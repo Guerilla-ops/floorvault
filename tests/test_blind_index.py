@@ -27,7 +27,7 @@ def test_blind_index_scope_domain_separation():
 def test_blind_index_truncation():
     key = b"\x10" * 32
     idx_short = compute_blind_index(
-        "scott@example.com", scope="users.email", key=key, truncate_bytes=16
+        "scott@example.com", scope="users.email", key=key, truncate_bytes=16  # gitleaks:allow
     )
     assert len(idx_short) == 16
 
