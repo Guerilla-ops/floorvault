@@ -29,9 +29,10 @@
 
 * **Contextual AAD Binding:** Cryptographically binds every encrypted value to its `table`, `record_id`, `column`, `schema`, and `app_instance_id`. Splicing ciphertext between rows or tables fails authentication instantly.
 * **Deterministic Misuse-Resistance (RFC 5297):** AES-256-SIV synthesizes the initialization vector from the plaintext and AAD, preventing key leaks even if a nonce repeats.
-* **Ephemeral Master Key Lifecycle (< 5 ms):** Derives functional subkeys via HKDF-SHA256 and immediately overwrites the master key in memory using `ctypes.memset`.
-* **Hardware Memory Custody (`HardenedMemoryKey`):** Pins derived keys in physical RAM via POSIX `mlock()` or Win32 `VirtualLock()`, shielded from crash dumps (`MADV_DONTDUMP`) and process forks (`MADV_DONTFORK`).
-* **Searchable Blind Indexing:** Query encrypted fields in native SQLite B-Trees (`WHERE email_idx = ?`) in **0.18 ms** without exposing search terms in memory.
+* **Ephemeral Master Key Handling:** Derives functional subkeys via HKDF-SHA256 and overwrites the mutable master-key buffer after derivation. Python and the cryptography backend may retain additional copies.
+* **Best-Effort Memory Hardening (`HardenedMemoryKey`):** Attempts to pin derived keys in physical RAM via POSIX `mlock()` or Win32 `VirtualLock()`, and to exclude them from crash dumps and forks. Strict mode can fail closed when locking is unavailable.
+* **Searchable Blind Indexing:** Query encrypted fields in native SQLite B-Trees (`WHERE email_idx = ?`) without storing search terms in plaintext. Equality and frequency leakage remain observable to database readers.
+* **Tokenized Message Search:** Hermes message projections use keyed hexadecimal search tokens by default; call `secure_search_query()` to build matching FTS queries. Plaintext FTS requires explicit `allow_plaintext_fts=True`.
 * **Zero C-Compilation Overhead:** Runs on Python's built-in `sqlite3` and PyCA `cryptography`. Universal binary wheels install anywhere in seconds.
 
 ---
@@ -53,23 +54,19 @@ uv add floorvault
 from floorvault import FloorVault, HardenedMemoryKey
 
 # Master key is wiped from memory in < 5 ms after HKDF derivation
-master_key = HardenedMemoryKey.from_hex("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+master_key = HardenedMemoryKey.from_hex(
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+)
 crypto = FloorVault(master_key, app_instance_id="agent-001")
 
 # Encrypt with contextual binding to table, row, and column
 ciphertext = crypto.encrypt(
-    plaintext="sk-ant-secret-token",
-    table="credentials",
-    record_id="user-123",
-    column="api_key"
+    plaintext="sk-ant-secret-token", table="credentials", record_id="user-123", column="api_key"
 )
 
 # Decrypt verifies the exact coordinates
 token = crypto.decrypt(
-    ciphertext=ciphertext,
-    table="credentials",
-    record_id="user-123",
-    column="api_key"
+    ciphertext=ciphertext, table="credentials", record_id="user-123", column="api_key"
 )
 
 # TAMPERING ATTEMPT: Trying to decrypt in another user's row aborts!
