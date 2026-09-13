@@ -1,4 +1,4 @@
-"""appstate-crypto: Contextual, misuse-resistant, searchable database encryption for SQLite."""
+"""floorvault: Contextual, misuse-resistant, searchable database encryption for SQLite."""
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from .core import (
     AppStateCrypto,
     AppStateCryptoError,
     DecryptionVerificationError,
+    FloorVault,
+    FloorVaultError,
     NonceReuseError,
     associated_data,
 )
@@ -23,6 +25,8 @@ __version__ = "0.1.0"
 
 __all__ = [
     # Core Cryptography
+    "FloorVault",
+    "FloorVaultError",
     "AppStateCrypto",
     "AppStateCryptoError",
     "DecryptionVerificationError",

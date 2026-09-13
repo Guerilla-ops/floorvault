@@ -11,8 +11,7 @@ import ctypes
 import hmac
 import json
 import os
-from collections.abc import Mapping
-from typing import Any, Union
+from typing import Any, Mapping, Union
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
@@ -23,19 +22,23 @@ from .blind_index import compute_blind_index
 from .memory import HardenedMemoryKey
 
 
-class AppStateCryptoError(Exception):
-    """Base error for all AppStateCrypto operations."""
+class FloorVaultError(Exception):
+    """Base error for all FloorVault operations."""
 
 
-class DecryptionVerificationError(AppStateCryptoError):
+# Backward compatibility alias
+AppStateCryptoError = FloorVaultError
+
+
+class DecryptionVerificationError(FloorVaultError):
     """Raised when ciphertext authentication tag fails or AAD is mismatched."""
 
 
-class NonceReuseError(AppStateCryptoError):
+class NonceReuseError(FloorVaultError):
     """Raised when an encrypted record reuses a previously observed nonce."""
 
 
-RECORD_MAGIC = b"ASC2"  # AppStateCrypto v2 Envelope Magic
+RECORD_MAGIC = b"FLRV"  # FloorVault v1 Envelope Magic
 
 
 def canonical_json_bytes(data: Mapping[str, Any]) -> bytes:
@@ -53,7 +56,7 @@ def associated_data(
     table: str,
     record_id: str,
     column: str,
-    schema_id: str = "appstate.v2",
+    schema_id: str = "floor.vault.v1",
     schema_version: int = 1,
     app_instance_id: str = "default",
 ) -> bytes:
@@ -83,7 +86,7 @@ def associated_data(
     return canonical_json_bytes(payload)
 
 
-class AppStateCrypto:
+class FloorVault:
     """Contextual, misuse-resistant database encryption engine."""
 
     def __init__(
@@ -94,7 +97,7 @@ class AppStateCrypto:
         maximum_tracked_nonces: int = 10000,
         memory_mode: str = "opportunistic",
     ) -> None:
-        """Initialize AppStateCrypto.
+        """Initialize FloorVault.
 
         Wipes the master_key in memory in < 5 ms after deriving isolated subkeys.
         """
@@ -125,7 +128,7 @@ class AppStateCrypto:
                 algorithm=hashes.SHA256(),
                 length=64,
                 salt=None,
-                info=b"appstate-crypto-v2-aes-siv",
+                info=b"floorvault-v1-aes-siv",
             ).derive(raw_master)
 
             # Subkey B: HMAC Blind Indexing requires 32 bytes
@@ -133,7 +136,7 @@ class AppStateCrypto:
                 algorithm=hashes.SHA256(),
                 length=32,
                 salt=None,
-                info=b"appstate-crypto-v2-hmac-index",
+                info=b"floorvault-v1-hmac-index",
             ).derive(raw_master)
 
             # Subkey C: Legacy v1 AES-GCM requires 32 bytes
@@ -141,14 +144,14 @@ class AppStateCrypto:
                 algorithm=hashes.SHA256(),
                 length=32,
                 salt=None,
-                info=b"appstate-crypto-v1-aes-gcm",
+                info=b"floorvault-v1-aes-gcm",
             ).derive(raw_master)
 
             # Assert key separation integrity
             if hmac.compare_digest(raw_siv[:32], raw_index) or hmac.compare_digest(
                 raw_gcm, raw_index
             ):
-                raise AppStateCryptoError("HKDF key separation failed")
+                raise FloorVaultError("HKDF key separation failed")
 
             # 3. Pin derived subkeys into physical RAM containers
             self._siv_key = HardenedMemoryKey(raw_siv, mode=memory_mode)
@@ -191,12 +194,12 @@ class AppStateCrypto:
         table: str,
         record_id: str,
         column: str,
-        schema_id: str = "appstate.v2",
+        schema_id: str = "floor.vault.v1",
         schema_version: int = 1,
     ) -> bytes:
         """Encrypt plaintext with contextual AAD binding via AES-256-SIV."""
         if self._closed:
-            raise RuntimeError("AppStateCrypto has been wiped")
+            raise RuntimeError("FloorVault has been wiped")
 
         data_bytes = plaintext.encode("utf-8") if isinstance(plaintext, str) else bytes(plaintext)
         aad = associated_data(
@@ -229,7 +232,7 @@ class AppStateCrypto:
         table: str,
         record_id: str,
         column: str,
-        schema_id: str = "appstate.v2",
+        schema_id: str = "floor.vault.v1",
         schema_version: int = 1,
     ) -> str:
         """Decrypt ciphertext and verify contextual AAD coordinates.
@@ -241,7 +244,7 @@ class AppStateCrypto:
             DecryptionVerificationError: If tag check fails or coordinates were spliced.
         """
         if self._closed:
-            raise RuntimeError("AppStateCrypto has been wiped")
+            raise RuntimeError("FloorVault has been wiped")
         if not isinstance(ciphertext, (bytes, bytearray)):
             raise TypeError("Ciphertext must be bytes")
         if len(ciphertext) < 21:  # 4B magic + 1B len + 16B nonce minimum
@@ -279,7 +282,7 @@ class AppStateCrypto:
     def blind_index(self, value: str, *, scope: str) -> bytes:
         """Compute an HMAC blind index for native SQLite B-Tree searching."""
         if self._closed:
-            raise RuntimeError("AppStateCrypto has been wiped")
+            raise RuntimeError("FloorVault has been wiped")
         return compute_blind_index(value, scope=scope, key=self._index_key)
 
     def wipe(self) -> None:
@@ -299,8 +302,12 @@ class AppStateCrypto:
     def __del__(self) -> None:
         self.wipe()
 
-    def __enter__(self) -> AppStateCrypto:
+    def __enter__(self) -> FloorVault:
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.wipe()
+
+
+# Backward compatibility alias
+AppStateCrypto = FloorVault

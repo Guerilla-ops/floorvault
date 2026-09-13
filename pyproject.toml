@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "appstate-crypto"
+name = "floorvault"
 version = "0.1.0"
 description = "Contextual, misuse-resistant, searchable database encryption for SQLite and beyond — zero C compilation."
 readme = "README.md"
@@ -21,6 +21,8 @@ keywords = [
     "searchable-encryption",
     "crypto",
     "database",
+    "floor",
+    "floorvault",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -50,10 +52,10 @@ dev = [
 ]
 
 [project.scripts]
-appstate-crypto = "appstate_crypto.inspector:main"
+floorvault = "floorvault.inspector:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/appstate_crypto"]
+packages = ["src/floorvault"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

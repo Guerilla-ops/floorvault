@@ -1,4 +1,4 @@
-"""Command-line inspection and query debugging tool for appstate-crypto."""
+"""Command-line inspection and query debugging tool for floorvault."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from .core import AppStateCrypto
+from .core import FloorVault
 from .providers.adaptive import AdaptiveKeyProvider
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for appstate-crypto CLI."""
+    """Entry point for floorvault CLI."""
     parser = argparse.ArgumentParser(
-        prog="appstate-crypto",
+        prog="floorvault",
         description="Inspect and debug encrypted SQLite databases.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
 
     provider = AdaptiveKeyProvider()
     master_key = provider.resolve_key()
-    crypto = AppStateCrypto(master_key)
+    crypto = FloorVault(master_key)
 
     if args.command == "index":
         digest = crypto.blind_index(args.value, scope=args.scope)

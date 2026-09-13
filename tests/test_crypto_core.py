@@ -1,17 +1,17 @@
-"""Tests for core AppStateCrypto engine, contextual AAD, and tamper resistance."""
+"""Tests for core FloorVault engine, contextual AAD, and tamper resistance."""
 
 import pytest
 
-from appstate_crypto.core import (
-    AppStateCrypto,
+from floorvault.core import (
     DecryptionVerificationError,
+    FloorVault,
 )
-from appstate_crypto.memory import HardenedMemoryKey
+from floorvault.memory import HardenedMemoryKey
 
 
-def test_appstate_crypto_round_trip():
+def test_floorvault_round_trip():
     master_key = b"\x01" * 32
-    crypto = AppStateCrypto(master_key, app_instance_id="inst-test-1", memory_mode="disabled")
+    crypto = FloorVault(master_key, app_instance_id="inst-test-1", memory_mode="disabled")
 
     plaintext = "super-secret-api-token-12345"
     ciphertext = crypto.encrypt(
@@ -35,7 +35,7 @@ def test_appstate_crypto_round_trip():
 
 def test_contextual_splicing_attack_detection():
     """Verify that moving ciphertext across rows or columns fails decryption."""
-    crypto = AppStateCrypto(b"\x02" * 32, app_instance_id="inst-test-1", memory_mode="disabled")
+    crypto = FloorVault(b"\x02" * 32, app_instance_id="inst-test-1", memory_mode="disabled")
 
     secret_admin = "admin-confidential-password"
     cipher_admin = crypto.encrypt(
@@ -78,7 +78,7 @@ def test_contextual_splicing_attack_detection():
 def test_ephemeral_master_key_destruction():
     """Verify master key is wiped in memory within initialization."""
     master = HardenedMemoryKey(b"\x03" * 32, mode="disabled")
-    crypto = AppStateCrypto(master, app_instance_id="inst-test-2", memory_mode="disabled")
+    crypto = FloorVault(master, app_instance_id="inst-test-2", memory_mode="disabled")
 
     # Master key container must be wiped
     assert master.is_wiped is True
@@ -92,7 +92,7 @@ def test_ephemeral_master_key_destruction():
 
 def test_bounded_nonce_tracking():
     """Verify sliding window bounds memory without leak."""
-    crypto = AppStateCrypto(b"\x04" * 32, maximum_tracked_nonces=20, memory_mode="disabled")
+    crypto = FloorVault(b"\x04" * 32, maximum_tracked_nonces=20, memory_mode="disabled")
 
     # Generate 50 encrypted records
     for i in range(50):
@@ -104,7 +104,7 @@ def test_bounded_nonce_tracking():
 
 
 def test_engine_wipe_lifecycle():
-    crypto = AppStateCrypto(b"\x05" * 32, memory_mode="disabled")
+    crypto = FloorVault(b"\x05" * 32, memory_mode="disabled")
     ciphertext = crypto.encrypt("data", table="t", record_id="r", column="c")
 
     crypto.wipe()

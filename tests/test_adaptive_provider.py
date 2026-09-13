@@ -1,6 +1,6 @@
 """Tests for the 3-Tier Adaptive Key Provider."""
 
-from appstate_crypto.providers.adaptive import AdaptiveKeyProvider
+from floorvault.providers.adaptive import AdaptiveKeyProvider
 
 
 def test_adaptive_provider_env_variable(monkeypatch, tmp_path):

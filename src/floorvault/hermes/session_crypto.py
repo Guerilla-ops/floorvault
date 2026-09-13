@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Tuple
 
-from ..core import AppStateCrypto
+from ..core import FloorVault
 
 # Common secret regex patterns (API keys, bearer tokens) for FTS5 scrubbing
 SECRET_PATTERNS = [
@@ -27,7 +26,7 @@ def scrub_secrets_for_fts(text: str) -> str:
 class HermesSessionCrypto:
     """Hybrid split-projection for Hermes state.db message history."""
 
-    def __init__(self, crypto: AppStateCrypto) -> None:
+    def __init__(self, crypto: FloorVault) -> None:
         self.crypto = crypto
 
     def encrypt_message(
@@ -36,7 +35,7 @@ class HermesSessionCrypto:
         session_id: str,
         message_id: str,
         content: str,
-    ) -> Tuple[bytes, str]:
+    ) -> tuple[bytes, str]:
         """Encrypt message with contextual AAD while extracting scrubbed FTS text.
 
         Returns:

@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from appstate_crypto.memory import HardenedMemoryKey
+from floorvault.memory import HardenedMemoryKey
 
 
 def test_hardened_memory_key_lifecycle():

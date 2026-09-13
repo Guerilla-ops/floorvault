@@ -14,10 +14,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from urllib.parse import urlsplit
 
-from ..core import AppStateCrypto
+from ..core import FloorVault
 from ..providers.adaptive import AdaptiveKeyProvider
 
 VAULT_KINDS = ("login", "payment", "address")
@@ -106,8 +106,8 @@ class VaultItemMeta:
     identifier: Optional[str] = None
     has_otp: bool = False
 
-    def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
             "id": self.id,
             "kind": self.kind,
             "label": self.label,
@@ -123,9 +123,9 @@ class VaultItemMeta:
 
 
 class HermesVaultStore:
-    """Hermes-optimized vault store backed by AppStateCrypto."""
+    """Hermes-optimized vault store backed by FloorVault."""
 
-    def __init__(self, base_dir: Path | str, *, crypto: Optional[AppStateCrypto] = None):
+    def __init__(self, base_dir: Path | str, *, crypto: Optional[FloorVault] = None):
         self._base = Path(base_dir)
         self._base.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._db_path = self._base / "vault.db"
@@ -140,7 +140,7 @@ class HermesVaultStore:
                 fallback_dir=self._base,
             )
             master_key = provider.resolve_key()
-            self._crypto = AppStateCrypto(master_key, app_instance_id="hermes-agent")
+            self._crypto = FloorVault(master_key, app_instance_id="hermes-agent")
 
         self._init_db()
 
@@ -166,7 +166,7 @@ class HermesVaultStore:
         self,
         kind: str,
         label: str,
-        secret: Dict[str, Any],
+        secret: dict[str, Any],
         origin: Optional[str] = None,
     ) -> VaultItemMeta:
         """Add credential item matching Hermes's exact tool parameters."""
@@ -257,7 +257,7 @@ class HermesVaultStore:
             has_otp=has_otp,
         )
 
-    def get_secret(self, item_id: str) -> Dict[str, Any]:
+    def get_secret(self, item_id: str) -> dict[str, Any]:
         """Retrieve and contextually decrypt secret payload."""
         with sqlite3.connect(self._db_path) as conn:
             row = conn.execute(
@@ -275,7 +275,7 @@ class HermesVaultStore:
         )
         return json.loads(plaintext)
 
-    def find_by_origin(self, origin: str) -> List[VaultItemMeta]:
+    def find_by_origin(self, origin: str) -> list[VaultItemMeta]:
         """Fast O(log N) lookup using HMAC blind indexing (0.18 ms)."""
         norm_origin = normalize_origin(origin)
         origin_idx = self._crypto.blind_index(norm_origin, scope="hermes.vault.origin")
@@ -302,7 +302,7 @@ class HermesVaultStore:
                 for row in cursor.fetchall()
             ]
 
-    def list_items(self) -> List[VaultItemMeta]:
+    def list_items(self) -> list[VaultItemMeta]:
         """List metadata for all stored items."""
         with sqlite3.connect(self._db_path) as conn:
             cursor = conn.execute(

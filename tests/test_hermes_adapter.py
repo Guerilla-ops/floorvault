@@ -1,14 +1,14 @@
 """Tests for Hermes Agent-optimized storage adapters."""
 
-from appstate_crypto.core import AppStateCrypto
-from appstate_crypto.hermes import (
+from floorvault.core import FloorVault
+from floorvault.hermes import (
     HermesSessionCrypto,
     HermesVaultStore,
 )
 
 
 def test_hermes_vault_store_lifecycle(tmp_path):
-    crypto = AppStateCrypto(b"\x11" * 32, memory_mode="disabled")
+    crypto = FloorVault(b"\x11" * 32, memory_mode="disabled")
     store = HermesVaultStore(tmp_path / "hermes_vault", crypto=crypto)
 
     # 1. Add login item
@@ -52,7 +52,7 @@ def test_hermes_vault_store_lifecycle(tmp_path):
 
 
 def test_hermes_session_crypto_hybrid_split(tmp_path):
-    crypto = AppStateCrypto(b"\x22" * 32, memory_mode="disabled")
+    crypto = FloorVault(b"\x22" * 32, memory_mode="disabled")
     session_crypto = HermesSessionCrypto(crypto)
 
     raw_content = (

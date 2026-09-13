@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Union
 
-from .core import AppStateCrypto
+from .core import FloorVault
 
 
 class ContextualTable:
@@ -13,10 +13,10 @@ class ContextualTable:
 
     def __init__(
         self,
-        crypto: AppStateCrypto,
+        crypto: FloorVault,
         table_name: str,
         *,
-        schema_id: str = "appstate.v2",
+        schema_id: str = "floor.vault.v1",
     ) -> None:
         self.crypto = crypto
         self.table_name = table_name
@@ -67,10 +67,10 @@ class ContextualTable:
 class ContextualSQLite:
     """Contextual encryption wrapper around a standard SQLite connection."""
 
-    def __init__(self, connection: sqlite3.Connection, crypto: AppStateCrypto) -> None:
+    def __init__(self, connection: sqlite3.Connection, crypto: FloorVault) -> None:
         self.connection = connection
         self.crypto = crypto
 
-    def table(self, table_name: str, *, schema_id: str = "appstate.v2") -> ContextualTable:
+    def table(self, table_name: str, *, schema_id: str = "floor.vault.v1") -> ContextualTable:
         """Get table-bound cryptographic helper."""
         return ContextualTable(self.crypto, table_name, schema_id=schema_id)

@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from appstate_crypto import AppStateCrypto, ContextualSQLite, DecryptionVerificationError
+from floorvault import ContextualSQLite, DecryptionVerificationError, FloorVault
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def memory_db():
 
 def test_sqlite_contextual_encryption_and_blind_search(memory_db):
     master_key = b"\xaa" * 32
-    crypto = AppStateCrypto(master_key, app_instance_id="inst-sql-1", memory_mode="disabled")
+    crypto = FloorVault(master_key, app_instance_id="inst-sql-1", memory_mode="disabled")
     db = ContextualSQLite(memory_db, crypto)
 
     cred_table = db.table("credentials")
@@ -61,7 +61,7 @@ def test_sqlite_contextual_encryption_and_blind_search(memory_db):
 
 
 def test_sqlite_tamper_detection(memory_db):
-    crypto = AppStateCrypto(b"\xbb" * 32, memory_mode="disabled")
+    crypto = FloorVault(b"\xbb" * 32, memory_mode="disabled")
     db = ContextualSQLite(memory_db, crypto)
     table = db.table("credentials")
 

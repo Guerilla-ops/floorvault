@@ -1,18 +1,18 @@
-# appstate-crypto
+# floorvault
 
-[![PyPI version](https://img.shields.io/pypi/v/appstate-crypto.svg)](https://pypi.org/project/appstate-crypto/)
+[![PyPI version](https://img.shields.io/pypi/v/floorvault.svg)](https://pypi.org/project/floorvault/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-[![Python Versions](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://pypi.org/project/appstate-crypto/)
+[![Python Versions](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://pypi.org/project/floorvault/)
 
 > **Contextual, misuse-resistant, searchable database encryption for SQLite and beyond — zero C compilation.**
 
-`appstate-crypto` provides field- and record-level Authenticated Encryption with Associated Data (AEAD) and HMAC blind indexing over standard, unmodified SQLite. It is designed for autonomous AI agents (Hermes, Claude Code, OpenHands), local desktop software (Tauri, Electron, PyQt), and edge services that require tamper-proof local storage without the compilation headaches of SQLCipher.
+`floorvault` provides field- and record-level Authenticated Encryption with Associated Data (AEAD) and HMAC blind indexing over standard, unmodified SQLite. It is designed for autonomous AI agents (Hermes, Claude Code, OpenHands), local desktop software (Tauri, Electron, PyQt), and edge services that require tamper-proof local storage without the compilation headaches of SQLCipher.
 
 ---
 
-## Why appstate-crypto?
+## Why FloorVault?
 
-| Capability | SQLCipher | Fernet / Ad-Hoc AES | appstate-crypto |
+| Capability | SQLCipher | Fernet / Ad-Hoc AES | FloorVault |
 | :--- | :---: | :---: | :---: |
 | **Installation** | Custom C compilation | Stock Python | **Stock Python (`pip install`)** |
 | **Tamper Resistance** | None (Page HMAC only) | None | **Contextual AAD Binding** |
@@ -39,9 +39,9 @@
 ## Installation
 
 ```bash
-pip install appstate-crypto
+pip install floorvault
 # or with uv:
-uv add appstate-crypto
+uv add floorvault
 ```
 
 ---
@@ -50,11 +50,11 @@ uv add appstate-crypto
 
 ### 1. Contextual Field Encryption
 ```python
-from appstate_crypto import AppStateCrypto, HardenedMemoryKey
+from floorvault import FloorVault, HardenedMemoryKey
 
 # Master key is wiped from memory in < 5 ms after HKDF derivation
 master_key = HardenedMemoryKey.from_hex("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-crypto = AppStateCrypto(master_key, app_instance_id="agent-001")
+crypto = FloorVault(master_key, app_instance_id="agent-001")
 
 # Encrypt with contextual binding to table, row, and column
 ciphertext = crypto.encrypt(
@@ -80,9 +80,9 @@ crypto.decrypt(ciphertext, table="credentials", record_id="user-attacker", colum
 ### 2. Searchable Blind Indexing in SQLite
 ```python
 import sqlite3
-from appstate_crypto import AppStateCrypto
+from floorvault import FloorVault
 
-crypto = AppStateCrypto.from_system_keyring("my-app")
+crypto = FloorVault.from_system_keyring("my-app")
 
 conn = sqlite3.connect("local_vault.db")
 conn.execute("""
