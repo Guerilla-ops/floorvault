@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "appstate-crypto"
+version = "0.1.0"
+description = "Contextual, misuse-resistant, searchable database encryption for SQLite and beyond — zero C compilation."
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+authors = [
+    { name = "Hermes & Nova", email = "hermes@nousresearch.com" },
+]
+keywords = [
+    "sqlite",
+    "encryption",
+    "aead",
+    "aes-siv",
+    "rfc5297",
+    "blind-index",
+    "searchable-encryption",
+    "crypto",
+    "database",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Database",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "cryptography>=43.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.5.0",
+]
+
+[project.scripts]
+appstate-crypto = "appstate_crypto.inspector:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/appstate_crypto"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
