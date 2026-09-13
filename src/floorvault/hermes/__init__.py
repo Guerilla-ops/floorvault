@@ -7,8 +7,12 @@ from .vault import (
     HermesVaultStore,
     VaultError,
     VaultItemMeta,
+    VaultStore,
+    get_vault_store,
     normalize_origin,
     normalize_otp_secret,
+    scrub_secret_from_text,
+    totp_now,
 )
 
 __all__ = [
@@ -16,7 +20,11 @@ __all__ = [
     "HermesVaultStore",
     "VaultError",
     "VaultItemMeta",
+    "VaultStore",
+    "get_vault_store",
     "normalize_origin",
     "normalize_otp_secret",
+    "scrub_secret_from_text",
     "scrub_secrets_for_fts",
+    "totp_now",
 ]
