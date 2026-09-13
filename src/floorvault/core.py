@@ -7,7 +7,6 @@ master key destruction (< 5 ms), and HKDF functional subkey separation.
 from __future__ import annotations
 
 import collections
-import ctypes
 import hmac
 import json
 import os
@@ -15,7 +14,7 @@ from typing import Any, Mapping, Union
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM, AESSIV
+from cryptography.hazmat.primitives.ciphers.aead import AESSIV
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from .blind_index import compute_blind_index
@@ -108,18 +107,18 @@ class FloorVault:
         self._closed = False
         self._memory_mode = memory_mode
 
-        # 1. Extract raw master key bytes for derivation
-        raw_master: bytes
+        # 1. Extract raw master key bytes for derivation into a mutable bytearray
+        master_buffer: bytearray
         is_hardened = isinstance(master_key, HardenedMemoryKey)
         if is_hardened:
-            raw_master = master_key.get_bytes()
+            master_buffer = bytearray(master_key.get_bytes())
         elif isinstance(master_key, (bytes, bytearray)):
-            raw_master = bytes(master_key)
+            master_buffer = bytearray(master_key)
         else:
             raise TypeError("master_key must be bytes or HardenedMemoryKey")
 
-        if len(raw_master) != 32:
-            raise ValueError(f"master_key must be exactly 32 bytes (got {len(raw_master)})")
+        if len(master_buffer) != 32:
+            raise ValueError(f"master_key must be exactly 32 bytes (got {len(master_buffer)})")
 
         try:
             # 2. Derive functional subkeys using HKDF-SHA256 with domain separation
@@ -129,7 +128,7 @@ class FloorVault:
                 length=64,
                 salt=None,
                 info=b"floorvault-v1-aes-siv",
-            ).derive(raw_master)
+            ).derive(bytes(master_buffer))
 
             # Subkey B: HMAC Blind Indexing requires 32 bytes
             raw_index = HKDF(
@@ -137,38 +136,31 @@ class FloorVault:
                 length=32,
                 salt=None,
                 info=b"floorvault-v1-hmac-index",
-            ).derive(raw_master)
-
-            # Subkey C: Legacy v1 AES-GCM requires 32 bytes
-            raw_gcm = HKDF(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=None,
-                info=b"floorvault-v1-aes-gcm",
-            ).derive(raw_master)
+            ).derive(bytes(master_buffer))
 
             # Assert key separation integrity
-            if hmac.compare_digest(raw_siv[:32], raw_index) or hmac.compare_digest(
-                raw_gcm, raw_index
-            ):
+            if hmac.compare_digest(raw_siv[:32], raw_index):
                 raise FloorVaultError("HKDF key separation failed")
 
             # 3. Pin derived subkeys into physical RAM containers
             self._siv_key = HardenedMemoryKey(raw_siv, mode=memory_mode)
             self._index_key = HardenedMemoryKey(raw_index, mode=memory_mode)
-            self._gcm_key = HardenedMemoryKey(raw_gcm, mode=memory_mode)
 
             # Initialize AES-SIV engine
-            self._aead_siv = AESSIV(self._siv_key.get_bytes())
-            self._aead_gcm = AESGCM(self._gcm_key.get_bytes())
+            siv_key_bytes = self._siv_key.get_bytes()
+            self._aead_siv = AESSIV(siv_key_bytes)
+            del siv_key_bytes
+            del raw_siv
+            del raw_index
 
         finally:
             # 4. EPHEMERAL MASTER KEY DESTRUCTION: wipe master key in < 5 ms
             if is_hardened:
                 master_key.wipe()
-            # Overwrite local buffer
-            ctypes.memset(ctypes.c_char_p(raw_master), 0, len(raw_master))
-            del raw_master
+            # Overwrite mutable buffer cleanly without ctypes.c_char_p null-byte truncation
+            for idx in range(len(master_buffer)):
+                master_buffer[idx] = 0
+            del master_buffer
 
         # Bounded sliding window for observed nonces
         self._max_nonces = maximum_tracked_nonces
@@ -293,8 +285,6 @@ class FloorVault:
             self._siv_key.wipe()
         if hasattr(self, "_index_key"):
             self._index_key.wipe()
-        if hasattr(self, "_gcm_key"):
-            self._gcm_key.wipe()
         self._nonce_set.clear()
         self._nonce_queue.clear()
         self._closed = True

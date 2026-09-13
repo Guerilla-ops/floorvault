@@ -7,9 +7,13 @@ proactive container capability probing and deterministic zeroization.
 from __future__ import annotations
 
 import ctypes
-import resource
 import sys
 from typing import Any
+
+try:
+    import resource
+except ImportError:
+    resource = None
 
 # POSIX madvise constants for Darwin and Linux
 MADV_DONTDUMP = 16 if sys.platform in ("darwin", "linux") else None
@@ -24,7 +28,7 @@ class SecurityHardeningError(RuntimeError):
 
 def disable_core_dumps() -> None:
     """Globally prevent the OS kernel from flushing process RAM to disk on crash."""
-    if sys.platform in ("darwin", "linux"):
+    if resource is not None and sys.platform in ("darwin", "linux"):
         try:
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         except Exception:

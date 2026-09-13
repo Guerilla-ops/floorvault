@@ -4,13 +4,14 @@ Seamlessly scales from interactive desktop keyrings to headless cloud/Docker
 environments without hanging, crashing, or requiring manual configuration:
   Tier 1: OS Keyring (macOS Keychain, Windows DPAPI, Linux Secret Service)
   Tier 2: Explicit Environment Variable (APPSTATE_KEY, HERMES_VAULT_KEY)
-  Tier 3: Machine-Bound Local 0600 File Key (Headless Docker / Remote SSH)
+  Tier 3: Explicitly Opt-In Local 0600 File Key (Headless Docker / Remote SSH)
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Optional
@@ -20,18 +21,22 @@ from .base import KeyProvider, KeyProviderError
 
 
 class AdaptiveKeyProvider(KeyProvider):
-    """Zero-configuration key provider with autonomous headless fallback."""
+    """Adaptive key provider with fail-closed protected-storage defaults."""
 
     def __init__(
         self,
-        service_name: str = "appstate-crypto",
+        service_name: str = "floorvault",
         account_name: str = "default-v1",
         *,
         fallback_dir: Optional[Path] = None,
+        strict: bool = False,
+        allow_disk_fallback: bool = False,
     ) -> None:
         self.service_name = service_name
         self.account_name = account_name
-        self.fallback_dir = fallback_dir or (Path.home() / ".appstate-crypto")
+        self.fallback_dir = fallback_dir or (Path.home() / ".floorvault")
+        self.strict = strict
+        self.allow_disk_fallback = allow_disk_fallback and not strict
 
     def _is_interactive_desktop(self) -> bool:
         """Heuristic detecting whether a GUI keyring environment is present."""
@@ -109,11 +114,24 @@ class AdaptiveKeyProvider(KeyProvider):
         return None
 
     def _resolve_machine_bound_file_key(self, *, allow_create: bool) -> HardenedMemoryKey:
-        """Resolve a machine-bound 0600 local file key without GUI prompts."""
+        """Resolve an explicitly enabled 0600 local file key without GUI prompts."""
+        if self.strict or not self.allow_disk_fallback:
+            raise KeyProviderError(
+                "Refusing headless fallback to plaintext disk key in strict mode. "
+                "Set APPSTATE_KEY or HERMES_VAULT_KEY environment variable."
+            )
+
         self.fallback_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         key_file = self.fallback_dir / "master.key"
 
         if key_file.exists():
+            file_stat = key_file.lstat()
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise KeyProviderError("Refusing non-regular key file")
+            if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():
+                raise KeyProviderError("Refusing key file with unexpected owner")
+            if file_stat.st_mode & 0o077:
+                raise KeyProviderError("Refusing key file with insecure permissions")
             key_bytes = key_file.read_bytes()
             if len(key_bytes) == 32:
                 return HardenedMemoryKey(key_bytes)
