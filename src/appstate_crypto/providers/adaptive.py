@@ -13,7 +13,7 @@ import hashlib
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from ..memory import HardenedMemoryKey
 from .base import KeyProvider, KeyProviderError
@@ -41,7 +41,11 @@ class AdaptiveKeyProvider(KeyProvider):
         if sys.platform == "win32":
             return True
         # Linux: check for X11 / Wayland / DBus session
-        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DBUS_SESSION_BUS_ADDRESS"))
+        return bool(
+            os.environ.get("DISPLAY")
+            or os.environ.get("WAYLAND_DISPLAY")
+            or os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+        )
 
     def resolve_key(self, *, allow_create: bool = True) -> HardenedMemoryKey:
         """Resolve the master key across the three autonomous tiers."""
@@ -77,6 +81,7 @@ class AdaptiveKeyProvider(KeyProvider):
         if sys.platform == "darwin":
             try:
                 import Security  # type: ignore[import-not-found]
+
                 query = {
                     Security.kSecClass: Security.kSecClassGenericPassword,
                     Security.kSecAttrService: self.service_name,

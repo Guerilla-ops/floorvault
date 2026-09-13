@@ -3,22 +3,21 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable
 import fcntl
 import json
 import os
-from pathlib import Path
 import stat
 import threading
-from typing import Protocol, runtime_checkable
 import uuid
+from collections.abc import Callable
+from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from .contract_registry import canonical_json_bytes
-
 
 DATA_KEY_BYTES = 32
 KEY_VERSION = 1

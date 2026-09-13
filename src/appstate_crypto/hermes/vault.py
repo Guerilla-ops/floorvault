@@ -8,7 +8,6 @@ AES-256-SIV with sub-5ms key destruction and HMAC blind indexing on origins.
 from __future__ import annotations
 
 import json
-import os
 import re
 import sqlite3
 import uuid
@@ -18,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
-from ..core import AppStateCrypto, DecryptionVerificationError
+from ..core import AppStateCrypto
 from ..providers.adaptive import AdaptiveKeyProvider
 
 VAULT_KINDS = ("login", "payment", "address")
@@ -82,6 +81,7 @@ def normalize_otp_secret(value: str) -> str:
         return ""
     if value.lower().startswith("otpauth://"):
         from urllib.parse import parse_qs, urlparse
+
         parsed = urlparse(value)
         if parsed.netloc.lower() != "totp":
             raise VaultError("only otpauth://totp links are supported")
@@ -96,6 +96,7 @@ def normalize_otp_secret(value: str) -> str:
 @dataclass(frozen=True)
 class VaultItemMeta:
     """Metadata-only view of a vault item matching Hermes's exact contract."""
+
     id: str
     kind: str
     label: str
@@ -196,11 +197,13 @@ class HermesVaultStore:
             has_otp = bool(otp_secret)
             clean_secret = {
                 "password": str(secret_copy["password"]),
-                **({"otp_secret": otp_secret} if otp_secret else {})
+                **({"otp_secret": otp_secret} if otp_secret else {}),
             }
         else:
             allowed = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
-            clean_secret = {k: str(v) for k, v in secret_copy.items() if k in allowed and str(v or "").strip()}
+            clean_secret = {
+                k: str(v) for k, v in secret_copy.items() if k in allowed and str(v or "").strip()
+            }
             missing = [f for f in REQUIRED_FIELDS[kind] if f not in clean_secret]
             if missing:
                 raise VaultError(f"{kind} items require {', '.join(missing)}")
@@ -230,9 +233,17 @@ class HermesVaultStore:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    item_id, kind, label, norm_origin, origin_idx,
-                    identifier_type, identifier, 1 if has_otp else 0, created_at, payload_cipher,
-                )
+                    item_id,
+                    kind,
+                    label,
+                    norm_origin,
+                    origin_idx,
+                    identifier_type,
+                    identifier,
+                    1 if has_otp else 0,
+                    created_at,
+                    payload_cipher,
+                ),
             )
 
         return VaultItemMeta(
@@ -250,8 +261,7 @@ class HermesVaultStore:
         """Retrieve and contextually decrypt secret payload."""
         with sqlite3.connect(self._db_path) as conn:
             row = conn.execute(
-                "SELECT payload_cipher FROM vault_items WHERE id = ?",
-                (item_id,)
+                "SELECT payload_cipher FROM vault_items WHERE id = ?", (item_id,)
             ).fetchone()
             if not row:
                 raise VaultError(f"Vault item not found: {item_id}")
@@ -276,7 +286,7 @@ class HermesVaultStore:
                 SELECT id, kind, label, origin, created_at, identifier_type, identifier, has_otp
                 FROM vault_items WHERE origin_idx = ?
                 """,
-                (origin_idx,)
+                (origin_idx,),
             )
             return [
                 VaultItemMeta(

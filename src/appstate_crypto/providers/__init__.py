@@ -6,8 +6,8 @@ from .adaptive import AdaptiveKeyProvider
 from .base import KeyProvider, KeyProviderError, MissingKeyError
 
 __all__ = [
+    "AdaptiveKeyProvider",
     "KeyProvider",
     "KeyProviderError",
     "MissingKeyError",
-    "AdaptiveKeyProvider",
 ]

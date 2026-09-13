@@ -1,6 +1,7 @@
 """Tests for HMAC-SHA256 blind indexing."""
 
 import pytest
+
 from appstate_crypto.blind_index import BlindIndexer, compute_blind_index
 
 
@@ -25,7 +26,9 @@ def test_blind_index_scope_domain_separation():
 
 def test_blind_index_truncation():
     key = b"\x10" * 32
-    idx_short = compute_blind_index("scott@example.com", scope="users.email", key=key, truncate_bytes=16)
+    idx_short = compute_blind_index(
+        "scott@example.com", scope="users.email", key=key, truncate_bytes=16
+    )
     assert len(idx_short) == 16
 
 

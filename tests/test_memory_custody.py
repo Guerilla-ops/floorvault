@@ -1,8 +1,10 @@
 """Tests for universal hardware memory custody and page locking."""
 
 import sys
+
 import pytest
-from appstate_crypto.memory import HardenedMemoryKey, SecurityHardeningError
+
+from appstate_crypto.memory import HardenedMemoryKey
 
 
 def test_hardened_memory_key_lifecycle():

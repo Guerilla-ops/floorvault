@@ -1,6 +1,5 @@
 """Official RFC Test Vectors verification for AES-SIV (RFC 5297) and HKDF-SHA256 (RFC 5869)."""
 
-import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -26,7 +25,9 @@ def test_rfc_5297_appendix_a1_deterministic_aes_siv():
 def test_rfc_5297_appendix_a2_nonce_based_aes_siv():
     """RFC 5297 Appendix A.2: Nonce-Based Authenticated Encryption Example with Multiple ADs."""
     key = bytes.fromhex("7f7e7d7c7b7a79787776757473727170404142434445464748494a4b4c4d4e4f")
-    ad1 = bytes.fromhex("00112233445566778899aabbccddeeffdeaddadadeaddadaffeeddccbbaa99887766554433221100")
+    ad1 = bytes.fromhex(
+        "00112233445566778899aabbccddeeffdeaddadadeaddadaffeeddccbbaa99887766554433221100"
+    )
     ad2 = bytes.fromhex("102030405060708090a0")
     nonce = bytes.fromhex("09f911029d74e35bd84156c5635688c0")
     plaintext = bytes.fromhex(
@@ -66,9 +67,7 @@ def test_rfc_5869_test_case_1_hkdf_sha256():
     ).derive(ikm)
 
     expected_okm = bytes.fromhex(
-        "3cb25f25faacd57a90434f64d0362f2a"
-        "2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
-        "34007208d5b887185865"
+        "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
     )
 
     assert okm == expected_okm

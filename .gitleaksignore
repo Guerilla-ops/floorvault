@@ -1,0 +1,3 @@
+# Gitleaks ignore file for synthetic test fixtures
+04d25598a24fe3a757d871009cf42e7cd3951ae8:tests/test_hermes_adapter.py:generic-api-key:62
+ed8c6f7e85b74b42769a1458371f6ed9ada63dc8:tests/test_adaptive_provider.py:generic-api-key:9

@@ -7,10 +7,9 @@ proactive container capability probing and deterministic zeroization.
 from __future__ import annotations
 
 import ctypes
-import os
 import resource
 import sys
-from typing import Any, Optional
+from typing import Any
 
 # POSIX madvise constants for Darwin and Linux
 MADV_DONTDUMP = 16 if sys.platform in ("darwin", "linux") else None
@@ -19,6 +18,7 @@ MADV_DONTFORK = 19 if sys.platform in ("darwin", "linux") else None
 
 class SecurityHardeningError(RuntimeError):
     """Raised when critical memory protections fail under strict enforcement."""
+
     code = "memory_hardening_failed"
 
 
@@ -123,12 +123,12 @@ class HardenedMemoryKey:
 
     def get_buffer(self) -> memoryview:
         """Return a zero-copy memoryview directly to the unmanaged buffer.
-        
+
         Avoids creating transient immutable Python bytes objects on the heap.
         """
         if self._closed:
             raise RuntimeError("Attempted to access wiped HardenedMemoryKey")
-        return memoryview(self._buffer)[:self._size]
+        return memoryview(self._buffer)[: self._size]
 
     def get_bytes(self) -> bytes:
         """Return raw bytes view. Use sparingly to avoid heap ghost copies."""

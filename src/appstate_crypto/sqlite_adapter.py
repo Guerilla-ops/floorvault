@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Union
 
 from .core import AppStateCrypto
 

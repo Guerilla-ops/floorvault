@@ -1,13 +1,12 @@
-import json
 import base64
 import hashlib
+import json
 import uuid
 
 import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-
 from pixel_org_ui.app_state_crypto import (
     AppStateCrypto,
     AppStateIntegrityError,
@@ -16,7 +15,6 @@ from pixel_org_ui.app_state_crypto import (
 )
 from pixel_org_ui.contract_registry import canonical_json_bytes
 from pixel_org_ui.errors import ValidationError
-
 
 INSTANCE = str(uuid.UUID(int=7))
 CONTEXT = {

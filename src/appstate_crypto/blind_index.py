@@ -41,7 +41,7 @@ def compute_blind_index(
         raise ValueError("Blind indexing key must be at least 32 bytes")
 
     # Domain separation: scope || 0x00 || value
-    canonical_payload = f"{scope}\x00{value}".encode("utf-8")
+    canonical_payload = f"{scope}\x00{value}".encode()
     digest = hmac.new(key_bytes, canonical_payload, hashlib.sha256).digest()
 
     return digest[:truncate_bytes]

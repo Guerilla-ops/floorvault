@@ -1,13 +1,9 @@
 """Tests for Hermes Agent-optimized storage adapters."""
 
-import pytest
 from appstate_crypto.core import AppStateCrypto
 from appstate_crypto.hermes import (
     HermesSessionCrypto,
     HermesVaultStore,
-    VaultError,
-    normalize_origin,
-    scrub_secrets_for_fts,
 )
 
 
@@ -59,7 +55,9 @@ def test_hermes_session_crypto_hybrid_split(tmp_path):
     crypto = AppStateCrypto(b"\x22" * 32, memory_mode="disabled")
     session_crypto = HermesSessionCrypto(crypto)
 
-    raw_content = "Please use this key: sk-1234567890123456789012345 to authenticate."
+    raw_content = (
+        "Please use this key: sk-1234567890123456789012345 to authenticate."  # gitleaks:allow
+    )
     cipher, fts_text = session_crypto.encrypt_message(
         session_id="sess-001",
         message_id="msg-001",

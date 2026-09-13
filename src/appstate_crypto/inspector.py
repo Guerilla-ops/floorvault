@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 
 from .core import AppStateCrypto
-from .memory import HardenedMemoryKey
 from .providers.adaptive import AdaptiveKeyProvider
 
 
@@ -30,7 +29,9 @@ def main(argv: list[str] | None = None) -> int:
     # Subcommand: index
     index_parser = subparsers.add_parser("index", help="Compute blind index for a search term")
     index_parser.add_argument("value", type=str, help="Plaintext search value")
-    index_parser.add_argument("--scope", type=str, required=True, help="Scope string (e.g. users.email)")
+    index_parser.add_argument(
+        "--scope", type=str, required=True, help="Scope string (e.g. users.email)"
+    )
 
     args = parser.parse_args(argv)
 
@@ -47,16 +48,20 @@ def main(argv: list[str] | None = None) -> int:
         if not args.db_path.exists():
             print(f"Error: Database file not found: {args.db_path}", file=sys.stderr)
             return 1
-            
+
         with sqlite3.connect(args.db_path) as conn:
             query = f"SELECT {args.column} FROM {args.table} WHERE id = ?"
             row = conn.execute(query, (args.record_id,)).fetchone()
             if not row:
-                print(f"Error: Record {args.record_id!r} not found in {args.table}", file=sys.stderr)
+                print(
+                    f"Error: Record {args.record_id!r} not found in {args.table}", file=sys.stderr
+                )
                 return 1
             ciphertext = row[0]
             if not isinstance(ciphertext, (bytes, bytearray)):
-                print(f"Value in {args.column} is not binary ciphertext (type: {type(ciphertext).__name__})")
+                print(
+                    f"Value in {args.column} is not binary ciphertext (type: {type(ciphertext).__name__})"
+                )
                 print(f"Plaintext: {ciphertext}")
                 return 0
             try:

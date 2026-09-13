@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import abc
-from typing import Optional, Tuple, Union
 
 from ..memory import HardenedMemoryKey
 
@@ -22,10 +21,10 @@ class KeyProvider(abc.ABC):
     @abc.abstractmethod
     def resolve_key(self, *, allow_create: bool = True) -> HardenedMemoryKey:
         """Resolve the 32-byte master encryption key wrapped in HardenedMemoryKey.
-        
+
         Args:
             allow_create: If True, generate a new key if none exists.
-            
+
         Returns:
             HardenedMemoryKey containing exactly 32 bytes.
         """

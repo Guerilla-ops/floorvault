@@ -1,11 +1,10 @@
 """Tests for core AppStateCrypto engine, contextual AAD, and tamper resistance."""
 
 import pytest
+
 from appstate_crypto.core import (
     AppStateCrypto,
     DecryptionVerificationError,
-    NonceReuseError,
-    associated_data,
 )
 from appstate_crypto.memory import HardenedMemoryKey
 
@@ -47,7 +46,9 @@ def test_contextual_splicing_attack_detection():
     )
 
     # 1. Splicing across rows (trying to decrypt under normal-user)
-    with pytest.raises(DecryptionVerificationError, match="Data was tampered with, spliced, or corrupted"):
+    with pytest.raises(
+        DecryptionVerificationError, match="Data was tampered with, spliced, or corrupted"
+    ):
         crypto.decrypt(
             cipher_admin,
             table="credentials",

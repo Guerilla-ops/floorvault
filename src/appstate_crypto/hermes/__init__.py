@@ -12,8 +12,8 @@ from .vault import (
 )
 
 __all__ = [
-    "HermesVaultStore",
     "HermesSessionCrypto",
+    "HermesVaultStore",
     "VaultError",
     "VaultItemMeta",
     "normalize_origin",

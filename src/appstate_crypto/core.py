@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import collections
 import ctypes
-import hashlib
 import hmac
 import json
 import os
-import struct
-from typing import Any, Mapping, Optional, Sequence, Union
+from collections.abc import Mapping
+from typing import Any, Union
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
@@ -59,7 +58,7 @@ def associated_data(
     app_instance_id: str = "default",
 ) -> bytes:
     """Construct canonical Associated Authenticated Data (AAD) binding block.
-    
+
     Locks the ciphertext to its exact database coordinates, preventing
     ciphertext cut-and-paste splicing across rows, columns, or tables.
     """
@@ -96,7 +95,7 @@ class AppStateCrypto:
         memory_mode: str = "opportunistic",
     ) -> None:
         """Initialize AppStateCrypto.
-        
+
         Wipes the master_key in memory in < 5 ms after deriving isolated subkeys.
         """
         if not isinstance(app_instance_id, str) or not app_instance_id.strip():
@@ -146,9 +145,8 @@ class AppStateCrypto:
             ).derive(raw_master)
 
             # Assert key separation integrity
-            if (
-                hmac.compare_digest(raw_siv[:32], raw_index)
-                or hmac.compare_digest(raw_gcm, raw_index)
+            if hmac.compare_digest(raw_siv[:32], raw_index) or hmac.compare_digest(
+                raw_gcm, raw_index
             ):
                 raise AppStateCryptoError("HKDF key separation failed")
 
@@ -171,7 +169,9 @@ class AppStateCrypto:
 
         # Bounded sliding window for observed nonces
         self._max_nonces = maximum_tracked_nonces
-        self._nonce_queue: collections.deque[bytes] = collections.deque(maxlen=maximum_tracked_nonces)
+        self._nonce_queue: collections.deque[bytes] = collections.deque(
+            maxlen=maximum_tracked_nonces
+        )
         self._nonce_set: set[bytes] = set()
 
     def _track_nonce(self, nonce: bytes) -> None:
@@ -233,10 +233,10 @@ class AppStateCrypto:
         schema_version: int = 1,
     ) -> str:
         """Decrypt ciphertext and verify contextual AAD coordinates.
-        
+
         Returns:
             Decrypted plaintext string.
-            
+
         Raises:
             DecryptionVerificationError: If tag check fails or coordinates were spliced.
         """

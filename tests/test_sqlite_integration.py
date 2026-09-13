@@ -1,7 +1,9 @@
 """End-to-end integration tests for SQLite with contextual encryption and blind indexing."""
 
 import sqlite3
+
 import pytest
+
 from appstate_crypto import AppStateCrypto, ContextualSQLite, DecryptionVerificationError
 
 
@@ -39,7 +41,7 @@ def test_sqlite_contextual_encryption_and_blind_search(memory_db):
         idx = cred_table.blind_index("account", email)
         memory_db.execute(
             "INSERT INTO credentials (id, secret_cipher, account_idx) VALUES (?, ?, ?)",
-            (rec_id, cipher, idx)
+            (rec_id, cipher, idx),
         )
 
     # 1. Blind index exact-match query (simulates zero-leakage search)
@@ -47,8 +49,7 @@ def test_sqlite_contextual_encryption_and_blind_search(memory_db):
     search_idx = cred_table.blind_index("account", search_email)
 
     cursor = memory_db.execute(
-        "SELECT id, secret_cipher FROM credentials WHERE account_idx = ?",
-        (search_idx,)
+        "SELECT id, secret_cipher FROM credentials WHERE account_idx = ?", (search_idx,)
     )
     row = cursor.fetchone()
     assert row is not None
@@ -75,6 +76,8 @@ def test_sqlite_tamper_detection(memory_db):
     memory_db.execute("UPDATE credentials SET secret_cipher = ? WHERE id = 'user-2'", (c1,))
 
     # Reading user2 must now fail verification
-    row = memory_db.execute("SELECT id, secret_cipher FROM credentials WHERE id = 'user-2'").fetchone()
+    row = memory_db.execute(
+        "SELECT id, secret_cipher FROM credentials WHERE id = 'user-2'"
+    ).fetchone()
     with pytest.raises(DecryptionVerificationError, match="Data was tampered with"):
         table.decrypt(row[0], "secret", row[1])

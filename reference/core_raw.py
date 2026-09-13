@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable, Mapping, Sequence
 import hashlib
 import hmac
 import json
 import os
 import re
 import threading
-from typing import Any
 import uuid
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
@@ -21,7 +21,6 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from .contract_registry import canonical_json_bytes
 from .data_key_provider import KEY_VERSION, validate_data_key
 from .errors import ValidationError
-
 
 ENCRYPTION_INFO = b"eightbit.appstate.encryption.v1"
 AES_SIV_ENCRYPTION_INFO = b"eightbit.appstate.encryption-siv.v2"

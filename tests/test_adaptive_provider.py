@@ -1,12 +1,10 @@
 """Tests for the 3-Tier Adaptive Key Provider."""
 
-import os
-import pytest
 from appstate_crypto.providers.adaptive import AdaptiveKeyProvider
 
 
 def test_adaptive_provider_env_variable(monkeypatch, tmp_path):
-    hex_key = "0123456789abcdef" * 4
+    hex_key = "0123456789abcdef" * 4  # gitleaks:allow
     monkeypatch.setenv("APPSTATE_KEY", hex_key)
 
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
@@ -21,7 +19,7 @@ def test_adaptive_provider_machine_file_fallback(monkeypatch, tmp_path):
     monkeypatch.delenv("APPSTATE_KEY", raising=False)
     monkeypatch.delenv("HERMES_VAULT_KEY", raising=False)
     monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
-    
+
     # Mock non-desktop to force Tier 3 fallback
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
     monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)
