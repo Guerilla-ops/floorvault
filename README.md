@@ -109,6 +109,60 @@ print(crypto.decrypt(row[0], table="users", record_id="usr-1", column="email"))
 
 ---
 
+## Architecture: User-Space Software Cryptography vs. Hardware Vaults
+
+### The Software Portability Trade-Off
+
+Pure user-space cryptographic libraries achieve broad cross-platform portability by operating entirely in software, avoiding native operating system APIs. However, this creates a fundamental architectural trade-off: **complete detachment from underlying OS hardware security enclaves, biometric verification gates, and kernel-level memory protections.**
+
+For local agent state storage, operator governance, and tamper resistance, hardware-anchored custody (`FloorVault`) is required to protect against memory scraping, cold-boot attacks, and unauthorized state mutation.
+
+### 1. The Hardware & Biometrics Barrier (NIST P-256 vs. Non-Standard Enclaves)
+
+Enterprise operating systems enforce hardware-bound cryptographic gates backed by physical sensors:
+
+* **macOS (Apple Secure Enclave Processor):**
+  Apple Silicon's Secure Enclave hardware strictly supports NIST P-256 (`secp256r1`) and RSA. Software libraries relying exclusively on Curve25519/Ed25519 cannot generate keys inside the Enclave, cannot bind to Touch ID or Apple Watch prompts, and must hold raw signing keys in unprotected host RAM.
+* **Linux (TPM 2.0 PCR Sealing):**
+  The vast majority of discrete enterprise TPMs (servers, workstations, laptops) implement NIST curves (P-256, P-384) and RSA. Detached user-space libraries cannot seal master keys against TPM 2.0 Platform Configuration Register (PCR) banks or tie decryption to verified system boot states.
+* **Windows (Windows Hello & CNG):**
+  Microsoft Cryptography Next Generation (CNG) and Windows Hello gate private keys behind biometric face or fingerprint verification using TPM-backed P-256. User-space crypto libraries cannot hook the Windows Platform Crypto Provider to enforce biometric gating.
+
+### 2. The Python Heap Ghosting Gap (RAM Residue Defense)
+
+Software cryptography running in managed runtimes (like Python) exposes keys to heap residue and swap leakage:
+
+1. **Immutable Heap Duplication:** Passing key bytes into standard cryptographic objects forces Python's memory allocator (`pymalloc`) to copy them into pageable heap arenas.
+2. **Non-Zeroing Garbage Collection:** Python's garbage collector frees memory without zeroing bytes, leaving ghost copies of private keys floating in unpinned RAM.
+3. **OS-Level Exploitation Vectors:**
+   * **macOS:** Key memory can be paged to `/var/vm/swapfile`, written to `/cores/` during process crashes, or captured in `/var/vm/sleepimage` during laptop hibernation.
+   * **Linux:** Unpinned memory can be read from `/proc/<pid>/mem` by same-UID processes or intercepted via eBPF tracepoints.
+   * **Windows:** Heap pages can be read by concurrent processes in the same desktop session using standard debugging APIs (`ReadProcessMemory`).
+
+**FloorVault Defense:** `FloorVault` pins functional subkeys in physical RAM using POSIX `mlock()` / Win32 `VirtualLock()`, isolates them from crash dumps via `MADV_DONTDUMP`, prevents Copy-on-Write leakage on forks via `MADV_DONTFORK`, and wipes raw master keys in `< 5 ms` using `ctypes.memset`.
+
+### 3. Hardware Silicon Acceleration vs. General ALU Overhead
+
+* **Dedicated Silicon Pipelines (FloorVault / AES-256):**
+  Executes via dedicated CPU hardware instructions (ARMv8-A Crypto Extensions on Apple Silicon; Intel AES-NI and CLMUL on x86_64). Operations run at line-rate hardware speeds (>10 GB/s per core) with near-zero CPU temperature or battery impact.
+* **General Vector Processing (Software Ciphers):**
+  Software-based stream ciphers must execute on general-purpose integer/vector ALUs (NEON, AVX2). While performant, they consume active CPU cycles and thermal headroom that AI agents need for graph traversal and token processing.
+
+### 4. Cross-Platform Comparison Matrix
+
+| Security / Performance Dimension | Detached User-Space Crypto | FloorVault (macOS / Linux / Windows) |
+| :--- | :--- | :--- |
+| **Cipher Suite** | Stream ciphers / MACs | AES-256-SIV (RFC 5297) / AES-256-GCM |
+| **Hardware Enclave Binding** | None (pure software) | Apple Secure Enclave / TPM 2.0 |
+| **Physical Biometric Gates** | Unsupported | Touch ID / Windows Hello / FIDO2 |
+| **Physical RAM Pinning** | None (heap ghosting) | POSIX `mlock()` / Win32 `VirtualLock()` |
+| **Crash Dump Exclusion** | None | `MADV_DONTDUMP` / WER Exclusion |
+| **Process Fork Isolation** | None (CoW exposure) | `MADV_DONTFORK` |
+| **Master Key Lifetime** | Persists indefinitely in RAM | Derives subkeys & destroyed in `< 5 ms` |
+| **Tamper Resistance** | Raw payload HMAC | Contextual AAD (Table + Row + Column) |
+
+---
+
 ## License
 
 Dual-licensed under either of:
