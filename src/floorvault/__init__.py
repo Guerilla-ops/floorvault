@@ -23,6 +23,7 @@ from .memory import (
     SecurityHardeningError,
     disable_core_dumps,
 )
+from .migration import LegacyVaultError, MigratingVaultStore
 from .providers.adaptive import AdaptiveKeyProvider
 from .providers.base import KeyProvider, KeyProviderError, MissingKeyError
 from .sqlite_adapter import ContextualSQLite, ContextualTable
@@ -56,4 +57,7 @@ __all__ = [
     "KeyProviderError",
     "MissingKeyError",
     "AdaptiveKeyProvider",
+    # Lazy Migration
+    "MigratingVaultStore",
+    "LegacyVaultError",
 ]

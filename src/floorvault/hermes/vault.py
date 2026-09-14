@@ -20,8 +20,14 @@ from urllib.parse import urlsplit
 from ..core import FloorVault
 from ..providers.adaptive import AdaptiveKeyProvider
 
-VAULT_KINDS = ("login", "payment", "address")
+VAULT_KINDS = ("login", "payment", "address", "generic")
 LOGIN_IDENTIFIER_TYPES = ("email", "phone", "username")
+
+# Generic kind: no required fields, arbitrary free-form secret. Used by lazy
+# migration to store a legacy item that conforms to no declared required shape
+# (so nothing is silently dropped), and available to callers who want a
+# schema-free secret. GAINS_FIELDS_TOLL = any key is accepted.
+GENERIC_FIELDS: frozenset[str] = frozenset()
 
 PAYMENT_FIELDS = {
     "card_number": "cc-number",
@@ -315,6 +321,11 @@ class HermesVaultStore:
                 "password": str(secret_copy["password"]),
                 **({"otp_secret": otp_secret} if otp_secret else {}),
             }
+        elif kind == "generic":
+            # Schema-free secret: accept any non-empty string values.
+            clean_secret = {k: str(v) for k, v in secret_copy.items() if str(v or "").strip() != ""}
+            if origin:
+                norm_origin = normalize_origin(origin)
         else:
             allowed = PAYMENT_FIELDS if kind == "payment" else ADDRESS_FIELDS
             clean_secret = {

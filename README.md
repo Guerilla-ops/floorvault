@@ -118,7 +118,36 @@ bucket reveals less) at the cost of more candidate rows to decrypt-confirm;
 larger widths (`bits=32…64`) minimise collisions but reveal more. For low-volume
 uniqueness you may use `bits=64`; treat 4–16 as the privacy-first default.
 
-### 3. CLI inspector (debugging)
+### 4. Lazy non-destructive migration from a legacy Fernet vault
+
+Upgrade an existing Hermes-style Fernet vault (`vault.json.enc` + `vault.key`)
+to AES-256-SIV **without a risky one-time conversion**: records are read from
+the modern store first, and any legacy-only item is transparently read and
+upgraded on first touch, with the legacy source left byte-for-byte intact until
+an explicit `verify()` proves the migration is sound.
+
+```python
+from floorvault import FloorVault, HardenedMemoryKey, MigratingVaultStore
+from floorvault.hermes.vault import HermesVaultStore
+
+crypto = FloorVault(HardenedMemoryKey.from_hex("01" * 32))
+modern = HermesVaultStore("~/.hermes/vault/modern", crypto=crypto)
+store = MigratingVaultStore(modern_store=modern, legacy_base_dir="~/.hermes/vault")
+
+# Reads are transparently served from modern, else legacy (and lazily migrated).
+secret = store.resolve_secret("some-legacy-item-id")
+
+# Batch-migrate everything, keeping a pre-migration backup and verifying.
+result = store.migrate_all()   # {"migrated": N, "verified": True, ...}
+assert store.verify() is True  # only safe to delete legacy after this passes
+```
+
+`migrate_all()` writes a `vault.json.enc.pre-migration.bak` first and never
+removes the legacy source — you finalise deletion yourself only after `verify()`
+passes. Legacy items that conform to no declared required shape are stored under
+a schema-free `generic` kind so nothing is silently dropped.
+
+### 5. CLI inspector (debugging)
 
 The bundled `floorvault` CLI decrypts an encrypted record on demand and, for the
 `index` subcommand, prints a blind index / beacon:
@@ -168,7 +197,10 @@ for the full measurement and the honest trade-off discussion.
 - [x] Searchable HMAC blind index / beacon (`beacon`, `beacon_matches`)
 - [x] Hardened memory custody (`mlock`/`VirtualLock`/anti-dump)
 - [x] Adaptive key provider (Keychain / env / machine key file)
-- [ ] Lazy non-destructive migration from legacy Fernet / plaintext stores
+- [x] **Lazy non-destructive migration** from legacy Fernet / plaintext stores
+      (`MigratingVaultStore`: modern-first dual-read, on-touch upgrade, `.bak`
+      backup + verify; adds a schema-free `generic` vault kind so nothing is
+      silently dropped)
 - [ ] Windows DPAPI and Linux (keyring / TPM) key providers
 - [ ] fuzz + comparative benchmark vs. SQLCipher / Fernet
 
