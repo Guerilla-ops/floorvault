@@ -15,7 +15,7 @@ here directly from the RFC 5297 text. It is then anchored to:
   1. The RFC's own published intermediate S2V values (Appendix A.1).
   2. The two official Appendix A vectors (A.1 deterministic, A.2 nonce-based).
   3. PyCA's ``AESSIV`` on random AES-256-SIV inputs (independent code path).
-  4. PyCryptodome's ``MODE_SIV`` (optional; skipped if not installed).
+  4. PyCryptodome's ``MODE_SIV`` (declared in the ``dev`` extra).
   5. FloorVault's own ciphertext, recovered by this independent implementation.
 
 Note on key sizes: RFC 5297's Appendix A vectors use a 256-bit key (AES-128 for
@@ -240,8 +240,19 @@ def test_random_aes256_siv_matches_pyca():
 
 
 def test_random_aes256_siv_matches_pycryptodome():
-    """Second independent implementation (PyCryptodome MODE_SIV), if present."""
-    pydome = pytest.importorskip("Crypto.Cipher.AES")
+    """Second independent implementation (PyCryptodome MODE_SIV).
+
+    PyCryptodome is declared in the ``dev`` extra, so this cross-check runs in
+    CI. It fails loudly (rather than skipping) if the dev environment is
+    incomplete, so a broken dependency can never silently disable it.
+    """
+    try:
+        from Crypto.Cipher import AES as pydome
+    except ImportError:  # pragma: no cover - guards an incomplete dev env
+        pytest.fail(
+            "PyCryptodome is required for the independent AES-SIV cross-check "
+            "(declared in the 'dev' extra): run `uv sync --extra dev`"
+        )
     rng = random.Random(4242)
     for _ in range(100):
         key = os.urandom(64)

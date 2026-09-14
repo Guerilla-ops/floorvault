@@ -49,6 +49,9 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.5.0",
+    # Second, independent AES-SIV implementation used by
+    # tests/test_rfc5297_independent.py to cross-check the AES-256-SIV path.
+    "pycryptodome>=3.20.0",
 ]
 # macOS Keychain (Tier 2 of AdaptiveKeyProvider) needs the Security framework
 # bindings. Without them the provider falls through to Tier 3 and, unless
