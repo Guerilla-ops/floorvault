@@ -148,6 +148,18 @@ hostile table / column names are refused rather than interpolated.
   create transient heap copies. `strict` mode fails closed rather than running
   with an unpinned key.
 
+## Performance & functionality cost of the hardening
+
+A frequently asked question: *"Did the beacon upgrade slow AI or drop features?"*
+Short answer: **no** — measured encrypt/decrypt are unchanged (~5–10 µs for a 1-KB
+message) and index ops went from ~1.29 µs to ~1.37 µs (sub-microsecond). The one
+real change is that exact-match lookup moved from "index is authoritative" to
+"bucket + `beacon_matches` confirm," which is a tunable privacy upgrade (`bits=`),
+not a lost capability.
+
+See [`docs/PERFORMANCE-HARDENING-COST-REVIEW-2026-09-15.md`](docs/PERFORMANCE-HARDENING-COST-REVIEW-2026-09-15.md)
+for the full measurement and the honest trade-off discussion.
+
 ---
 
 ## Roadmap
