@@ -215,7 +215,10 @@ for the measured comparison vs. Fernet and plain SQLite (reproduce with
       Secret Service** (GNOME Keyring / KWallet) key providers, fail-closed
 - [x] **Comparative benchmark** harness + measured results vs. Fernet / plain
       SQLite (`scripts/benchmark_compare.py`, `docs/COMPARATIVE-BENCHMARK…`)
-- [ ] fuzz + CI matrix (macOS / Linux / Windows)
+- [x] **Deterministic fuzz harness** (seeded, dependency-free: round-trip,
+      splice-immunity, malformed-envelope, nonce-reuse, beacon exactness —
+      `tests/test_fuzz.py`)
+- [ ] CI matrix (macOS / Linux / Windows runners)
 
 ---
 

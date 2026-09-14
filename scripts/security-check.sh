@@ -58,7 +58,12 @@ pytest -q tests/test_vaultkit_adapter.py tests/test_adaptive_provider.py
 echo "[PASS] Adapter: Vault lookups and FTS5 split-projection verified."
 
 echo ""
-echo "=== 8. Verifying Universal Wheel Build (Zero-C Compilation) ==="
+echo "=== 8. Running Deterministic Fuzz Harness (adversarial crypto invariants) ==="
+pytest -q tests/test_fuzz.py
+echo "[PASS] Fuzz: round-trip, splice-immunity, malformed-envelope, beacon invariants verified."
+
+echo ""
+echo "=== 9. Verifying Universal Wheel Build (Zero-C Compilation) ==="
 uv build
 echo "[PASS] Wheel Build: Successfully packaged universal wheel."
 
