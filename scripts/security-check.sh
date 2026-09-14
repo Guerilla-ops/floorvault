@@ -53,9 +53,9 @@ pytest -q tests/test_crypto_core.py tests/test_blind_index.py tests/test_sqlite_
 echo "[PASS] Core Crypto: Contextual AAD anti-splicing and B-Tree lookups verified."
 
 echo ""
-echo "=== 7. Running Hermes-Optimized Drop-in Adapter Tests ==="
-pytest -q tests/test_hermes_adapter.py tests/test_adaptive_provider.py
-echo "[PASS] Hermes Adapter: Vault lookups and FTS5 split-projection verified."
+echo "=== 7. Running Agent-Optimized Drop-in Adapter Tests ==="
+pytest -q tests/test_vaultkit_adapter.py tests/test_adaptive_provider.py
+echo "[PASS] Adapter: Vault lookups and FTS5 split-projection verified."
 
 echo ""
 echo "=== 8. Verifying Universal Wheel Build (Zero-C Compilation) ==="

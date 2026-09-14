@@ -1,6 +1,6 @@
-"""Hermes Agent-optimized drop-in vault store.
+"""Agent-optimized drop-in vault store.
 
-Provides 100% API compatibility with Hermes's agent/vault_store.py while
+Provides 100% API compatibility with the reference agent vault_store.py while
 upgrading the underlying storage from whole-file Fernet to contextual
 AES-256-SIV with sub-5ms key destruction and HMAC blind indexing on origins.
 """
@@ -152,7 +152,7 @@ def scrub_secret_from_text(text: str, secret: dict[str, Any]) -> str:
 
 @dataclass(frozen=True)
 class VaultItemMeta:
-    """Metadata-only view of a vault item matching Hermes's exact contract."""
+    """Metadata-only view of a vault item matching the reference agent contract."""
 
     id: str
     kind: str
@@ -179,8 +179,8 @@ class VaultItemMeta:
         return out
 
 
-class HermesVaultStore:
-    """Hermes-optimized vault store backed by FloorVault."""
+class VaultStore:
+    """floorvault-backed vault store backed by FloorVault."""
 
     def __init__(self, base_dir: Path | str, *, crypto: Optional[FloorVault] = None):
         self._base = Path(base_dir)
@@ -193,11 +193,11 @@ class HermesVaultStore:
             self._crypto = crypto
         else:
             provider = AdaptiveKeyProvider(
-                service_name="hermes-vault",
+                service_name="floor-vault",
                 fallback_dir=self._base,
             )
             master_key = provider.resolve_key()
-            self._crypto = FloorVault(master_key, app_instance_id="hermes-agent")
+            self._crypto = FloorVault(master_key, app_instance_id="floor-agent")
 
         self._init_db()
 
@@ -291,7 +291,7 @@ class HermesVaultStore:
         secret: dict[str, Any],
         origin: Optional[str] = None,
     ) -> VaultItemMeta:
-        """Add credential item matching Hermes's exact tool parameters."""
+        """Add credential item matching the reference agent's tool parameters."""
         if kind not in VAULT_KINDS:
             raise VaultError(f"unknown vault kind {kind!r}")
         label = (label or "").strip()
@@ -340,7 +340,7 @@ class HermesVaultStore:
         item_id = f"vault_{uuid.uuid4().hex[:12]}"
         created_at = datetime.now(timezone.utc).isoformat()
         origin_str = norm_origin or ""
-        origin_idx = self._crypto.blind_index(origin_str, scope="hermes.vault.origin")
+        origin_idx = self._crypto.blind_index(origin_str, scope="floor.vault.origin")
 
         # Contextually encrypt secret payload with AAD
         payload_json = json.dumps(clean_secret, ensure_ascii=False)
@@ -441,7 +441,7 @@ class HermesVaultStore:
     def find_by_origin(self, origin: str) -> list[VaultItemMeta]:
         """Fast O(log N) lookup using HMAC blind indexing (0.18 ms)."""
         norm_origin = normalize_origin(origin)
-        origin_idx = self._crypto.blind_index(norm_origin, scope="hermes.vault.origin")
+        origin_idx = self._crypto.blind_index(norm_origin, scope="floor.vault.origin")
 
         with self._connect() as conn:
             cursor = conn.execute(
@@ -496,18 +496,18 @@ class HermesVaultStore:
 
 
 # Drop-in compatibility aliases
-VaultStore = HermesVaultStore
+VaultStore = VaultStore
 
 
-def get_vault_store(base_dir: Optional[Path | str] = None) -> HermesVaultStore:
-    """Default vault store factory matching Hermes agent/vault_store.py."""
+def get_vault_store(base_dir: Optional[Path | str] = None) -> VaultStore:
+    """Default vault store factory matching the reference agent vault_store.py."""
     if base_dir is None:
         try:
-            from hermes_constants import (
-                get_hermes_home,  # type: ignore[import-not-found,import-untyped]
+            from floor_constants import (
+                get_floor_home,  # type: ignore[import-not-found,import-untyped]
             )
 
-            base_dir = Path(get_hermes_home()) / "vault"
+            base_dir = Path(get_floor_home()) / "vault"
         except ImportError:
-            base_dir = Path.home() / ".hermes" / "vault"
-    return HermesVaultStore(base_dir)
+            base_dir = Path.home() / ".floor" / "vault"
+    return VaultStore(base_dir)

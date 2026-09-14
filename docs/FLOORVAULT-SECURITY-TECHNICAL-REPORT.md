@@ -3,8 +3,8 @@
 
 - **Document Version:** 3.0.0 (Comprehensive Technical Report)
 - **Classification:** Architectural Specification & Security Audit Report
-- **Target Systems:** Hermes Agent (`hermes-agent`), FloorVault (`floorvault`)
-- **Author:** Hermes CLI (Standalone Agent)
+- **Target Systems:** the reference CLI agent, FloorVault (`floorvault`)
+- **Author:** Scott Lee (floorbond@pm.me)
 - **Approved by:** Scott (Estate Operator & Final Authority)
 - **Date:** 2026-09-14
 - **Verification Status:** 47/47 tests passing and 8/8 local gates passing on macOS (Python 3.13, cryptography 50.0.1). Linux and Windows runtime validation not yet executed; optional security tools may be skipped by the local script.
@@ -26,7 +26,7 @@ FloorVault enforces four structural invariants across all storage paths:
 
 ## 2. Comprehensive Functional & API Inventory
 
-FloorVault's architecture is partitioned into four primary modules: Core Cryptography, Memory Custody, Adaptive Key Providers, and Hermes Agent Adapters.
+FloorVault's architecture is partitioned into four primary modules: Core Cryptography, Memory Custody, Adaptive Key Providers, and the reference agent Adapters.
 
 ```
 floorvault/
@@ -37,10 +37,10 @@ floorvault/
 ├── providers/
 │   ├── base.py           # KeyProvider abstract base class
 │   └── adaptive.py       # 3-tier fail-closed keyring/env/0600 provider
-└── hermes/
-    ├── __init__.py       # Hermes module exports
-    ├── vault.py          # HermesVaultStore compatibility adapter
-    └── session_crypto.py # HermesSessionCrypto (state.db hybrid split-projection)
+└── vaultkit/
+    ├── __init__.py       # the agent module exports
+    ├── vault.py          # VaultStore compatibility adapter
+    └── session_crypto.py # SessionCrypto (state.db hybrid split-projection)
 ```
 
 ### 2.1 Core Cryptography (`src/floorvault/core.py`)
@@ -114,7 +114,7 @@ Attempts to reduce swapping and memory-dump exposure for its own buffer; it does
 
 #### `AdaptiveKeyProvider(service_name="floorvault", account_name="default-v1", *, fallback_dir=None, strict=False, allow_disk_fallback=False)`
 Multi-tier key provider engineered to scale from desktop GUI environments to headless cloud containers while failing closed by default:
-- **Tier 1 (Environment Variables)**: Checks `APPSTATE_KEY`, `HERMES_VAULT_KEY`, or `VAULT_MASTER_KEY` first. Valid key format and entropy must be enforced by deployment.
+- **Tier 1 (Environment Variables)**: Checks `APPSTATE_KEY`, `FLOOR_VAULT_KEY`, or `VAULT_MASTER_KEY` first. Valid key format and entropy must be enforced by deployment.
 - **Tier 2 (macOS Keychain when available)**: Attempts the native macOS Security API. Windows DPAPI and Linux Secret Service integration are not implemented in this provider. Detects some non-interactive environments before attempting desktop storage.
 - **Tier 3 (Explicitly Opt-In 0600 File Key)**:
   * Strict fail-closed default: If `allow_disk_fallback=False` (default) or `strict=True`, raises `KeyProviderError`.
@@ -122,13 +122,13 @@ Multi-tier key provider engineered to scale from desktop GUI environments to hea
 
 ---
 
-### 2.4 Hermes Agent Credential Vault (`src/floorvault/hermes/vault.py`)
+### 2.4 the reference agent Credential Vault (`src/floorvault/vaultkit/vault.py`)
 
-#### `HermesVaultStore(base_dir, *, crypto=None)`
-A compatibility adapter for Hermes Agent's `agent/vault_store.py`; method and parameter parity must be validated against the deployed Hermes version:
+#### `VaultStore(base_dir, *, crypto=None)`
+A compatibility adapter for the reference agent's `agent/vault_store.py`; method and parameter parity must be validated against the deployed the agent version:
 - **Residue Reduction**: Opens SQLite database (`vault.db`) with `PRAGMA secure_delete = ON`, `PRAGMA journal_mode = DELETE`, and `PRAGMA synchronous = FULL`.
 - **Metadata Protection**: In `add_item()`, encrypts `label`, `origin`, `identifier_type`, `identifier`, and `created_at` into binary BLOBs using contextual sub-coordinates (`meta:<column>`).
-- **Blind-Indexed Origins**: Derives `origin_idx = crypto.blind_index(norm_origin, scope="hermes.vault.origin")` for fast $O(\log N)$ equality lookups without plaintext exposure.
+- **Blind-Indexed Origins**: Derives `origin_idx = crypto.blind_index(norm_origin, scope="floor.vault.origin")` for fast $O(\log N)$ equality lookups without plaintext exposure.
 - **Legacy Migration**: Automatically migrates unencrypted plaintext rows from older schemas on first open via `_migrate_plaintext_metadata()`.
 - **Public API Parity**:
   * `add_item(kind, label, secret, origin=None) -> VaultItemMeta`
@@ -142,17 +142,17 @@ A compatibility adapter for Hermes Agent's `agent/vault_store.py`; method and pa
   * `normalize_otp_secret(value: str) -> str`: Normalizes base32 seeds and `otpauth://` URIs, retaining non-default RFC 6238 parameters via canonical `seed|digits|period|algo`.
   * `totp_now(seed: str, *, digits=6, period=30, at=None) -> str`: Stdlib-only RFC 6238 TOTP code generation.
   * `scrub_secret_from_text(text: str, secret: dict[str, Any]) -> str`: Redacts secret values from error strings and logs.
-  * Factory alias: `VaultStore = HermesVaultStore` and `get_vault_store()`.
+  * Factory alias: `VaultStore = VaultStore` and `get_vault_store()`.
 
 ---
 
-### 2.5 Hermes Session Message Encryption (`src/floorvault/hermes/session_crypto.py`)
+### 2.5 the agent Session Message Encryption (`src/floorvault/vaultkit/session_crypto.py`)
 
-#### `HermesSessionCrypto(crypto, *, allow_plaintext_fts=False)`
-Engineers the hybrid split-projection for Hermes `state.db` message storage:
+#### `SessionCrypto(crypto, *, allow_plaintext_fts=False)`
+Engineers the hybrid split-projection for the agent `state.db` message storage:
 - **`encrypt_message(*, session_id, message_id, content) -> tuple[bytes, str]`**:
   * Contextually encrypts message content via AES-256-SIV bound to `record_id = f"{session_id}\x00{message_id}"`.
-  * Generates search projection: By default, returns space-separated HMAC blind index hex digests using Unicode-aware regex `\w+(?:[-']\w+)*` under scope `hermes.messages.fts.v1`.
+  * Generates search projection: By default, returns space-separated HMAC blind index hex digests using Unicode-aware regex `\w+(?:[-']\w+)*` under scope `floor.messages.fts.v1`.
   * If `allow_plaintext_fts=True`, runs secret-scrubbing regex pass to redact API keys while retaining cleartext words.
 - **`decrypt_message(*, session_id, message_id, payload_cipher) -> str`**:
   * Attempts primary decryption using hardened coordinates `f"{session_id}\x00{message_id}"`.
@@ -173,7 +173,7 @@ Engineers the hybrid split-projection for Hermes `state.db` message storage:
                ▼
    AdaptiveKeyProvider.resolve_key()
    ├── Tier 1: Probe macOS Keychain when available
-   ├── Tier 2: Check ENV (APPSTATE_KEY, HERMES_VAULT_KEY)
+   ├── Tier 2: Check ENV (APPSTATE_KEY, FLOOR_VAULT_KEY)
    └── Tier 3: Opt-in 0600 file check (Regular file, st_uid match, mode 0600)
                │ (Fails closed if unconfigured)
                ▼
@@ -201,9 +201,9 @@ Engineers the hybrid split-projection for Hermes `state.db` message storage:
 [User Form Encounter] ──> Model triggers browser_vault_save_login
                                     │
                                     ▼
-                          HermesVaultStore.add_item()
+                          VaultStore.add_item()
                           ├── Normalize URL: "https://github.com/login" -> "https://github.com"
-                          ├── Blind Index: origin_idx = HMAC(norm_origin, scope="hermes.vault.origin")
+                          ├── Blind Index: origin_idx = HMAC(norm_origin, scope="floor.vault.origin")
                           ├── AAD Binding: Encrypt metadata fields into BLOBs (meta:label, meta:origin, etc.)
                           ├── Payload Encryption: AES-256-SIV(password + otp, record_id=item_id)
                           └── SQLite Insert: Atomic transaction with secure_delete=ON
@@ -211,7 +211,7 @@ Engineers the hybrid split-projection for Hermes `state.db` message storage:
 [Browser Fill Request] ──> Model triggers browser_vault_fill(handle)
                                     │
                                     ▼
-                          HermesVaultStore.find_by_origin()
+                          VaultStore.find_by_origin()
                           ├── Compute HMAC blind index of target origin (0.001 ms)
                           ├── Indexed B-Tree Query: SELECT * WHERE origin_idx = ? (0.158 ms)
                           ├── Decrypt secret payload in RAM via AES-256-SIV (0.0036 ms)
@@ -226,8 +226,8 @@ Engineers the hybrid split-projection for Hermes `state.db` message storage:
 [Agent Message Generation] ──> AIAgent completes turn
                                       │
                                       ▼
-                          hermes_state_messages.append_message()
-                          ├── HermesSessionCrypto.encrypt_message()
+                          agent_state_messages.append_message()
+                          ├── SessionCrypto.encrypt_message()
                           │   ├── Contextual AAD: record_id = f"{session_id}\x00{message_id}"
                           │   ├── AES-256-SIV Encrypt message content -> payload_cipher (0.005 ms)
                           │   └── Whole-word keyed HMAC tokens
@@ -283,9 +283,9 @@ The current implementation uses full-length keyed HMAC tokens for normalized who
 
 ## 5. Comparative Evaluation
 
-### 5.1 FloorVault vs. Industry AI Apps & Native Hermes
+### 5.1 FloorVault vs. Industry AI Apps & Native the agent
 
-| Capability / Threat Gate | Hermes Native | Signal Desktop | OpenAI ChatGPT | Claude Desktop | FloorVault (Hermes) |
+| Capability / Threat Gate | the agent Native | Signal Desktop | OpenAI ChatGPT | Claude Desktop | FloorVault (the agent) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Credential Encryption at Rest** | Fernet (Colocated key)| Plaintext JSON | macOS Keychain | Plaintext | **AES-256-SIV (Row-Bound)** |
 | **Session State at Rest** | Plaintext SQLite | SQLCipher (AES-CBC)| Plaintext SQLite | Plaintext LevelDB | **Encrypted BLOBs (Namespaced)** |
@@ -316,7 +316,7 @@ Benchmarks executed directly on Apple M-Series hardware (`Darwin 27.0`, `Python 
 
 ```
 ┌───────────────┬───────────────────────────────┬───────────────────────────────┐
-│ Dataset Size  │ Native Hermes (Linear Scan)   │ FloorVault (Indexed B-Tree)   │
+│ Dataset Size  │ Native the agent (Linear Scan)   │ FloorVault (Indexed B-Tree)   │
 ├───────────────┼───────────────────────────────┼───────────────────────────────┤
 │ 10 Items      │ Write: 8.61 ms | Read: 0.28 ms│ Write: 0.41 ms | Read: 0.16 ms│
 │ 50 Items      │ Write: 0.50 ms | Read: 0.38 ms│ Write: 0.37 ms | Read: 0.16 ms│
@@ -324,7 +324,7 @@ Benchmarks executed directly on Apple M-Series hardware (`Darwin 27.0`, `Python 
 │ 250 Items     │ Write: 0.73 ms | Read: 0.93 ms│ Write: 0.38 ms | Read: 0.16 ms│
 └───────────────┴───────────────────────────────┴───────────────────────────────┘
 ```
-**Empirical Finding**: FloorVault B-Tree lookups remain invariant at **$0.16\ \text{ms}$ flat**, outperforming native Hermes by **$5.8\times$** at 250 items. FloorVault writes remain flat at **$0.38\ \text{ms}$**, whereas native write latency scales upward due to monolithic file rewrites.
+**Empirical Finding**: FloorVault B-Tree lookups remain invariant at **$0.16\ \text{ms}$ flat**, outperforming the native agent by **$5.8\times$** at 250 items. FloorVault writes remain flat at **$0.38\ \text{ms}$**, whereas native write latency scales upward due to monolithic file rewrites.
 
 ### 6.3 Hardware & Token Utilization
 - **CPU Overhead**: AES-SIV executes via OpenSSL vectorized assembly (`AESE`/`PMULL`); consumes $< 0.000005$ seconds of CPU core time per message.
@@ -345,11 +345,11 @@ The repository passes 47 automated unit tests and 8 local gates (`./scripts/secu
 4. **RFC Test Vectors**: 100% byte-for-byte mathematical alignment (RFC 5297 & RFC 5869).
 5. **Memory Custody Suite**: Verifies the exposed buffer-locking and zeroization behavior; it does not by itself prove backend-copy destruction or successful platform-specific dump/fork advice.
 6. **Core Cryptography Suite**: Verifies AES-SIV round-trips, contextual splicing rejection, sliding nonce tracking, and engine wipe.
-7. **Hermes Adapter Suite**: 15 reported tests covering metadata encryption, legacy migration, API parity, OTP/TOTP helpers, Unicode tokenization, and rejection of legacy un-namespaced AAD.
+7. **the agent Adapter Suite**: 15 reported tests covering metadata encryption, legacy migration, API parity, OTP/TOTP helpers, Unicode tokenization, and rejection of legacy un-namespaced AAD.
 8. **Universal Wheel Packaging**: Builds binary distribution wheel cleanly with zero C compilation.
 
 ---
 
 ## 8. Conclusion
 
-FloorVault provides contextual AAD coordinate binding, application-layer encrypted fields, keyed whole-word search tokens, and best-effort memory hardening. Its security properties remain dependent on migration controls, key persistence, platform behavior, backend memory handling, and Hermes integration. This report does not establish a complete zero-trust boundary or an unassailable security architecture.
+FloorVault provides contextual AAD coordinate binding, application-layer encrypted fields, keyed whole-word search tokens, and best-effort memory hardening. Its security properties remain dependent on migration controls, key persistence, platform behavior, backend memory handling, and the agent integration. This report does not establish a complete zero-trust boundary or an unassailable security architecture.

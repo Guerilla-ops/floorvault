@@ -1,4 +1,4 @@
-"""Hermes state.db session encryption helper with FTS5 search preservation."""
+"""state.db session encryption helper with FTS5 search preservation."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ SECRET_PATTERNS = [
     re.compile(r"Bearer\s+[a-zA-Z0-9._-]{20,}", re.IGNORECASE),
     re.compile(r"[a-f0-9]{32,64}", re.IGNORECASE),  # Raw hex tokens
 ]
-FTS_SCOPE = "hermes.messages.fts.v1"
+FTS_SCOPE = "floor.messages.fts.v1"
 SEARCH_TERM_PATTERN = re.compile(r"\w+(?:[-']\w+)*")
 
 
@@ -37,8 +37,8 @@ def _secure_search_tokens(text: str, crypto: FloorVault) -> str:
     return " ".join(tokens)
 
 
-class HermesSessionCrypto:
-    """Hybrid split-projection for Hermes state.db message history."""
+class SessionCrypto:
+    """Hybrid split-projection for state.db message history."""
 
     def __init__(self, crypto: FloorVault, *, allow_plaintext_fts: bool = False) -> None:
         self.crypto = crypto

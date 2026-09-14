@@ -1,7 +1,7 @@
 """3-Tier Adaptive Key Provider.
 
 Scales from interactive desktop storage to headless cloud/Docker environments:
-  Tier 1: Explicit Environment Variable (APPSTATE_KEY, HERMES_VAULT_KEY)
+  Tier 1: Explicit Environment Variable (APPSTATE_KEY, FLOOR_VAULT_KEY)
   Tier 2: macOS Keychain when available
   Tier 3: Explicitly Opt-In Local 0600 File Key (Headless Docker / Remote SSH)
 """
@@ -54,7 +54,7 @@ class AdaptiveKeyProvider(KeyProvider):
     def resolve_key(self, *, allow_create: bool = True) -> HardenedMemoryKey:
         """Resolve the master key across the three autonomous tiers."""
         # --- Tier 1: Explicit Environment Variable (CI / Cloud / Kubernetes) ---
-        for var_name in ("APPSTATE_KEY", "HERMES_VAULT_KEY", "VAULT_MASTER_KEY"):
+        for var_name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
             val = os.environ.get(var_name)
             if val:
                 raw_bytes: bytes
@@ -135,7 +135,7 @@ class AdaptiveKeyProvider(KeyProvider):
         if self.strict or not self.allow_disk_fallback:
             raise KeyProviderError(
                 "Refusing headless fallback to plaintext disk key in strict mode. "
-                "Set APPSTATE_KEY or HERMES_VAULT_KEY environment variable."
+                "Set APPSTATE_KEY or FLOOR_VAULT_KEY environment variable."
             )
 
         self.fallback_dir.mkdir(mode=0o700, parents=True, exist_ok=True)

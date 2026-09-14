@@ -1,23 +1,23 @@
-"""Tests for Hermes Agent-optimized storage adapters."""
+"""Tests for floorvault storage adapters (vaultkit)."""
 
 import sqlite3
 
 import pytest
 
 from floorvault.core import DecryptionVerificationError, FloorVault
-from floorvault.hermes import (
-    HermesSessionCrypto,
-    HermesVaultStore,
+from floorvault.vaultkit import (
+    SessionCrypto,
+    VaultStore,
     normalize_otp_secret,
     scrub_secret_from_text,
     totp_now,
 )
-from floorvault.hermes.vault import VaultError
+from floorvault.vaultkit.vault import VaultError
 
 
-def test_hermes_vault_store_lifecycle(tmp_path):
+def test_vault_store_lifecycle(tmp_path):
     crypto = FloorVault(b"\x11" * 32, memory_mode="disabled")
-    store = HermesVaultStore(tmp_path / "hermes_vault", crypto=crypto)
+    store = VaultStore(tmp_path / "vault_store", crypto=crypto)
 
     with store._connect() as conn:
         assert conn.execute("PRAGMA secure_delete").fetchone()[0] == 1
@@ -68,7 +68,7 @@ def test_hermes_vault_store_lifecycle(tmp_path):
     assert len(store.list_items()) == 0
 
 
-def test_hermes_vault_migrates_legacy_plaintext_metadata(tmp_path):
+def test_vault_migrates_legacy_plaintext_metadata(tmp_path):
     db_dir = tmp_path / "legacy"
     db_dir.mkdir()
     db_path = db_dir / "vault.db"
@@ -99,7 +99,7 @@ def test_hermes_vault_migrates_legacy_plaintext_metadata(tmp_path):
             ),
         )
 
-    store = HermesVaultStore(db_dir, crypto=FloorVault(b"\x25" * 32, memory_mode="disabled"))
+    store = VaultStore(db_dir, crypto=FloorVault(b"\x25" * 32, memory_mode="disabled"))
     assert store.list_items()[0].label == "Legacy"
     with db_path.open("rb") as db_file:
         raw_db = db_file.read()
@@ -107,9 +107,9 @@ def test_hermes_vault_migrates_legacy_plaintext_metadata(tmp_path):
     assert b"https://example.com" not in raw_db
 
 
-def test_hermes_vault_rejects_plaintext_metadata_after_migration(tmp_path):
+def test_vault_rejects_plaintext_metadata_after_migration(tmp_path):
     crypto = FloorVault(b"\x26" * 32, memory_mode="disabled")
-    store = HermesVaultStore(tmp_path / "vault", crypto=crypto)
+    store = VaultStore(tmp_path / "vault", crypto=crypto)
     item = store.add_item(
         kind="login",
         label="Trusted",
@@ -121,14 +121,12 @@ def test_hermes_vault_rejects_plaintext_metadata_after_migration(tmp_path):
         conn.execute("UPDATE vault_items SET label = ? WHERE id = ?", ("forged", item.id))
 
     with pytest.raises(VaultError, match="plaintext metadata"):
-        HermesVaultStore(
-            tmp_path / "vault", crypto=FloorVault(b"\x26" * 32, memory_mode="disabled")
-        )
+        VaultStore(tmp_path / "vault", crypto=FloorVault(b"\x26" * 32, memory_mode="disabled"))
 
 
-def test_hermes_session_crypto_hybrid_split(tmp_path):
+def test_session_crypto_hybrid_split(tmp_path):
     crypto = FloorVault(b"\x22" * 32, memory_mode="disabled")
-    session_crypto = HermesSessionCrypto(crypto, allow_plaintext_fts=True)
+    session_crypto = SessionCrypto(crypto, allow_plaintext_fts=True)
 
     raw_content = (
         "Please use this key: sk-1234567890123456789012345 to authenticate."  # gitleaks:allow
@@ -156,9 +154,9 @@ def test_hermes_session_crypto_hybrid_split(tmp_path):
     assert decrypted == raw_content
 
 
-def test_hermes_session_crypto_tokenizes_fts_by_default():
+def test_session_crypto_tokenizes_fts_by_default():
     crypto = FloorVault(b"\x23" * 32, memory_mode="disabled")
-    session_crypto = HermesSessionCrypto(crypto)
+    session_crypto = SessionCrypto(crypto)
 
     _, fts_text = session_crypto.encrypt_message(
         session_id="sess-001",
@@ -170,9 +168,9 @@ def test_hermes_session_crypto_tokenizes_fts_by_default():
     assert "private" not in fts_text
 
 
-def test_hermes_session_crypto_uses_hmac_tokens_for_secure_fts():
+def test_session_crypto_uses_hmac_tokens_for_secure_fts():
     crypto = FloorVault(b"\x26" * 32, memory_mode="disabled")
-    session_crypto = HermesSessionCrypto(crypto)
+    session_crypto = SessionCrypto(crypto)
 
     _, search_text = session_crypto.encrypt_message(
         session_id="sess-001",
@@ -187,9 +185,9 @@ def test_hermes_session_crypto_uses_hmac_tokens_for_secure_fts():
     assert all(token in search_text.split() for token in query_tokens)
 
 
-def test_hermes_session_crypto_plaintext_fts_requires_explicit_opt_in():
+def test_session_crypto_plaintext_fts_requires_explicit_opt_in():
     crypto = FloorVault(b"\x27" * 32, memory_mode="disabled")
-    session_crypto = HermesSessionCrypto(crypto, allow_plaintext_fts=True)
+    session_crypto = SessionCrypto(crypto, allow_plaintext_fts=True)
 
     _, search_text = session_crypto.encrypt_message(
         session_id="sess-001", message_id="msg-001", content="private launch"
@@ -198,9 +196,9 @@ def test_hermes_session_crypto_plaintext_fts_requires_explicit_opt_in():
     assert "private" in search_text
 
 
-def test_hermes_session_crypto_binds_session_id():
+def test_session_crypto_binds_session_id():
     crypto = FloorVault(b"\x24" * 32, memory_mode="disabled")
-    session_crypto = HermesSessionCrypto(crypto)
+    session_crypto = SessionCrypto(crypto)
     cipher, _ = session_crypto.encrypt_message(
         session_id="sess-a", message_id="same-id", content="secret"
     )
@@ -211,9 +209,9 @@ def test_hermes_session_crypto_binds_session_id():
         )
 
 
-def test_hermes_vault_native_api_compatibility(tmp_path):
+def test_vault_native_api_compatibility(tmp_path):
     crypto = FloorVault(b"\x30" * 32, memory_mode="disabled")
-    store = HermesVaultStore(tmp_path / "vault", crypto=crypto)
+    store = VaultStore(tmp_path / "vault", crypto=crypto)
 
     assert not store.has_items()
 
@@ -243,7 +241,7 @@ def test_hermes_vault_native_api_compatibility(tmp_path):
     assert store.get_meta(item.id) is None
 
 
-def test_hermes_vault_otp_and_totp_utilities():
+def test_vault_otp_and_totp_utilities():
     # 1. Standard OTP URI defaults
     seed_std = normalize_otp_secret("otpauth://totp/Test:user?secret=JBSWY3DPEHPK3PXP")
     assert seed_std == "JBSWY3DPEHPK3PXP"
@@ -267,9 +265,9 @@ def test_hermes_vault_otp_and_totp_utilities():
     assert "[REDACTED]" in scrubbed
 
 
-def test_hermes_session_crypto_unicode_and_legacy_ciphertext_is_rejected():
+def test_session_crypto_unicode_and_legacy_ciphertext_is_rejected():
     crypto = FloorVault(b"\x31" * 32, memory_mode="disabled")
-    session_crypto = HermesSessionCrypto(crypto)
+    session_crypto = SessionCrypto(crypto)
 
     # 1. Unicode/multilingual tokenization
     _, fts_text = session_crypto.encrypt_message(

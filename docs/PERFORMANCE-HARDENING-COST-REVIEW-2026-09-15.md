@@ -67,7 +67,7 @@ collision-averse exact lookups.
 
 These are the author's own measurements of the commit at `c17e629` on this machine. They are
 reproducible via the repo test suite + a micro-benchmark, not a third-party audit, and they
-do not constitute a security sign-off (that remains Nova's lane). If you rely on the absolute
+do not constitute a security sign-off (that remains with the project maintainer). If you rely on the absolute
 figures, benchmark on your own hardware and workload.
 
 ## Bottom line

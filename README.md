@@ -6,7 +6,7 @@
 
 > **Contextual, misuse-resistant, searchable database encryption for SQLite and beyond — zero C compilation.**
 
-`floorvault` provides field- and record-level Authenticated Encryption with Associated Data (AEAD) and **searchable beacons** over standard, unmodified SQLite. It is designed for autonomous AI agents (Hermes, Claude Code, OpenHands), local desktop software (Tauri, Electron, PyQt), and edge services that need tamper-proof local storage without the compilation and portability friction of SQLCipher.
+`floorvault` provides field- and record-level Authenticated Encryption with Associated Data (AEAD) and **searchable beacons** over standard, unmodified SQLite. It is designed for autonomous AI agents, local desktop software (Tauri, Electron, PyQt), and edge services that need tamper-proof local storage without the compilation and portability friction of SQLCipher.
 
 ---
 
@@ -120,7 +120,7 @@ uniqueness you may use `bits=64`; treat 4–16 as the privacy-first default.
 
 ### 4. Lazy non-destructive migration from a legacy Fernet vault
 
-Upgrade an existing Hermes-style Fernet vault (`vault.json.enc` + `vault.key`)
+Upgrade an existing legacy Fernet vault (`vault.json.enc` + `vault.key`)
 to AES-256-SIV **without a risky one-time conversion**: records are read from
 the modern store first, and any legacy-only item is transparently read and
 upgraded on first touch, with the legacy source left byte-for-byte intact until
@@ -128,11 +128,11 @@ an explicit `verify()` proves the migration is sound.
 
 ```python
 from floorvault import FloorVault, HardenedMemoryKey, MigratingVaultStore
-from floorvault.hermes.vault import HermesVaultStore
+from floorvault.vaultkit.vault import VaultStore
 
 crypto = FloorVault(HardenedMemoryKey.from_hex("01" * 32))
-modern = HermesVaultStore("~/.hermes/vault/modern", crypto=crypto)
-store = MigratingVaultStore(modern_store=modern, legacy_base_dir="~/.hermes/vault")
+modern = VaultStore("~/.floor/vault/modern", crypto=crypto)
+store = MigratingVaultStore(modern_store=modern, legacy_base_dir="~/.floor/vault")
 
 # Reads are transparently served from modern, else legacy (and lazily migrated).
 secret = store.resolve_secret("some-legacy-item-id")

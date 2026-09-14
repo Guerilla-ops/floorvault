@@ -1,10 +1,9 @@
-"""Hermes Agent-optimized storage adapters."""
+"""Agent-optimized storage adapters."""
 
 from __future__ import annotations
 
-from .session_crypto import HermesSessionCrypto, scrub_secrets_for_fts
+from .session_crypto import SessionCrypto, scrub_secrets_for_fts
 from .vault import (
-    HermesVaultStore,
     VaultError,
     VaultItemMeta,
     VaultStore,
@@ -16,8 +15,7 @@ from .vault import (
 )
 
 __all__ = [
-    "HermesSessionCrypto",
-    "HermesVaultStore",
+    "SessionCrypto",
     "VaultError",
     "VaultItemMeta",
     "VaultStore",

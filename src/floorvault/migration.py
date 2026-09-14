@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from .hermes.vault import HermesVaultStore, VaultError
+from .vaultkit.vault import VaultError, VaultStore
 
 
 class LegacyVaultError(VaultError):
@@ -45,17 +45,17 @@ class MigratingVaultStore:
     Parameters
     ----------
     modern_store:
-        The floorvault-backed HermesVaultStore (the target of migration).
+        The floorvault-backed VaultStore (the target of migration).
     legacy_base_dir:
         Directory that contains the legacy ``vault.json.enc`` + ``vault.key``.
     legacy_vault_name / legacy_key_name:
-        Filenames of the legacy vault and key (defaults match Hermes).
+        Filenames of the legacy vault and key (defaults match the reference agent layout).
     """
 
     def __init__(
         self,
         *,
-        modern_store: HermesVaultStore,
+        modern_store: VaultStore,
         legacy_base_dir: Path | str,
         legacy_vault_name: str = "vault.json.enc",
         legacy_key_name: str = "vault.key",

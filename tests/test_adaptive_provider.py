@@ -32,7 +32,7 @@ def test_adaptive_provider_records_missing_keychain_backend(monkeypatch, tmp_pat
     Regression: import Security raised ModuleNotFoundError inside a broad
     except, so a stock install silently fell through to Tier 3 with no signal.
     """
-    for name in ("APPSTATE_KEY", "HERMES_VAULT_KEY", "VAULT_MASTER_KEY"):
+    for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
 
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
@@ -55,7 +55,7 @@ def test_adaptive_provider_records_missing_keychain_backend(monkeypatch, tmp_pat
 def test_adaptive_provider_machine_file_fallback(monkeypatch, tmp_path):
     # Ensure env vars are unset
     monkeypatch.delenv("APPSTATE_KEY", raising=False)
-    monkeypatch.delenv("HERMES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("FLOOR_VAULT_KEY", raising=False)
     monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
 
     # Mock non-desktop to force Tier 3 fallback
@@ -75,7 +75,7 @@ def test_adaptive_provider_machine_file_fallback(monkeypatch, tmp_path):
 
 
 def test_adaptive_provider_fails_closed_by_default(monkeypatch, tmp_path):
-    for name in ("APPSTATE_KEY", "HERMES_VAULT_KEY", "VAULT_MASTER_KEY"):
+    for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
 
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
@@ -89,7 +89,7 @@ def test_adaptive_provider_fails_closed_by_default(monkeypatch, tmp_path):
 
 def test_adaptive_provider_strict_mode_refuses_disk_fallback(monkeypatch, tmp_path):
     monkeypatch.delenv("APPSTATE_KEY", raising=False)
-    monkeypatch.delenv("HERMES_VAULT_KEY", raising=False)
+    monkeypatch.delenv("FLOOR_VAULT_KEY", raising=False)
     monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
 
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, strict=True)
@@ -100,7 +100,7 @@ def test_adaptive_provider_strict_mode_refuses_disk_fallback(monkeypatch, tmp_pa
 
 
 def test_adaptive_provider_rejects_insecure_existing_key_file(monkeypatch, tmp_path):
-    for name in ("APPSTATE_KEY", "HERMES_VAULT_KEY", "VAULT_MASTER_KEY"):
+    for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
 
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)

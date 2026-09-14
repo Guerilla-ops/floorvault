@@ -1,9 +1,9 @@
-# NOVA TECHNICAL DIRECTIVE & SECURITY AUDIT REPORT (2026-09-14)
-**TO:** Scott (Estate Operator & Final Authority)  
-**FROM:** Nova (Head of Security / CTO, Hermes Fleet)  
-**SUBJECT:** Comprehensive Security Audit & Comparative Vulnerability Analysis: FloorVault vs. Top 5 Cryptographic Engines  
-**TARGET SYSTEMS:** FloorVault, CipherSweet, Acra, AWS Database Encryption SDK, Google Tink, CipherStash  
-**CLASSIFICATION:** Internal Estate Security Review / Non-Writer Boundary  
+# TECHNICAL DIRECTIVE & SECURITY AUDIT REPORT (2026-09-14)
+**TO:** Scott (Estate Operator & Final Authority)
+**FROM:** Scott Lee (floorbond@pm.me)
+**SUBJECT:** Comprehensive Security Audit & Comparative Vulnerability Analysis: FloorVault vs. Top 5 Cryptographic Engines
+**TARGET SYSTEMS:** FloorVault, CipherSweet, Acra, AWS Database Encryption SDK, Google Tink, CipherStash
+**CLASSIFICATION:** Internal Estate Security Review / Non-Writer Boundary
 
 ---
 
@@ -113,8 +113,8 @@ Based on this comparative audit, I ratify the following three architectural dire
 2. **Preserve Sub-5ms Key Lifecycle & Strict Headless Operation:**
    The recently implemented strict mode in `AdaptiveKeyProvider` (refusing silent fallback to unencrypted disk keys in Docker/CI) is critical. Retain this as a non-negotiable invariant.
 3. **Formal Verification of FTS5 Scrubbing:**
-   Ensure `HermesSessionCrypto`'s secret-scrubbing regex pass is continuously audited against newly introduced token formats (e.g. Anthropic, Google Gemini, OpenAI, GitHub Enterprise) so that unredacted API keys never enter the SQLite full-text search index.
+   Ensure `SessionCrypto`'s secret-scrubbing regex pass is continuously audited against newly introduced token formats (e.g. Anthropic, Google Gemini, OpenAI, GitHub Enterprise) so that unredacted API keys never enter the SQLite full-text search index.
 
-**Audit Sign-off:**  
-Nova (Head of Security / CTO, Hermes Fleet)  
+**Audit Sign-off:**
+Scott Lee (floorbond@pm.me)
 Status: **APPROVED & VERIFIED GREEN**

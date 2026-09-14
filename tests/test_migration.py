@@ -20,9 +20,9 @@ import pytest
 from cryptography.fernet import Fernet
 
 from floorvault.core import FloorVault
-from floorvault.hermes.vault import HermesVaultStore, VaultError
 from floorvault.memory import HardenedMemoryKey
 from floorvault.migration import MigratingVaultStore
+from floorvault.vaultkit.vault import VaultError, VaultStore
 
 
 def _make_crypto() -> FloorVault:
@@ -30,7 +30,7 @@ def _make_crypto() -> FloorVault:
 
 
 def _write_legacy_fernet(base_dir: Path, items: dict[str, dict]) -> tuple[bytes, Path, Path]:
-    """Write a legacy Fernet vault the way the old Hermes store did:
+    """Write a legacy Fernet vault the way the legacy reference store did:
     vault.json.enc = Fernet-encrypted JSON {item_id: secret-dict},
     vault.key = the fernet key."""
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -48,7 +48,7 @@ def test_modern_item_read_first_without_touching_legacy(tmp_path):
     """An item already in the modern store must be served from modern, and the
     legacy fetch must not run / must not mutate anything."""
     crypto = _make_crypto()
-    modern = HermesVaultStore(tmp_path / "modern", crypto=crypto)
+    modern = VaultStore(tmp_path / "modern", crypto=crypto)
     _write_legacy_fernet(tmp_path / "modern", {"legacy-1": {"password": "p1"}})
 
     meta = modern.add_item(
@@ -67,7 +67,7 @@ def test_legacy_item_read_and_lazily_upgraded(tmp_path):
     and leave the legacy file intact (non-destructive)."""
     base = tmp_path / "vault"
     crypto = _make_crypto()
-    modern = HermesVaultStore(base / "modern", crypto=crypto)
+    modern = VaultStore(base / "modern", crypto=crypto)
     _, legacy_vault_path, _ = _write_legacy_fernet(
         base / "modern",
         {
@@ -91,7 +91,7 @@ def test_legacy_item_read_and_lazily_upgraded(tmp_path):
 def test_legacy_meta_and_has_items(tmp_path):
     base = tmp_path / "vault"
     crypto = _make_crypto()
-    modern = HermesVaultStore(base / "modern", crypto=crypto)
+    modern = VaultStore(base / "modern", crypto=crypto)
     _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw", "label": "Legacy item"}})
 
     facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
@@ -107,7 +107,7 @@ def test_migrate_all_backs_up_and_verify(tmp_path):
     source stays until verify passes."""
     base = tmp_path / "vault"
     crypto = _make_crypto()
-    modern = HermesVaultStore(base / "modern", crypto=crypto)
+    modern = VaultStore(base / "modern", crypto=crypto)
     legacy_items = {
         "a": {"password": "pw-a"},
         "b": {"password": "pw-b", "identifier": "b@x", "identifier_type": "email"},
@@ -128,7 +128,7 @@ def test_migrate_all_raises_and_keeps_legacy_if_invalid(tmp_path):
     the legacy source."""
     base = tmp_path / "vault"
     crypto = _make_crypto()
-    modern = HermesVaultStore(base / "modern", crypto=crypto)
+    modern = VaultStore(base / "modern", crypto=crypto)
     _write_legacy_fernet(base / "modern", {"x": {"password": "pw-x"}})
     legacy_vault_path = base / "modern" / "vault.json.enc"
 

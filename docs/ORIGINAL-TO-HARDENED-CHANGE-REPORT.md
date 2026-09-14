@@ -8,7 +8,7 @@ Scope: Changes made from the original repository implementation
 
 FloorVault was changed from a cryptographic helper with optional local key fallback and plaintext searchable projections into a fail-closed, context-bound storage-encryption library with protected metadata, keyed search projections, SQLite residue reduction, and platform memory-hardening hooks.
 
-The Hermes adapter remains API-oriented toward direct credential-vault replacement. However, encrypted message storage is currently an integration helper; it has not yet replaced Hermes's production `SessionDB` and `state.db` writer/search path.
+The adapter remains API-oriented toward direct credential-vault replacement. However, encrypted message storage is currently an integration helper; it has not yet replaced the reference production `SessionDB` and `state.db` writer/search path.
 
 ## Change inventory
 
@@ -33,7 +33,7 @@ File: `src/floorvault/providers/adaptive.py`
 Original behavior allowed a local `master.key` fallback by default. The current implementation:
 
 - Disables disk-key fallback by default.
-- Requires an explicit environment key such as `APPSTATE_KEY`, `HERMES_VAULT_KEY`, or `VAULT_MASTER_KEY`, or a supported OS keychain path.
+- Requires an explicit environment key such as `APPSTATE_KEY`, `FLOOR_VAULT_KEY`, or `VAULT_MASTER_KEY`, or a supported OS keychain path.
 - Makes local disk fallback an explicit opt-in.
 - Rejects non-regular key files.
 - Rejects key files owned by another user on POSIX systems.
@@ -41,17 +41,17 @@ Original behavior allowed a local `master.key` fallback by default. The current 
 - Creates new local fallback keys with mode `0600`.
 - Refuses fallback in strict mode.
 
-Operational effect: an unattended Hermes/FloorVault process can now fail at startup if no approved key source is configured. This is intentional and prevents silently placing the decryption key beside the database.
+Operational effect: an unattended FloorVault process can now fail at startup if no approved key source is configured. This is intentional and prevents silently placing the decryption key beside the database.
 
-### 3. Hermes vault metadata encryption
+### 3. Vault metadata encryption
 
-File: `src/floorvault/hermes/vault.py`
+File: `src/floorvault/vaultkit/vault.py`
 
-The Hermes credential adapter now:
+The credential adapter now:
 
 - Encrypts labels, origins, identifier types, identifiers, and creation timestamps.
 - Retains a keyed `origin_idx` for equality lookup without storing the searchable origin in plaintext.
-- Provides 100% API parity with Hermes's native `agent/vault_store.py`: exposes `resolve_secret()`, `remove_item()`, `has_items()`, `get_meta()`, `totp_now()`, and `scrub_secret_from_text()`, while keeping backwards-compatible aliases `get_secret()` and `delete_item()`.
+- Provides 100% API parity with the reference `agent/vault_store.py`: exposes `resolve_secret()`, `remove_item()`, `has_items()`, `get_meta()`, `totp_now()`, and `scrub_secret_from_text()`, while keeping backwards-compatible aliases `get_secret()` and `delete_item()`.
 - Supports RFC 6238 TOTP non-default parameter preservation (`seed|digits|period|algo`).
 - Detects legacy plaintext metadata after migration rather than silently treating it as protected.
 - Applies SQLite `secure_delete=ON`.
@@ -61,16 +61,16 @@ The Hermes credential adapter now:
 
 Compatibility effect: public metadata APIs remain readable after decryption, but existing plaintext rows require the migration path on first open. Existing `vault.json.enc`/`vault.key` files are identified as legacy inputs; automatic format migration still needs to be implemented if those files are in use.
 
-### 4. Hermes message encryption and searchable projection
+### 4. Message encryption and searchable projection
 
-File: `src/floorvault/hermes/session_crypto.py`
+File: `src/floorvault/vaultkit/session_crypto.py`
 
 Added or changed:
 
 - AES-SIV encryption of message content with AAD bound to `session_id` and `message_id`.
 - HMAC-tokenized search projections by default.
 - Keyed query transformation through `secure_search_query()`.
-- Domain separation using `hermes.messages.fts.v1`.
+- Domain separation using `floor.messages.fts.v1`.
 - Explicit legacy compatibility mode through `allow_plaintext_fts=True`.
 - Existing secret-scrubbing support remains available for that compatibility mode.
 
@@ -102,7 +102,7 @@ Files:
 - `scripts/security-check.sh`
 - `scripts/memory_probe.py`
 - `tests/test_memory_platform_probe.py`
-- Updated adaptive-provider and Hermes-adapter tests
+- Updated adaptive-provider and vaultkit-adapter tests
 
 Added documentation and checks cover:
 
@@ -123,7 +123,7 @@ The hardened FloorVault test suite passed locally with 37 tests. The security-ch
 - RFC encryption vectors.
 - Memory-custody tests.
 - Blind-index and SQLite tests.
-- Hermes adapter (including full native `VaultStore` API parity and Unicode search tokenization) and adaptive-provider tests.
+- Adapter (including full native `VaultStore` API parity and Unicode search tokenization) and adaptive-provider tests.
 - Standalone execution of host memory capability probe script.
 - Source and wheel builds.
 
@@ -131,13 +131,13 @@ The current macOS memory probe reported successful core-dump, crash-dump, fork-e
 
 ## Known limitations and follow-up work
 
-1. Wire `HermesSessionCrypto` into Hermes's real `SessionDB.append_message()`, batch writers, and search implementation.
-2. Design and run an offline migration for existing Hermes `state.db` plaintext message and FTS data.
-3. Decide how to preserve or intentionally replace Hermes phrase, CJK trigram, snippet, and fuzzy search behavior beyond token-exact matching.
-4. Implement/import migration from any legacy Hermes credential-vault format actually present on the target installation.
+1. Wire `SessionCrypto` into the reference agent's real `SessionDB.append_message()`, batch writers, and search implementation.
+2. Design and run an offline migration for existing `state.db` plaintext message and FTS data.
+3. Decide how to preserve or intentionally replace legacy phrase, CJK trigram, snippet, and fuzzy search behavior beyond token-exact matching.
+4. Implement/import migration from any legacy credential-vault format actually present on the target installation.
 5. Complete Linux and Windows runtime validation.
-6. Benchmark encryption, decryption, indexing, and search overhead against representative Hermes workloads.
+6. Benchmark encryption, decryption, indexing, and search overhead against representative workloads.
 
 ## Overall assessment
 
-The changes materially improve protection against database theft, row/column ciphertext splicing, plaintext metadata exposure, insecure local key files, and several crash/swap/fork residue paths. They introduce operational key configuration, migration requirements, and narrower default search semantics. The credential-vault adapter is still close to a direct replacement at the API level; full encrypted Hermes state replacement remains a separate integration project.
+The changes materially improve protection against database theft, row/column ciphertext splicing, plaintext metadata exposure, insecure local key files, and several crash/swap/fork residue paths. They introduce operational key configuration, migration requirements, and narrower default search semantics. The credential-vault adapter is still close to a direct replacement at the API level; full encrypted state replacement remains a separate integration project.

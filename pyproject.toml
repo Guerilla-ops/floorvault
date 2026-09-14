@@ -9,7 +9,7 @@ description = "Contextual, misuse-resistant, searchable database encryption for 
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 authors = [
-    { name = "Hermes & Nova", email = "hermes@nousresearch.com" },
+    { name = "Scott Lee", email = "floorbond@pm.me" },
 ]
 keywords = [
     "sqlite",
