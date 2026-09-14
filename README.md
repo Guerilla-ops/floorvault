@@ -167,6 +167,13 @@ hostile table / column names are refused rather than interpolated.
 * **Search beacons leak a bounded bucket, not the value.** Even so, treat
   beacons as *coarse* — re-keying changes all buckets. Do not index values that
   cannot tolerate any equality leakage unless you raise `bits` consciously.
+* **Platform-native key custody.** `WindowsDPAPIKeyProvider` binds the master
+  key to the Windows user via `CryptProtectData` with secondary entropy (so an
+  infostealer cannot decrypt it by calling `CryptUnprotectData` alone);
+  `LinuxSecretServiceKeyProvider` stores it in the freedesktop Secret Service
+  (GNOME Keyring / KWallet), failing closed if a desktop session is present but
+  the service is unreachable. Where the OS backend is absent both fall back to
+  an entropy-masked, 0600, no-symlink protected store.
 * **Same-UID process threat.** Like all pure user-space crypto, floorvault
   protects *at rest* and against memory scraping, but a process executing as the
   same operating-system user can read the key from an OS keychain / key file.
@@ -181,13 +188,16 @@ hostile table / column names are refused rather than interpolated.
 
 A frequently asked question: *"Did the beacon upgrade slow AI or drop features?"*
 Short answer: **no** — measured encrypt/decrypt are unchanged (~5–10 µs for a 1-KB
-message) and index ops went from ~1.29 µs to ~1.37 µs (sub-microsecond). The one
-real change is that exact-match lookup moved from "index is authoritative" to
-"bucket + `beacon_matches` confirm," which is a tunable privacy upgrade (`bits=`),
-not a lost capability.
+message) and index ops went from ~1.29 µs to ~1.37 µs (sub-microsecond). Measured
+against Fernet, floorvault is **~21% faster to encrypt and ~30% faster to
+decrypt** at identical payloads (same AES hardware, no two-pass token framing),
+and its search beacon is sub-1.4 µs.
 
 See [`docs/PERFORMANCE-HARDENING-COST-REVIEW-2026-09-15.md`](docs/PERFORMANCE-HARDENING-COST-REVIEW-2026-09-15.md)
-for the full measurement and the honest trade-off discussion.
+for the honest trade-off discussion and
+[`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](docs/COMPARATIVE-BENCHMARK-2026-09-15.md)
+for the measured comparison vs. Fernet and plain SQLite (reproduce with
+`uv run python scripts/benchmark_compare.py`).
 
 ---
 
@@ -201,8 +211,11 @@ for the full measurement and the honest trade-off discussion.
       (`MigratingVaultStore`: modern-first dual-read, on-touch upgrade, `.bak`
       backup + verify; adds a schema-free `generic` vault kind so nothing is
       silently dropped)
-- [ ] Windows DPAPI and Linux (keyring / TPM) key providers
-- [ ] fuzz + comparative benchmark vs. SQLCipher / Fernet
+- [x] **Windows DPAPI** (`CryptProtectData` + secondary entropy) and **Linux
+      Secret Service** (GNOME Keyring / KWallet) key providers, fail-closed
+- [x] **Comparative benchmark** harness + measured results vs. Fernet / plain
+      SQLite (`scripts/benchmark_compare.py`, `docs/COMPARATIVE-BENCHMARK…`)
+- [ ] fuzz + CI matrix (macOS / Linux / Windows)
 
 ---
 

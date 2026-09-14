@@ -61,9 +61,9 @@ agents need."** To make every word of the docs true:
 |---|---|---|
 | **1** | Fix H1 inspector SQL-injection (deny-first identifier allowlist) | ✅ **DONE** — `src/floorvault/inspector.py`, `tests/test_inspector_sql_injection.py` (3 tests) |
 | **2** | **Blind-index beacon redesign** (truncated 4-30 bit HMAC + `beacon_matches` verify) — closes the equality/frequency leak | ✅ **DONE** — `blind_index.py` (+`compute_beacon`/`beacon_bucket_bytes`/`beacon_matches`), `core.py` (`FloorVault.beacon`/`beacon_matches`), `__init__.py` exports, `tests/test_beacon.py` (7 tests). Suite 56 pass. |
-| **3** | Lazy non-destructive migration + dev-mode (`$PLAIN$`) + CLI inspect | — |
-| **4** | Windows DPAPI + Linux (keyring/TPM) key providers | — |
-| **5** | Benchmark harness vs SQLCipher/Fernet (to back the latency claims with evidence) | — |
+| **3** | Lazy non-destructive migration + dev-mode (`$PLAIN$`) + CLI inspect | ✅ **DONE** — `migration.py` `MigratingVaultStore` + `generic` vault kind, `tests/test_migration.py` (5) |
+| **4** | Windows DPAPI + Linux (keyring/TPM) key providers | ✅ **DONE** — `providers/windows_dpapi.py` (CryptProtectData + entropy), `providers/linux_keyring.py` (Secret Service), shared `platform_custody.py`; `tests/test_platform_providers.py` (6) |
+| **5** | Benchmark harness vs SQLCipher/Fernet (to back the latency claims with evidence) | ✅ **DONE** — `scripts/benchmark_compare.py` + `docs/COMPARATIVE-BENCHMARK-2026-09-15.md`; measured floorvault 0.79×/0.70× (faster than) Fernet encrypt/decrypt; `tests/test_benchmark.py` (2) |
 | **6** | Secure-Enclave signer (Swift) + P-256 Python verifier + receipt-bound digest tests | — |
 
 Execution proceeds slice-by-slice, RED→GREEN, scoped commits, per SOP-ENG-004.
