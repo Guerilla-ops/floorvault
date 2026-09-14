@@ -1,7 +1,7 @@
 # Gitleaks ignore file for synthetic test fixtures.
-# Note: the fixture commit hash / path both appear in git history, so keep both
-# the pre-rename and post-rename path forms to cover historical commits and HEAD.
-04d25598a24fe3a757d871009cf42e7cd3951ae8:tests/test_hermes_adapter.py:generic-api-key:***
-04d25598a24fe3a757d871009cf42e7cd3951ae8:tests/test_vaultkit_adapter.py:generic-api-key:***
-ed8c6f7e85b74b42769a1458371f6ed9ada63dc8:tests/test_adaptive_provider.py:generic-api-key:***
-0f2dea78a1478c6dad01d32614223b4301135f14:tests/test_blind_index.py:generic-api-key:***
+# Format: <commit>:<file>:<rule-id>:<start-line> (gitleaks ignore semantics).
+# Keep pre-rename and post-rename paths; the fixtures live under both in history.
+04d25598a24fe3a757d871009cf42e7cd3951ae8:tests/test_hermes_adapter.py:generic-api-key:62
+04d25598a24fe3a757d871009cf42e7cd3951ae8:tests/test_vaultkit_adapter.py:generic-api-key:62
+ed8c6f7e85b74b42769a1458371f6ed9ada63dc8:tests/test_adaptive_provider.py:generic-api-key:9
+0f2dea78a1478c6dad01d32614223b4301135f14:tests/test_blind_index.py:generic-api-key:30
