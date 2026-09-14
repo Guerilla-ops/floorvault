@@ -50,6 +50,12 @@ dev = [
     "pytest-cov>=4.0.0",
     "ruff>=0.5.0",
 ]
+# macOS Keychain (Tier 2 of AdaptiveKeyProvider) needs the Security framework
+# bindings. Without them the provider falls through to Tier 3 and, unless
+# allow_disk_fallback is enabled, fails closed.
+macos = [
+    "pyobjc-framework-Security>=10.0",
+]
 
 [project.scripts]
 floorvault = "floorvault.inspector:main"

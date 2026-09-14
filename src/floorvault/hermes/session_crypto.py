@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from ..core import DecryptionVerificationError, FloorVault
+from ..core import FloorVault
 
 # Common secret regex patterns (API keys, bearer tokens) for FTS5 scrubbing
 SECRET_PATTERNS = [
@@ -78,19 +78,10 @@ class HermesSessionCrypto:
         message_id: str,
         payload_cipher: bytes,
     ) -> str:
-        """Decrypt message verifying contextual coordinates with legacy fallback."""
-        try:
-            return self.crypto.decrypt(
-                payload_cipher,
-                table="messages",
-                record_id=f"{session_id}\x00{message_id}",
-                column="content",
-            )
-        except DecryptionVerificationError:
-            # Fallback for historical messages encrypted with legacy un-namespaced record_id
-            return self.crypto.decrypt(
-                payload_cipher,
-                table="messages",
-                record_id=message_id,
-                column="content",
-            )
+        """Decrypt message while requiring the current session binding."""
+        return self.crypto.decrypt(
+            payload_cipher,
+            table="messages",
+            record_id=f"{session_id}\x00{message_id}",
+            column="content",
+        )

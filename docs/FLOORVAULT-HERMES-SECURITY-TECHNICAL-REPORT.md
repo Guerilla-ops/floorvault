@@ -7,20 +7,20 @@
 - **Author:** Hermes CLI (Standalone Agent)
 - **Approved by:** Scott (Estate Operator & Final Authority)
 - **Date:** 2026-09-14
-- **Verification Status:** 37/37 Tests Passing | 8/8 Local Security Gates Passing
+- **Verification Status:** 47/47 tests passing and 8/8 local gates passing on macOS (Python 3.13, cryptography 50.0.1). Linux and Windows runtime validation not yet executed; optional security tools may be skipped by the local script.
 
 ---
 
 ## 1. System Overview & Core Philosophy
 
-FloorVault is a zero-dependency (zero C-compilation) application-layer cryptographic storage engine engineered for local AI agents, desktop software, and edge runtimes. It is built natively on Python's stock `sqlite3` driver and PyCA `cryptography` (OpenSSL 3.x), eliminating the compilation and native-linking vulnerabilities of SQLCipher.
+FloorVault is an application-layer cryptographic storage engine for local AI agents, desktop software, and edge runtimes. It uses Python's stock `sqlite3` driver and the PyCA `cryptography` package; this does not eliminate dependencies or establish that SQLCipher has native-linking vulnerabilities.
 
 ### 1.1 The Architectural Non-Negotiables
 FloorVault enforces four structural invariants across all storage paths:
 1. **Contextual Coordinate Binding (Anti-Splicing)**: Every ciphertext is cryptographically locked to its database coordinates (`table`, `record_id`, `column`, `schema_id`, `app_instance_id`) via RFC 5297 AES-256-SIV. Ciphertext cannot be moved between rows, columns, tables, or sessions without tag verification failure.
-2. **Sub-5ms Ephemeral Master Key Destruction**: Master key material is zeroed in physical RAM immediately after HKDF subkey derivation.
-3. **Hardware Memory Custody**: Functional subkeys are pinned in physical RAM (`mlock()` on POSIX, `VirtualLock()` on Windows), excluded from crash dumps (`MADV_DONTDUMP`), and prevented from leaking across process forks (`MADV_DONTFORK`).
-4. **Dual-Pillar Functional Fidelity**: Zero-trust encryption is implemented without sacrificing agent capabilities: search snippets, wildcards, CJK ideographs, and multi-agent concurrency remain fully functional.
+2. **Best-effort master-buffer clearing**: The constructor clears its mutable derivation buffer after HKDF; this does not prove destruction of caller-owned bytes, backend copies, or a sub-5ms physical-memory guarantee.
+3. **Memory hardening (best effort)**: Functional subkeys may be page-locked when the platform permits. Dump and fork exclusion are platform-dependent and must be verified separately; the Python cryptographic backend may retain additional copies.
+4. **Application-dependent functionality**: Encryption is provided without changing the core API, while search features, snippets, multilingual behavior and concurrency depend on the surrounding integration.
 
 ---
 
@@ -31,15 +31,15 @@ FloorVault's architecture is partitioned into four primary modules: Core Cryptog
 ```
 floorvault/
 ├── core.py               # RFC 5297 AES-SIV engine, AAD canonicalization, sliding nonce tracker
-├── memory.py             # Hardware page locking (mlock), zeroization, anti-dump primitives
-├── blind_index.py        # HMAC-SHA256 blind indexing, Bloom filter truncation, trigram generation
+├── memory.py             # Best-effort page locking and buffer zeroization
+├── blind_index.py        # HMAC-SHA256 blind indexing
 ├── sqlite_adapter.py     # Custom transparent SQLite connection/cursor wrappers
 ├── providers/
 │   ├── base.py           # KeyProvider abstract base class
 │   └── adaptive.py       # 3-tier fail-closed keyring/env/0600 provider
 └── hermes/
     ├── __init__.py       # Hermes module exports
-    ├── vault.py          # HermesVaultStore (100% drop-in drop replacement for agent/vault_store.py)
+    ├── vault.py          # HermesVaultStore compatibility adapter
     └── session_crypto.py # HermesSessionCrypto (state.db hybrid split-projection)
 ```
 
@@ -61,7 +61,7 @@ Initializes the cryptographic engine:
 4. Wraps derived subkeys inside `HardenedMemoryKey` containers.
 5. Initializes the `AESSIV` engine.
 6. **Ephemeral Key Destruction**: In a mandatory `finally:` block, explicitly zeros the `master_buffer` in physical RAM via an index loop (`master_buffer[idx] = 0`), eliminating `ctypes.c_char_p` null-byte truncation bugs.
-7. Initializes a bounded sliding window (`collections.deque` + `set`) tracking up to 10,000 nonces to detect replay.
+7. Initializes a bounded sliding window (`collections.deque` + `set`) tracking up to 10,000 nonces to detect nonce reuse during this process; it is not rollback or ciphertext-replay protection.
 
 #### `FloorVault.encrypt(plaintext, *, table, record_id, column, schema_id="floor.vault.v1", schema_version=1) -> bytes`
 Encrypts plaintext strings or bytes into a self-describing binary envelope:
@@ -69,7 +69,7 @@ Encrypts plaintext strings or bytes into a self-describing binary envelope:
 - AES-256-SIV: Passes plaintext and associated components `[aad, nonce]` to `AESSIV.encrypt()`.
 - Binary Envelope Format:
   $$\text{Envelope} = \mathtt{0x464C5256} \text{ ("FLRV")} \mathbin{\Vert} \text{NonceLen (1B)} \mathbin{\Vert} \text{Nonce (16B)} \mathbin{\Vert} \text{Ciphertext}$$
-- Total cryptographic expansion: Exactly 37 bytes per field.
+- The envelope adds a fixed 21-byte header plus the AEAD tag; total expansion is 37 bytes for the current envelope format, excluding storage encoding or database overhead.
 
 #### `FloorVault.decrypt(ciphertext, *, table, record_id, column, schema_id="floor.vault.v1", schema_version=1) -> str`
 Verifies and decrypts binary envelopes:
@@ -93,12 +93,12 @@ Deterministic destruction hook: invokes `.wipe()` on `_siv_key` and `_index_key`
 Invokes POSIX `resource.setrlimit(resource.RLIMIT_CORE, (0, 0))` on macOS and Linux. Wrapped in a safe `try / except ImportError` to allow error-free import on Windows systems.
 
 #### `HardenedMemoryKey(key_bytes, *, mode="opportunistic")`
-Holds sensitive cryptographic key material in physical RAM with anti-swapping and anti-dumping guarantees:
+Attempts to reduce swapping and memory-dump exposure for its own buffer; it does not guarantee that all copies held by Python or the cryptographic backend are protected:
 - Allocates an unmanaged C buffer outside Python's heap via `ctypes.create_string_buffer()`.
 - **POSIX (`darwin`, `linux`)**:
   * Calls `libc.mlock()` to lock pages into physical RAM.
-  * Calls `libc.madvise(..., MADV_DONTDUMP)` (constant 16) to shield buffers from core dumps.
-  * Calls `libc.madvise(..., MADV_DONTFORK)` (constant 19) to prevent key inheritance across subprocess forks.
+  * Requests `madvise` protections where supported, but the return values are not currently used to establish successful protection.
+  * Fork and dump behavior is platform-specific; these controls are not a portable guarantee and must not be described as universally active.
 - **Windows (`win32`)**:
   * Calls `kernel32.VirtualLock()` to pin pages into the process working set.
 - **Enforcement Modes**:
@@ -114,8 +114,8 @@ Holds sensitive cryptographic key material in physical RAM with anti-swapping an
 
 #### `AdaptiveKeyProvider(service_name="floorvault", account_name="default-v1", *, fallback_dir=None, strict=False, allow_disk_fallback=False)`
 Multi-tier key provider engineered to scale from desktop GUI environments to headless cloud containers while failing closed by default:
-- **Tier 1 (OS Keyring)**: Queries macOS Keychain, Windows DPAPI, or Linux Secret Service via the `keyring` library. Detects non-interactive desktop environments (SSH sessions, Docker, launchd daemons) to prevent hanging on headless GUI prompts.
-- **Tier 2 (Environment Variables)**: Checks `APPSTATE_KEY`, `HERMES_VAULT_KEY`, or `VAULT_MASTER_KEY` for 64-character hex-encoded keys.
+- **Tier 1 (Environment Variables)**: Checks `APPSTATE_KEY`, `HERMES_VAULT_KEY`, or `VAULT_MASTER_KEY` first. Valid key format and entropy must be enforced by deployment.
+- **Tier 2 (macOS Keychain when available)**: Attempts the native macOS Security API. Windows DPAPI and Linux Secret Service integration are not implemented in this provider. Detects some non-interactive environments before attempting desktop storage.
 - **Tier 3 (Explicitly Opt-In 0600 File Key)**:
   * Strict fail-closed default: If `allow_disk_fallback=False` (default) or `strict=True`, raises `KeyProviderError`.
   * If enabled: Validates that the fallback file is a regular file (`stat.S_ISREG`), verifies ownership matches the executing UID (`st_uid == os.getuid()`), and rejects any group or world permissions (`st_mode & 0o077`). New keys are written with atomic `0600` permissions.
@@ -125,7 +125,7 @@ Multi-tier key provider engineered to scale from desktop GUI environments to hea
 ### 2.4 Hermes Agent Credential Vault (`src/floorvault/hermes/vault.py`)
 
 #### `HermesVaultStore(base_dir, *, crypto=None)`
-A drop-in replacement for Hermes Agent's `agent/vault_store.py` providing 100% method and parameter parity:
+A compatibility adapter for Hermes Agent's `agent/vault_store.py`; method and parameter parity must be validated against the deployed Hermes version:
 - **Residue Reduction**: Opens SQLite database (`vault.db`) with `PRAGMA secure_delete = ON`, `PRAGMA journal_mode = DELETE`, and `PRAGMA synchronous = FULL`.
 - **Metadata Protection**: In `add_item()`, encrypts `label`, `origin`, `identifier_type`, `identifier`, and `created_at` into binary BLOBs using contextual sub-coordinates (`meta:<column>`).
 - **Blind-Indexed Origins**: Derives `origin_idx = crypto.blind_index(norm_origin, scope="hermes.vault.origin")` for fast $O(\log N)$ equality lookups without plaintext exposure.
@@ -156,9 +156,10 @@ Engineers the hybrid split-projection for Hermes `state.db` message storage:
   * If `allow_plaintext_fts=True`, runs secret-scrubbing regex pass to redact API keys while retaining cleartext words.
 - **`decrypt_message(*, session_id, message_id, payload_cipher) -> str`**:
   * Attempts primary decryption using hardened coordinates `f"{session_id}\x00{message_id}"`.
-  * **Backward-Compatible Fallback**: If primary decryption fails with `DecryptionVerificationError`, falls back to legacy un-namespaced `record_id = message_id` to decrypt historical messages.
+  * **Backward-Compatible Fallback**: Removed. `decrypt_message` now requires the session-bound coordinate and rejects legacy un-namespaced ciphertext.
+- **`decrypt_bytes(...)`**: Returns raw bytes for values encrypted from bytes rather than str; `decrypt()` raises `DecryptionVerificationError` on non-UTF-8 payloads.
 - **`secure_search_query(query: str) -> str`**:
-  * Tokenizes query strings into identical keyed HMAC digests for direct SQLite FTS5 matching.
+  * Tokenizes query strings into identical keyed HMAC digests for an application-managed FTS5 projection; this does not provide substring, wildcard, or trigram search.
 
 ---
 
@@ -171,7 +172,7 @@ Engineers the hybrid split-projection for Hermes `state.db` message storage:
                │
                ▼
    AdaptiveKeyProvider.resolve_key()
-   ├── Tier 1: Probe OS Keyring (macOS Keychain / DPAPI / SecretService)
+   ├── Tier 1: Probe macOS Keychain when available
    ├── Tier 2: Check ENV (APPSTATE_KEY, HERMES_VAULT_KEY)
    └── Tier 3: Opt-in 0600 file check (Regular file, st_uid match, mode 0600)
                │ (Fails closed if unconfigured)
@@ -185,10 +186,9 @@ Engineers the hybrid split-projection for Hermes `state.db` message storage:
    │   └── raw_index (32B) ──> HardenedMemoryKey(raw_index)
    │                           ├── ctypes unmanaged buffer allocation
    │                           ├── libc.mlock() (Pin to physical RAM)
-   │                           ├── madvise(MADV_DONTDUMP) (Exclude from crash cores)
-   │                           └── madvise(MADV_DONTFORK) (Shield from child forks)
+   │                           └── Platform-dependent madvise requests (outcomes must be checked)
    │
-   └── Mandatory finally: Block (< 5 ms execution)
+    └── Mandatory finally: Clear the mutable derivation buffer (duration not a security guarantee)
        ├── Master buffer explicitly overwritten with zeros (index loop)
        └── Mutable master bytearray deleted
 ```
@@ -230,16 +230,16 @@ Engineers the hybrid split-projection for Hermes `state.db` message storage:
                           ├── HermesSessionCrypto.encrypt_message()
                           │   ├── Contextual AAD: record_id = f"{session_id}\x00{message_id}"
                           │   ├── AES-256-SIV Encrypt message content -> payload_cipher (0.005 ms)
-                          │   └── Trigram Blind Indexing -> 16-bit truncated beacons
+                          │   └── Whole-word keyed HMAC tokens
                           ├── SQLite INSERT: Write payload_cipher to messages table
-                          └── FTS5 INSERT: Write trigram beacons to messages_fts table
+                          └── Application-managed FTS5 projection (integration-dependent)
                                       │
 [Search Execution]        ──> User / Tool executes session_search("deploy timeout")
                                       │
                                       ▼
                           Dual-Pillar Search Pipeline
-                          ├── Query Tokenization: Slices query into trigram HMAC beacons (0.003 ms)
-                          ├── FTS5 Candidate Match: Retrieves Top 5 message IDs (0.150 ms)
+                          ├── Query Tokenization: Produces whole-word HMAC tokens
+                          ├── FTS5 Candidate Match: Requires application integration and verification
                           ├── Fetch Ciphertexts: Reads 5 encrypted BLOBs from messages (0.200 ms)
                           ├── In-Memory Decrypt: SIV decrypts 5 records in RAM (0.022 ms)
                           └── Python Highlighter: Generates bolded contextual snippets (0.050 ms)
@@ -255,7 +255,7 @@ Engineers the hybrid split-projection for Hermes `state.db` message storage:
                │
                ▼
    PRAGMA wal_checkpoint(TRUNCATE)
-   ├── Flushes all uncommitted WAL frames into state.db
+   ├── Closes the application database and applies configured SQLite synchronization
    └── Truncates state.db-wal to 0 bytes (Zero persistent disk residue)
                │
                ▼
@@ -277,13 +277,7 @@ Engineers the hybrid split-projection for Hermes `state.db` message storage:
 - **RFC Test Vectors**: 100% byte-for-byte alignment verified against official RFC 5297 Appendix A.1/A.2 and RFC 5869 Test Case 1 vectors.
 
 ### 4.2 Mathematical Mitigation of Frequency Leakage
-To prevent frequency-analysis attacks (Cash et al., Grubbs et al.), FloorVault implements truncated blind index beacons:
-- The HMAC output is truncated to $L=16$ bits ($65,536$ discrete buckets).
-- Truncation forces intentional hash collisions ("coincidences"), transforming the index into a distributed Bloom filter.
-- Mathematical Coincidence Bound:
-  $$C = R \cdot 2^{-L}$$
-  For an agent store of $R = 10,000$ messages, $C \approx 0.15$ collisions per beacon, satisfying the security bound $2 \le C < \sqrt{R}$.
-- An attacker observing bucket distributions cannot distinguish between a single frequent word and multiple colliding words. False positives are pruned client-side in RAM via AES-256-SIV verification.
+The current implementation uses full-length keyed HMAC tokens for normalized whole-word terms. This preserves equality and frequency information for indexed terms and does not, by itself, prevent frequency analysis. No 16-bit collision bound, Bloom-filter construction, trigram privacy property, or universal false-positive claim is made here.
 
 ---
 
@@ -300,10 +294,10 @@ To prevent frequency-analysis attacks (Cash et al., Grubbs et al.), FloorVault i
 | **Ephemeral Key Destruction** | None | None | None | None | **Complete (`bytearray` loop)** |
 | **Hardware RAM Locking** | None | None | None | None | **`mlock` + `MADV_DONTDUMP`** |
 | **Search Snippets & Highlights**| Supported | Supported | Supported | Supported | **Supported (In-Memory)** |
-| **Wildcard & Prefix Search** | Supported | Supported | Supported | Supported | **Supported (Trigram HMAC)** |
-| **CJK / Multilingual Search** | Supported | Supported | Supported | Supported | **Supported (Unicode Trigrams)** |
-| **Multi-Agent Swarm Scaling** | High (WAL) | Single-App | N/A | N/A | **High (Hardened WAL)** |
-| **Infostealer Dump Immunity** | **Vulnerable** | **Vulnerable** | **Vulnerable** | **Vulnerable** | **100% Immune** |
+| **Wildcard & Prefix Search** | Supported | Supported | Supported | Supported | **Integration-dependent; not provided by whole-word tokens** |
+| **CJK / Multilingual Search** | Supported | Supported | Supported | Supported | **Whole-token Unicode matching only** |
+| **Multi-Agent Swarm Scaling** | High (WAL) | Single-App | N/A | N/A | **Application-dependent; no global hardened-WAL claim** |
+| **Infostealer Dump Exposure** | Varies | Varies | Varies | Varies | **Not eliminated; process and backend memory remain in scope** |
 
 ---
 
@@ -334,28 +328,28 @@ Benchmarks executed directly on Apple M-Series hardware (`Darwin 27.0`, `Python 
 
 ### 6.3 Hardware & Token Utilization
 - **CPU Overhead**: AES-SIV executes via OpenSSL vectorized assembly (`AESE`/`PMULL`); consumes $< 0.000005$ seconds of CPU core time per message.
-- **Memory Overhead**: Exactly two 4KB physical pages ($8,192$ bytes) pinned in physical silicon via `mlock()`.
-- **Disk Storage Overhead**: Exactly **37 bytes** per encrypted record envelope.
+- **Memory Overhead**: Variable allocator and platform overhead; `mlock()` does not establish exactly two 4KB pages.
+- **Disk Storage Overhead**: 37 bytes for the current encrypted envelope before database and encoding overhead.
 - **Token Overhead**: **0 Extra Prompt/Completion Tokens**. Tool schemas and assembled prompts are byte-identical.
-- **KV-Cache Hit Rate**: **100% Preserved**. Prompt caching affinity is unaffected.
+- **KV-Cache Hit Rate**: Not measured by this package; prompt-cache impact depends on the deployed integration.
 
 ---
 
 ## 7. Quality Gates & Test Suite Validation
 
-The hardened FloorVault codebase passes 37 automated unit tests and 8 local security gates (`./scripts/security-check.sh`):
+The repository passes 47 automated unit tests and 8 local gates (`./scripts/security-check.sh`) on macOS. Linux and Windows runtime behavior is not yet validated by CI; unavailable optional tools can be skipped by the script.
 
 1. **Gitleaks Secret Scan**: 0 leaks detected across git commit history and working tree.
 2. **pip-audit Dependency Audit**: 0 vulnerable dependencies detected.
 3. **Ruff Static Analysis**: 0 lint or code formatting violations.
 4. **RFC Test Vectors**: 100% byte-for-byte mathematical alignment (RFC 5297 & RFC 5869).
-5. **Memory Custody Suite**: Verifies `mlock()`, `MADV_DONTDUMP`, `MADV_DONTFORK`, and zeroization.
+5. **Memory Custody Suite**: Verifies the exposed buffer-locking and zeroization behavior; it does not by itself prove backend-copy destruction or successful platform-specific dump/fork advice.
 6. **Core Cryptography Suite**: Verifies AES-SIV round-trips, contextual splicing rejection, sliding nonce tracking, and engine wipe.
-7. **Hermes Adapter Suite**: 15 tests verifying metadata encryption, legacy metadata migration, native API parity, OTP normalization, TOTP generation, Unicode search tokenization, and legacy AAD fallback.
+7. **Hermes Adapter Suite**: 15 reported tests covering metadata encryption, legacy migration, API parity, OTP/TOTP helpers, Unicode tokenization, and rejection of legacy un-namespaced AAD.
 8. **Universal Wheel Packaging**: Builds binary distribution wheel cleanly with zero C compilation.
 
 ---
 
 ## 8. Conclusion
 
-FloorVault resolves the historic compromise between agent security and operational usability. By deploying contextual AAD coordinate locks, hardware memory page custody, truncated trigram blind indexing, and partitioned hardened WAL concurrency, Hermes Agent establishes an unassailable zero-trust security architecture while preserving the fluid, instant user experience required of an autonomous personal AI agent.
+FloorVault provides contextual AAD coordinate binding, application-layer encrypted fields, keyed whole-word search tokens, and best-effort memory hardening. Its security properties remain dependent on migration controls, key persistence, platform behavior, backend memory handling, and Hermes integration. This report does not establish a complete zero-trust boundary or an unassailable security architecture.

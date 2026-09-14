@@ -20,8 +20,8 @@
 | **Cipher Suite** | AES-GCM / CBC | AES-128-CBC | **AES-256-SIV (RFC 5297)** |
 | **Nonce Misuse Resistance** | Fragile (GCM leaks keys) | None | **Immune (Deterministic SIV)** |
 | **Search Query Privacy** | Decrypt-all in RAM | Full table scan | **HMAC Blind Indexing** |
-| **Master Key Memory Life** | Permanent in RAM | Permanent in RAM | **Destroyed in < 5 ms** |
-| **RAM Swapping Protection** | None | None | **`mlock` + `MADV_DONTDUMP`** |
+| **Master Key Memory Life** | Permanent in RAM | Permanent in RAM | **Constructor buffer zeroed after derivation** |
+| **RAM Swapping Protection** | None | None | **`mlock` page pinning (best-effort)** |
 
 ---
 
@@ -30,7 +30,7 @@
 * **Contextual AAD Binding:** Cryptographically binds every encrypted value to its `table`, `record_id`, `column`, `schema`, and `app_instance_id`. Splicing ciphertext between rows or tables fails authentication instantly.
 * **Deterministic Misuse-Resistance (RFC 5297):** AES-256-SIV synthesizes the initialization vector from the plaintext and AAD, preventing key leaks even if a nonce repeats.
 * **Ephemeral Master Key Handling:** Derives functional subkeys via HKDF-SHA256 and overwrites the mutable master-key buffer after derivation. Python and the cryptography backend may retain additional copies.
-* **Best-Effort Memory Hardening (`HardenedMemoryKey`):** Attempts to pin derived keys in physical RAM via POSIX `mlock()` or Win32 `VirtualLock()`, and to exclude them from crash dumps and forks. Strict mode can fail closed when locking is unavailable.
+* **Best-Effort Memory Hardening (`HardenedMemoryKey`):** Pins derived keys in physical RAM via POSIX `mlock()` or Win32 `VirtualLock()` on a page-aligned mapping. Linux additionally applies `MADV_DONTDUMP`/`MADV_DONTFORK` where the kernel supports them; macOS does not implement either advice and relies on `RLIMIT_CORE=0` plus page pinning. `strict` mode fails closed when the platform's own guarantees are unavailable.
 * **Searchable Blind Indexing:** Query encrypted fields in native SQLite B-Trees (`WHERE email_idx = ?`) without storing search terms in plaintext. Equality and frequency leakage remain observable to database readers.
 * **Tokenized Message Search:** Hermes message projections use keyed hexadecimal search tokens by default; call `secure_search_query()` to build matching FTS queries. Plaintext FTS requires explicit `allow_plaintext_fts=True`.
 * **Zero C-Compilation Overhead:** Runs on Python's built-in `sqlite3` and PyCA `cryptography`. Universal binary wheels install anywhere in seconds.
@@ -136,7 +136,7 @@ Software cryptography running in managed runtimes (like Python) exposes keys to 
    * **Linux:** Unpinned memory can be read from `/proc/<pid>/mem` by same-UID processes or intercepted via eBPF tracepoints.
    * **Windows:** Heap pages can be read by concurrent processes in the same desktop session using standard debugging APIs (`ReadProcessMemory`).
 
-**FloorVault Defense:** `FloorVault` pins functional subkeys in physical RAM using POSIX `mlock()` / Win32 `VirtualLock()`, isolates them from crash dumps via `MADV_DONTDUMP`, prevents Copy-on-Write leakage on forks via `MADV_DONTFORK`, and wipes raw master keys in `< 5 ms` using `ctypes.memset`.
+**FloorVault Defense:** `FloorVault` pins functional subkeys in physical RAM on a page-aligned mapping using POSIX `mlock()` / Win32 `VirtualLock()`, applies `MADV_DONTDUMP`/`MADV_DONTFORK` on Linux where supported, disables core dumps via `RLIMIT_CORE`, and zeroes the mutable master-key buffer after derivation using `bytearray` overwrites.
 
 ### 3. Hardware Silicon Acceleration vs. General ALU Overhead
 
@@ -152,10 +152,10 @@ Software cryptography running in managed runtimes (like Python) exposes keys to 
 | **Cipher Suite** | Stream ciphers / MACs | AES-256-SIV (RFC 5297) / AES-256-GCM |
 | **Hardware Enclave Binding** | None (pure software) | Apple Secure Enclave / TPM 2.0 |
 | **Physical Biometric Gates** | Unsupported | Touch ID / Windows Hello / FIDO2 |
-| **Physical RAM Pinning** | None (heap ghosting) | POSIX `mlock()` / Win32 `VirtualLock()` |
-| **Crash Dump Exclusion** | None | `MADV_DONTDUMP` / WER Exclusion |
-| **Process Fork Isolation** | None (CoW exposure) | `MADV_DONTFORK` |
-| **Master Key Lifetime** | Persists indefinitely in RAM | Derives subkeys & destroyed in `< 5 ms` |
+| **Physical RAM Pinning** | None (heap ghosting) | POSIX `mlock()` / Win32 `VirtualLock()` (page-aligned) |
+| **Crash Dump Exclusion** | None | `RLIMIT_CORE=0`; `MADV_DONTDUMP` on Linux |
+| **Process Fork Isolation** | None (CoW exposure) | `MADV_DONTFORK` on Linux |
+| **Master Key Lifetime** | Persists indefinitely in RAM | Derives subkeys; constructor buffer zeroed |
 | **Tamper Resistance** | Raw payload HMAC | Contextual AAD (Table + Row + Column) |
 
 ---

@@ -216,6 +216,7 @@ class HermesVaultStore:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_origin ON vault_items(origin_idx)")
             self._migrate_plaintext_metadata(conn)
+            conn.execute("PRAGMA user_version = 1")
 
     def _connect(self) -> sqlite3.Connection:
         """Open a connection with residue-reduction pragmas applied."""
@@ -230,7 +231,13 @@ class HermesVaultStore:
         rows = conn.execute(
             "SELECT id, label, origin, identifier_type, identifier, created_at FROM vault_items"
         ).fetchall()
+        already_migrated = conn.execute("PRAGMA user_version").fetchone()[0] >= 1
         for item_id, label, origin, identifier_type, identifier, created_at in rows:
+            if already_migrated and any(
+                isinstance(value, str)
+                for value in (label, origin, identifier_type, identifier, created_at)
+            ):
+                raise VaultError("plaintext metadata detected after migration")
             if not isinstance(label, str) or not isinstance(created_at, str):
                 continue
             conn.execute(

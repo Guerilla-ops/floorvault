@@ -12,6 +12,7 @@ from floorvault.hermes import (
     scrub_secret_from_text,
     totp_now,
 )
+from floorvault.hermes.vault import VaultError
 
 
 def test_hermes_vault_store_lifecycle(tmp_path):
@@ -104,6 +105,25 @@ def test_hermes_vault_migrates_legacy_plaintext_metadata(tmp_path):
         raw_db = db_file.read()
     assert b"Legacy" not in raw_db
     assert b"https://example.com" not in raw_db
+
+
+def test_hermes_vault_rejects_plaintext_metadata_after_migration(tmp_path):
+    crypto = FloorVault(b"\x26" * 32, memory_mode="disabled")
+    store = HermesVaultStore(tmp_path / "vault", crypto=crypto)
+    item = store.add_item(
+        kind="login",
+        label="Trusted",
+        origin="https://example.com",
+        secret={"identifier_type": "username", "identifier": "u", "password": "p"},
+    )
+
+    with sqlite3.connect(tmp_path / "vault" / "vault.db") as conn:
+        conn.execute("UPDATE vault_items SET label = ? WHERE id = ?", ("forged", item.id))
+
+    with pytest.raises(VaultError, match="plaintext metadata"):
+        HermesVaultStore(
+            tmp_path / "vault", crypto=FloorVault(b"\x26" * 32, memory_mode="disabled")
+        )
 
 
 def test_hermes_session_crypto_hybrid_split(tmp_path):
@@ -247,7 +267,7 @@ def test_hermes_vault_otp_and_totp_utilities():
     assert "[REDACTED]" in scrubbed
 
 
-def test_hermes_session_crypto_unicode_and_legacy_fallback():
+def test_hermes_session_crypto_unicode_and_legacy_ciphertext_is_rejected():
     crypto = FloorVault(b"\x31" * 32, memory_mode="disabled")
     session_crypto = HermesSessionCrypto(crypto)
 
@@ -261,16 +281,16 @@ def test_hermes_session_crypto_unicode_and_legacy_fallback():
     assert query_tokens
     assert query_tokens[0] in fts_text.split()
 
-    # 2. Legacy AAD decryption fallback (record_id=message_id without session_id prefix)
+    # Legacy un-namespaced ciphertext must not bypass session binding.
     legacy_cipher = crypto.encrypt(
         "historical un-namespaced message content",
         table="messages",
         record_id="legacy-msg-99",
         column="content",
     )
-    decrypted = session_crypto.decrypt_message(
-        session_id="any-session-id",
-        message_id="legacy-msg-99",
-        payload_cipher=legacy_cipher,
-    )
-    assert decrypted == "historical un-namespaced message content"
+    with pytest.raises(DecryptionVerificationError):
+        session_crypto.decrypt_message(
+            session_id="any-session-id",
+            message_id="legacy-msg-99",
+            payload_cipher=legacy_cipher,
+        )

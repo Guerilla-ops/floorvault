@@ -102,10 +102,24 @@ class FloorVault:
         """
         if not isinstance(app_instance_id, str) or not app_instance_id.strip():
             raise ValueError("app_instance_id must be a non-empty string")
+        if not isinstance(maximum_tracked_nonces, int) or maximum_tracked_nonces < 1:
+            raise ValueError("maximum_tracked_nonces must be a positive integer")
 
         self.app_instance_id = app_instance_id
         self._closed = False
         self._memory_mode = memory_mode
+
+        # Nonce tracking structures and engine slots must exist before any
+        # failure path can run, otherwise __del__/wipe() raise AttributeError
+        # on a partially initialised instance and leave the engine unclosed.
+        self._max_nonces = maximum_tracked_nonces
+        self._nonce_queue: collections.deque[bytes] = collections.deque(
+            maxlen=max(1, maximum_tracked_nonces)
+        )
+        self._nonce_set: set[bytes] = set()
+        self._aead_siv: Any = None
+        self._siv_key: Any = None
+        self._index_key: Any = None
 
         # 1. Extract raw master key bytes for derivation into a mutable bytearray
         master_buffer: bytearray
@@ -118,7 +132,12 @@ class FloorVault:
             raise TypeError("master_key must be bytes or HardenedMemoryKey")
 
         if len(master_buffer) != 32:
-            raise ValueError(f"master_key must be exactly 32 bytes (got {len(master_buffer)})")
+            # Zero the copy before failing so no key material is left behind
+            bad_len = len(master_buffer)
+            for idx in range(bad_len):
+                master_buffer[idx] = 0
+            del master_buffer
+            raise ValueError(f"master_key must be exactly 32 bytes (got {bad_len})")
 
         try:
             # 2. Derive functional subkeys using HKDF-SHA256 with domain separation
@@ -162,12 +181,8 @@ class FloorVault:
                 master_buffer[idx] = 0
             del master_buffer
 
-        # Bounded sliding window for observed nonces
-        self._max_nonces = maximum_tracked_nonces
-        self._nonce_queue: collections.deque[bytes] = collections.deque(
-            maxlen=maximum_tracked_nonces
-        )
-        self._nonce_set: set[bytes] = set()
+        # Bounded sliding window for observed nonces (allocated earlier so that
+        # failure paths and __del__ always find them present).
 
     def _track_nonce(self, nonce: bytes) -> None:
         """Register nonce in sliding window to detect replay."""
@@ -264,7 +279,57 @@ class FloorVault:
 
         try:
             decrypted_bytes = self._aead_siv.decrypt(raw_cipher, [aad, nonce])
+        except InvalidTag as exc:
+            raise DecryptionVerificationError(
+                f"Contextual decryption verification failed for {table}.{column} "
+                f"(record: {record_id}). Data was tampered with, spliced, or corrupted."
+            ) from exc
+        try:
             return decrypted_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise DecryptionVerificationError(
+                "Decrypted payload is not valid UTF-8; use decrypt_bytes() for binary values"
+            ) from exc
+
+    def decrypt_bytes(
+        self,
+        ciphertext: bytes,
+        *,
+        table: str,
+        record_id: str,
+        column: str,
+        schema_id: str = "floor.vault.v1",
+        schema_version: int = 1,
+    ) -> bytes:
+        """Decrypt ciphertext and return raw bytes, without UTF-8 decoding.
+
+        Use for values that were encrypted from bytes rather than str.
+        """
+        if self._closed:
+            raise RuntimeError("FloorVault has been wiped")
+        if not isinstance(ciphertext, (bytes, bytearray)):
+            raise TypeError("Ciphertext must be bytes")
+        if len(ciphertext) < 21:
+            raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
+        if ciphertext[:4] != RECORD_MAGIC:
+            raise DecryptionVerificationError("Invalid ciphertext magic header")
+
+        nonce_len = ciphertext[4]
+        if nonce_len != 16 or len(ciphertext) < 5 + nonce_len:
+            raise DecryptionVerificationError("Invalid nonce length in ciphertext envelope")
+
+        nonce = ciphertext[5 : 5 + nonce_len]
+        raw_cipher = ciphertext[5 + nonce_len :]
+        aad = associated_data(
+            table=table,
+            record_id=record_id,
+            column=column,
+            schema_id=schema_id,
+            schema_version=schema_version,
+            app_instance_id=self.app_instance_id,
+        )
+        try:
+            return self._aead_siv.decrypt(raw_cipher, [aad, nonce])
         except InvalidTag as exc:
             raise DecryptionVerificationError(
                 f"Contextual decryption verification failed for {table}.{column} "
@@ -279,15 +344,18 @@ class FloorVault:
 
     def wipe(self) -> None:
         """Zero all internal functional subkeys and close engine."""
-        if self._closed:
+        if getattr(self, "_closed", True):
             return
-        if hasattr(self, "_siv_key"):
-            self._siv_key.wipe()
-        if hasattr(self, "_index_key"):
-            self._index_key.wipe()
-        self._nonce_set.clear()
-        self._nonce_queue.clear()
         self._closed = True
+        if getattr(self, "_siv_key", None) is not None:
+            self._siv_key.wipe()
+        if getattr(self, "_index_key", None) is not None:
+            self._index_key.wipe()
+        self._aead_siv = None
+        if getattr(self, "_nonce_set", None) is not None:
+            self._nonce_set.clear()
+        if getattr(self, "_nonce_queue", None) is not None:
+            self._nonce_queue.clear()
 
     def __del__(self) -> None:
         self.wipe()

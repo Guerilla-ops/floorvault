@@ -38,3 +38,26 @@ def test_memory_probe_script_execution():
     output = json.loads(proc.stdout)
     assert "memory_locked" in output
     assert "platform" in output
+
+
+def test_memory_probe_reports_observed_dump_fork_state():
+    """The probe must report observed madvise outcomes, not mlock success.
+
+    Regression: dump/fork exclusion was derived from is_locked, so Darwin
+    (which has no MADV_DONTDUMP/MADV_DONTFORK) reported true for both.
+    """
+    script_path = Path(__file__).resolve().parent.parent / "scripts" / "memory_probe.py"
+    proc = subprocess.run(
+        [sys.executable, str(script_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = json.loads(proc.stdout)
+    assert "crash_dump_exclusion_supported" in output
+    assert "fork_exclusion_supported" in output
+    if sys.platform == "darwin":
+        assert output["crash_dump_exclusion_supported"] is False
+        assert output["fork_exclusion_supported"] is False
+        assert output["crash_dump_exclusion"] is False
+        assert output["fork_exclusion"] is False

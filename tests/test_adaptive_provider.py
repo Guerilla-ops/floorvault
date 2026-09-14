@@ -1,5 +1,7 @@
 """Tests for the 3-Tier Adaptive Key Provider."""
 
+import sys
+
 import pytest
 
 from floorvault.providers.adaptive import AdaptiveKeyProvider
@@ -15,6 +17,39 @@ def test_adaptive_provider_env_variable(monkeypatch, tmp_path):
 
     assert key.get_bytes() == bytes.fromhex(hex_key)
     key.wipe()
+
+
+def test_adaptive_provider_rejects_implicit_weak_environment_keys(monkeypatch, tmp_path):
+    monkeypatch.setenv("APPSTATE_KEY", "password")
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
+    with pytest.raises(KeyProviderError, match="64 hexadecimal characters"):
+        provider.resolve_key()
+
+
+def test_adaptive_provider_records_missing_keychain_backend(monkeypatch, tmp_path):
+    """Tier 2 must report why it is unavailable, not fail silently.
+
+    Regression: import Security raised ModuleNotFoundError inside a broad
+    except, so a stock install silently fell through to Tier 3 with no signal.
+    """
+    for name in ("APPSTATE_KEY", "HERMES_VAULT_KEY", "VAULT_MASTER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
+    if sys.platform != "darwin":
+        pytest.skip("macOS Keychain tier is darwin-only")
+    try:
+        import Security  # type: ignore[import-not-found]  # noqa: F401
+
+        pytest.skip("pyobjc-framework-Security installed; unavailable path not reachable")
+    except ImportError:
+        pass
+
+    monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: True)
+    with pytest.raises(KeyProviderError):
+        provider.resolve_key()
+    assert provider.keychain_unavailable_reason is not None
+    assert "floorvault[macos]" in provider.keychain_unavailable_reason
 
 
 def test_adaptive_provider_machine_file_fallback(monkeypatch, tmp_path):

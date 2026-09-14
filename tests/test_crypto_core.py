@@ -103,6 +103,20 @@ def test_bounded_nonce_tracking():
     assert len(crypto._nonce_set) == 20
 
 
+def test_binary_payload_round_trip():
+    """encrypt() accepts bytes; decrypt_bytes() must return them unchanged."""
+    crypto = FloorVault(b"\x08" * 32, memory_mode="disabled")
+    payload = b"\xff\xfe\x00\x01binary\x80"
+    ct = crypto.encrypt(payload, table="t", record_id="r", column="c")
+
+    assert crypto.decrypt_bytes(ct, table="t", record_id="r", column="c") == payload
+
+    # str path still works, and non-UTF-8 through the str API fails cleanly
+    crypto.encrypt("plain text", table="t", record_id="r2", column="c")
+    with pytest.raises(DecryptionVerificationError, match="not valid UTF-8"):
+        crypto.decrypt(ct, table="t", record_id="r", column="c")
+
+
 def test_engine_wipe_lifecycle():
     crypto = FloorVault(b"\x05" * 32, memory_mode="disabled")
     ciphertext = crypto.encrypt("data", table="t", record_id="r", column="c")
@@ -115,3 +129,29 @@ def test_engine_wipe_lifecycle():
 
     with pytest.raises(RuntimeError, match="wiped"):
         crypto.decrypt(ciphertext, table="t", record_id="r", column="c")
+
+
+def test_failed_init_leaves_no_partial_instance():
+    """A failed __init__ must not leave a half-built object whose __del__ raises.
+
+    Regression: core.wipe() cleared _nonce_set before setting _closed, so
+    garbage collecting a FloorVault that failed key validation raised
+    AttributeError from __del__ and left the engine unclosed.
+    """
+    import gc
+
+    for bad in (b"\x00" * 16, b"\x00" * 64, "not-bytes"):
+        with pytest.raises((ValueError, TypeError)):
+            FloorVault(bad, memory_mode="disabled")  # type: ignore[arg-type]
+    gc.collect()
+
+
+def test_maximum_tracked_nonces_must_be_positive():
+    """max_nonces=0 used to raise IndexError on first encrypt (empty deque)."""
+    with pytest.raises(ValueError, match="positive integer"):
+        FloorVault(b"\x06" * 32, maximum_tracked_nonces=0, memory_mode="disabled")
+
+    crypto = FloorVault(b"\x07" * 32, maximum_tracked_nonces=5, memory_mode="disabled")
+    for i in range(20):
+        crypto.encrypt(f"m{i}", table="t", record_id=f"r{i}", column="c")
+    assert len(crypto._nonce_queue) == 5

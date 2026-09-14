@@ -1,15 +1,13 @@
 """3-Tier Adaptive Key Provider.
 
-Seamlessly scales from interactive desktop keyrings to headless cloud/Docker
-environments without hanging, crashing, or requiring manual configuration:
-  Tier 1: OS Keyring (macOS Keychain, Windows DPAPI, Linux Secret Service)
-  Tier 2: Explicit Environment Variable (APPSTATE_KEY, HERMES_VAULT_KEY)
+Scales from interactive desktop storage to headless cloud/Docker environments:
+  Tier 1: Explicit Environment Variable (APPSTATE_KEY, HERMES_VAULT_KEY)
+  Tier 2: macOS Keychain when available
   Tier 3: Explicitly Opt-In Local 0600 File Key (Headless Docker / Remote SSH)
 """
 
 from __future__ import annotations
 
-import hashlib
 import os
 import stat
 import sys
@@ -37,6 +35,7 @@ class AdaptiveKeyProvider(KeyProvider):
         self.fallback_dir = fallback_dir or (Path.home() / ".floorvault")
         self.strict = strict
         self.allow_disk_fallback = allow_disk_fallback and not strict
+        self.keychain_unavailable_reason: Optional[str] = None
 
     def _is_interactive_desktop(self) -> bool:
         """Heuristic detecting whether a GUI keyring environment is present."""
@@ -60,12 +59,14 @@ class AdaptiveKeyProvider(KeyProvider):
             if val:
                 raw_bytes: bytes
                 clean_val = val.strip()
-                if len(clean_val) == 64:
+                if len(clean_val) != 64:
+                    raise KeyProviderError(
+                        "Environment key must be 64 hexadecimal characters (32 bytes hex-encoded)"
+                    )
+                try:
                     raw_bytes = bytes.fromhex(clean_val)
-                else:
-                    raw_bytes = clean_val.encode("utf-8")
-                    if len(raw_bytes) != 32:
-                        raw_bytes = hashlib.sha256(raw_bytes).digest()
+                except ValueError as exc:
+                    raise KeyProviderError("Environment key must be valid hexadecimal") from exc
                 return HardenedMemoryKey(raw_bytes)
 
         # --- Tier 2: System Keyring (Desktop Workstation) ---
@@ -74,10 +75,11 @@ class AdaptiveKeyProvider(KeyProvider):
                 key = self._resolve_from_system_keyring(allow_create=allow_create)
                 if key is not None:
                     return key
+            except KeyProviderError:
+                raise
             except Exception:
                 # If desktop keyring is unavailable, locked, or prompts are denied, fall through
                 pass
-
         # --- Tier 3: Zero-Config Machine-Bound Local File Key (Docker / SSH) ---
         return self._resolve_machine_bound_file_key(allow_create=allow_create)
 
@@ -86,7 +88,15 @@ class AdaptiveKeyProvider(KeyProvider):
         if sys.platform == "darwin":
             try:
                 import Security  # type: ignore[import-not-found]
-
+            except ImportError:
+                # pyobjc-framework-Security not installed: Tier 2 cannot run.
+                # Install the "macos" extra to enable Keychain custody.
+                self.keychain_unavailable_reason = (
+                    "pyobjc-framework-Security is not installed; "
+                    "install floorvault[macos] to enable the macOS Keychain tier"
+                )
+                return None
+            try:
                 query = {
                     Security.kSecClass: Security.kSecClassGenericPassword,
                     Security.kSecAttrService: self.service_name,
@@ -107,8 +117,15 @@ class AdaptiveKeyProvider(KeyProvider):
                         Security.kSecValueData: new_key,
                         Security.kSecAttrAccessible: Security.kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
                     }
-                    Security.SecItemAdd(add_query, None)
-                    return HardenedMemoryKey(new_key)
+                    add_status, _ = Security.SecItemAdd(add_query, None)
+                    if add_status == 0:
+                        return HardenedMemoryKey(new_key)
+                    if add_status != -25299:  # errSecDuplicateItem: resolve the winner
+                        raise KeyProviderError(f"Keychain insert failed with status {add_status}")
+                    status, data = Security.SecItemCopyMatching(query, None)
+                    if status != 0 or not data:
+                        raise KeyProviderError(f"Keychain duplicate could not be read: {status}")
+                    return HardenedMemoryKey(bytes(data))
             except Exception:
                 return None
         return None

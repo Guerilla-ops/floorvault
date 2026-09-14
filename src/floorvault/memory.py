@@ -7,6 +7,7 @@ proactive container capability probing and deterministic zeroization.
 from __future__ import annotations
 
 import ctypes
+import mmap
 import sys
 from typing import Any
 
@@ -15,9 +16,17 @@ try:
 except ImportError:
     resource = None
 
-# POSIX madvise constants for Darwin and Linux
-MADV_DONTDUMP = 16 if sys.platform in ("darwin", "linux") else None
-MADV_DONTFORK = 19 if sys.platform in ("darwin", "linux") else None
+# POSIX madvise constants. Values are from Linux
+# include/uapi/asm-generic/mman-common.h; MADV_KEEPONFORK is 19 and is NOT
+# MADV_DONTFORK. Darwin does not implement either advice, so both stay None
+# there and the capability is reported as unavailable rather than attempted.
+MADV_DONTDUMP = 16 if sys.platform == "linux" else None
+MADV_DONTFORK = 10 if sys.platform == "linux" else None
+
+# Page size used to align the key allocation. Linux madvise(2) requires the
+# address to be page-aligned and returns EINVAL otherwise, so an unaligned
+# buffer can never receive either protection.
+PAGE_SIZE = 4096
 
 
 class SecurityHardeningError(RuntimeError):
@@ -48,6 +57,8 @@ class HardenedMemoryKey:
     ) -> None:
         self._closed = True
         self._locked = False
+        self._dump_excluded = False
+        self._fork_excluded = False
         self._buffer: Any = None
         self._size = 0
         self._mode = mode
@@ -60,8 +71,25 @@ class HardenedMemoryKey:
         disable_core_dumps()
 
         self._size = len(key_bytes)
-        # Allocate unmanaged ctypes buffer outside Python's string-interning allocator
-        self._buffer = ctypes.create_string_buffer(bytes(key_bytes), self._size)
+        # Allocate a page-aligned unmanaged buffer outside Python's interning
+        # allocator. Linux madvise(2) requires a page-aligned address and fails
+        # with EINVAL otherwise, so a malloc-aligned buffer (ctypes default,
+        # 16-byte alignment) can never receive dump/fork protection.
+        # mmap.mmap gives a page-aligned region, so mlock/madvise act on it.
+        self._alloc_size = PAGE_SIZE
+        self._mmap_base: Any = None
+        self._mapping: Any = None
+        try:
+            self._mapping = mmap.mmap(-1, self._alloc_size)
+            self._mmap_base = ctypes.addressof(ctypes.c_char.from_buffer(self._mapping))
+            self._buffer = (ctypes.c_char * self._alloc_size).from_address(self._mmap_base)
+            ctypes.memmove(self._buffer, bytes(key_bytes), self._size)
+        except Exception:
+            self._mmap_base = None
+            self._mapping = None
+            self._buffer = ctypes.create_string_buffer(bytes(key_bytes), self._size)
+        self._alloc_size = self._size if self._mmap_base is None else PAGE_SIZE
+        self._locked_size = self._size if self._mmap_base is None else PAGE_SIZE
         self._closed = False
 
         if mode != "disabled":
@@ -73,19 +101,35 @@ class HardenedMemoryKey:
             try:
                 libc = ctypes.CDLL(None)
                 # int mlock(const void *addr, size_t len);
-                res = libc.mlock(self._buffer, ctypes.c_size_t(self._size))
+                # Lock the whole page-aligned region; mlock rounds addr down,
+                # and locking only the mapped page keeps the range consistent.
+                res = libc.mlock(self._buffer, ctypes.c_size_t(self._locked_size))
                 if res == 0:
                     self._locked = True
-                    # Shield from core dumps
+                    # Shield from core dumps (Linux only; EINVAL on Darwin)
                     if MADV_DONTDUMP is not None:
                         try:
-                            libc.madvise(self._buffer, ctypes.c_size_t(self._size), MADV_DONTDUMP)
+                            self._dump_excluded = (
+                                libc.madvise(
+                                    self._buffer,
+                                    ctypes.c_size_t(self._locked_size),
+                                    MADV_DONTDUMP,
+                                )
+                                == 0
+                            )
                         except Exception:
                             pass
                     # Shield from child process fork copies
                     if MADV_DONTFORK is not None:
                         try:
-                            libc.madvise(self._buffer, ctypes.c_size_t(self._size), MADV_DONTFORK)
+                            self._fork_excluded = (
+                                libc.madvise(
+                                    self._buffer,
+                                    ctypes.c_size_t(self._locked_size),
+                                    MADV_DONTFORK,
+                                )
+                                == 0
+                            )
                         except Exception:
                             pass
                 elif self._mode == "required":
@@ -93,6 +137,16 @@ class HardenedMemoryKey:
                         "mlock() failed: insufficient privileges or RLIMIT_MEMLOCK exceeded. "
                         "Refusing to operate with unpinned master key in production."
                     )
+                # Required mode only demands advice the platform actually
+                # implements. Darwin has neither MADV_DONTDUMP nor MADV_DONTFORK
+                # (src/floorvault/memory.py:19-20), so requiring them there
+                # could never succeed; page locking plus RLIMIT_CORE=0 is the
+                # real Darwin guarantee.
+                if self._mode == "required" and sys.platform == "linux":
+                    if not (self._dump_excluded and self._fork_excluded):
+                        raise SecurityHardeningError(
+                            "Required Linux dump/fork memory protections are unavailable"
+                        )
             except SecurityHardeningError:
                 raise
             except Exception as exc:
@@ -104,7 +158,7 @@ class HardenedMemoryKey:
             try:
                 kernel32 = ctypes.windll.kernel32
                 # BOOL VirtualLock(LPVOID lpAddress, SIZE_T dwSize);
-                res = kernel32.VirtualLock(self._buffer, ctypes.c_size_t(self._size))
+                res = kernel32.VirtualLock(self._buffer, ctypes.c_size_t(self._locked_size))
                 if res != 0:
                     self._locked = True
                 elif self._mode == "required":
@@ -138,33 +192,44 @@ class HardenedMemoryKey:
         """Return raw bytes view. Use sparingly to avoid heap ghost copies."""
         if self._closed:
             raise RuntimeError("Attempted to access wiped HardenedMemoryKey")
-        return bytes(self._buffer.raw)
+        return bytes(memoryview(self._buffer)[: self._size])
 
     def wipe(self) -> None:
-        """Securely zero memory buffer and unlock physical RAM pages."""
+        """Securely zero memory buffer, unlock physical RAM pages, release mapping."""
         if self._closed:
             return
 
-        # 1. Overwrite physical buffer with zeroes
-        ctypes.memset(self._buffer, 0, self._size)
+        # Mark closed first so a partial failure cannot leave the key readable.
+        self._closed = True
+
+        # 1. Overwrite the whole mapped region with zeroes
+        ctypes.memset(self._buffer, 0, self._alloc_size)
 
         # 2. Unlock memory pages
         if self._locked:
             if sys.platform in ("darwin", "linux"):
                 try:
                     libc = ctypes.CDLL(None)
-                    libc.munlock(self._buffer, ctypes.c_size_t(self._size))
+                    libc.munlock(self._buffer, ctypes.c_size_t(self._locked_size))
                 except Exception:
                     pass
             elif sys.platform == "win32":
                 try:
                     kernel32 = ctypes.windll.kernel32
-                    kernel32.VirtualUnlock(self._buffer, ctypes.c_size_t(self._size))
+                    kernel32.VirtualUnlock(self._buffer, ctypes.c_size_t(self._locked_size))
                 except Exception:
                     pass
             self._locked = False
 
-        self._closed = True
+        # 3. Release the page-aligned mapping (no key material remains in it)
+        self._buffer = None
+        if self._mapping is not None:
+            try:
+                self._mapping.close()
+            except Exception:
+                pass
+            self._mapping = None
+        self._mmap_base = None
 
     def __del__(self) -> None:
         self.wipe()
@@ -177,6 +242,10 @@ class HardenedMemoryKey:
 
     @classmethod
     def from_hex(cls, hex_str: str, *, mode: str = "opportunistic") -> HardenedMemoryKey:
-        """Construct from hexadecimal string and wipe the string reference."""
+        """Construct from hexadecimal string.
+
+        Note: the caller's string object cannot be zeroed from here; drop the
+        reference in the calling scope if the hex form is sensitive.
+        """
         key_bytes = bytes.fromhex(hex_str.strip())
         return cls(key_bytes, mode=mode)
