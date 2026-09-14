@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from .blind_index import BlindIndexer, compute_blind_index
+from .blind_index import (
+    BlindIndexer,
+    beacon_bucket_bytes,
+    beacon_matches,
+    compute_beacon,
+    compute_blind_index,
+)
 from .core import (
     AppStateCrypto,
     AppStateCryptoError,
@@ -38,6 +44,9 @@ __all__ = [
     "disable_core_dumps",
     # Blind Indexing
     "BlindIndexer",
+    "beacon_bucket_bytes",
+    "beacon_matches",
+    "compute_beacon",
     "compute_blind_index",
     # SQLite Helpers
     "ContextualSQLite",

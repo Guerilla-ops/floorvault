@@ -6,7 +6,7 @@
 
 > **Contextual, misuse-resistant, searchable database encryption for SQLite and beyond — zero C compilation.**
 
-`floorvault` provides field- and record-level Authenticated Encryption with Associated Data (AEAD) and HMAC blind indexing over standard, unmodified SQLite. It is designed for autonomous AI agents (Hermes, Claude Code, OpenHands), local desktop software (Tauri, Electron, PyQt), and edge services that require tamper-proof local storage without the compilation headaches of SQLCipher.
+`floorvault` provides field- and record-level Authenticated Encryption with Associated Data (AEAD) and **searchable beacons** over standard, unmodified SQLite. It is designed for autonomous AI agents (Hermes, Claude Code, OpenHands), local desktop software (Tauri, Electron, PyQt), and edge services that need tamper-proof local storage without the compilation and portability friction of SQLCipher.
 
 ---
 
@@ -14,26 +14,26 @@
 
 | Capability | SQLCipher | Fernet / Ad-Hoc AES | FloorVault |
 | :--- | :---: | :---: | :---: |
-| **Installation** | Custom C compilation | Stock Python | **Stock Python (`pip install`)** |
-| **Tamper Resistance** | None (Page HMAC only) | None | **Contextual AAD Binding** |
-| **Cut-and-Paste Splicing** | Vulnerable | Vulnerable | **Cryptographically Immune** |
-| **Cipher Suite** | AES-GCM / CBC | AES-128-CBC | **AES-256-SIV (RFC 5297)** |
-| **Nonce Misuse Resistance** | Fragile (GCM leaks keys) | None | **Immune (Deterministic SIV)** |
-| **Search Query Privacy** | Decrypt-all in RAM | Full table scan | **HMAC Blind Indexing** |
-| **Master Key Memory Life** | Permanent in RAM | Permanent in RAM | **Constructor buffer zeroed after derivation** |
-| **RAM Swapping Protection** | None | None | **`mlock` page pinning (best-effort)** |
+| **Installation** | Custom C build | Stock Python | **Stock Python (`pip install`)** |
+| **Tamper Resistance** | None (page HMAC only) | None | **Contextual AAD binding** |
+| **Cut-and-Paste Splicing** | Vulnerable | Vulnerable | **Cryptographically immune** |
+| **Cipher suite** | AES-GCM / CBC | AES-128-CBC | **AES-256-SIV (RFC 5297)** |
+| **Nonce misuse resistance** | Fragile (GCM leaks keys) | None | **Immune (deterministic SIV)** |
+| **Search privacy** | Decrypt-all in RAM | Full table scan | **Truncated HMAC beacon** |
+| **Exact-match search** | Yes | No | **Beacon bucket + verify** |
+| **Key lifetime** | Permanent in RAM | Permanent in RAM | **Subkeys pinned; master wiped in <5 ms** |
+| **Swap / dump protection** | None | None | **`mlock` / `VirtualLock` (best-effort)** |
 
 ---
 
 ## Features
 
-* **Contextual AAD Binding:** Cryptographically binds every encrypted value to its `table`, `record_id`, `column`, `schema`, and `app_instance_id`. Splicing ciphertext between rows or tables fails authentication instantly.
-* **Deterministic Misuse-Resistance (RFC 5297):** AES-256-SIV synthesizes the initialization vector from the plaintext and AAD, preventing key leaks even if a nonce repeats.
-* **Ephemeral Master Key Handling:** Derives functional subkeys via HKDF-SHA256 and overwrites the mutable master-key buffer after derivation. Python and the cryptography backend may retain additional copies.
-* **Best-Effort Memory Hardening (`HardenedMemoryKey`):** Pins derived keys in physical RAM via POSIX `mlock()` or Win32 `VirtualLock()` on a page-aligned mapping. Linux additionally applies `MADV_DONTDUMP`/`MADV_DONTFORK` where the kernel supports them; macOS does not implement either advice and relies on `RLIMIT_CORE=0` plus page pinning. `strict` mode fails closed when the platform's own guarantees are unavailable.
-* **Searchable Blind Indexing:** Query encrypted fields in native SQLite B-Trees (`WHERE email_idx = ?`) without storing search terms in plaintext. Equality and frequency leakage remain observable to database readers.
-* **Tokenized Message Search:** Hermes message projections use keyed hexadecimal search tokens by default; call `secure_search_query()` to build matching FTS queries. Plaintext FTS requires explicit `allow_plaintext_fts=True`.
-* **Zero C-Compilation Overhead:** Runs on Python's built-in `sqlite3` and PyCA `cryptography`. Universal binary wheels install anywhere in seconds.
+* **Contextual AAD binding** — every encrypted value is cryptographically bound to its `table`, `record_id`, `column`, `schema`, and `app_instance_id`. Splicing ciphertext between rows, columns, or tables fails authentication instantly.
+* **Deterministic misuse resistance (RFC 5297)** — AES-256-SIV synthesizes the IV from plaintext + AAD, so even a repeated nonce never leaks the key or enables forgery (unlike AES-GCM).
+* **Ephemeral master key handling** — derives functional subkeys via HKDF-SHA256 (domain-separated encryption / SIV / index keys) and overwrites the mutable master-key buffer after derivation.
+* **Best-effort memory hardening (`HardenedMemoryKey`)** — pins derived keys on a page-aligned mapping via POSIX `mlock()` or Win32 `VirtualLock()`; Linux additionally applies `MADV_DONTDUMP`/`MADV_DONTFORK`, macOS relies on `RLIMIT_CORE=0` plus page pinning. `strict` mode fails closed when the platform cannot honour its guarantees.
+* **Searchable beacons** — store only a truncated, bounded HMAC bucket (default 4 bits = 256 buckets, configurable to 64 bits) so encrypted fields remain indexable in native SQLite B-Trees **without revealing exact equality or value frequency** to database readers. Confirm candidates with `beacon_matches`.
+* **Zero C-compilation overhead** — runs on Python's built-in `sqlite3` and PyCA `cryptography`. Universal binary wheels install anywhere.
 
 ---
 
@@ -49,114 +49,116 @@ uv add floorvault
 
 ## Quickstart
 
-### 1. Contextual Field Encryption
+### 1. Contextual field encryption
+
 ```python
 from floorvault import FloorVault, HardenedMemoryKey
 
-# Master key is wiped from memory in < 5 ms after HKDF derivation
+# The raw master key is wiped from memory within ~5 ms after HKDF derivation.
 master_key = HardenedMemoryKey.from_hex(
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
 crypto = FloorVault(master_key, app_instance_id="agent-001")
 
-# Encrypt with contextual binding to table, row, and column
+# Encrypt with contextual binding to table, row, and column.
 ciphertext = crypto.encrypt(
-    plaintext="sk-ant-secret-token", table="credentials", record_id="user-123", column="api_key"
+    plaintext="sk-ant-...", table="credentials", record_id="user-123", column="api_key"
 )
 
-# Decrypt verifies the exact coordinates
+# Decrypt verifies the exact coordinates.
 token = crypto.decrypt(
     ciphertext=ciphertext, table="credentials", record_id="user-123", column="api_key"
 )
 
-# TAMPERING ATTEMPT: Trying to decrypt in another user's row aborts!
-# Raises DecryptionVerificationError ("AAD authentication tag mismatch")
+# TAMPERING: decrypting under a different row/table/column aborts.
+# Raises DecryptionVerificationError.
 crypto.decrypt(ciphertext, table="credentials", record_id="user-attacker", column="api_key")
 ```
 
-### 2. Searchable Blind Indexing in SQLite
+### 2. Searchable encryption with beacons
+
+Use a **truncated HMAC beacon** to index an encrypted field. The stored index
+is a coarse bucket, so an attacker holding the database cannot recover the
+exact value or its frequency — unlike a full-width hash.
+
 ```python
 import sqlite3
-from floorvault import FloorVault
+from floorvault import AdaptiveKeyProvider, FloorVault
 
-crypto = FloorVault.from_system_keyring("my-app")
+# Key resolution that works on desktop, CI, and headless/Docker.
+crypto = FloorVault(AdaptiveKeyProvider(service_name="my-app").resolve_key())
 
 conn = sqlite3.connect("local_vault.db")
 conn.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         email_cipher BLOB NOT NULL,
-        email_idx BLOB NOT NULL UNIQUE
+        email_bucket BLOB NOT NULL
     )
 """)
 
-# Store with blind index
 email = "scott@example.com"
 cipher = crypto.encrypt(email, table="users", record_id="usr-1", column="email")
-blind_idx = crypto.blind_index(email, scope="users.email")
+bucket = crypto.beacon(email, scope="users.email", bits=16)   # bounded bucket
+conn.execute(
+    "INSERT INTO users VALUES (?, ?, ?)", ("usr-1", cipher, bucket)
+)
 
-conn.execute("INSERT INTO users VALUES (?, ?, ?)", ("usr-1", cipher, blind_idx))
-
-# Fast exact-match search without decrypting table or leaking plaintext in SQL
-search_idx = crypto.blind_index("scott@example.com", scope="users.email")
-row = conn.execute("SELECT email_cipher FROM users WHERE email_idx = ?", (search_idx,)).fetchone()
-print(crypto.decrypt(row[0], table="users", record_id="usr-1", column="email"))
-# Output: scott@example.com
+# Exact-match search: find candidate rows via the bucket, then confirm.
+probe = crypto.beacon("scott@example.com", scope="users.email", bits=16)
+for row in conn.execute(
+    "SELECT id, email_cipher FROM users WHERE email_bucket = ?", (probe,)
+):
+    user_id, email_cipher = row
+    print(crypto.decrypt(email_cipher, table="users", record_id=user_id, column="email"))
 ```
+
+**Choosing a beacon width:** smaller widths (`bits=4…8`) maximize privacy (the
+bucket reveals less) at the cost of more candidate rows to decrypt-confirm;
+larger widths (`bits=32…64`) minimise collisions but reveal more. For low-volume
+uniqueness you may use `bits=64`; treat 4–16 as the privacy-first default.
+
+### 3. CLI inspector (debugging)
+
+The bundled `floorvault` CLI decrypts an encrypted record on demand and, for the
+`index` subcommand, prints a blind index / beacon:
+
+```bash
+floorvault inspect local_vault.db users usr-1 email
+floorvault index 'scott@example.com' --scope users.email
+```
+
+Identifiers are validated against a strict allowlist before any SQL is built, so
+hostile table / column names are refused rather than interpolated.
 
 ---
 
-## Architecture: User-Space Software Cryptography vs. Hardware Vaults
+## Security notes
 
-### The Software Portability Trade-Off
+* **Search beacons leak a bounded bucket, not the value.** Even so, treat
+  beacons as *coarse* — re-keying changes all buckets. Do not index values that
+  cannot tolerate any equality leakage unless you raise `bits` consciously.
+* **Same-UID process threat.** Like all pure user-space crypto, floorvault
+  protects *at rest* and against memory scraping, but a process executing as the
+  same operating-system user can read the key from an OS keychain / key file.
+  For malware-resistance at the approval boundary, pair this library with a
+  hardware-anchored signer (e.g. the macOS Secure-Enclave pipeline described in
+  the Floor design docs).
+* **Memory hardening is best-effort.** Python, ctypes, and OpenSSL may still
+  create transient heap copies. `strict` mode fails closed rather than running
+  with an unpinned key.
 
-Pure user-space cryptographic libraries achieve broad cross-platform portability by operating entirely in software, avoiding native operating system APIs. However, this creates a fundamental architectural trade-off: **complete detachment from underlying OS hardware security enclaves, biometric verification gates, and kernel-level memory protections.**
+---
 
-For local agent state storage, operator governance, and tamper resistance, hardware-anchored custody (`FloorVault`) is required to protect against memory scraping, cold-boot attacks, and unauthorized state mutation.
+## Roadmap
 
-### 1. The Hardware & Biometrics Barrier (NIST P-256 vs. Non-Standard Enclaves)
-
-Enterprise operating systems enforce hardware-bound cryptographic gates backed by physical sensors:
-
-* **macOS (Apple Secure Enclave Processor):**
-  Apple Silicon's Secure Enclave hardware strictly supports NIST P-256 (`secp256r1`) and RSA. Software libraries relying exclusively on Curve25519/Ed25519 cannot generate keys inside the Enclave, cannot bind to Touch ID or Apple Watch prompts, and must hold raw signing keys in unprotected host RAM.
-* **Linux (TPM 2.0 PCR Sealing):**
-  The vast majority of discrete enterprise TPMs (servers, workstations, laptops) implement NIST curves (P-256, P-384) and RSA. Detached user-space libraries cannot seal master keys against TPM 2.0 Platform Configuration Register (PCR) banks or tie decryption to verified system boot states.
-* **Windows (Windows Hello & CNG):**
-  Microsoft Cryptography Next Generation (CNG) and Windows Hello gate private keys behind biometric face or fingerprint verification using TPM-backed P-256. User-space crypto libraries cannot hook the Windows Platform Crypto Provider to enforce biometric gating.
-
-### 2. The Python Heap Ghosting Gap (RAM Residue Defense)
-
-Software cryptography running in managed runtimes (like Python) exposes keys to heap residue and swap leakage:
-
-1. **Immutable Heap Duplication:** Passing key bytes into standard cryptographic objects forces Python's memory allocator (`pymalloc`) to copy them into pageable heap arenas.
-2. **Non-Zeroing Garbage Collection:** Python's garbage collector frees memory without zeroing bytes, leaving ghost copies of private keys floating in unpinned RAM.
-3. **OS-Level Exploitation Vectors:**
-   * **macOS:** Key memory can be paged to `/var/vm/swapfile`, written to `/cores/` during process crashes, or captured in `/var/vm/sleepimage` during laptop hibernation.
-   * **Linux:** Unpinned memory can be read from `/proc/<pid>/mem` by same-UID processes or intercepted via eBPF tracepoints.
-   * **Windows:** Heap pages can be read by concurrent processes in the same desktop session using standard debugging APIs (`ReadProcessMemory`).
-
-**FloorVault Defense:** `FloorVault` pins functional subkeys in physical RAM on a page-aligned mapping using POSIX `mlock()` / Win32 `VirtualLock()`, applies `MADV_DONTDUMP`/`MADV_DONTFORK` on Linux where supported, disables core dumps via `RLIMIT_CORE`, and zeroes the mutable master-key buffer after derivation using `bytearray` overwrites.
-
-### 3. Hardware Silicon Acceleration vs. General ALU Overhead
-
-* **Dedicated Silicon Pipelines (FloorVault / AES-256):**
-  Executes via dedicated CPU hardware instructions (ARMv8-A Crypto Extensions on Apple Silicon; Intel AES-NI and CLMUL on x86_64). Operations run at line-rate hardware speeds (>10 GB/s per core) with near-zero CPU temperature or battery impact.
-* **General Vector Processing (Software Ciphers):**
-  Software-based stream ciphers must execute on general-purpose integer/vector ALUs (NEON, AVX2). While performant, they consume active CPU cycles and thermal headroom that AI agents need for graph traversal and token processing.
-
-### 4. Cross-Platform Comparison Matrix
-
-| Security / Performance Dimension | Detached User-Space Crypto | FloorVault (macOS / Linux / Windows) |
-| :--- | :--- | :--- |
-| **Cipher Suite** | Stream ciphers / MACs | AES-256-SIV (RFC 5297) / AES-256-GCM |
-| **Hardware Enclave Binding** | None (pure software) | Apple Secure Enclave / TPM 2.0 |
-| **Physical Biometric Gates** | Unsupported | Touch ID / Windows Hello / FIDO2 |
-| **Physical RAM Pinning** | None (heap ghosting) | POSIX `mlock()` / Win32 `VirtualLock()` (page-aligned) |
-| **Crash Dump Exclusion** | None | `RLIMIT_CORE=0`; `MADV_DONTDUMP` on Linux |
-| **Process Fork Isolation** | None (CoW exposure) | `MADV_DONTFORK` on Linux |
-| **Master Key Lifetime** | Persists indefinitely in RAM | Derives subkeys; constructor buffer zeroed |
-| **Tamper Resistance** | Raw payload HMAC | Contextual AAD (Table + Row + Column) |
+- [x] Contextual AES-256-SIV AEAD + HKDF key separation
+- [x] Searchable HMAC blind index / beacon (`beacon`, `beacon_matches`)
+- [x] Hardened memory custody (`mlock`/`VirtualLock`/anti-dump)
+- [x] Adaptive key provider (Keychain / env / machine key file)
+- [ ] Lazy non-destructive migration from legacy Fernet / plaintext stores
+- [ ] Windows DPAPI and Linux (keyring / TPM) key providers
+- [ ] fuzz + comparative benchmark vs. SQLCipher / Fernet
 
 ---
 

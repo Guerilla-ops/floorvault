@@ -17,7 +17,11 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from .blind_index import compute_blind_index
+from .blind_index import (
+    beacon_matches,
+    compute_beacon,
+    compute_blind_index,
+)
 from .memory import HardenedMemoryKey
 
 
@@ -341,6 +345,22 @@ class FloorVault:
         if self._closed:
             raise RuntimeError("FloorVault has been wiped")
         return compute_blind_index(value, scope=scope, key=self._index_key)
+
+    def beacon(self, value: str, *, scope: str, bits: int = 4) -> bytes:
+        """Compute a truncated search beacon (bounded bucket assignment).
+
+        Unlike ``blind_index`` (full-width, leaks equality/frequency), the
+        beacon keeps only ``bits`` of HMAC entropy so the stored index reveals
+        a coarse bucket — not the exact value or its frequency. Look up the
+        bucket, then confirm with ``beacon_matches`` or by decrypting.
+        """
+        if self._closed:
+            raise RuntimeError("FloorVault has been wiped")
+        return compute_beacon(value, scope=scope, key=self._index_key, bits=bits)
+
+    def beacon_matches(self, value: str, *, scope: str, beacon: bytes, bits: int = 4) -> bool:
+        """True iff ``value``'s beacon equals the stored ``beacon``."""
+        return beacon_matches(value, scope=scope, key=self._index_key, beacon=beacon, bits=bits)
 
     def wipe(self) -> None:
         """Zero all internal functional subkeys and close engine."""
