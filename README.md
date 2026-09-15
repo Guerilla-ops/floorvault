@@ -882,6 +882,7 @@ without replacing SQLite itself.
 - [x] Authenticated retirement of migrated legacy ids (a migrated id can never be served from the pre-migration source again)
 - [x] Schema-free `generic` migration records
 - [x] Versioned record envelope with an authenticated header (`crypto_version`, `key_id`)
+- [x] CI publishes the built wheel and sdist, with SHA-256 digests printed by the gate on every runner
 - [x] Comparative benchmark harness
 - [x] Deterministic fuzz harness
 - [x] Linux, macOS, and Windows CI coverage

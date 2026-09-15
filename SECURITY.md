@@ -390,6 +390,13 @@ We prefer measured claims over marketing claims. Currently in place:
   cannot fail.
 - A **universal wheel** build verified on every push, so the published artifact
   matches the audited source and carries no unexpected native code.
+- **Artifact identity**: the gate prints the SHA-256 of the wheel and sdist it
+  built on every runner, and CI publishes the artifacts from one leg, so a
+  download can be checked against a build from source. The wheel is currently
+  bit-identical across repeated builds, a clean checkout, and the gate's own
+  build on the maintainer's host; **cross-platform byte-identity is measured from
+  the per-runner digests, not assumed** — compare the three operating systems'
+  logs before claiming it.
 
 **Not** (yet) in place, and not claimed:
 

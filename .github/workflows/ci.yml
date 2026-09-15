@@ -81,6 +81,24 @@ jobs:
           FLOORVAULT_SKIP_SECRET_SCAN: "1"
         run: bash scripts/security-check.sh
 
+      # Publish one leg's artifacts as the release identity. The gate prints the
+      # digests of what it built on EVERY leg (step 10), so the other platforms
+      # stay comparable from the logs; this step exists so that a released wheel
+      # can be checked against a CI-built artifact rather than only against a
+      # maintainer's machine. One leg only: ten legs publishing the same name
+      # would collide, and upload-artifact cannot merge them meaningfully.
+      - name: Publish the built artifacts
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
+        uses: actions/upload-artifact@v4
+        with:
+          name: floorvault-dist
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          # Fail closed: an upload step that silently publishes nothing is worse
+          # than no step at all, because it looks like the artifact was captured.
+          if-no-files-found: error
+
   # Secret scanning runs once. gitleaks-action needs no license here: the
   # Gitleaks license requirement applies to organization-owned repositories,
   # and this repository is owned by a user account.

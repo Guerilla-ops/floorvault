@@ -51,3 +51,20 @@ def test_gate_runs_the_entire_test_suite():
     gate while the suite failed locally.
     """
     assert "pytest -q tests/" in TEXT, "gate does not run the whole tests/ directory"
+
+
+def test_gate_prints_the_artifact_digests():
+    """The built wheel and sdist must be reported by digest.
+
+    The gate builds the artifacts and verifies their *shape*, then discards them.
+    Without a digest in the output there is no record of the artifact any given
+    run produced - so a build from source cannot be compared against another
+    runner's, nor against a published download. The digests are printed on every
+    leg (including the three operating systems), which is what makes
+    cross-platform reproducibility checkable from the logs.
+    """
+    assert "sha256" in TEXT.lower(), "gate does not report SHA-256 digests"
+    assert "dist/*.whl" in TEXT or "dist/floorvault" in TEXT or "DIGEST" in TEXT, (
+        "gate reports no digest for the built artifacts"
+    )
+    assert "digest" in TEXT.lower(), "digest output is not labelled"

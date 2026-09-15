@@ -108,6 +108,28 @@ uv build
 python scripts/verify_wheel.py dist
 echo "[PASS] Wheel Build: Successfully packaged a universal (py3-none-any) wheel."
 
+# Report the artifact digests. The gate builds the wheel and sdist, verifies
+# their shape, and would otherwise discard them leaving no record of which
+# bytes this run produced - which makes reproducibility unprovable rather than
+# merely unproven. Every leg prints these, so the logs from all three operating
+# systems can be compared against each other, and a release note can carry the
+# digests for anyone checking a download against a build from source.
+# Computed in Python rather than with sha256sum/shasum: the gate runs under bash
+# on Windows too, where neither tool is guaranteed to exist.
+python - <<'DIGESTS'
+import hashlib
+import pathlib
+
+artifacts = sorted(pathlib.Path("dist").glob("*.whl")) + sorted(
+    pathlib.Path("dist").glob("*.tar.gz")
+)
+if not artifacts:
+    raise SystemExit("[FAIL] no built artifact to digest")
+for artifact in artifacts:
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    print(f"[DIGEST] sha256 {digest} {artifact.name}")
+DIGESTS
+
 echo ""
 echo "=== 11. Verifying the Security Tests Actually Detect Regressions (Mutation) ==="
 # The suite passing proves nothing if the tests cannot fail. This runs curated

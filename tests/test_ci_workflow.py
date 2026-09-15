@@ -73,3 +73,61 @@ def test_every_operating_system_tests_the_declared_python_floor():
         assert floor in versions, (
             f"{os_name} does not test the declared floor {floor}: it tests {sorted(versions)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Release artifacts
+#
+# The gate builds a wheel and sdist and verifies their shape, then discards
+# them. Nothing recorded which artifact a given run produced, so a build from
+# source could not be compared against another runner's or against a published
+# download - reproducibility was unprovable rather than merely unproven.
+# ---------------------------------------------------------------------------
+
+
+def _upload_step() -> str:
+    """The whole upload-artifact step, including its condition and inputs.
+
+    Walks out to the YAML list-item boundaries rather than slicing from the
+    ``uses:`` line, so the step's ``if:`` and ``with:`` are included regardless
+    of the order the keys are written in.
+    """
+    lines = TEXT.splitlines()
+    marker = next((i for i, text in enumerate(lines) if "actions/upload-artifact@" in text), None)
+    assert marker is not None, "the workflow does not upload the built artifacts"
+    start = marker
+    while start > 0 and not re.match(r"\s*- ", lines[start]):
+        start -= 1
+    end = marker + 1
+    while end < len(lines) and not re.match(r"\s*- ", lines[end]):
+        end += 1
+    return "\n".join(lines[start:end])
+
+
+def test_the_built_artifacts_are_published_by_ci():
+    step = _upload_step()
+    assert ".whl" in step, "the wheel is not among the published artifacts"
+    assert ".tar.gz" in step, "the sdist is not among the published artifacts"
+
+
+def test_publishing_is_fail_closed_when_no_artifact_was_built():
+    """An upload step that silently publishes nothing is worse than none."""
+    assert "if-no-files-found" in _upload_step(), (
+        "upload-artifact defaults to warning when its path matches nothing"
+    )
+    assert re.search(r"if-no-files-found:\s*error", _upload_step()), (
+        "a missing artifact must fail the job, not warn"
+    )
+
+
+def test_only_one_matrix_leg_publishes_the_artifacts():
+    """Ten legs publishing the same name would collide or overwrite silently.
+
+    One leg is the release identity; the digests printed by the gate on every
+    leg (see test_gate_script.py) are what make the other platforms comparable.
+    """
+    step = _upload_step()
+    assert re.search(r"if:\s*\S", step), (
+        "the upload step has no condition, so every matrix leg would publish"
+    )
+    assert "matrix." in step, "the upload condition does not reference the matrix"
