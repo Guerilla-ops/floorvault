@@ -233,6 +233,32 @@ For a full description see the README and the design notes in `docs/`.
 - Dependency versions are pinned in `uv.lock`, and the pre-push checks audit
   dependencies with `pip-audit` on every run.
 
+### Where a dependency alert comes from, and which source we trust
+
+`pip-audit` over the locked environment in `scripts/security-check.sh` (gate
+step 2, fatal on a finding by default) is the authoritative dependency check: it
+resolves exactly the versions this project ships.
+
+GitHub's dependency graph and its Dependabot alerts are advisory, and for
+`uv.lock` they can be **stale**. As of 2026-09-15 the graph for this repository
+simultaneously listed two versions of most packages — `cryptography` 47.0.0 *and*
+50.0.1, `pytest` 8.4.2 *and* 9.1.1, `cffi` 2.0.0 *and* 2.1.1 — omitted `pip-audit`
+entirely despite it being in `uv.lock`, and raised five alerts against versions
+that appear in no manifest in this repository. There is no supported way to force
+a rescan of the graph (see [dependabot-core#15010](https://github.com/dependabot/dependabot-core/issues/15010)).
+
+How we handle that:
+
+- A dependency alert is verified against `uv.lock` and `pip-audit` before it is
+  acted on. If the flagged version is not in the tree, the alert is **dismissed
+  as `inaccurate`** with the evidence in the dismissal comment — never as
+  "tolerable risk" or "not used", which would imply we had accepted something.
+- Dismissal is not a substitute for a fix: if `pip-audit` reports a real
+  vulnerability, it fails the gate and the fix is a normal dependency update.
+- **Residual risk:** while the graph is stale, a *genuine* alert could be
+  missed. That is precisely why the gate runs its own SCA rather than relying on
+  the platform, and why the gate fails closed when `pip-audit` is missing.
+
 ---
 
 ## 8. Assurance practices — what we do today, and what we do not
