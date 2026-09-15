@@ -390,13 +390,26 @@ We prefer measured claims over marketing claims. Currently in place:
   cannot fail.
 - A **universal wheel** build verified on every push, so the published artifact
   matches the audited source and carries no unexpected native code.
-- **Artifact identity**: the gate prints the SHA-256 of the wheel and sdist it
-  built on every runner, and CI publishes the artifacts from one leg, so a
-  download can be checked against a build from source. The wheel is currently
-  bit-identical across repeated builds, a clean checkout, and the gate's own
-  build on the maintainer's host; **cross-platform byte-identity is measured from
-  the per-runner digests, not assumed** — compare the three operating systems'
-  logs before claiming it.
+- **Artifact identity — and what is explicitly NOT claimed.** The gate prints the
+  SHA-256 of the wheel and sdist it built on every runner, and CI publishes the
+  artifacts from one leg, so a download can be identified against a build from
+  source. **Reproducibility is per platform, not across platforms.** Measured for
+  one commit while line endings were still unpinned: `0c0e2ae7…` from the ubuntu
+  runners (py3.10, py3.13), the macOS runner and the maintainer's host;
+  `d17b4902…` from both Windows runners. Two causes were isolated by measurement,
+  not assumed:
+  - *Line endings.* No `.gitattributes` existed, so git's Windows default
+    (`core.autocrlf=true`) rewrote every text file to CRLF and the build packed
+    those bytes. Now pinned with `* text=auto eol=lf`, which removes this cause; a
+    CRLF-forced checkout of the pinned tree now yields the POSIX digest.
+  - *The executable bit.* The archive records whether a source file is executable
+    (non-executable modes are normalised, so `0666` and `0644` build identically),
+    and Windows cannot represent that bit. This affects only the **sdist**, which
+    contains `scripts/security-check.sh` (tracked `100755`): the same tree gave
+    `ad5d6de4…` at `0755` and `564ed501…` at `0644`.
+  Byte-identity across operating systems is therefore **not** claimed for the
+  sdist; a digest identifies the artifact for its platform, and the ubuntu-built
+  artifact is the release identity.
 
 **Not** (yet) in place, and not claimed:
 

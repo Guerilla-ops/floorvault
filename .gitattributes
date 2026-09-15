@@ -1,0 +1,18 @@
+# Normalise line endings for every text file in the repository.
+#
+# Without this the checked-out bytes depend on the platform: git's Windows
+# default (core.autocrlf=true, which is also what the GitHub Windows runners use)
+# rewrites text files to CRLF. The build then packs those CRLF bytes, so the
+# wheel and sdist differ from a POSIX build of the same commit - two digests for
+# one source tree, and no way to check a download against a build from source.
+#
+# eol=lf forces LF on checkout everywhere, so the artifact is at least a function
+# of the source rather than of the machine that checked it out.
+#
+# What this does NOT fix: the archive records the file mode it sees on the
+# filesystem (measured: a source file chmod 0755 produces a different wheel than
+# the same file at 0644), and Windows cannot represent POSIX modes. Byte-identity
+# *across* operating systems is therefore not claimed anywhere; the digest
+# identifies the artifact for a given platform. See tests/test_release_artifacts.py
+# and Appendix B of the third-party review report.
+* text=auto eol=lf
