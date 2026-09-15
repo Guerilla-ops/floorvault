@@ -103,6 +103,16 @@ python scripts/verify_wheel.py dist
 echo "[PASS] Wheel Build: Successfully packaged a universal (py3-none-any) wheel."
 
 echo ""
+echo "=== 11. Verifying the Security Tests Actually Detect Regressions (Mutation) ==="
+# The suite passing proves nothing if the tests cannot fail. This runs curated
+# behavioural mutants of the custody code and requires every one to be killed.
+# It was previously a manual script only, so a refactor that invalidated the
+# mutants' anchors (they silently reported 'pattern not found' rather than
+# failing) went unnoticed by this gate.
+python scripts/mutation_check.py --mode curated
+echo "[PASS] Mutation: every curated security mutant was killed (canary survived)."
+
+echo ""
 echo "============================================================"
 echo "    ALL STANDALONE SECURITY GATES & RFC VECTORS PASSED     "
 echo "============================================================"

@@ -48,6 +48,8 @@ CURATED_TESTS = [
     "tests/test_protected_store_safety.py",
     "tests/test_platform_providers.py",
     "tests/test_adaptive_provider.py",
+    "tests/test_platform_support.py",
+    "tests/test_crypto_core.py",
 ]
 
 # --------------------------------------------------------------------------
@@ -68,21 +70,21 @@ class Mutation:
 MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PC-1",
-        "src/floorvault/providers/platform_custody.py",
-        "    if IS_WINDOWS:\n        return False",
+        "src/floorvault/platform_support.py",
+        "    if is_windows():\n        return False",
         "    if False:  # MUTANT\n        return False",
         "Windows exemption disabled: a synthesised 0o666 treated as insecure",
     ),
     Mutation(
         "PC-2",
-        "src/floorvault/providers/platform_custody.py",
+        "src/floorvault/platform_support.py",
         "    return bool(mode & 0o077)",
         "    return False  # MUTANT",
         "POSIX group/other gate disabled entirely",
     ),
     Mutation(
         "PC-3",
-        "src/floorvault/providers/platform_custody.py",
+        "src/floorvault/platform_support.py",
         "    return bool(mode & 0o077)",
         "    return mode != 0o600  # MUTANT",
         "Exact-equality bug: any non-0600 owner-only mode refused",
@@ -131,11 +133,53 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "CANARY",
-        "src/floorvault/providers/platform_custody.py",
+        "src/floorvault/platform_support.py",
         '"""Whether POSIX permission bits grant group or other access.',
         '"""Whether POSIX permission bits grant group or other access. (mutated)',
         "Equivalent docstring mutant: must survive (harness validity check)",
         expect="survived",
+    ),
+    Mutation(
+        "PC-9",
+        "src/floorvault/providers/platform_custody.py",
+        "        item.mkdir(mode=0o700, exist_ok=True)",
+        "        item.mkdir(mode=0o777, exist_ok=True)",
+        "Ancestor custody directory created world-searchable (0o777)",
+    ),
+    Mutation(
+        "PC-10",
+        "src/floorvault/providers/platform_custody.py",
+        "    _mkdir_owner_only(path.parent)",
+        "    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)",
+        "Ancestors revert to Path.mkdir(parents=True) default of 0o777",
+    ),
+    Mutation(
+        "PC-11",
+        "src/floorvault/providers/platform_custody.py",
+        '    temporary = path.parent / f".{path.name}.{os.urandom(6).hex()}.tmp"',
+        '    temporary = Path(os.environ.get("TMPDIR", "/tmp")) / f".{path.name}.{os.urandom(6).hex()}.tmp"',
+        "Temp file moved to TMPDIR: cross-device publish (EXDEV) breaks atomicity",
+    ),
+    Mutation(
+        "PC-12",
+        "src/floorvault/providers/platform_custody.py",
+        '        raise ProtectedStoreInvalidLength("protected store key has an unexpected length")',
+        '        raise ProtectedStoreError("protected store key has an unexpected length")',
+        "Length failure loses its distinct type and can be masked by another check",
+    ),
+    Mutation(
+        "WD-1",
+        "src/floorvault/providers/windows_dpapi.py",
+        "        self._assert_store_location_is_private()",
+        "        pass  # MUTANT",
+        "Windows store-location policy silently disabled (no ACL verification)",
+    ),
+    Mutation(
+        "CR-1",
+        "src/floorvault/core.py",
+        "encrypt(data_bytes, [aad, nonce])",
+        "encrypt(data_bytes, [aad])  # MUTANT",
+        "Static AD vector: SIV becomes deterministic and leaks plaintext equality",
     ),
 )
 
