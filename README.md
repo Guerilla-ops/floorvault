@@ -367,6 +367,8 @@ suggest_beacon_bits(
 
 > [!CAUTION]
 > Searchable encryption necessarily leaks some information. FloorVault beacons expose a **bounded bucket**, not the plaintext value, but the bucket is still information. Do not index values that cannot tolerate that leakage.
+>
+> **Do not index low-entropy domains.** A beacon key stops an offline attacker from reversing an index, but it does not stop anyone who can *call* `beacon()` — including your own application under an attacker's control. A `country` (≈200 values), a `role` (≈5) or a boolean can be enumerated bucket by bucket. Beacons are for high-entropy values such as emails, tokens and identifiers.
 
 ---
 
@@ -877,17 +879,33 @@ without replacing SQLite itself.
 - [x] Modern-first dual-read migration
 - [x] On-touch upgrades
 - [x] Migration backup + verification
+- [x] Authenticated retirement of migrated legacy ids (a migrated id can never be served from the pre-migration source again)
 - [x] Schema-free `generic` migration records
+- [x] Versioned record envelope with an authenticated header (`crypto_version`, `key_id`)
 - [x] Comparative benchmark harness
 - [x] Deterministic fuzz harness
 - [x] Linux, macOS, and Windows CI coverage
 
 ## 🛠️ Roadmap
 
-- [ ] **Windows NT DACL verification**
-  - Inspect the protected key store's actual discretionary ACL.
-  - Planned implementation uses `GetNamedSecurityInfoW` through `ctypes`.
-  - Current Windows behaviour relies on the user-profile ACL assumption described in the security notes.
+- [ ] **Key rotation tooling**
+  - The v2 header records which key a record was written under, so a rotation can
+    now be staged record by record (`envelope_header()` selects the key).
+  - What is missing is the tooling: re-encrypt a store under a new key and prove
+    every record moved (`FloorVault` still holds one key at a time).
+- [ ] **Whole-database integrity / freshness mode**
+  - Row deletion, duplication, truncation and snapshot restore are not detected.
+  - Any real solution needs state the attacker cannot roll back, so it is a design
+    project rather than a patch; until then the limit is stated in
+    [`SECURITY.md`](SECURITY.md) rather than implied.
+
+## ✅ Verified on Windows
+
+- [x] **Effective NT DACL verification** on the protected key store
+  (`GetNamedSecurityInfoW` through `ctypes`); a store granting access beyond its
+  owner, SYSTEM and Administrators is refused, and an ACL that cannot be read is
+  a refusal rather than a pass. The real query runs on the `windows-latest` CI
+  legs; the policy is unit-tested on every platform.
 
 ---
 

@@ -188,7 +188,7 @@ material.
 - Denial of service of any kind.
 - Loss of data because the key was not backed up.
 
-**Two limits worth stating explicitly:**
+**Two general limits worth stating explicitly:**
 
 - **Same-coordinate replay is not detected by default.** The contextual binding
   detects a ciphertext *moved* to different coordinates, but a previously valid
@@ -205,6 +205,60 @@ material.
   seeded by public constants): a copy of the store is enough to recover the
   key. The OS-native tiers (macOS Keychain, Windows DPAPI, Linux Secret
   Service) bind the key to the OS user instead.
+
+**A third limit, specific to migration:**
+
+- **A retired legacy id is refused, not protected against a full rollback.**
+  Once an id has been migrated its pre-migration value is retired permanently:
+  if the modern record is later deleted or rolled back, the read fails
+  (`LegacyRetiredError`) instead of silently serving the value from before the
+  credential was rotated. The retirement record is authenticated under the
+  master key and bound to the id, so it cannot be rewritten or moved. It does
+  live in the same database as the data, though, so an attacker who can roll the
+  *whole* database back rolls the retirement back with it. This closes silent
+  resurrection and makes a downgrade detectable; genuine freshness still needs
+  state the attacker cannot roll back, as above.
+
+### Attacker capabilities, and what to expect from each
+
+Stated by capability rather than by feature, so a threat that is out of scope
+cannot be mistaken for one that is covered.
+
+| Attacker | Can read store | Can modify store | Can read the process | Controls the account | Expected protection |
+|---|:---:|:---:|:---:|:---:|---|
+| A1 — stolen database file | ✅ | ❌ | ❌ | ❌ | **Strong**: no plaintext, bounded beacon leakage |
+| A2 — stolen disk / backup files | ✅ | ❌ | ❌ | ❌ | **Strong**, minus what the key store itself gives up (see the fallback limit above) |
+| A3 — malicious store writer | ✅ | ✅ | ❌ | ❌ | **Partial**: values cannot be forged or spliced; rows can be deleted, duplicated or replayed (see freshness above) |
+| A4 — malicious same-UID process | ✅ | ✅ | Possibly | ✅ | **Weak**: it can use the same custody the application uses |
+| A5 — compromised application | ✅ | ✅ | ✅ | ✅ | **Not protected** — see the next section |
+| A6 — administrator / root | ✅ | ✅ | ✅ | ✅ | **Not protected** |
+| A7 — snapshot / backup attacker | ✅ | Possibly rollback | ❌ | ❌ | **Partial**, as A3 |
+
+### When the caller is an autonomous agent (authorised-use attacks)
+
+This is a scope statement, not a mitigation.
+
+FloorVault cannot tell an authorised request from a coerced one. If an agent is
+prompt-injected, or otherwise steered, into making a request the application
+would normally make, then `decrypt()` returns the plaintext and every
+cryptographic check legitimately passes — the value is authentic, the
+coordinates are right, and the caller holds exactly the authority it was given.
+The library has no way to see the difference, and it does not try to.
+
+Consequences an integrator should plan for:
+
+- An agent that holds the master key **is** the decryption authority. Compromise
+  of the agent is compromise of everything it can decrypt.
+- Narrowing what an agent may decrypt is an *application* concern: pass it
+  scoped credentials, not one master key, and keep the ability to request a
+  secret out of the model's control where you can.
+- Where the authority must not travel with the caller, put policy **outside**
+  the process that holds the key — a broker or service that authenticates the
+  request and returns an outcome rather than the secret. That is a deployment
+  architecture; FloorVault does not implement it.
+- Memory hardening, mlock and anti-dump measures raise the cost of some
+  opportunistic inspection. They do not turn a Python process into an enclave
+  and are not a defence against a compromised application (A5).
 
 These exclusions mirror the practice of well-established cryptographic
 libraries, including OpenSSL. Issues in these classes are not treated as
@@ -227,6 +281,24 @@ For a full description see the README and the design notes in `docs/`.
   causes a verification failure rather than a silent wrong-plaintext result. An
   optional caller-supplied `revision` can additionally be bound for
   same-coordinate rollback detection (see §5).
+  **The coordinate encoding is canonical and unambiguous.** The fields are
+  serialised as UTF-8 JSON with sorted keys and no insignificant whitespace, and
+  the resulting block is passed to AES-SIV as *one* associated-data element with
+  the nonce and (for v2 records) the header as *separate* elements. Field
+  boundaries therefore cannot be blurred by concatenation: no two distinct
+  coordinate sets produce the same associated data, and empty coordinates are
+  rejected outright. This is a guarantee, not an implementation detail — a
+  change to it is a format change.
+- **Record format (v2):** `FLV2` (4 bytes) ‖ `crypto_version` (1) ‖ `key_id` (1)
+  ‖ `nonce_len` (1) ‖ `nonce` (16) ‖ ciphertext. The cleartext header is bound
+  into the associated data as its own element, so a rewritten version or key id
+  fails authentication rather than being ignored. `envelope_header()` reports
+  these fields without decrypting. v1 records (`FLRV` ‖ `nonce_len` ‖ `nonce` ‖
+  ciphertext) remain readable and keep their original associated-data vector.
+- **Key identifiers:** `key_id` records which key a record was written under, so
+  a reader can select the right one and a rotation can be staged per record.
+  `decrypt(..., key_id=)` can require a specific key. This build derives one
+  subkey per instance and writes `0`.
 - **Key separation:** a single master key is expanded with HKDF-SHA256 into
   domain-separated subkeys — one for the AEAD and one for the blind-index/beacon
   MAC — which are never reused across purposes.
@@ -234,6 +306,20 @@ For a full description see the README and the design notes in `docs/`.
   *beacons* over a bounded bucket. Exact matches are confirmed by decrypting the
   candidate. Beacons deliberately trade exact-match precision for a bounded
   leakage profile; collisions within a bucket are by design, not a defect.
+  Beacons are for high-entropy values: a keyed index does not stop anyone who
+  can call `beacon()` from enumerating a low-entropy domain such as a country or
+  a boolean, one bucket at a time.
+- **Key-store protection:** the store is refused unless it is owner-only. On
+  POSIX that is the file mode; on Windows, where there are no POSIX permission
+  bits and `os.stat()` reports a synthesised mode, the store's **effective NT
+  DACL** is read (`GetNamedSecurityInfoW`) and a store granting access to any
+  principal other than its owner, SYSTEM and Administrators is refused. If the
+  protection cannot be established on either platform, the store is refused
+  rather than trusted.
+- **Key custody tiers:** the environment, the OS store (macOS Keychain, Windows
+  DPAPI with secondary entropy, Linux Secret Service), then — only if the caller
+  explicitly enables it — a local file. A present-but-unusable OS store raises
+  instead of quietly dropping to a weaker tier.
 - **Zero C compilation:** FloorVault ships as a universal pure-Python wheel
   (`py3-none-any`) and does not compile native code at install time. Its
   cryptographic primitives come from the `cryptography` project (PyCA).
@@ -297,12 +383,22 @@ We prefer measured claims over marketing claims. Currently in place:
   `ruff` (lint/format), `pip-audit` (dependency CVEs), the RFC vector suites,
   the memory-custody/zeroization tests, the core crypto and splice-immunity
   tests, the fuzz harness, and a universal-wheel build.
+- **Mutation testing of the security gate itself**: curated behavioural mutants
+  of the custody, migration, envelope and beacon code must all be killed before
+  the gate passes, with a canary mutant that must survive to prove the harness
+  can still detect a live mutant. A green suite proves nothing if the tests
+  cannot fail.
 - A **universal wheel** build verified on every push, so the published artifact
   matches the audited source and carries no unexpected native code.
 
 **Not** (yet) in place, and not claimed:
 
-- No third-party security audit or cryptographic review has been performed.
+- No third-party security **audit** or cryptographic review of the code has been
+  performed. An independent architecture and threat-model review of the README
+  was received and triaged; it found no weakness in the cryptographic design, and
+  its findings were verified against source before any were acted on (one did
+  become a real fix). A README review is not a code audit and is not presented as
+  one.
 - No formal verification, and no FIPS/Common Criteria validation.
 - No paid bug bounty.
 
