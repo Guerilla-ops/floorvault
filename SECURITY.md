@@ -188,6 +188,24 @@ material.
 - Denial of service of any kind.
 - Loss of data because the key was not backed up.
 
+**Two limits worth stating explicitly:**
+
+- **Same-coordinate replay is not detected by default.** The contextual binding
+  detects a ciphertext *moved* to different coordinates, but a previously valid
+  ciphertext written back into its *original* coordinates authenticates
+  successfully — AES-SIV provides authenticity, not freshness. FloorVault
+  detects rollback when the caller binds a monotonic `revision` sourced from
+  trusted state (`encrypt(..., revision=)` / `decrypt(..., revision=)`); where
+  no such trusted source exists, rollback protection is out of scope. If the
+  revision is stored beside the ciphertext, an attacker who can rewrite one can
+  roll back both.
+- **The file-based key fallbacks are not a confidentiality boundary.** Where no
+  OS-native key store is available or enabled, the fallback store keeps the key
+  recoverable from the file itself (raw, or masked with a deterministic pad
+  seeded by public constants): a copy of the store is enough to recover the
+  key. The OS-native tiers (macOS Keychain, Windows DPAPI, Linux Secret
+  Service) bind the key to the OS user instead.
+
 These exclusions mirror the practice of well-established cryptographic
 libraries, including OpenSSL. Issues in these classes are not treated as
 FloorVault vulnerabilities and will not receive a CVE — though we may still act
@@ -206,7 +224,9 @@ For a full description see the README and the design notes in `docs/`.
 - **Context binding:** every record is encrypted with associated data derived
   from its coordinates (table, record id, column, schema id and version, and the
   application instance id). Moving or splicing ciphertext between coordinates
-  causes a verification failure rather than a silent wrong-plaintext result.
+  causes a verification failure rather than a silent wrong-plaintext result. An
+  optional caller-supplied `revision` can additionally be bound for
+  same-coordinate rollback detection (see §5).
 - **Key separation:** a single master key is expanded with HKDF-SHA256 into
   domain-separated subkeys — one for the AEAD and one for the blind-index/beacon
   MAC — which are never reused across purposes.
