@@ -26,6 +26,7 @@ import pytest
 
 from floorvault.providers import linux_keyring as linux_module
 from floorvault.providers import platform_custody as custody
+from floorvault.providers.base import MissingKeyError
 from floorvault.providers.platform_custody import (
     ProtectedStoreError,
     ProtectedStoreMissing,
@@ -159,22 +160,6 @@ def test_write_protected_leaves_nothing_behind_when_the_write_fails(tmp_path, mo
 # --------------------------------------------------------------------------
 
 
-def test_windows_dpapi_does_not_rotate_on_a_corrupt_store(tmp_path):
-    store = tmp_path / "winstore"
-    provider = WindowsDPAPIKeyProvider(store_path=store, entropy=b"entropy")
-    provider.resolve_key(allow_create=True)
-
-    # Corrupt the payload while keeping the store present.
-    store.write_bytes(b"FLOORWV1" + b"not-a-valid-payload")
-    corrupted = store.read_bytes()
-
-    with pytest.raises(ProtectedStoreError):
-        WindowsDPAPIKeyProvider(store_path=store, entropy=b"entropy").resolve_key(allow_create=True)
-
-    # The store must be byte-for-byte untouched: no rotation, no overwrite.
-    assert store.read_bytes() == corrupted
-
-
 def test_windows_dpapi_does_not_rotate_on_a_non_0600_store(tmp_path):
     if sys.platform == "win32":
         pytest.skip("POSIX permission bits")
@@ -208,16 +193,53 @@ def test_windows_dpapi_fails_closed_when_absent_and_create_disallowed(tmp_path):
         )
 
 
-def test_linux_provider_does_not_rotate_on_a_corrupt_store(tmp_path, monkeypatch):
+def _build(provider_name: str, store):
+    if provider_name == "windows_dpapi":
+        return WindowsDPAPIKeyProvider(store_path=store, entropy=b"entropy")
+    return linux_module.LinuxSecretServiceKeyProvider(store_path=store)
+
+
+@pytest.mark.parametrize("provider_name", ["windows_dpapi", "linux_keyring"])
+def test_corrupt_store_is_never_reported_as_absent(provider_name, tmp_path, monkeypatch):
+    """The READ must be what refuses a corrupt store - not the write guard.
+
+    A mutant that swallows the read error takes the create path and only then
+    hits write_protected's no-clobber guard, which raises ProtectedStoreError
+    too. Asserting merely "a ProtectedStoreError was raised" therefore passes for
+    the wrong reason - mutation testing found exactly this gap - so pin both
+    halves:
+
+      1. the failure is the read's (header/length/permission), not the guard's;
+      2. a corrupt store is not a *missing* one, so allow_create=False must not
+         report MissingKeyError.
+    """
     monkeypatch.setattr(linux_module, "_looks_interactive_desktop", lambda: False)
-    store = tmp_path / "linuxstore"
+    store = tmp_path / "store"
+    _build(provider_name, store).resolve_key(allow_create=True)
 
-    provider = linux_module.LinuxSecretServiceKeyProvider(store_path=store)
-    provider.resolve_key(allow_create=True)
+    # A store that exists but cannot be parsed.
+    store.write_bytes(b"XXXX" + b"\x00" * 32)
 
-    store.write_bytes(b"FLOORLV1" + b"not-a-valid-payload")
+    # 1. Fails on the read, not on the write guard.
+    with pytest.raises(ProtectedStoreError, match="header|length|0600|permission"):
+        _build(provider_name, store).resolve_key(allow_create=True)
+
+    # 2. Unreadable is not absent.
+    with pytest.raises(ProtectedStoreError) as excinfo:
+        _build(provider_name, store).resolve_key(allow_create=False)
+    assert not isinstance(excinfo.value, MissingKeyError)
+
+
+@pytest.mark.parametrize("provider_name", ["windows_dpapi", "linux_keyring"])
+def test_corrupt_store_is_left_byte_identical(provider_name, tmp_path, monkeypatch):
+    """A failed resolve must never modify the store."""
+    monkeypatch.setattr(linux_module, "_looks_interactive_desktop", lambda: False)
+    store = tmp_path / "store"
+    _build(provider_name, store).resolve_key(allow_create=True)
+    store.write_bytes(b"XXXX" + b"not-a-valid-payload")
     corrupted = store.read_bytes()
 
     with pytest.raises(ProtectedStoreError):
-        linux_module.LinuxSecretServiceKeyProvider(store_path=store).resolve_key(allow_create=True)
+        _build(provider_name, store).resolve_key(allow_create=True)
+
     assert store.read_bytes() == corrupted
