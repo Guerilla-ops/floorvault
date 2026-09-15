@@ -409,22 +409,28 @@ We prefer measured claims over marketing claims. Currently in place:
   values. So:
 
   - *Line endings were a real cause and are fixed.* A CRLF-forced checkout of the
-    pinned tree now builds the POSIX digest. Every Windows artifact moved when
+    pinned tree now builds the POSIX digest, and every Windows artifact moved when
     this landed.
-  - *The executable bit is a real cause, confirmed locally:* the same tree gives
-    `ad5d6de4…`/`564ed501…` for the sdist with `scripts/security-check.sh` at
-    `0755`/`0644`. It cannot explain the wheel, which contains no such file.
-  - *At least one further cause remains.* The strongest candidate is the zip
-    header's creating-system field: every wheel entry built here records
-    `create_system=3` (Unix), and CPython writes `0` when the archive is created
-    on Windows. That single byte per entry would change every wheel. **This is a
-    hypothesis, not a measurement** — the next CI run prints the field per runner
-    (`[ARTIFACT]`) so it can be confirmed or killed.
+  - *The zip creating-system byte — confirmed by reading, not inferred.* The gate
+    prints it per runner: ubuntu and macOS build `create_system=[3]` (Unix),
+    Windows builds `create_system=[0]`, with byte-identical content and identical
+    file modes (`0o644`/`0o100644`). CPython derives that byte from the platform,
+    so it differs for every entry in every wheel built on Windows.
+  - *The sdist's executable bit — confirmed the same way.* ubuntu and macOS report
+    `tar_modes=['0o644', '0o755']` (the gate script is tracked executable), Windows
+    reports `['0o644']`: it cannot represent the bit. The gzip OS byte is `255` on
+    every runner, so it is **not** a cause.
 
-  Byte-identity across operating systems is therefore **not** claimed for either
-  artifact. A digest identifies an artifact for its platform; the ubuntu-built
-  wheel is the release identity, and verifying a download means comparing it
-  against *that* artifact, not against a build from an arbitrary machine.
+  **Byte-identity across operating systems is therefore not achievable from
+  repository settings**, because both remaining causes live in metadata that
+  CPython derives from the platform. Reaching it would mean normalising the
+  archives after the build (rewriting the creating-system byte and the tar modes)
+  or — the usual answer — building the published artifact in one designated
+  environment. That is the position taken here: the ubuntu-built wheel is the
+  release identity, and verifying a download means comparing it against *that*
+  artifact rather than against a build from an arbitrary machine. A digest
+  identifies an artifact for its platform — it is **not** a cross-platform
+  identity, and no such identity is claimed.
 
 **Not** (yet) in place, and not claimed:
 
