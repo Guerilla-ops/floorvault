@@ -39,7 +39,7 @@ It provides:
 - 🔎 **Searchable encrypted fields** — truncated HMAC beacons allow indexed exact-match lookup without storing plaintext values.
 - 🧠 **Short-lived master-key handling** — functional subkeys are derived with HKDF-SHA256 before the mutable master-key buffer is wiped.
 - 🔒 **Best-effort locked memory** — derived keys can be pinned with `mlock()` or `VirtualLock()`, with additional platform-specific hardening.
-- 🗝️ **Cross-platform key custody** — adaptive key resolution plus Windows DPAPI and Linux Secret Service support.
+- 🗝️ **Cross-platform key custody** — adaptive key resolution plus macOS Keychain, Windows DPAPI, and Linux Secret Service support.
 - ♻️ **Non-destructive Fernet migration** — modern-first dual reads, migration on first touch, backups, and explicit verification.
 - 🧱 **Standard SQLite compatibility** — no custom SQLite binary and no C compilation requirement.
 
@@ -72,12 +72,11 @@ uv add floorvault
 ## Encrypt a field
 
 ```python
-from floorvault import FloorVault, HardenedMemoryKey
+from floorvault import AdaptiveKeyProvider, FloorVault
 
-master_key = HardenedMemoryKey.from_hex(
-    "0123456789abcdef0123456789abcdef"
-    "0123456789abcdef0123456789abcdef"
-)
+master_key = AdaptiveKeyProvider(
+    service_name="my-app"
+).resolve_key()
 
 crypto = FloorVault(
     master_key,
@@ -118,6 +117,9 @@ DecryptionVerificationError
 
 > [!TIP]
 > The encrypted value is not merely protected as bytes. It is protected as **the `api_key` belonging to `user-123` inside `credentials`**.
+
+> [!WARNING]
+> `HardenedMemoryKey.from_hex(...)` can build a key from a fixed hex string. It exists for tests and examples — never hard-code a production master key in source code, and never commit one.
 
 ---
 
@@ -324,28 +326,44 @@ for row in conn.execute(
 ):
     user_id, email_cipher = row
 
-    print(
-        crypto.decrypt(
-            email_cipher,
-            table="users",
-            record_id=user_id,
-            column="email",
-        )
+    decrypted = crypto.decrypt(
+        email_cipher,
+        table="users",
+        record_id=user_id,
+        column="email",
     )
+
+    if decrypted == "scott@example.com":
+        print("exact match:", user_id)
 ```
 
 The beacon narrows the search to candidate rows.  
-The ciphertext still provides the final cryptographic verification.
+The ciphertext still provides the final cryptographic verification: bucket hits are collisions by design, so only decrypting and comparing the plaintext proves an exact match.
+
+`crypto.beacon_matches(...)` can narrow candidates without decrypting, but it proves bucket agreement — not equality.
 
 ## Choosing a beacon width
 
 Beacon width is a **privacy ↔ efficiency** trade-off.
 
+Buckets are byte-aligned: a width of `bits` stores `ceil(bits/8)` bytes, so the index holds `256**ceil(bits/8)` possible buckets, and an `N`-row dataset averages about `N / 256**ceil(bits/8)` candidate rows per bucket.
+
 | Beacon width | Privacy | Candidate collisions | Typical use |
 |---:|:---:|:---:|---|
 | `4–8 bits` | 🔒🔒🔒 High | Higher | Maximum privacy, small datasets |
-| `8–16 bits` | 🔒🔒 Strong | Moderate | **Privacy-first default range** |
+| `16 bits` | 🔒🔒 Strong | Moderate | Typical app datasets (10²–10⁵ rows) |
 | `32–64 bits` | 🔒 Lower | Low | Low-volume uniqueness / faster narrowing |
+
+There is no universally safe width. Pick the average bucket occupancy you are willing to decrypt-confirm, then derive the width:
+
+```python
+from floorvault import suggest_beacon_bits
+
+suggest_beacon_bits(
+    expected_rows=100_000,
+    target_bucket_size=8,
+)  # -> 16
+```
 
 > [!CAUTION]
 > Searchable encryption necessarily leaks some information. FloorVault beacons expose a **bounded bucket**, not the plaintext value, but the bucket is still information. Do not index values that cannot tolerate that leakage.
@@ -407,6 +425,16 @@ CryptProtectData
 + secondary entropy
 ```
 
+### macOS
+
+On an interactive desktop, `AdaptiveKeyProvider` stores the master key in the macOS login Keychain as a generic-password item.
+
+The Security framework bindings are an optional extra:
+
+```bash
+uv add "floorvault[macos]"
+```
+
 ### Linux
 
 `LinuxSecretServiceKeyProvider` integrates with the freedesktop Secret Service ecosystem, including:
@@ -418,11 +446,17 @@ If a desktop session exists but the Secret Service backend is unavailable, the p
 
 ### Fallback storage
 
-Where the native OS backend is unavailable, FloorVault can use an entropy-masked protected local store with:
+Where the native OS backend is unavailable or not enabled, FloorVault can use a protected local store with:
 
 - owner-restricted permissions where supported,
 - symlink protection,
+- no-clobber writes and fail-closed reads,
 - binary key handling.
+
+If a native backend is present but unusable, key resolution fails closed with `CustodyDowngradeError` rather than silently dropping to a weaker tier.
+
+> [!WARNING]
+> The file fallbacks are not a second secret. The stored key is masked with a deterministic pad derived from public constants (or stored raw in the machine key file), so anyone who can read the store can recover the key. Their protection is the filesystem and the OS account boundary. Use a native OS tier (Keychain / DPAPI / Secret Service) or an external secret source when the key must not be recoverable from a stolen file tree.
 
 ---
 
@@ -589,6 +623,29 @@ Re-keying changes the generated buckets.
 </details>
 
 <details>
+<summary><strong>🕰️ Replay / rollback of an older ciphertext</strong></summary>
+
+<br>
+
+Context binding prevents a ciphertext from being *moved* to another record, column, table, schema, or application instance.
+
+It does not, by itself, prevent an older — but still authentic — ciphertext from being restored into its **original** coordinates. AES-256-SIV provides authenticity, not freshness, so replayed data decrypts successfully unless the caller binds something the attacker cannot roll back:
+
+```python
+ciphertext = crypto.encrypt(
+    value,
+    table="users",
+    record_id="usr-1",
+    column="permission",
+    revision=current_revision,
+)
+```
+
+A ciphertext bound to a revision fails to decrypt at any other revision, so a replayed older value is rejected — provided `current_revision` comes from state the attacker cannot roll back together with the ciphertext. A revision stored beside the ciphertext (for example, in the same database) provides no protection.
+
+</details>
+
+<details>
 <summary><strong>👤 Same-UID / same-user process threat</strong></summary>
 
 <br>
@@ -695,6 +752,12 @@ Each CI cell runs:
 - universal-wheel validation,
 - the curated mutation set.
 
+An opt-in live test exercises the real macOS Keychain (skipped by default, because it writes to the user's Keychain):
+
+```bash
+FLOORVAULT_KEYCHAIN_LIVE=1 uv run --extra macos pytest tests/test_keychain_live.py
+```
+
 Cross-platform findings are documented in:
 
 [`docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md`](docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md)
@@ -798,15 +861,18 @@ without replacing SQLite itself.
 ## ✅ Implemented
 
 - [x] Contextual AES-256-SIV encryption
+- [x] Optional revision binding for replay / rollback detection
 - [x] HKDF-SHA256 key separation
 - [x] Searchable HMAC beacons
 - [x] `beacon()` and `beacon_matches()`
+- [x] Dataset-sized beacon width guidance (`suggest_beacon_bits`)
 - [x] Hardened memory key custody
 - [x] `mlock()` / `VirtualLock()`
 - [x] Anti-dump protections where supported
 - [x] Adaptive key provider
 - [x] Windows DPAPI key provider
 - [x] Linux Secret Service provider
+- [x] macOS Keychain custody (adaptive provider tier)
 - [x] Lazy Fernet migration
 - [x] Modern-first dual-read migration
 - [x] On-touch upgrades
