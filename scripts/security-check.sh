@@ -64,8 +64,10 @@ echo "[PASS] Fuzz: round-trip, splice-immunity, malformed-envelope, beacon invar
 
 echo ""
 echo "=== 9. Verifying Universal Wheel Build (Zero-C Compilation) ==="
+rm -rf dist/
 uv build
-echo "[PASS] Wheel Build: Successfully packaged universal wheel."
+python scripts/verify_wheel.py dist
+echo "[PASS] Wheel Build: Successfully packaged a universal (py3-none-any) wheel."
 
 echo ""
 echo "============================================================"
