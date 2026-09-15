@@ -1,34 +1,58 @@
 #!/usr/bin/env bash
 # scripts/security-check.sh for floorvault
-# 100% Local Git Pipeline (Zero Cloud / No GitHub Actions Required)
+#
+# Single source of truth for the security gates: run locally before pushing,
+# and by CI on every supported OS and Python version.
+#
+# Behaviour knobs:
+#   FLOORVAULT_STRICT=1            a missing gate tool is fatal (default: warn + skip)
+#   FLOORVAULT_SKIP_SECRET_SCAN=1  skip the gitleaks history scan
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
+STRICT="${FLOORVAULT_STRICT:-0}"
+
 echo "============================================================"
 echo "    STARTING LOCAL SECURITY & CRYPTOGRAPHIC VERIFICATION    "
 echo "============================================================"
 
-# Ensure virtualenv binaries are prioritized
-export PATH="$REPO_DIR/.venv/bin:$PATH"
+# Ensure virtualenv binaries are prioritized. The venv layout differs between
+# Windows (Scripts/) and POSIX (bin/), so probe both.
+for candidate in "$REPO_DIR/.venv/bin" "$REPO_DIR/.venv/Scripts"; do
+    if [ -d "$candidate" ]; then
+        export PATH="$candidate:$PATH"
+    fi
+done
+
+require_tool() {
+    # In strict mode (CI) a missing tool is fatal; locally it is a loud warning.
+    if ! command -v "$1" >/dev/null 2>&1; then
+        if [ "$STRICT" = "1" ]; then
+            echo "[FAIL] Required gate tool not found: $1" >&2
+            exit 1
+        fi
+        echo "[WARN] $1 not found. Skipping (set FLOORVAULT_STRICT=1 to fail instead)."
+        return 1
+    fi
+    return 0
+}
 
 echo ""
 echo "=== 1. Scanning Repository History & Staged Changes (Gitleaks) ==="
-if command -v gitleaks >/dev/null 2>&1; then
+if [ "${FLOORVAULT_SKIP_SECRET_SCAN:-0}" = "1" ]; then
+    echo "[SKIP] Secret scan disabled (FLOORVAULT_SKIP_SECRET_SCAN=1)."
+elif require_tool gitleaks; then
     gitleaks git --verbose --redact
     echo "[PASS] Gitleaks: Zero secrets or private keys detected."
-else
-    echo "[WARN] Gitleaks not found globally. Skipping secret scan."
 fi
 
 echo ""
 echo "=== 2. Auditing Python Dependencies for CVEs (pip-audit) ==="
-if command -v pip-audit >/dev/null 2>&1; then
+if require_tool pip-audit; then
     pip-audit --desc on --skip-editable
     echo "[PASS] pip-audit: Zero vulnerable dependencies detected."
-else
-    echo "[INFO] pip-audit not installed in active environment. Skipping CVE audit."
 fi
 
 echo ""
