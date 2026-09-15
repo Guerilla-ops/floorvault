@@ -102,12 +102,20 @@ def test_adaptive_provider_strict_mode_refuses_disk_fallback(monkeypatch, tmp_pa
         provider.resolve_key()
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="POSIX permission bits are not implemented on Windows; the key file's "
-    "protection there comes from the profile-directory ACL",
-)
 def test_adaptive_provider_rejects_insecure_existing_key_file(monkeypatch, tmp_path):
+    """The POSIX group/other gate must refuse, driven on every platform.
+
+    This test used to be skipped on Windows ("POSIX permission bits are not
+    implemented there"), which was true of the platform but wrong for the test:
+    with nothing exercising the check on the Windows runner, the mutant that
+    disables it (AD-1, `if has_posix_group_or_other_access(...)` -> `if False`)
+    survived there and failed the mutation step of the gate. Patching the
+    predicate exercises the real code path everywhere instead of skipping it.
+    """
+    # On Windows the helper short-circuits; force the POSIX branch this test is
+    # about. The synthesised 0o644/0o666 mode Windows reports still has a
+    # group/other bit set, so the gate must fire.
+    monkeypatch.setattr(platform_support, "IS_WINDOWS", False)
     for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
 
