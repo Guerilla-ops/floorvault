@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from floorvault.providers import platform_custody as custody
+from floorvault import platform_support
 from floorvault.providers.adaptive import AdaptiveKeyProvider
 from floorvault.providers.base import CustodyDowngradeError, KeyProviderError
 
@@ -132,7 +132,7 @@ def test_machine_file_fallback_survives_a_synthesised_mode(monkeypatch, tmp_path
         monkeypatch.delenv(name, raising=False)
 
     # Simulate the platform the gate must treat as Windows.
-    monkeypatch.setattr(custody, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform_support, "IS_WINDOWS", True)
 
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)
     monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)

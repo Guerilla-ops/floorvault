@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import ctypes
 import mmap
-import sys
 from typing import Any
+
+from .platform_support import is_linux, is_macos, is_windows
 
 try:
     import resource
@@ -20,8 +21,8 @@ except ImportError:
 # include/uapi/asm-generic/mman-common.h; MADV_KEEPONFORK is 19 and is NOT
 # MADV_DONTFORK. Darwin does not implement either advice, so both stay None
 # there and the capability is reported as unavailable rather than attempted.
-MADV_DONTDUMP = 16 if sys.platform == "linux" else None
-MADV_DONTFORK = 10 if sys.platform == "linux" else None
+MADV_DONTDUMP = 16 if is_linux() else None
+MADV_DONTFORK = 10 if is_linux() else None
 
 # Page size used to align the key allocation. Linux madvise(2) requires the
 # address to be page-aligned and returns EINVAL otherwise, so an unaligned
@@ -37,7 +38,7 @@ class SecurityHardeningError(RuntimeError):
 
 def disable_core_dumps() -> None:
     """Globally prevent the OS kernel from flushing process RAM to disk on crash."""
-    if resource is not None and sys.platform in ("darwin", "linux"):
+    if resource is not None and (is_macos() or is_linux()):
         try:
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         except Exception:
@@ -97,7 +98,7 @@ class HardenedMemoryKey:
 
     def _lock_pages(self) -> None:
         # 1. POSIX: macOS and Linux
-        if sys.platform in ("darwin", "linux"):
+        if is_macos() or is_linux():
             try:
                 libc = ctypes.CDLL(None)
                 # int mlock(const void *addr, size_t len);
@@ -142,7 +143,7 @@ class HardenedMemoryKey:
                 # (src/floorvault/memory.py:19-20), so requiring them there
                 # could never succeed; page locking plus RLIMIT_CORE=0 is the
                 # real Darwin guarantee.
-                if self._mode == "required" and sys.platform == "linux":
+                if self._mode == "required" and is_linux():
                     if not (self._dump_excluded and self._fork_excluded):
                         raise SecurityHardeningError(
                             "Required Linux dump/fork memory protections are unavailable"
@@ -154,7 +155,7 @@ class HardenedMemoryKey:
                     raise SecurityHardeningError(f"Kernel memory locking error: {exc}") from exc
 
         # 2. Windows 10 / 11 / Server
-        elif sys.platform == "win32":
+        elif is_windows():
             try:
                 kernel32 = ctypes.windll.kernel32
                 # BOOL VirtualLock(LPVOID lpAddress, SIZE_T dwSize);
@@ -207,13 +208,13 @@ class HardenedMemoryKey:
 
         # 2. Unlock memory pages
         if self._locked:
-            if sys.platform in ("darwin", "linux"):
+            if is_macos() or is_linux():
                 try:
                     libc = ctypes.CDLL(None)
                     libc.munlock(self._buffer, ctypes.c_size_t(self._locked_size))
                 except Exception:
                     pass
-            elif sys.platform == "win32":
+            elif is_windows():
                 try:
                     kernel32 = ctypes.windll.kernel32
                     kernel32.VirtualUnlock(self._buffer, ctypes.c_size_t(self._locked_size))

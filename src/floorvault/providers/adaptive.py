@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import os
 import stat
-import sys
 from pathlib import Path
 from typing import Optional
 
 from ..memory import HardenedMemoryKey
+from ..platform_support import has_posix_group_or_other_access, is_macos, is_windows
 from .base import CustodyDowngradeError, KeyProvider, KeyProviderError
-from .platform_custody import has_posix_group_or_other_access
 
 
 class AdaptiveKeyProvider(KeyProvider):
@@ -40,10 +39,10 @@ class AdaptiveKeyProvider(KeyProvider):
 
     def _is_interactive_desktop(self) -> bool:
         """Heuristic detecting whether a GUI keyring environment is present."""
-        if sys.platform == "darwin":
+        if is_macos():
             # On macOS, window server is active if not in a raw detached ssh without gui
             return os.environ.get("SSH_CONNECTION") is None or bool(os.environ.get("DISPLAY"))
-        if sys.platform == "win32":
+        if is_windows():
             return True
         # Linux: check for X11 / Wayland / DBus session
         return bool(
@@ -86,7 +85,7 @@ class AdaptiveKeyProvider(KeyProvider):
 
     def _resolve_from_system_keyring(self, *, allow_create: bool) -> Optional[HardenedMemoryKey]:
         """Attempt to read from macOS Keychain or generic system keyring."""
-        if sys.platform == "darwin":
+        if is_macos():
             try:
                 import Security  # type: ignore[import-not-found]
             except ImportError:

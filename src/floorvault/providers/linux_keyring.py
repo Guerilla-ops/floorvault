@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..memory import HardenedMemoryKey
+from ..platform_support import is_linux
 from .base import CustodyDowngradeError, KeyProvider, KeyProviderError, MissingKeyError
 from .platform_custody import (
     ProtectedStoreError,
@@ -63,7 +64,7 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
     # ---- Secret Service primary (Linux, interactive) ----------------------
 
     def _secret_service_available(self) -> bool:
-        if os.name != "posix" or not _looks_interactive_desktop():
+        if not is_linux() or not _looks_interactive_desktop():
             return False
         try:
             import secretstorage  # type: ignore[import-not-found]  # noqa: F401
@@ -149,7 +150,7 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
             raise MissingKeyError("Linux Secret Service store is missing; recovery is required")
         # On an interactive desktop where Secret Service is expected but absent,
         # fail closed rather than silently writing a key file.
-        if _looks_interactive_desktop() and os.name == "posix":
+        if _looks_interactive_desktop() and is_linux():
             raise MissingKeyError(
                 "Secret Service is unavailable but a desktop session is present; "
                 "refusing to fall back to a key file. Set a key explicitly."

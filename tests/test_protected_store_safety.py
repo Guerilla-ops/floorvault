@@ -21,6 +21,7 @@ must fail loudly, and must never be replaced.
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import sys
 import textwrap
@@ -28,11 +29,13 @@ from pathlib import Path
 
 import pytest
 
+from floorvault import platform_support
 from floorvault.providers import linux_keyring as linux_module
 from floorvault.providers import platform_custody as custody
 from floorvault.providers.base import MissingKeyError
 from floorvault.providers.platform_custody import (
     ProtectedStoreError,
+    ProtectedStoreInvalidLength,
     ProtectedStoreMissing,
     read_protected,
     write_protected,
@@ -106,7 +109,7 @@ def test_owner_only_modes_are_accepted_on_posix(tmp_path):
 
 def test_synthesised_windows_mode_is_not_refused(tmp_path, monkeypatch):
     """Windows reports 0o666 for a writable file whatever its ACL."""
-    monkeypatch.setattr(custody, "IS_WINDOWS", True)
+    monkeypatch.setattr(platform_support, "IS_WINDOWS", True)
     store = tmp_path / "store"
     write_protected(_KEY, store, header=_HEADER)
     store.chmod(0o666)
@@ -115,7 +118,7 @@ def test_synthesised_windows_mode_is_not_refused(tmp_path, monkeypatch):
 
 def test_posix_check_still_refuses_when_not_windows(monkeypatch, tmp_path):
     """Guard against the fix silently disabling the POSIX gate."""
-    monkeypatch.setattr(custody, "IS_WINDOWS", False)
+    monkeypatch.setattr(platform_support, "IS_WINDOWS", False)
     store = tmp_path / "store"
     write_protected(_KEY, store, header=_HEADER)
     store.chmod(0o644)
@@ -318,3 +321,97 @@ def test_corrupt_store_is_left_byte_identical(provider_name, tmp_path, monkeypat
         _build(provider_name, store).resolve_key(allow_create=True)
 
     assert store.read_bytes() == corrupted
+
+
+# --------------------------------------------------------------------------
+# Filesystem assumptions behind the atomic publish
+# --------------------------------------------------------------------------
+
+
+def test_temporary_file_is_created_in_the_store_directory(tmp_path, monkeypatch):
+    """The atomic publish is os.link, which only works within one filesystem.
+
+    A temporary file in TMPDIR could sit on a different mount and would fail
+    with EXDEV, forcing the non-atomic fallback. The temp - and therefore the
+    link source - must be created next to the store itself.
+    """
+    store = tmp_path / "store"
+    opened: list[str] = []
+    links: list[tuple[str, str]] = []
+    real_open = os.open
+    real_link = os.link
+
+    def recording_open(path, flags, *args, **kwargs):
+        opened.append(os.fspath(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    def recording_link(source, destination, *args, **kwargs):
+        links.append((os.fspath(source), os.fspath(destination)))
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(custody.os, "open", recording_open)
+    monkeypatch.setattr(custody.os, "link", recording_link)
+    write_protected(_KEY, store, header=_HEADER)
+
+    assert opened, "no file was opened during the write"
+    for path in opened:
+        assert Path(path).parent == store.parent, f"temp {path} is not beside the store"
+
+    # The link source is what makes the publish atomic; it must share the
+    # store's directory (and so its filesystem) or EXDEV would force the
+    # non-atomic fallback.
+    assert links, "the atomic publish did not run (hard links unavailable?)"
+    for source, destination in links:
+        assert Path(source).parent == store.parent, f"link source {source} is not beside the store"
+        assert Path(destination) == store
+
+
+def test_store_directory_is_created_owner_only(tmp_path):
+    """0o700 on the directory, not merely 'no group/other' by accident.
+
+    Uses umask 022 rather than 077: 0o077 would mask an injected other-execute
+    bit and hide the regression this asserts against.
+    """
+    previous = os.umask(0o022)
+    try:
+        write_protected(_KEY, tmp_path / "nested" / "deep" / "store", header=_HEADER)
+    finally:
+        os.umask(previous)
+
+    for directory in (tmp_path / "nested", tmp_path / "nested" / "deep"):
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700, directory
+
+
+def test_writing_into_an_existing_directory_is_allowed(tmp_path):
+    """`exist_ok=True`: the directory may already exist (store deleted, dir left)."""
+    store = tmp_path / "store"
+    write_protected(_KEY, store, header=_HEADER)
+    store.unlink()
+    assert store.parent.is_dir()
+
+    write_protected(b"\x22" * 32, store, header=_HEADER)
+    assert read_protected(store, header=_HEADER) == b"\x22" * 32
+
+
+def test_invalid_key_length_raises_its_own_error_type(tmp_path):
+    """A distinct type so a test can pin *which* check fired.
+
+    The store is chmod'd to 0600 first: otherwise the permission check would
+    raise a generic ProtectedStoreError and mask a broken length check.
+    """
+    store = tmp_path / "store"
+    store.write_bytes(_HEADER + b"short")
+    store.chmod(0o600)
+
+    with pytest.raises(ProtectedStoreInvalidLength):
+        read_protected(store, header=_HEADER)
+
+
+def test_invalid_length_is_also_a_protected_store_error(tmp_path):
+    """Back-compat: existing `except ProtectedStoreError` handlers still catch it."""
+    store = tmp_path / "store"
+    store.write_bytes(_HEADER + b"short")
+    store.chmod(0o600)
+
+    with pytest.raises(ProtectedStoreError):
+        read_protected(store, header=_HEADER)

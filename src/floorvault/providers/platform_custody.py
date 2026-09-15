@@ -27,21 +27,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# Resolved at import; tests patch it to exercise both platforms' behaviour.
-IS_WINDOWS = os.name == "nt"
-
-
-def has_posix_group_or_other_access(mode: int) -> bool:
-    """Whether POSIX permission bits grant group or other access.
-
-    Windows does not implement POSIX permission bits: ``os.stat()`` reports a
-    synthesised mode (typically ``0o666`` for a writable file) regardless of the
-    file's ACL, so applying this test there would reject every key file -
-    including one this module has just written with ``0o600``.
-    """
-    if IS_WINDOWS:
-        return False
-    return bool(mode & 0o077)
+from ..platform_support import has_posix_group_or_other_access
 
 
 class ProtectedStoreError(Exception):
@@ -57,6 +43,35 @@ class ProtectedStoreMissing(ProtectedStoreError):
     """
 
 
+class ProtectedStoreInvalidLength(ProtectedStoreError):
+    """The store exists but its key is not exactly 32 bytes.
+
+    Distinct from the header and permission failures so a test can pin *which*
+    check fired. A generic ``ProtectedStoreError`` from one check can satisfy an
+    assertion aimed at another - mutation testing found exactly that masking
+    (a mutated length check still passed because the permission check raised
+    instead).
+    """
+
+
+def _mkdir_owner_only(directory: Path) -> None:
+    """Create ``directory`` and every missing ancestor with mode 0700.
+
+    ``Path.mkdir(parents=True, mode=0o700)`` applies the mode **only to the final
+    component**: its recursive call for ancestors uses the default 0o777 (masked
+    by umask), so a path like ``~/.floor/vault/keys/store`` would leave
+    ``.floor/vault/keys`` world-searchable. The custody chain should be
+    owner-only throughout, so each component is created explicitly.
+    """
+    missing: list[Path] = []
+    current = directory
+    while not current.exists() and current != current.parent:
+        missing.append(current)
+        current = current.parent
+    for item in reversed(missing):
+        item.mkdir(mode=0o700, exist_ok=True)
+
+
 def write_protected(key: bytes, path: Path, *, header: bytes) -> None:
     """Atomically write ``header + key`` to ``path`` with 0600. Refuses symlinks.
 
@@ -67,8 +82,8 @@ def write_protected(key: bytes, path: Path, *, header: bytes) -> None:
     rotate each other's key; exactly one wins and the loser fails loudly.
     """
     if len(key) != 32:
-        raise ProtectedStoreError("master key must be exactly 32 bytes")
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        raise ProtectedStoreInvalidLength("master key must be exactly 32 bytes")
+    _mkdir_owner_only(path.parent)
     temporary = path.parent / f".{path.name}.{os.urandom(6).hex()}.tmp"
     descriptor: int | None = None
     try:
@@ -142,7 +157,7 @@ def read_protected(path: Path, *, header: bytes) -> bytes:
         raise ProtectedStoreError("protected store has an unknown or missing header")
     key = raw[len(header) :]
     if len(key) != 32:
-        raise ProtectedStoreError("protected store key has an unexpected length")
+        raise ProtectedStoreInvalidLength("protected store key has an unexpected length")
     if has_posix_group_or_other_access(os.stat(path).st_mode):
         raise ProtectedStoreError(
             "protected store permissions grant group or other access (expected 0600)"

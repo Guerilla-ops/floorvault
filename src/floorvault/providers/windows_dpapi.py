@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import hashlib
 import os
-import sys
 from pathlib import Path
 from typing import Callable
 
 from ..memory import HardenedMemoryKey
+from ..platform_support import is_windows
 from .base import KeyProvider, MissingKeyError
 from .platform_custody import (
     ProtectedStoreError,
@@ -47,16 +47,47 @@ class WindowsDPAPIKeyProvider(KeyProvider):
         store_path: str | Path,
         entropy: bytes | None = None,
         random_bytes: Callable[[int], bytes] = _random,
+        allow_outside_user_profile: bool = False,
     ) -> None:
         if entropy is not None and not isinstance(entropy, bytes):
             raise TypeError("entropy must be bytes")
         self._path = Path(store_path)
         self._entropy = bytes(entropy or b"floorvault-dpapi")
         self._random_bytes = random_bytes
+        self._allow_outside_user_profile = allow_outside_user_profile
+        self._assert_store_location_is_private()
+
+    def _assert_store_location_is_private(self) -> None:
+        """On Windows, require the store to live inside the user profile.
+
+        Windows has no POSIX permission bits, so the file-mode check is a no-op
+        there and FloorVault cannot inspect the store's NT ACL. The user profile
+        is the only location whose ACLs can reasonably be assumed to be
+        owner-only, so a store anywhere else - a shared volume, ``ProgramData``,
+        or a redirected directory - is refused rather than silently trusted.
+
+        This is the compensating control for F-1's residual risk. Pass
+        ``allow_outside_user_profile=True`` only when the location has been
+        secured independently, e.g. an ACL you control.
+        """
+        if not is_windows() or self._allow_outside_user_profile:
+            return
+        profile = Path(os.path.expanduser("~")).resolve()
+        try:
+            Path(self._path).resolve().relative_to(profile)
+        except ValueError as exc:
+            raise ProtectedStoreError(
+                f"refusing a Windows key store outside the user profile: {self._path} "
+                f"(expected it to be under {profile}). FloorVault cannot verify NT "
+                "ACLs elsewhere; move the store, or construct the provider with "
+                "allow_outside_user_profile=True if the location is already secured."
+            ) from exc
 
     @staticmethod
     def _is_windows() -> bool:
-        return os.name == "nt" and sys.platform in ("win32", "cygwin")
+        # Cygwin/MSYS report os.name == "posix" with sys.platform == "cygwin";
+        # the previous conjunction made this branch unreachable there.
+        return is_windows()
 
     # ---- Windows DPAPI boundary -------------------------------------------
 

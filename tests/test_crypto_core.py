@@ -155,3 +155,28 @@ def test_maximum_tracked_nonces_must_be_positive():
     for i in range(20):
         crypto.encrypt(f"m{i}", table="t", record_id=f"r{i}", column="c")
     assert len(crypto._nonce_queue) == 5
+
+
+def test_reencryption_is_not_deterministic():
+    """SIV is deterministic *given its inputs*, so the nonce must be one of them.
+
+    Raised during independent review as a plaintext-equality leak: if the AD
+    vector were static, re-encrypting the same value at the same coordinates
+    would produce identical ciphertext and an observer could tell when a stored
+    value was rewritten. The engine generates a fresh 128-bit nonce per
+    encryption and passes it as the final AD component, so this must hold.
+    """
+    crypto = FloorVault(b"\x08" * 32, app_instance_id="inst-nonrep", memory_mode="disabled")
+
+    ciphertexts = [
+        crypto.encrypt("identical-value", table="users", record_id="u-1", column="email")
+        for _ in range(5)
+    ]
+
+    assert len(set(ciphertexts)) == 5, "identical plaintext re-encrypted to identical ciphertext"
+    assert len({c[5:21] for c in ciphertexts}) == 5, "the envelope nonce repeats"
+    for ciphertext in ciphertexts:
+        assert (
+            crypto.decrypt(ciphertext, table="users", record_id="u-1", column="email")
+            == "identical-value"
+        )
