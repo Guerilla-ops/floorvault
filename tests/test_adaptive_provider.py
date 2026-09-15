@@ -6,7 +6,7 @@ import pytest
 
 from floorvault.providers import platform_custody as custody
 from floorvault.providers.adaptive import AdaptiveKeyProvider
-from floorvault.providers.base import KeyProviderError
+from floorvault.providers.base import CustodyDowngradeError, KeyProviderError
 
 
 def test_adaptive_provider_env_variable(monkeypatch, tmp_path):
@@ -148,3 +148,105 @@ def test_machine_file_fallback_survives_a_synthesised_mode(monkeypatch, tmp_path
 
     key1.wipe()
     key2.wipe()
+
+
+# --------------------------------------------------------------------------
+# F-5: a present-but-unusable keychain must fail closed, not downgrade custody
+# --------------------------------------------------------------------------
+
+
+def _fake_security(monkeypatch, *, copy_result=None, copy_raises=None, add_result=(0, None)):
+    """Install a fake ``Security`` module so the Keychain tier is drivable here.
+
+    The macOS Keychain cannot be exercised in CI or on a non-macOS host, so the
+    module is injected into ``sys.modules`` and its two entry points scripted.
+    """
+    import types
+
+    module = types.ModuleType("Security")
+    for name in (
+        "kSecClass",
+        "kSecClassGenericPassword",
+        "kSecAttrService",
+        "kSecAttrAccount",
+        "kSecReturnData",
+        "kSecMatchLimit",
+        "kSecMatchLimitOne",
+        "kSecValueData",
+        "kSecAttrAccessible",
+        "kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly",
+    ):
+        setattr(module, name, name)
+
+    def SecItemCopyMatching(_query, _flags):
+        if copy_raises is not None:
+            raise copy_raises
+        return copy_result
+
+    def SecItemAdd(_query, _flags):
+        return add_result
+
+    module.SecItemCopyMatching = SecItemCopyMatching  # type: ignore[attr-defined]
+    module.SecItemAdd = SecItemAdd  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "Security", module)
+    return module
+
+
+def _interactive_provider(monkeypatch, tmp_path, **kwargs):
+    for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, **kwargs)
+    monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: True)
+    return provider
+
+
+def test_keychain_error_fails_closed_instead_of_downgrading(monkeypatch, tmp_path):
+    """A keychain that is present but broken must not silently fall back.
+
+    Regression: ``except Exception: return None`` reported a Keychain
+    malfunction as "tier unavailable", so custody silently dropped from the
+    Keychain to a plaintext key file on disk.
+    """
+    _fake_security(monkeypatch, copy_raises=RuntimeError("keychain locked"))
+    provider = _interactive_provider(monkeypatch, tmp_path, allow_disk_fallback=True)
+
+    with pytest.raises(CustodyDowngradeError, match="unusable"):
+        provider.resolve_key()
+
+    assert not (tmp_path / "master.key").exists(), "weaker custody tier was used anyway"
+
+
+def test_keychain_deliberate_failure_is_not_swallowed(monkeypatch, tmp_path):
+    """The explicit KeyProviderError must surface rather than become a silent None.
+
+    Before the fix these raises were unreachable: the terminal
+    ``except Exception`` caught them and returned None.
+    """
+    # Item not found -> creation path; insertion then fails unexpectedly.
+    _fake_security(monkeypatch, copy_result=(-25300, None), add_result=(-25291, None))
+    provider = _interactive_provider(monkeypatch, tmp_path, allow_disk_fallback=True)
+
+    with pytest.raises(KeyProviderError, match="Keychain insert failed"):
+        provider.resolve_key()
+
+    assert not (tmp_path / "master.key").exists()
+
+
+def test_absent_keychain_still_falls_through_and_is_fail_closed(monkeypatch, tmp_path):
+    """A genuinely absent tier is not a downgrade: fall-through must be preserved."""
+    monkeypatch.setitem(sys.modules, "Security", None)  # `import Security` -> ImportError
+    provider = _interactive_provider(monkeypatch, tmp_path)
+
+    # Tier 3 then refuses, because disk fallback was not explicitly allowed.
+    with pytest.raises(KeyProviderError, match="Refusing headless fallback"):
+        provider.resolve_key()
+
+    assert not (tmp_path / "master.key").exists()
+
+
+def test_working_keychain_still_returns_the_key(monkeypatch, tmp_path):
+    """Guard against over-correcting: the success path must be untouched."""
+    _fake_security(monkeypatch, copy_result=(0, b"\x11" * 32))
+    provider = _interactive_provider(monkeypatch, tmp_path)
+
+    assert provider.resolve_key().get_bytes() == b"\x11" * 32

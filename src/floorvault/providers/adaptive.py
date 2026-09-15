@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..memory import HardenedMemoryKey
-from .base import KeyProvider, KeyProviderError
+from .base import CustodyDowngradeError, KeyProvider, KeyProviderError
 from .platform_custody import has_posix_group_or_other_access
 
 
@@ -127,8 +127,20 @@ class AdaptiveKeyProvider(KeyProvider):
                     if status != 0 or not data:
                         raise KeyProviderError(f"Keychain duplicate could not be read: {status}")
                     return HardenedMemoryKey(bytes(data))
-            except Exception:
-                return None
+            except KeyProviderError:
+                # Our own deliberate failures (lines above) must not be mistaken
+                # for "tier unavailable" - swallowing them silently downgrades
+                # custody. This clause is why they are no longer dead code.
+                raise
+            except Exception as exc:
+                # The Keychain is present and reachable but failed unexpectedly
+                # (locked, denied prompt, missing entitlement). Falling through
+                # to a weaker tier would hide that from the operator.
+                raise CustodyDowngradeError(
+                    "macOS Keychain is present but unusable "
+                    f"({type(exc).__name__}: {exc}); refusing to fall back to a "
+                    "weaker custody tier"
+                ) from exc
         return None
 
     def _resolve_machine_bound_file_key(self, *, allow_create: bool) -> HardenedMemoryKey:

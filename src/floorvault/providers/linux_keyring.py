@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..memory import HardenedMemoryKey
-from .base import KeyProvider, MissingKeyError
+from .base import CustodyDowngradeError, KeyProvider, KeyProviderError, MissingKeyError
 from .platform_custody import (
     ProtectedStoreError,
     ProtectedStoreMissing,
@@ -107,9 +107,19 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
             )
             return HardenedMemoryKey(key)
         except SecretServiceNotAvailable:
+            # The tier is genuinely not present on this session: falling through
+            # is correct and is not a downgrade.
             return None
-        except Exception:  # noqa: BLE001
-            return None
+        except (KeyProviderError, ProtectedStoreError):
+            # Deliberate failures (invalid key length, missing key, unavailable
+            # Secret Service when a desktop session exists) must surface.
+            raise
+        except Exception as exc:
+            raise CustodyDowngradeError(
+                "Secret Service is present but unusable "
+                f"({type(exc).__name__}: {exc}); refusing to fall back to a "
+                "weaker custody tier"
+            ) from exc
 
     # ---- fallback custody (masked protected file) -------------------------
 
