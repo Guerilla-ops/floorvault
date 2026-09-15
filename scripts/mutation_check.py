@@ -57,6 +57,7 @@ CURATED_TESTS = [
     "tests/test_store_permissions.py",
     "tests/test_keyring.py",
     "tests/test_rotation.py",
+    "tests/test_origin_index_bounded.py",
 ]
 
 # --------------------------------------------------------------------------
@@ -212,9 +213,9 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "ROT-1",
         "src/floorvault/vaultkit/vault.py",
-        "        origin_idx = new_vault.blind_index(",
-        "        origin_idx = self._crypto.blind_index(  # MUTANT",
-        "Blind index re-keyed under the OLD key: everything decrypts and search finds nothing",
+        "        origin_idx = new_vault.beacon(",
+        "        origin_idx = self._crypto.beacon(  # MUTANT",
+        "Origin index re-keyed under the OLD key: everything decrypts and search finds nothing",
     ),
     Mutation(
         "ROT-2",
@@ -229,6 +230,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         '                payload["modern_id"],\n                vault=new_vault,',
         '                payload["modern_id"],\n                vault=self._crypto,  # MUTANT',
         "Retirement tombstones left under the old key, so F-1 protection stops authenticating",
+    ),
+    Mutation(
+        "OIDX-1",
+        "src/floorvault/vaultkit/vault.py",
+        "            if row_origin != norm_origin:",
+        "            if False:  # MUTANT",
+        "Bucket collision reported as a match: a truncated index is read as proof of equality",
+    ),
+    Mutation(
+        "OIDX-2",
+        "src/floorvault/vaultkit/vault.py",
+        '        if conn.execute("PRAGMA user_version").fetchone()[0] >= 2:',
+        "        if True:  # MUTANT: never re-seal",
+        "Existing full-width origin indexes left in place: the disclosure survives the version bump",
     ),
     Mutation(
         "CANARY",

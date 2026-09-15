@@ -30,7 +30,12 @@ from floorvault.core import DecryptionVerificationError, FloorVault
 from floorvault.keyring import KeyRing, UnknownKeyIdError
 from floorvault.memory import HardenedMemoryKey
 from floorvault.migration import LegacyRetiredError, MigratingVaultStore
-from floorvault.vaultkit.vault import VaultError, VaultStore
+from floorvault.vaultkit.vault import (
+    ORIGIN_INDEX_BITS,
+    ORIGIN_INDEX_SCOPE,
+    VaultError,
+    VaultStore,
+)
 
 KEY_OLD = bytes.fromhex("11" * 32)
 KEY_NEW = bytes.fromhex("22" * 32)
@@ -178,7 +183,15 @@ def test_write_sealed_item_recomputes_the_blind_index(tmp_path):
         "SELECT origin_idx FROM vault_items WHERE id=?", (item.id,)
     ).fetchone()[0]
     after.close()
-    assert new_index != old_index, "the blind index was not recomputed for the new key"
+    # Pin the exact value rather than "it changed": the index is now a truncated
+    # bucket, so two different keys can legitimately land in the same bucket and
+    # an inequality assertion would be flaky at ~1/256 per run.
+    assert old_index == _vault(KEY_OLD).beacon(
+        "https://example.com", scope=ORIGIN_INDEX_SCOPE, bits=ORIGIN_INDEX_BITS
+    )
+    assert new_index == _vault(KEY_NEW).beacon(
+        "https://example.com", scope=ORIGIN_INDEX_SCOPE, bits=ORIGIN_INDEX_BITS
+    ), "the blind index was not recomputed for the new key"
 
 
 def test_lookup_by_origin_still_works_after_a_re_seal(tmp_path):

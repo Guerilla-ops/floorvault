@@ -56,6 +56,19 @@ REQUIRED_FIELDS = {
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
+# The origin search index.
+#
+# A full-width HMAC is deterministic and collision-free, so anyone holding the
+# database file could read *exact* equality (which rows share an origin) and the
+# frequency distribution of every origin straight out of the index. The index is
+# therefore a truncated bucket: 8 bits keeps 256 buckets, coarse enough that
+# exact equality is not recoverable, and still selective for a store of ordinary
+# size (use blind_index.suggest_beacon_bits to size a width to a dataset). A
+# bucket hit is candidate evidence only — find_by_origin confirms equality by
+# decrypting meta:origin, so a collision costs a decrypt and never a false match.
+ORIGIN_INDEX_BITS = 8
+ORIGIN_INDEX_SCOPE = "floor.vault.origin"
+
 
 class VaultError(Exception):
     """Vault failure that is safe to surface without leaking secrets."""
@@ -251,7 +264,8 @@ class VaultStore:
                 )
             """)
             self._migrate_plaintext_metadata(conn)
-            conn.execute("PRAGMA user_version = 1")
+            self._migrate_origin_index(conn)
+            conn.execute("PRAGMA user_version = 2")
 
     def _connect(self) -> sqlite3.Connection:
         """Open a connection with residue-reduction pragmas applied."""
@@ -287,6 +301,37 @@ class VaultStore:
                     self._encrypt_metadata(item_id, "identifier_type", identifier_type),
                     self._encrypt_metadata(item_id, "identifier", identifier),
                     self._encrypt_metadata(item_id, "created_at", created_at),
+                    item_id,
+                ),
+            )
+
+    def _migrate_origin_index(self, conn: sqlite3.Connection) -> None:
+        """Re-seal ``origin_idx`` at the bounded width (store format version 2).
+
+        Stores written before the index was bounded hold the full 32-byte HMAC,
+        which still discloses exact origin equality to anyone holding the file.
+        The index is not re-derived on read, so leaving it alone would leave the
+        disclosure in place for existing data; it is recomputed here from the
+        decrypted origin, which is the only value it can be derived from.
+        Idempotent: a store already at version 2 returns immediately.
+        """
+        if conn.execute("PRAGMA user_version").fetchone()[0] >= 2:
+            return
+        rows = conn.execute("SELECT id, origin FROM vault_items").fetchall()
+        for item_id, origin in rows:
+            if isinstance(origin, str):
+                # `_migrate_plaintext_metadata` owns this failure; reaching here
+                # means the call ordering above changed.
+                raise VaultError("plaintext metadata detected after migration")
+            decrypted = self._decrypt_metadata(item_id, "origin", origin)
+            conn.execute(
+                "UPDATE vault_items SET origin_idx = ? WHERE id = ?",
+                (
+                    self._crypto.beacon(
+                        str(decrypted or ""),
+                        scope=ORIGIN_INDEX_SCOPE,
+                        bits=ORIGIN_INDEX_BITS,
+                    ),
                     item_id,
                 ),
             )
@@ -369,7 +414,9 @@ class VaultStore:
         item_id = f"vault_{uuid.uuid4().hex[:12]}"
         created_at = datetime.now(timezone.utc).isoformat()
         origin_str = norm_origin or ""
-        origin_idx = self._crypto.blind_index(origin_str, scope="floor.vault.origin")
+        origin_idx = self._crypto.beacon(
+            origin_str, scope=ORIGIN_INDEX_SCOPE, bits=ORIGIN_INDEX_BITS
+        )
 
         # Contextually encrypt secret payload with AAD
         payload_json = json.dumps(clean_secret, ensure_ascii=False)
@@ -468,9 +515,15 @@ class VaultStore:
             return row is not None
 
     def find_by_origin(self, origin: str) -> list[VaultItemMeta]:
-        """Fast O(log N) lookup using HMAC blind indexing (0.18 ms)."""
+        """Find items for an exact origin, through the bounded origin bucket.
+
+        The stored index is a truncated bucket, so a row sharing the bucket is
+        only a *candidate*: equality is confirmed by decrypting that row's
+        ``meta:origin`` and comparing it to the normalized origin. A bucket
+        collision therefore costs a decrypt, never a false match.
+        """
         norm_origin = normalize_origin(origin)
-        origin_idx = self._crypto.blind_index(norm_origin, scope="floor.vault.origin")
+        bucket = self._crypto.beacon(norm_origin, scope=ORIGIN_INDEX_SCOPE, bits=ORIGIN_INDEX_BITS)
 
         with self._connect() as conn:
             cursor = conn.execute(
@@ -478,21 +531,31 @@ class VaultStore:
                 SELECT id, kind, label, origin, created_at, identifier_type, identifier, has_otp
                 FROM vault_items WHERE origin_idx = ?
                 """,
-                (origin_idx,),
+                (bucket,),
             )
-            return [
+            rows = cursor.fetchall()
+
+        matches: list[VaultItemMeta] = []
+        for row in rows:
+            row_origin = self._decrypt_metadata(row[0], "origin", row[3])
+            if row_origin != norm_origin:
+                # Bucket collision, not a match: the index no longer carries
+                # enough information to tell two origins apart, which is the
+                # point of truncating it.
+                continue
+            matches.append(
                 VaultItemMeta(
                     id=row[0],
                     kind=row[1],
                     label=self._decrypt_metadata(row[0], "label", row[2]) or "",
-                    origin=self._decrypt_metadata(row[0], "origin", row[3]),
+                    origin=row_origin,
                     created_at=self._decrypt_metadata(row[0], "created_at", row[4]) or "",
                     identifier_type=self._decrypt_metadata(row[0], "identifier_type", row[5]),
                     identifier=self._decrypt_metadata(row[0], "identifier", row[6]),
                     has_otp=bool(row[7]),
                 )
-                for row in cursor.fetchall()
-            ]
+            )
+        return matches
 
     def list_items(self) -> list[VaultItemMeta]:
         """List metadata for all stored items."""
@@ -646,8 +709,10 @@ class VaultStore:
         # The blind index is keyed off the same master key, so it must be
         # recomputed here. Skipping this leaves a store that decrypts perfectly
         # and finds nothing.
-        origin_idx = new_vault.blind_index(
-            str(meta.get("origin") or ""), scope="floor.vault.origin"
+        origin_idx = new_vault.beacon(
+            str(meta.get("origin") or ""),
+            scope=ORIGIN_INDEX_SCOPE,
+            bits=ORIGIN_INDEX_BITS,
         )
 
         with self._connect() as conn:
