@@ -15,7 +15,6 @@ problem, so the store fails closed rather than being trusted by default.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -64,10 +63,24 @@ def test_no_sids_at_all_is_not_a_problem():
 
 # ---------------------------------------------------------------------------
 # The POSIX branch
+#
+# These tests assert POSIX file-mode semantics. On Windows the mode is
+# synthesised and the gate consults the DACL instead, so the branch under test is
+# selected explicitly rather than inherited from the runner: a `skipif` would
+# leave the POSIX path uncovered on the Windows legs, and inheriting the runner's
+# platform makes the assertion mean something different there (which is exactly
+# how two of these tests failed on windows-latest).
 # ---------------------------------------------------------------------------
 
 
-def test_posix_owner_only_modes_are_accepted(tmp_path):
+def _posix_branch(monkeypatch):
+    monkeypatch.setattr(platform_support, "IS_WINDOWS", False)
+    # Fail loudly if the patch ever stops taking effect.
+    assert platform_support.has_posix_group_or_other_access(0o644) is True
+
+
+def test_posix_owner_only_modes_are_accepted(tmp_path, monkeypatch):
+    _posix_branch(monkeypatch)
     store = tmp_path / "master.key"
     store.write_bytes(b"k" * 32)
     for mode in (0o600, 0o400, 0o700):
@@ -75,7 +88,8 @@ def test_posix_owner_only_modes_are_accepted(tmp_path):
         assert store_permission_problem(store, store.stat().st_mode) is None, mode
 
 
-def test_posix_group_or_other_access_is_reported(tmp_path):
+def test_posix_group_or_other_access_is_reported(tmp_path, monkeypatch):
+    _posix_branch(monkeypatch)
     store = tmp_path / "master.key"
     store.write_bytes(b"k" * 32)
     store.chmod(0o644)
@@ -84,7 +98,8 @@ def test_posix_group_or_other_access_is_reported(tmp_path):
     assert "group" in problem or "other" in problem
 
 
-def test_posix_missing_mode_is_reported():
+def test_posix_missing_mode_is_reported(monkeypatch):
+    _posix_branch(monkeypatch)
     # No mode to inspect is not "fine": the gate must fail closed.
     problem = store_permission_problem(Path("/nonexistent"), None)
     assert problem is not None
@@ -180,7 +195,8 @@ def test_windows_world_accessible_file_is_refused(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_posix_gate_is_unchanged_for_a_real_store(tmp_path):
+def test_posix_gate_is_unchanged_for_a_real_store(tmp_path, monkeypatch):
+    _posix_branch(monkeypatch)
     store = tmp_path / "master.key"
     store.write_bytes(b"k" * 32)
     store.chmod(0o600)
@@ -190,6 +206,14 @@ def test_posix_gate_is_unchanged_for_a_real_store(tmp_path):
     assert store_permission_problem(store, store.stat().st_mode) is not None
 
 
-def test_module_has_no_posix_only_assumption_on_this_host():
-    """Sanity: this host is not Windows, so the POSIX branch is the live one."""
-    assert platform_support.is_windows() == (os.name == "nt")
+def test_platform_predicates_read_the_flag_at_call_time(monkeypatch):
+    """The predicates consult the module flag per call.
+
+    This is what makes the branch selection in these tests meaningful: it is how
+    a test drives the other platform's branch on any runner, and it is the
+    property the Windows legs of the matrix rely on.
+    """
+    monkeypatch.setattr(platform_support, "IS_WINDOWS", True)
+    assert platform_support.has_posix_group_or_other_access(0o644) is False
+    monkeypatch.setattr(platform_support, "IS_WINDOWS", False)
+    assert platform_support.has_posix_group_or_other_access(0o644) is True
