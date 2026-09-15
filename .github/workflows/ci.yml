@@ -1,0 +1,88 @@
+name: CI
+
+# Runs the same security gates developers run before pushing
+# (scripts/security-check.sh) across every supported OS and Python version, so
+# the cross-platform and "zero C compilation" claims are exercised on every
+# push rather than only on a maintainer's machine.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Python-version sweep on Linux (regressions here are platform-independent),
+  # plus one macOS and one Windows runner for the OS-specific code paths.
+  gates:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.10" }
+          - { os: ubuntu-latest, python: "3.11" }
+          - { os: ubuntu-latest, python: "3.12" }
+          - { os: ubuntu-latest, python: "3.13" }
+          - { os: ubuntu-latest, python: "3.14" }
+          - { os: macos-latest, python: "3.13" }
+          - { os: windows-latest, python: "3.13" }
+    steps:
+      # fetch-depth: 0 is required because gitleaks scans history, not just the
+      # tip; a shallow checkout would make the scan meaningless.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up uv and Python ${{ matrix.python }}
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+
+      - name: Sync environment
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            # Keychain (Tier 2 of the adaptive provider) needs the Security bindings.
+            uv sync --extra dev --extra macos
+          else
+            uv sync --extra dev
+          fi
+          # The gate audits dependencies with pip-audit; install it into the venv
+          # so require_tool finds it under FLOORVAULT_STRICT=1 on every OS.
+          uv pip install pip-audit
+
+      - name: Run security gates
+        shell: bash
+        env:
+          FLOORVAULT_STRICT: "1"
+          # History is identical on every runner, so the secret scan runs once,
+          # in the `secrets` job below.
+          FLOORVAULT_SKIP_SECRET_SCAN: "1"
+        run: bash scripts/security-check.sh
+
+  # Secret scanning runs once. gitleaks-action needs no license here: the
+  # Gitleaks license requirement applies to organization-owned repositories,
+  # and this repository is owned by a user account.
+  secrets:
+    name: secret scan (history)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
