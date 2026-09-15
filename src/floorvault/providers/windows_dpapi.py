@@ -39,7 +39,19 @@ def _random(n: int) -> bytes:
 
 
 class WindowsDPAPIKeyProvider(KeyProvider):
-    """Persistent Windows DPAPI master-key provider (with cross-platform store)."""
+    """Persistent Windows DPAPI master-key provider (with cross-platform store).
+
+    **Store location policy.** Windows has no POSIX permission bits: the mode
+    FloorVault reads back is synthesised, and an NT ACL cannot be inspected from
+    pure Python without a Windows-only dependency. The user profile is therefore
+    the only location whose protection can reasonably be assumed, and a store
+    outside it is REFUSED by default
+    (``allow_outside_user_profile=False``). This is deliberate: an accidental
+    ``C:\\ProgramData``, shared-volume, or redirected-directory placement would
+    otherwise be trusted on the strength of a permission check that cannot see
+    it. Pass ``allow_outside_user_profile=True`` only when that location has been
+    secured independently, e.g. by an ACL you control and have verified.
+    """
 
     def __init__(
         self,

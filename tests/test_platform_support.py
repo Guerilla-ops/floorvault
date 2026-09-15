@@ -13,6 +13,7 @@ These pin two review items:
 
 from __future__ import annotations
 
+import inspect
 import sys
 import types
 
@@ -128,6 +129,16 @@ def test_windows_override_allows_an_independently_secured_location(monkeypatch, 
         allow_outside_user_profile=True,
     )
     assert provider is not None
+
+
+def test_windows_provider_defaults_to_refusing_outside_locations():
+    """The safe default must not be flipped by a later refactor.
+
+    allow_outside_user_profile=False is the documented default; if it were
+    defaulted to True the containment control would be silently inert.
+    """
+    parameters = inspect.signature(wd_module.WindowsDPAPIKeyProvider.__init__).parameters
+    assert parameters["allow_outside_user_profile"].default is False
 
 
 def test_non_windows_is_unaffected_by_the_location_policy(monkeypatch, tmp_path):

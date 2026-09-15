@@ -366,20 +366,38 @@ def test_temporary_file_is_created_in_the_store_directory(tmp_path, monkeypatch)
         assert Path(destination) == store
 
 
-def test_store_directory_is_created_owner_only(tmp_path):
-    """0o700 on the directory, not merely 'no group/other' by accident.
+def test_store_directory_is_created_owner_only(tmp_path, monkeypatch):
+    """Every created component must be requested 0o700.
 
-    Uses umask 022 rather than 077: 0o077 would mask an injected other-execute
-    bit and hide the regression this asserts against.
+    Asserts the mode handed to ``mkdir``, which is meaningful on every platform,
+    and additionally the resulting mode on POSIX (Windows ignores the argument
+    and synthesises a mode from the ACL, so asserting 0o700 there would fail for
+    a reason unrelated to this property).
+
+    Uses umask 022 rather than 077 on purpose: 0o077 would mask an injected
+    other-execute bit and hide the regression this asserts against.
     """
+    requested: list[tuple[str, int]] = []
+    real_mkdir = Path.mkdir
+
+    def recording_mkdir(self, mode=0o777, parents=False, exist_ok=False):
+        requested.append((self.name, mode))
+        return real_mkdir(self, mode, parents, exist_ok)
+
+    monkeypatch.setattr(Path, "mkdir", recording_mkdir)
     previous = os.umask(0o022)
     try:
         write_protected(_KEY, tmp_path / "nested" / "deep" / "store", header=_HEADER)
     finally:
         os.umask(previous)
 
-    for directory in (tmp_path / "nested", tmp_path / "nested" / "deep"):
-        assert stat.S_IMODE(directory.stat().st_mode) == 0o700, directory
+    assert requested, "no directory was created"
+    for name, mode in requested:
+        assert stat.S_IMODE(mode) == 0o700, f"{name} was requested mode {oct(mode)}"
+
+    if not platform_support.is_windows():
+        for directory in (tmp_path / "nested", tmp_path / "nested" / "deep"):
+            assert stat.S_IMODE(directory.stat().st_mode) == 0o700, directory
 
 
 def test_writing_into_an_existing_directory_is_allowed(tmp_path):

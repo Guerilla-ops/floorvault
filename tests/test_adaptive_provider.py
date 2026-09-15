@@ -160,9 +160,16 @@ def _fake_security(monkeypatch, *, copy_result=None, copy_raises=None, add_resul
 
     The macOS Keychain cannot be exercised in CI or on a non-macOS host, so the
     module is injected into ``sys.modules`` and its two entry points scripted.
+
+    ``IS_MACOS`` is patched too: the Keychain tier is macOS-gated, so on the
+    Linux and Windows CI cells it would otherwise be skipped entirely and these
+    tests would assert nothing (they were written on macOS, where the gate is
+    already open). Patching the predicate keeps the F-5 fail-closed behaviour
+    covered on every runner.
     """
     import types
 
+    monkeypatch.setattr(platform_support, "IS_MACOS", True)
     module = types.ModuleType("Security")
     for name in (
         "kSecClass",
