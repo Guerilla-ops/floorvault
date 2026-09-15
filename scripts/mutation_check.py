@@ -53,6 +53,7 @@ CURATED_TESTS = [
     "tests/test_revision_binding.py",
     "tests/test_beacon.py",
     "tests/test_migration_retirement.py",
+    "tests/test_envelope_versioning.py",
 ]
 
 # --------------------------------------------------------------------------
@@ -158,7 +159,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "MIG-4",
         "src/floorvault/vaultkit/vault.py",
-        "        except FloorVaultError as exc:\n            raise VaultError(\n                f\"legacy retirement record failed authentication for {legacy_id!r}; \"",
+        '        except FloorVaultError as exc:\n            raise VaultError(\n                f"legacy retirement record failed authentication for {legacy_id!r}; "',
         '        except FloorVaultError as exc:\n            return {"legacy_id": legacy_id, "modern_id": ""}  # MUTANT\n            raise VaultError(\n                f"legacy retirement record failed authentication for {legacy_id!r}; "',
         "A tampered tombstone read as 'present but unmapped' instead of failing closed",
         expect="killed",
@@ -209,9 +210,31 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "CR-1",
         "src/floorvault/core.py",
-        "encrypt(data_bytes, [aad, nonce])",
-        "encrypt(data_bytes, [aad])  # MUTANT",
+        "encrypt(data_bytes, [aad, header, nonce])",
+        "encrypt(data_bytes, [aad, header])  # MUTANT",
         "Static AD vector: SIV becomes deterministic and leaks plaintext equality",
+    ),
+    Mutation(
+        "CR-3",
+        "src/floorvault/core.py",
+        "encrypt(data_bytes, [aad, header, nonce])",
+        "encrypt(data_bytes, [aad, nonce])  # MUTANT",
+        "Cleartext header stops being authenticated: a rewritten key id is accepted",
+    ),
+    Mutation(
+        "CR-4",
+        "src/floorvault/core.py",
+        "        return [aad, header, nonce] if header is not None else [aad, nonce]",
+        "        return [aad, header, nonce]  # MUTANT",
+        "v1 records read with the v2 AD vector: the compatibility path breaks",
+    ),
+    Mutation(
+        "CR-5",
+        "src/floorvault/core.py",
+        "            if crypto_version != CRYPTO_VERSION:",
+        "            if False:  # MUTANT",
+        "Version check removed - refused anyway by the header AD binding",
+        expect="survived",
     ),
     Mutation(
         "PC-13",

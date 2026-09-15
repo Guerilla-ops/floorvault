@@ -79,7 +79,10 @@ def test_revision_is_not_stored_in_the_envelope():
 
     assert first != second  # fresh nonce per encryption
     assert len(first) == len(second)  # same envelope shape: no revision field
-    assert first[:5] == second[:5] == b"FLRV\x10"
+    # Header is static (magic, crypto_version, key_id, nonce_len); the nonce
+    # that follows it is what changes between two encryptions here.
+    assert first[:7] == second[:7] == b"FLV2\x02\x00\x10"
+    assert first[7:23] != second[7:23]
 
 
 def test_associated_data_includes_revision_only_when_provided():

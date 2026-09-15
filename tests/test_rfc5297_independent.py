@@ -36,7 +36,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESSIV
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from floorvault import FloorVault, associated_data
-from floorvault.core import RECORD_MAGIC
+from floorvault.core import (  # noqa: E402
+    CRYPTO_VERSION,
+    RECORD_MAGIC,
+    RECORD_MAGIC_V2,
+    envelope_header,
+)
 from floorvault.memory import HardenedMemoryKey
 
 # --------------------------------------------------------------------------
@@ -285,6 +290,36 @@ def test_floorvault_key_schedule_matches_independent_hkdf():
     assert len(expected) == 64  # AES-256-SIV
 
 
+def test_v1_records_remain_conformant_siv_and_readable():
+    """The v1 envelope is still verified by the independent implementation.
+
+    v1 bound only ``[aad, nonce]``. A reader must keep using that vector for a
+    v1 record - the v2 vector, which adds the header block, must NOT verify it,
+    or the two formats would be interchangeable and the version field pointless.
+    """
+    master = bytes.fromhex("ab" * 32)
+    siv_key = HKDF(
+        algorithm=hashes.SHA256(), length=64, salt=None, info=b"floorvault-v1-aes-siv"
+    ).derive(master)
+    fv = _floorvault()
+
+    aad = associated_data(
+        table="users",
+        record_id="u-1",
+        column="email",
+        schema_id="floor.vault.v1",
+        schema_version=1,
+        app_instance_id=fv.app_instance_id,
+    )
+    nonce = bytes(range(16))
+    z = siv_encrypt(siv_key, b"legacy-secret", [aad, nonce])
+    env = RECORD_MAGIC + bytes([len(nonce)]) + nonce + z
+
+    assert siv_decrypt(siv_key, z, [aad, nonce]) == b"legacy-secret"
+    assert fv.decrypt(env, table="users", record_id="u-1", column="email") == "legacy-secret"
+    assert siv_decrypt(siv_key, z, [aad, env[:7], nonce]) is None
+
+
 def test_floorvault_ciphertext_recovers_with_independent_rfc5297():
     """FloorVault's real ciphertext must be openable by the from-spec impl.
 
@@ -306,9 +341,14 @@ def test_floorvault_ciphertext_recovers_with_independent_rfc5297():
     ]
     for table, rec, col, value in cases:
         env = fv.encrypt(value, table=table, record_id=rec, column=col)
-        assert env[:4] == RECORD_MAGIC
-        assert env[4] == 16
-        nonce, z = env[5:21], env[21:]
+        header = envelope_header(env)
+        assert header["magic"] == RECORD_MAGIC_V2
+        assert header["crypto_version"] == CRYPTO_VERSION
+        assert header["nonce_len"] == 16
+        # v2 layout: header || nonce || ciphertext, with the cleartext header
+        # bound as its own associated-data component.
+        hlen = header["header_len"]
+        nonce, z = env[hlen : hlen + 16], env[hlen + 16 :]
         aad = associated_data(
             table=table,
             record_id=rec,
@@ -317,7 +357,7 @@ def test_floorvault_ciphertext_recovers_with_independent_rfc5297():
             schema_version=1,
             app_instance_id=fv.app_instance_id,
         )
-        recovered = siv_decrypt(siv_key, z, [aad, nonce])
+        recovered = siv_decrypt(siv_key, z, [aad, env[:hlen], nonce])
         assert recovered is not None
         assert recovered.decode("utf-8") == value
 
@@ -331,7 +371,8 @@ def test_independent_impl_rejects_spliced_context_and_tamper():
     fv = _floorvault()
 
     env = fv.encrypt("sensitive", table="users", record_id="u-1", column="email")
-    nonce, z = env[5:21], env[21:]
+    hlen = envelope_header(env)["header_len"]
+    nonce, z = env[hlen : hlen + 16], env[hlen + 16 :]
     aad = associated_data(
         table="users",
         record_id="u-1",
@@ -340,7 +381,10 @@ def test_independent_impl_rejects_spliced_context_and_tamper():
         schema_version=1,
         app_instance_id=fv.app_instance_id,
     )
-    assert siv_decrypt(siv_key, z, [aad, nonce]) == b"sensitive"
+    assert siv_decrypt(siv_key, z, [aad, env[:hlen], nonce]) == b"sensitive"
+    # The cleartext header is authenticated: it is an AD component, so dropping
+    # or rewriting it must not verify.
+    assert siv_decrypt(siv_key, z, [aad, nonce]) is None
 
     # Wrong column -> different AAD -> FAIL.
     wrong_aad = associated_data(
