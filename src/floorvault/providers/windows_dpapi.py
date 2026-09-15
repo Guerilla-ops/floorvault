@@ -24,7 +24,12 @@ from typing import Callable
 
 from ..memory import HardenedMemoryKey
 from .base import KeyProvider, MissingKeyError
-from .platform_custody import ProtectedStoreError, read_protected, write_protected
+from .platform_custody import (
+    ProtectedStoreError,
+    ProtectedStoreMissing,
+    read_protected,
+    write_protected,
+)
 
 _HEADER = b"FLOORWV1"  # floorvault protected key store, dpapi boundary
 
@@ -146,7 +151,12 @@ class WindowsDPAPIKeyProvider(KeyProvider):
     def resolve_key(self, *, allow_create: bool = True) -> HardenedMemoryKey:
         try:
             blob = read_protected(self._path, header=_HEADER)
-        except ProtectedStoreError:
+        except ProtectedStoreMissing:
+            # Genuinely absent, so creating below is correct. Any other read
+            # failure (corrupt header, unexpected length, insecure mode) raises
+            # ProtectedStoreError and propagates: an unreadable store must never
+            # be treated as an absent one, or the existing master key would be
+            # silently replaced and the user's data lost.
             existing = None
         else:
             existing = blob

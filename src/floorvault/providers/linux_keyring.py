@@ -20,7 +20,12 @@ from typing import Callable
 
 from ..memory import HardenedMemoryKey
 from .base import KeyProvider, MissingKeyError
-from .platform_custody import ProtectedStoreError, read_protected, write_protected
+from .platform_custody import (
+    ProtectedStoreError,
+    ProtectedStoreMissing,
+    read_protected,
+    write_protected,
+)
 
 _HEADER = b"FLOORLV1"  # floorvault protected key store, linux/secret-service boundary
 
@@ -121,7 +126,9 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
         # Fallback: masked protected file.
         try:
             blob = read_protected(self._path, header=_HEADER)
-        except ProtectedStoreError:
+        except ProtectedStoreMissing:
+            # Absent: creating below is correct. Other read failures propagate,
+            # so an unreadable store is never replaced by a fresh key.
             blob = None
         if blob is not None:
             key = self._mask(blob)

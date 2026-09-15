@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from floorvault.providers import adaptive as adaptive_module
+from floorvault.providers import platform_custody as custody
 from floorvault.providers.adaptive import AdaptiveKeyProvider
 from floorvault.providers.base import KeyProviderError
 
@@ -119,39 +119,20 @@ def test_adaptive_provider_rejects_insecure_existing_key_file(monkeypatch, tmp_p
         provider.resolve_key(allow_create=False)
 
 
-def test_posix_mode_check_detects_group_or_other_access():
-    """On POSIX the 0600 gate is meaningful and must stay strict."""
-    assert adaptive_module.has_posix_group_or_other_access(0o644) is True
-    assert adaptive_module.has_posix_group_or_other_access(0o640) is True
-    assert adaptive_module.has_posix_group_or_other_access(0o606) is True
-    assert adaptive_module.has_posix_group_or_other_access(0o600) is False
-    assert adaptive_module.has_posix_group_or_other_access(0o400) is False
-
-
-def test_synthesised_windows_mode_is_not_treated_as_insecure(monkeypatch):
-    """Windows does not implement POSIX mode bits.
-
-    ``os.stat()`` reports a synthesised mode (typically 0o666 for a writable
-    file) regardless of the ACL, so applying the POSIX test there rejects every
-    key file - including one the provider itself just wrote with 0600.
-    """
-    monkeypatch.setattr(adaptive_module, "IS_WINDOWS", True)
-    assert adaptive_module.has_posix_group_or_other_access(0o666) is False
-    assert adaptive_module.has_posix_group_or_other_access(0o644) is False
-
-
 def test_machine_file_fallback_survives_a_synthesised_mode(monkeypatch, tmp_path):
     """Regression for the Windows CI failure.
 
     The provider writes master.key with 0600; on Windows that same file then
     reports 0o666, and the second resolve refused the provider's own key file
     with "Refusing key file with insecure permissions".
+
+    The permission helper itself is unit-tested in test_protected_store_safety.py.
     """
     for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
 
     # Simulate the platform the gate must treat as Windows.
-    monkeypatch.setattr(adaptive_module, "IS_WINDOWS", True)
+    monkeypatch.setattr(custody, "IS_WINDOWS", True)
 
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)
     monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)
