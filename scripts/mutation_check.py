@@ -51,6 +51,7 @@ CURATED_TESTS = [
     "tests/test_platform_support.py",
     "tests/test_crypto_core.py",
     "tests/test_revision_binding.py",
+    "tests/test_beacon.py",
 ]
 
 # --------------------------------------------------------------------------
@@ -223,6 +224,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         'payload["revision"] = revision',
         "pass  # MUTANT",
         "Revision dropped from the AAD: same-coordinate replay becomes undetectable",
+    ),
+    Mutation(
+        "BE-1",
+        "src/floorvault/blind_index.py",
+        "    return bucket_bytes * 8",
+        "    return bucket_bytes * 4  # MUTANT",
+        "Width recommendation halved: buckets sized far below the dataset target",
     ),
 )
 

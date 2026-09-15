@@ -60,11 +60,11 @@ def compute_blind_index(
 # Truncated HMAC BEACON (AWS-DB-Encryption-SDK-style search index)
 #
 # The full-width blind index leaks exact equality + frequency of every indexed
-# value to anyone holding the database. A "beacon" keeps only a bounded number
-# of bits of the HMAC (default 4 bits = 16 buckets), so:
+# value to anyone holding the database. A "beacon" keeps only a bounded amount
+# of the HMAC (default: one bucket byte = 256 buckets), so:
 #   * an attacker cannot recover exact equality / frequency from the index, and
 #   * the app still finds CANDIDATE rows in O(log N) via the bucket, then
-#     re-derives the full beacon / decrypts to confirm the exact match.
+#     decrypts the shortlisted candidates to confirm the exact match.
 # This is the industry-standard design (AWS beacons, CipherSweet bloom filters)
 # and it is what makes the "zero query privacy leakage" claim true.
 # ---------------------------------------------------------------------------
@@ -90,11 +90,14 @@ def compute_beacon(
     """Return a truncated, bounded-behavior search beacon for ``value``.
 
     The beacon is a deterministic prefix of the value's keyed HMAC (domain
-    separated by ``scope``), truncated to ``bits`` of entropy. Two DISTINCT
-    values map to the same bucket with probability ~2^-bits, so the stored
-    index reveals only a coarse bin, never the exact value or its true
-    frequency. Use ``beacon_matches`` (or decrypt the candidate) to confirm an
-    exact match after a bucket lookup.
+    separated by ``scope``), truncated to ``bits`` of requested width. Storage
+    is byte-aligned (``ceil(bits / 8)`` bytes are kept), so two DISTINCT
+    values collide within a bucket with a probability that reflects the
+    effective width; the stored index reveals only a coarse bin, never the
+    exact value or its true frequency. After a bucket lookup, use
+    ``beacon_matches`` to discard candidates whose bucket disagrees, then
+    confirm EXACT equality by decrypting the candidate and comparing its
+    plaintext — a bucket hit is not by itself proof of equality.
     """
     bucket_size = beacon_bucket_bytes(bits)
     full = _hmac(value, scope=scope, key=key)
@@ -113,10 +116,48 @@ def beacon_matches(
 
     Used to disambiguate the candidate set returned by a truncated-beacon
     bucket query: assert ``beacon_matches(value)`` for each row before
-    attempting decryption, to avoid decrypting unrelated collisions.
+    attempting decryption, to avoid decrypting unrelated collisions. A True
+    result means both values share the same bucket — collisions are by design —
+    not that the values are equal; confirm equality by decrypting the
+    candidate.
     """
     candidate = compute_beacon(value, scope=scope, key=key, bits=bits)
     return hmac.compare_digest(candidate, bytes(beacon))
+
+
+def suggest_beacon_bits(expected_rows: int, target_bucket_size: int = 8) -> int:
+    """Recommend a beacon width (``bits``) sized to a dataset.
+
+    There is no universally safe width: the index must be coarse enough that
+    an observer cannot recover exact equality or frequency, and fine enough
+    that a search does not have to decrypt most of the table. Given
+    ``expected_rows`` indexed values and a target average bucket occupancy of
+    ``target_bucket_size``, returns the smallest byte-aligned width whose
+    average occupancy is at or below the target.
+
+    Buckets are byte-aligned (:func:`beacon_bucket_bytes`), so a width of
+    ``bits`` stores ``ceil(bits / 8)`` bytes and the index holds
+    ``256 ** ceil(bits / 8)`` buckets; the result is a multiple of 8 in
+    [8, 64] (``bits=8`` is equivalent to every value in 4..8). At very large
+    ``expected_rows`` the result clamps to 64 and the requested occupancy may
+    not be reachable.
+    """
+    if isinstance(expected_rows, bool) or not isinstance(expected_rows, int):
+        raise TypeError("expected_rows must be a positive integer")
+    if expected_rows < 1:
+        raise ValueError("expected_rows must be a positive integer")
+    if isinstance(target_bucket_size, bool) or not isinstance(target_bucket_size, int):
+        raise TypeError("target_bucket_size must be a positive integer")
+    if target_bucket_size < 1:
+        raise ValueError("target_bucket_size must be a positive integer")
+
+    buckets_needed = -(-expected_rows // target_bucket_size)  # ceiling division
+    bucket_bytes = 1
+    capacity = 256
+    while capacity < buckets_needed and bucket_bytes < _MAX_BEACON_BITS // 8:
+        bucket_bytes += 1
+        capacity *= 256
+    return bucket_bytes * 8
 
 
 class BlindIndexer:

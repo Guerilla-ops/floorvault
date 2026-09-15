@@ -17,6 +17,7 @@ from floorvault.blind_index import (
     beacon_bucket_bytes,
     beacon_matches,
     compute_beacon,
+    suggest_beacon_bits,
 )
 
 
@@ -87,3 +88,53 @@ def test_blind_indexer_beacon_round_trip():
     assert len(b) == beacon_bucket_bytes(bits=8)
     assert indexer.verify_beacon("alice@example.com", scope="users.email", beacon=b, bits=8) is True
     assert indexer.verify_beacon("bob@example.com", scope="users.email", beacon=b, bits=8) is False
+
+
+def test_suggest_beacon_bits_sizes_buckets_to_the_dataset():
+    """The width recommendation answers "which bits for THIS dataset?".
+
+    Buckets are byte-aligned, so the average occupancy of a width ``bits``
+    over ``N`` rows is ``N / 256**ceil(bits/8)``. The recommendation is the
+    smallest byte-aligned width whose average occupancy is at or below the
+    requested target bucket size.
+    """
+    assert suggest_beacon_bits(1) == 8
+    assert suggest_beacon_bits(100, target_bucket_size=8) == 8
+    assert suggest_beacon_bits(100_000) == 16
+    assert suggest_beacon_bits(100_000, target_bucket_size=16) == 16
+    assert suggest_beacon_bits(10**12) == 40
+    assert suggest_beacon_bits(10**30) == 64  # clamped to the supported maximum
+
+
+def test_suggest_beacon_bits_is_byte_aligned_and_minimal():
+    for rows, target in [
+        (100, 8),
+        (10_000, 8),
+        (100_000, 8),
+        (10**6, 16),
+        (12345, 4),
+        (500_000, 8),
+    ]:
+        bits = suggest_beacon_bits(rows, target_bucket_size=target)
+        assert bits % 8 == 0, "recommendation must be byte-aligned"
+        assert 8 <= bits <= 64
+        bucket_bytes = bits // 8
+        occupancy = rows / (256**bucket_bytes)
+        assert occupancy <= target or bits == 64, "target occupancy not met"
+        if bucket_bytes > 1:
+            assert rows / (256 ** (bucket_bytes - 1)) > target, "width is not minimal"
+
+
+def test_suggest_beacon_bits_rejects_invalid_input():
+    for bad in (0, -1, 1.5, "100"):
+        with pytest.raises((TypeError, ValueError)):
+            suggest_beacon_bits(bad)
+    for bad in (0, -8, 2.5):
+        with pytest.raises((TypeError, ValueError)):
+            suggest_beacon_bits(100, target_bucket_size=bad)
+
+
+def test_suggest_beacon_bits_is_exported_from_the_package():
+    import floorvault
+
+    assert floorvault.suggest_beacon_bits is suggest_beacon_bits

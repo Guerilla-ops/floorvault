@@ -385,16 +385,21 @@ class FloorVault:
         """Compute a truncated search beacon (bounded bucket assignment).
 
         Unlike ``blind_index`` (full-width, leaks equality/frequency), the
-        beacon keeps only ``bits`` of HMAC entropy so the stored index reveals
-        a coarse bucket — not the exact value or its frequency. Look up the
-        bucket, then confirm with ``beacon_matches`` or by decrypting.
+        beacon keeps only a byte-aligned prefix of the HMAC so the stored index
+        reveals a coarse bucket — not the exact value or its frequency. Look up
+        the bucket, use ``beacon_matches`` to narrow candidates, then confirm
+        exact equality by decrypting.
         """
         if self._closed:
             raise RuntimeError("FloorVault has been wiped")
         return compute_beacon(value, scope=scope, key=self._index_key, bits=bits)
 
     def beacon_matches(self, value: str, *, scope: str, beacon: bytes, bits: int = 4) -> bool:
-        """True iff ``value``'s beacon equals the stored ``beacon``."""
+        """True iff ``value``'s beacon equals the stored ``beacon``.
+
+        A True result proves bucket agreement only (collisions are by design);
+        confirm equality by decrypting the candidate.
+        """
         return beacon_matches(value, scope=scope, key=self._index_key, beacon=beacon, bits=bits)
 
     def wipe(self) -> None:

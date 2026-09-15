@@ -8,6 +8,7 @@ from .blind_index import (
     beacon_matches,
     compute_beacon,
     compute_blind_index,
+    suggest_beacon_bits,
 )
 from .core import (
     AppStateCrypto,
@@ -49,6 +50,7 @@ __all__ = [
     "beacon_matches",
     "compute_beacon",
     "compute_blind_index",
+    "suggest_beacon_bits",
     # SQLite Helpers
     "ContextualSQLite",
     "ContextualTable",
