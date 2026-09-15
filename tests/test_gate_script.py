@@ -24,9 +24,16 @@ def test_path_setup_handles_the_windows_venv_layout():
     assert ".venv/Scripts" in TEXT, "gate script cannot find the venv on Windows"
 
 
-def test_strict_mode_fails_when_a_gate_tool_is_missing():
-    """In CI a missing tool must be fatal; locally it may only warn."""
-    assert "FLOORVAULT_STRICT" in TEXT
+def test_strict_mode_is_the_default_and_requires_an_explicit_opt_out():
+    """A missing gate tool must be fatal unless someone opts out deliberately.
+
+    The previous default warned and continued, so a missing pip-audit removed the
+    dependency CVE audit from the gate while it still reported every gate as
+    passing. Failing closed has to be the default; weakening the gate must be an
+    explicit act, not the path of least resistance.
+    """
+    assert 'STRICT="${FLOORVAULT_STRICT:-1}"' in TEXT, "strict mode is not the default"
+    assert "FLOORVAULT_STRICT=0" in TEXT, "no documented opt-out from strict mode"
     assert "require_tool" in TEXT
 
 

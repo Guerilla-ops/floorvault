@@ -56,6 +56,17 @@ class ProtectedStoreInvalidLength(ProtectedStoreError):
     """
 
 
+class ProtectedStoreHeaderError(ProtectedStoreError):
+    """The store exists but does not start with the expected magic header.
+
+    Distinct for the same reason as the length error, plus one more: this check
+    runs *first*, so if its raise were removed the length check would fail on the
+    same blob and raise a different subclass. An assertion naming only the base
+    class cannot tell those two paths apart, which is how a mutant that deleted
+    this raise survived until the test asserted this type specifically.
+    """
+
+
 def _mkdir_owner_only(directory: Path) -> None:
     """Create ``directory`` and every missing ancestor with mode 0700.
 
@@ -156,7 +167,7 @@ def read_protected(path: Path, *, header: bytes) -> bytes:
     finally:
         os.close(fd)
     if not raw.startswith(header):
-        raise ProtectedStoreError("protected store has an unknown or missing header")
+        raise ProtectedStoreHeaderError("protected store has an unknown or missing header")
     key = raw[len(header) :]
     if len(key) != 32:
         raise ProtectedStoreInvalidLength("protected store key has an unexpected length")

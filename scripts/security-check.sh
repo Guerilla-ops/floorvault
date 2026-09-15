@@ -5,14 +5,17 @@
 # and by CI on every supported OS and Python version.
 #
 # Behaviour knobs:
-#   FLOORVAULT_STRICT=1            a missing gate tool is fatal (default: warn + skip)
+#   FLOORVAULT_STRICT=0            allow a missing gate tool to be skipped (warn)
+#                                  rather than failing the gate. Default is 1:
+#                                  fail closed, so a missing tool can never be
+#                                  mistaken for a passing check.
 #   FLOORVAULT_SKIP_SECRET_SCAN=1  skip the gitleaks history scan
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
-STRICT="${FLOORVAULT_STRICT:-0}"
+STRICT="${FLOORVAULT_STRICT:-1}"
 
 echo "============================================================"
 echo "    STARTING LOCAL SECURITY & CRYPTOGRAPHIC VERIFICATION    "
@@ -27,13 +30,16 @@ for candidate in "$REPO_DIR/.venv/bin" "$REPO_DIR/.venv/Scripts"; do
 done
 
 require_tool() {
-    # In strict mode (CI) a missing tool is fatal; locally it is a loud warning.
+    # Fail closed by default: a gate that silently skips a missing tool reports
+    # success it did not earn (a missing pip-audit once removed the dependency
+    # CVE audit from this gate entirely). Opting out is deliberate and explicit.
     if ! command -v "$1" >/dev/null 2>&1; then
         if [ "$STRICT" = "1" ]; then
             echo "[FAIL] Required gate tool not found: $1" >&2
+            echo "       Install it, or set FLOORVAULT_STRICT=0 to run without this check." >&2
             exit 1
         fi
-        echo "[WARN] $1 not found. Skipping (set FLOORVAULT_STRICT=1 to fail instead)."
+        echo "[WARN] $1 not found. Skipping (FLOORVAULT_STRICT=0)."
         return 1
     fi
     return 0

@@ -181,6 +181,27 @@ MUTATIONS: tuple[Mutation, ...] = (
         "encrypt(data_bytes, [aad])  # MUTANT",
         "Static AD vector: SIV becomes deterministic and leaks plaintext equality",
     ),
+    Mutation(
+        "PC-13",
+        "src/floorvault/providers/platform_custody.py",
+        '        raise ProtectedStoreHeaderError("protected store has an unknown or missing header")',
+        "        pass  # MUTANT",
+        "Header raise deleted; the length check below would mask it for a base-class assertion",
+    ),
+    Mutation(
+        "PC-14",
+        "src/floorvault/providers/platform_custody.py",
+        "        if path.exists():",
+        "        if False:  # MUTANT",
+        "No-clobber check disabled in the no-hard-link fallback, which then replaces the store",
+    ),
+    Mutation(
+        "PC-15",
+        "src/floorvault/providers/platform_custody.py",
+        "        item.mkdir(mode=0o700, exist_ok=True)",
+        "        item.mkdir(mode=0o700, exist_ok=False)",
+        "Directory creation loses tolerance for a directory created by another writer",
+    ),
 )
 
 # --------------------------------------------------------------------------

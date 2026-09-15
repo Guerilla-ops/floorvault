@@ -35,6 +35,7 @@ from floorvault.providers import platform_custody as custody
 from floorvault.providers.base import MissingKeyError
 from floorvault.providers.platform_custody import (
     ProtectedStoreError,
+    ProtectedStoreHeaderError,
     ProtectedStoreInvalidLength,
     ProtectedStoreMissing,
     read_protected,
@@ -298,8 +299,11 @@ def test_corrupt_store_is_never_reported_as_absent(provider_name, tmp_path, monk
     # A store that exists but cannot be parsed.
     store.write_bytes(b"XXXX" + b"\x00" * 32)
 
-    # 1. Fails on the read, not on the write guard.
-    with pytest.raises(ProtectedStoreError, match="header|length|0600|permission"):
+    # 1. Fails on the read, not on the write guard. The header is asserted
+    #    specifically: a base-class assertion here would also be satisfied by the
+    #    length check further down, which is how a mutant that removed the header
+    #    raise survived.
+    with pytest.raises(ProtectedStoreHeaderError, match="header"):
         _build(provider_name, store).resolve_key(allow_create=True)
 
     # 2. Unreadable is not absent.
@@ -433,3 +437,62 @@ def test_invalid_length_is_also_a_protected_store_error(tmp_path):
 
     with pytest.raises(ProtectedStoreError):
         read_protected(store, header=_HEADER)
+
+
+def test_invalid_header_raises_its_own_error_type(tmp_path):
+    """The header check runs first, so it cannot be pinned by the base class.
+
+    With a base-class assertion the length check below satisfies the expectation
+    instead, and a mutant that deletes the header raise survives.
+    """
+    store = tmp_path / "store"
+    store.write_bytes(b"XXXXXXXX" + b"\x00" * 32)
+    store.chmod(0o600)
+
+    with pytest.raises(ProtectedStoreHeaderError):
+        read_protected(store, header=_HEADER)
+
+
+def test_fallback_publish_refuses_to_replace_an_existing_store(tmp_path, monkeypatch):
+    """Without hard links the publish is check-then-replace, so it must still refuse.
+
+    Monkeypatches os.link to raise OSError, the way a FAT or some network volume
+    behaves. The no-clobber check in that fallback is the only thing standing
+    between a second writer and the first writer's key.
+    """
+    store = tmp_path / "store"
+    write_protected(_KEY, store, header=_HEADER)
+    original = store.read_bytes()
+
+    def hard_links_unavailable(*_args, **_kwargs):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(custody.os, "link", hard_links_unavailable)
+
+    with pytest.raises(ProtectedStoreError, match="refusing to overwrite"):
+        write_protected(b"\x33" * 32, store, header=_HEADER)
+
+    assert store.read_bytes() == original, "the fallback clobbered an existing store"
+
+
+def test_creation_tolerates_a_directory_appearing_after_the_check(tmp_path, monkeypatch):
+    """exist_ok=True exists for a real race, not as decoration.
+
+    Another process can create the directory between our existence scan and our
+    mkdir; without the flag that raises FileExistsError and the store cannot be
+    created at all. Simulated by making the scan report a directory as missing
+    while it is really there.
+    """
+    target = tmp_path / "nested"
+    target.mkdir()
+    real_exists = Path.exists
+
+    def lying_exists(self):
+        if self == target:
+            return False
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", lying_exists)
+
+    write_protected(_KEY, target / "store", header=_HEADER)
+    assert read_protected(target / "store", header=_HEADER) == _KEY
