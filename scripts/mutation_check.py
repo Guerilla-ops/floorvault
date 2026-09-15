@@ -55,6 +55,7 @@ CURATED_TESTS = [
     "tests/test_migration_retirement.py",
     "tests/test_envelope_versioning.py",
     "tests/test_store_permissions.py",
+    "tests/test_keyring.py",
 ]
 
 # --------------------------------------------------------------------------
@@ -185,6 +186,27 @@ MUTATIONS: tuple[Mutation, ...] = (
         '        except FloorVaultError as exc:\n            return {"legacy_id": legacy_id, "modern_id": ""}  # MUTANT\n            raise VaultError(\n                f"legacy retirement record failed authentication for {legacy_id!r}; "',
         "A tampered tombstone read as 'present but unmapped' instead of failing closed",
         expect="killed",
+    ),
+    Mutation(
+        "KR-1",
+        "src/floorvault/keyring.py",
+        "        except KeyError:\n            raise UnknownKeyIdError(",
+        "        except KeyError:\n            return next(iter(self._keys.values()))  # MUTANT\n            raise UnknownKeyIdError(",
+        "Ring silently falls back to an arbitrary held key instead of refusing an unknown id",
+    ),
+    Mutation(
+        "KR-2",
+        "src/floorvault/keyring.py",
+        "            if self._default_key_id is None:\n                raise UnknownKeyIdError(",
+        "            if False:  # MUTANT\n                raise UnknownKeyIdError(",
+        "Ring guesses a key for a v1 record instead of demanding a declared default",
+    ),
+    Mutation(
+        "KR-3",
+        "src/floorvault/keyring.py",
+        "            if default_key_id not in checked:",
+        "            if False:  # MUTANT",
+        "Ring accepts a default_key_id it does not hold, deferring the failure to read time",
     ),
     Mutation(
         "CANARY",

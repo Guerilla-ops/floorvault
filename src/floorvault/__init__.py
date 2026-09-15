@@ -19,6 +19,7 @@ from .core import (
     NonceReuseError,
     associated_data,
 )
+from .keyring import KeyRing, UnknownKeyIdError
 from .memory import (
     HardenedMemoryKey,
     SecurityHardeningError,
@@ -62,4 +63,7 @@ __all__ = [
     # Lazy Migration
     "MigratingVaultStore",
     "LegacyVaultError",
+    # Multi-generation reads (rotation)
+    "KeyRing",
+    "UnknownKeyIdError",
 ]
