@@ -17,6 +17,24 @@ from typing import Optional
 from ..memory import HardenedMemoryKey
 from .base import KeyProvider, KeyProviderError
 
+# Resolved at import; tests patch it to exercise both platforms' behaviour.
+IS_WINDOWS = os.name == "nt"
+
+
+def has_posix_group_or_other_access(mode: int) -> bool:
+    """Whether POSIX permission bits grant group or other access.
+
+    Windows does not implement POSIX permission bits: ``os.stat()`` reports a
+    synthesised mode (typically ``0o666`` for a writable file) regardless of the
+    file's ACL. Applying this test there would reject every key file - including
+    one this provider has just written with ``0o600`` - so on Windows the key
+    file's protection comes from the ACL of the user's profile directory rather
+    than from mode bits.
+    """
+    if IS_WINDOWS:
+        return False
+    return bool(mode & 0o077)
+
 
 class AdaptiveKeyProvider(KeyProvider):
     """Adaptive key provider with fail-closed protected-storage defaults."""
@@ -147,7 +165,7 @@ class AdaptiveKeyProvider(KeyProvider):
                 raise KeyProviderError("Refusing non-regular key file")
             if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():
                 raise KeyProviderError("Refusing key file with unexpected owner")
-            if file_stat.st_mode & 0o077:
+            if has_posix_group_or_other_access(file_stat.st_mode):
                 raise KeyProviderError("Refusing key file with insecure permissions")
             key_bytes = key_file.read_bytes()
             if len(key_bytes) == 32:
