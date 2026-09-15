@@ -131,3 +131,37 @@ def test_only_one_matrix_leg_publishes_the_artifacts():
         "the upload step has no condition, so every matrix leg would publish"
     )
     assert "matrix." in step, "the upload condition does not reference the matrix"
+
+
+# ---------------------------------------------------------------------------
+# The secret scan
+#
+# The gitleaks ACTION requires a licence for organization-owned repositories. The
+# repository moved into the `vaultfloor` organization, so the Action began failing
+# with "License key is required", and because the workflow cancels in-progress
+# runs, that single failure cancelled five other legs. The comment above the job
+# had asserted the licence was unnecessary - true when written, false after the
+# move, and the kind of stale claim that turns into a red build.
+#
+# The OSS CLI has no such gate and runs exactly the command the local gate runs,
+# so CI and the local run now agree on what the scan is.
+# ---------------------------------------------------------------------------
+
+
+def test_the_secret_scan_does_not_use_the_license_gated_action():
+    assert "gitleaks/gitleaks-action@" not in TEXT, (
+        "the gitleaks Action needs a licence for organization-owned repos; use the CLI"
+    )
+    assert "gitleaks git" in TEXT, "CI does not run the same scan command as the local gate"
+
+
+def test_the_secret_scanner_is_pinned_and_its_checksum_verified():
+    """The scanner is part of the gate, so its provenance is part of the gate."""
+    assert re.search(r"VERSION=\d+\.\d+\.\d+", TEXT), "the scanner version is not pinned"
+    assert re.search(r"SHA256=[0-9a-f]{64}", TEXT), "no pinned checksum for the download"
+    assert "sha256sum -c -" in TEXT, "the downloaded scanner is not verified before use"
+
+
+def test_the_secret_scan_still_runs_over_full_history():
+    """A shallow checkout would make a history scan meaningless."""
+    assert "fetch-depth: 0" in TEXT

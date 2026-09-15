@@ -99,19 +99,43 @@ jobs:
           # than no step at all, because it looks like the artifact was captured.
           if-no-files-found: error
 
-  # Secret scanning runs once. gitleaks-action needs no license here: the
-  # Gitleaks license requirement applies to organization-owned repositories,
-  # and this repository is owned by a user account.
+  # Secret scanning over full history, once, on Linux.
+  #
+  # This runs the gitleaks CLI rather than `gitleaks/gitleaks-action`: the Action
+  # requires a licence for ORGANIZATION-owned repositories, and this repository
+  # moved into the `vaultfloor` organization, at which point the job started
+  # failing with "License key is required" and - because the workflow cancels
+  # in-progress runs - cancelled five other legs with it. The CLI has no such
+  # gate, runs exactly the command the local gate runs, and removes one
+  # third-party action from the supply chain.
+  #
+  # The download is version-pinned and checksum-verified: a scanner that cannot
+  # be verified must not silently become the thing that certifies everything else.
   secrets:
     name: secret scan (history)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     steps:
       - uses: actions/checkout@v6
         with:
+          # A shallow checkout would make a history scan meaningless.
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install gitleaks (pinned, checksum-verified)
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=8.30.1
+          ASSET="gitleaks_${VERSION}_linux_x64.tar.gz"
+          SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl -sSfL -o "$ASSET" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/${ASSET}"
+          echo "${SHA256}  ${ASSET}" | sha256sum -c -
+          tar -xzf "$ASSET" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Scan history for secrets
+        shell: bash
+        # Same command as step 1 of scripts/security-check.sh, so CI and a local
+        # run agree on what the scan is. Non-zero exit when a secret is found.
+        run: gitleaks git --verbose --redact
