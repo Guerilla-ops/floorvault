@@ -51,20 +51,25 @@ def run(iterations: int = 2000) -> dict[str, float]:
     import sqlite3
     import tempfile
 
-    db = tempfile.mktemp(".bench.db")
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE t (id TEXT PRIMARY KEY, blob BLOB)")
-    conn.commit()
+    # A TemporaryDirectory, never tempfile.mktemp(): mktemp hands back a *name*,
+    # and the gap before the caller creates the file is a race another process
+    # can win - which is why it is deprecated (CodeQL py/insecure-temporary-file
+    # flagged this line). This form also cleans up after itself; the old one left
+    # a stray .bench.db in the temp directory on every run.
+    with tempfile.TemporaryDirectory(prefix="fv-bench-") as tmpdir:
+        conn = sqlite3.connect(Path(tmpdir) / "bench.db")
+        conn.execute("CREATE TABLE t (id TEXT PRIMARY KEY, blob BLOB)")
+        conn.commit()
 
-    def sqlite_write():
-        conn.execute("INSERT OR REPLACE INTO t VALUES (?, ?)", ("r", PAYLOAD.encode()))
+        def sqlite_write():
+            conn.execute("INSERT OR REPLACE INTO t VALUES (?, ?)", ("r", PAYLOAD.encode()))
 
-    def sqlite_read():
-        conn.execute("SELECT blob FROM t WHERE id=?", ("r",)).fetchone()
+        def sqlite_read():
+            conn.execute("SELECT blob FROM t WHERE id=?", ("r",)).fetchone()
 
-    results["sqlite_write"] = _median_ms(sqlite_write, iterations)
-    results["sqlite_read"] = _median_ms(sqlite_read, iterations)
-    conn.close()
+        results["sqlite_write"] = _median_ms(sqlite_write, iterations)
+        results["sqlite_read"] = _median_ms(sqlite_read, iterations)
+        conn.close()
 
     # --- Fernet (whole-field, no AAD binding) ------------------------------
     fernet_key = Fernet.generate_key()
