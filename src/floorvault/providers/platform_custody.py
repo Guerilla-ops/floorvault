@@ -29,7 +29,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ..platform_support import has_posix_group_or_other_access
+from ..platform_support import binary_mode_flag, has_posix_group_or_other_access
 
 
 class ProtectedStoreError(Exception):
@@ -105,6 +105,7 @@ def write_protected(key: bytes, path: Path, *, header: bytes) -> None:
             os.O_WRONLY
             | os.O_CREAT
             | os.O_EXCL
+            | binary_mode_flag()
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0),
             0o600,
@@ -157,7 +158,12 @@ def read_protected(path: Path, *, header: bytes) -> bytes:
             file, or is group/other-accessible on POSIX. Callers must not
             treat this as "absent".
     """
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (
+        os.O_RDONLY
+        | binary_mode_flag()
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     try:
         fd = os.open(path, flags)
     except FileNotFoundError as exc:

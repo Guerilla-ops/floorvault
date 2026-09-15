@@ -45,3 +45,19 @@ def has_posix_group_or_other_access(mode: int) -> bool:
     if is_windows():
         return False
     return bool(mode & 0o077)
+
+
+def binary_mode_flag() -> int:
+    """``O_BINARY`` on Windows, ``0`` elsewhere.
+
+    ``os.open`` without ``O_BINARY`` leaves the descriptor in TEXT mode on
+    Windows, where the C runtime translates ``\\n`` to ``\\r\\n`` on write and
+    stops at the ``0x1A`` (Ctrl-Z) byte on read. Key material is uniformly random
+    bytes, so a 40-byte store will contain one of those bytes often enough that
+    the store is silently mangled or truncated - the failure the ``windows-latest``
+    CI leg reported as a key of "unexpected length" on read and "must be exactly
+    32 bytes" on the subsequent write.
+
+    ``O_BINARY`` does not exist on POSIX, hence the ``getattr``.
+    """
+    return getattr(os, "O_BINARY", 0)

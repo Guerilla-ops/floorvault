@@ -131,6 +131,20 @@ def test_windows_override_allows_an_independently_secured_location(monkeypatch, 
     assert provider is not None
 
 
+def test_binary_mode_flag_tracks_o_binary(monkeypatch):
+    """The helper must return O_BINARY where it exists and 0 where it does not.
+
+    A store written through a TEXT-mode descriptor on Windows has newlines
+    expanded and reads truncated at 0x1A; key material is random bytes, so this
+    corrupts real stores. The helper is the single place that knows about it.
+    """
+    monkeypatch.setattr(platform_support.os, "O_BINARY", 0x8000, raising=False)
+    assert platform_support.binary_mode_flag() == 0x8000
+
+    monkeypatch.delattr(platform_support.os, "O_BINARY", raising=False)
+    assert platform_support.binary_mode_flag() == 0, "POSIX must not invent a flag"
+
+
 def test_windows_provider_defaults_to_refusing_outside_locations():
     """The safe default must not be flipped by a later refactor.
 

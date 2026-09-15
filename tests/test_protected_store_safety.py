@@ -475,6 +475,44 @@ def test_fallback_publish_refuses_to_replace_an_existing_store(tmp_path, monkeyp
     assert store.read_bytes() == original, "the fallback clobbered an existing store"
 
 
+def test_store_io_requests_binary_mode_on_windows(tmp_path, monkeypatch):
+    """Windows text mode would mangle or truncate key material.
+
+    os.open without O_BINARY leaves the descriptor in TEXT mode on Windows: the C
+    runtime expands "\\n" to "\\r\\n" on write and stops reading at the 0x1A
+    (Ctrl-Z) byte. Key stores are uniformly random bytes, so this broke the
+    windows-latest CI leg with "unexpected length" on read and "must be exactly
+    32 bytes" on the next write.
+
+    The helper is substituted with a synthetic bit that is stripped again before
+    the real syscall: every plausible sentinel is a genuine flag somewhere
+    (0x8000 is O_BINARY on Windows but O_EVTONLY on macOS), so passing it through
+    to a live os.open would make the test depend on unrelated kernel behaviour.
+    """
+    sentinel = 0x40000000  # a bit no platform treats as a harmless no-op
+    monkeypatch.setattr(custody, "binary_mode_flag", lambda: sentinel)
+
+    seen: list[int] = []
+    real_open = os.open
+
+    def recording_open(path, flags, *args, **kwargs):
+        seen.append(flags)
+        # Record what the code asked for, then strip the simulated bit before the
+        # real syscall: every candidate sentinel is a real flag on some platform
+        # (0x8000 is O_EVTONLY on macOS), so passing it through would make this
+        # test depend on unrelated kernel behaviour.
+        return real_open(path, flags & ~sentinel, *args, **kwargs)
+
+    monkeypatch.setattr(custody.os, "open", recording_open)
+    store = tmp_path / "store"
+    write_protected(_KEY, store, header=_HEADER)
+    assert read_protected(store, header=_HEADER) == _KEY
+
+    assert seen, "no os.open was recorded"
+    for flags in seen:
+        assert flags & sentinel, f"store opened without the binary-mode flag: {flags:#x}"
+
+
 def test_creation_tolerates_a_directory_appearing_after_the_check(tmp_path, monkeypatch):
     """exist_ok=True exists for a real race, not as decoration.
 

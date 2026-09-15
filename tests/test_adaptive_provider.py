@@ -1,10 +1,12 @@
 """Tests for the 3-Tier Adaptive Key Provider."""
 
+import os
 import sys
 
 import pytest
 
 from floorvault import platform_support
+from floorvault.providers import adaptive as adaptive_module
 from floorvault.providers.adaptive import AdaptiveKeyProvider
 from floorvault.providers.base import CustodyDowngradeError, KeyProviderError
 
@@ -205,6 +207,38 @@ def _interactive_provider(monkeypatch, tmp_path, **kwargs):
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, **kwargs)
     monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: True)
     return provider
+
+
+def test_adaptive_machine_key_file_is_written_in_binary_mode(tmp_path, monkeypatch):
+    """The machine-bound key file gets the same Windows binary-mode treatment.
+
+    See the custody-layer test: without O_BINARY, Windows text mode would expand
+    newlines in the 32 random key bytes and truncate reads at 0x1A. A sentinel is
+    used rather than a real O_* bit, which differs across platforms.
+    """
+    sentinel = 0x40000000
+    monkeypatch.setattr(adaptive_module, "binary_mode_flag", lambda: sentinel)
+    for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    seen: list[int] = []
+    real_open = os.open
+
+    def recording_open(path, flags, *args, **kwargs):
+        seen.append(flags)
+        # Strip the simulated bit before the real syscall; see the custody test.
+        return real_open(path, flags & ~sentinel, *args, **kwargs)
+
+    monkeypatch.setattr(adaptive_module.os, "open", recording_open)
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)
+    monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)
+
+    key = provider.resolve_key(allow_create=True)
+    assert key is not None
+
+    assert seen, "the machine-bound key file was not written"
+    for flags in seen:
+        assert flags & sentinel, f"key file opened without the binary-mode flag: {flags:#x}"
 
 
 def test_keychain_error_fails_closed_instead_of_downgrading(monkeypatch, tmp_path):

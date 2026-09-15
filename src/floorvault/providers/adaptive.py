@@ -14,7 +14,12 @@ from pathlib import Path
 from typing import Optional
 
 from ..memory import HardenedMemoryKey
-from ..platform_support import has_posix_group_or_other_access, is_macos, is_windows
+from ..platform_support import (
+    binary_mode_flag,
+    has_posix_group_or_other_access,
+    is_macos,
+    is_windows,
+)
 from .base import CustodyDowngradeError, KeyProvider, KeyProviderError
 
 
@@ -172,7 +177,9 @@ class AdaptiveKeyProvider(KeyProvider):
 
         # Generate new 32-byte key and write with strict 0600 permissions
         new_key = os.urandom(32)
-        fd = os.open(str(key_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(
+            str(key_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL | binary_mode_flag(), 0o600
+        )
         try:
             os.write(fd, new_key)
         finally:
