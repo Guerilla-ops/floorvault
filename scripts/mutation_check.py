@@ -56,6 +56,7 @@ CURATED_TESTS = [
     "tests/test_envelope_versioning.py",
     "tests/test_store_permissions.py",
     "tests/test_keyring.py",
+    "tests/test_rotation.py",
 ]
 
 # --------------------------------------------------------------------------
@@ -207,6 +208,27 @@ MUTATIONS: tuple[Mutation, ...] = (
         "            if default_key_id not in checked:",
         "            if False:  # MUTANT",
         "Ring accepts a default_key_id it does not hold, deferring the failure to read time",
+    ),
+    Mutation(
+        "ROT-1",
+        "src/floorvault/vaultkit/vault.py",
+        "        origin_idx = new_vault.blind_index(",
+        "        origin_idx = self._crypto.blind_index(  # MUTANT",
+        "Blind index re-keyed under the OLD key: everything decrypts and search finds nothing",
+    ),
+    Mutation(
+        "ROT-2",
+        "src/floorvault/vaultkit/vault.py",
+        "                    item_id,\n                ),\n            )\n            self._write_journal_rows(conn, journal_rows, target_key_id=key_id)",
+        "                    item_id,\n                ),\n            )\n            pass  # MUTANT: journal not written with the data",
+        "Journal row not written in the write's transaction: an interrupted rotation resumes blind",
+    ),
+    Mutation(
+        "ROT-3",
+        "src/floorvault/vaultkit/vault.py",
+        '                payload["modern_id"],\n                vault=new_vault,',
+        '                payload["modern_id"],\n                vault=self._crypto,  # MUTANT',
+        "Retirement tombstones left under the old key, so F-1 protection stops authenticating",
     ),
     Mutation(
         "CANARY",

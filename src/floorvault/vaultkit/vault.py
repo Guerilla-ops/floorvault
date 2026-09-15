@@ -11,6 +11,7 @@ import json
 import re
 import sqlite3
 import uuid
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any, Optional
 from urllib.parse import urlsplit
 
 from ..core import FloorVault, FloorVaultError
+from ..keyring import KeyRing
 from ..providers.adaptive import AdaptiveKeyProvider
 
 VAULT_KINDS = ("login", "payment", "address", "generic")
@@ -230,6 +232,22 @@ class VaultStore:
                 CREATE TABLE IF NOT EXISTS vault_legacy_retirements (
                     legacy_id TEXT PRIMARY KEY,
                     tombstone_cipher BLOB NOT NULL
+                )
+            """)
+            # Rotation progress. A rotation re-seals every protected value, and
+            # an interrupted one must resume rather than corrupt: each unit of
+            # work marks its row 'done' in the SAME transaction as the write, so
+            # the journal can never claim work that did not land. Rows survive
+            # the rotation until it completes, and record which key generation
+            # they target so a second rotation is visible rather than silent.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS vault_rotation_journal (
+                    record_kind TEXT NOT NULL,
+                    record_id TEXT NOT NULL,
+                    column_name TEXT NOT NULL DEFAULT '',
+                    target_key_id INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    PRIMARY KEY (record_kind, record_id, column_name)
                 )
             """)
             self._migrate_plaintext_metadata(conn)
@@ -505,6 +523,193 @@ class VaultStore:
     # Alias for compatibility
     delete_item = remove_item
 
+    # ---- rotation support -------------------------------------------------
+    #
+    # A rotation re-seals every value the master key protects, which is more
+    # than the payloads: the sealed metadata columns, the blind index derived
+    # from the key, and the retirement tombstones. The journal exists so an
+    # interrupted rotation can resume instead of leaving a half-converted store
+    # whose remaining records are under a key the caller has already retired.
+
+    def _write_journal_rows(
+        self,
+        conn: sqlite3.Connection,
+        rows: Optional[Iterable[tuple[str, str, str]]],
+        *,
+        target_key_id: int,
+    ) -> None:
+        """Record rotation progress on ``conn`` (same transaction as the write)."""
+        for kind, record_id, column in rows or ():
+            conn.execute(
+                """
+                INSERT INTO vault_rotation_journal
+                    (record_kind, record_id, column_name, target_key_id, state)
+                VALUES (?, ?, ?, ?, 'done')
+                ON CONFLICT(record_kind, record_id, column_name)
+                DO UPDATE SET target_key_id = excluded.target_key_id, state = 'done'
+                """,
+                (kind, record_id, column, target_key_id),
+            )
+
+    def rotation_journal(self) -> dict[tuple[str, str, str], tuple[int, str]]:
+        """Current rotation progress: ``(kind, record_id, column) -> (key_id, state)``."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT record_kind, record_id, column_name, target_key_id, state "
+                "FROM vault_rotation_journal"
+            ).fetchall()
+        return {
+            (kind, record_id, column): (int(target_key_id), str(state))
+            for kind, record_id, column, target_key_id, state in rows
+        }
+
+    def mark_rotation_done(
+        self, rows: Iterable[tuple[str, str, str]], *, target_key_id: int
+    ) -> None:
+        """Mark units of rotation work complete (idempotent)."""
+        with self._connect() as conn:
+            self._write_journal_rows(conn, rows, target_key_id=target_key_id)
+
+    def clear_rotation_journal(self) -> None:
+        """Empty the journal once a rotation has completed and been verified."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM vault_rotation_journal")
+
+    def read_sealed_item(self, item_id: str, ring: KeyRing) -> dict[str, Any]:
+        """Return one item's plaintext as sealed today, read through ``ring``.
+
+        Rotation's read half: the caller does not have to know which generation
+        the record is under, only that the ring holds it.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT label, origin, identifier_type, identifier, created_at, payload_cipher "
+                "FROM vault_items WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+        if row is None:
+            raise VaultError(f"Vault item not found: {item_id}")
+
+        sealed_meta: dict[str, Optional[str]] = {}
+        for column, value in zip(self._SEALED_META_COLUMNS, row[:5]):
+            sealed_meta[column] = (
+                None
+                if value is None
+                else ring.decrypt(
+                    value, table="vault_items", record_id=item_id, column=f"meta:{column}"
+                )
+            )
+        return {
+            "payload": ring.decrypt(
+                row[5], table="vault_items", record_id=item_id, column="payload"
+            ),
+            "meta": sealed_meta,
+        }
+
+    def write_sealed_item(
+        self,
+        item_id: str,
+        sealed: Mapping[str, Any],
+        *,
+        new_vault: FloorVault,
+        key_id: int = 0,
+        journal_rows: Optional[Iterable[tuple[str, str, str]]] = None,
+    ) -> None:
+        """Re-seal one item's payload, metadata and blind index under ``new_vault``.
+
+        All of it lands in one transaction together with the journal rows, so a
+        crash can never leave the index describing one generation while the
+        values are under another.
+        """
+        payload = sealed.get("payload")
+        meta: Mapping[str, Any] = sealed.get("meta") or {}
+        if not isinstance(payload, str):
+            raise VaultError("sealed payload must be text")
+
+        payload_cipher = new_vault.encrypt(
+            payload, key_id=key_id, table="vault_items", record_id=item_id, column="payload"
+        )
+        encrypted: dict[str, Optional[bytes]] = {}
+        for column in self._SEALED_META_COLUMNS:
+            value = meta.get(column)
+            encrypted[column] = (
+                None
+                if value is None
+                else new_vault.encrypt(
+                    str(value),
+                    key_id=key_id,
+                    table="vault_items",
+                    record_id=item_id,
+                    column=f"meta:{column}",
+                )
+            )
+        # The blind index is keyed off the same master key, so it must be
+        # recomputed here. Skipping this leaves a store that decrypts perfectly
+        # and finds nothing.
+        origin_idx = new_vault.blind_index(
+            str(meta.get("origin") or ""), scope="floor.vault.origin"
+        )
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE vault_items
+                SET payload_cipher = ?, label = ?, origin = ?, identifier_type = ?,
+                    identifier = ?, created_at = ?, origin_idx = ?
+                WHERE id = ?
+                """,
+                (
+                    payload_cipher,
+                    encrypted["label"],
+                    encrypted["origin"],
+                    encrypted["identifier_type"],
+                    encrypted["identifier"],
+                    encrypted["created_at"],
+                    origin_idx,
+                    item_id,
+                ),
+            )
+            self._write_journal_rows(conn, journal_rows, target_key_id=key_id)
+
+    def reseal_retirements(
+        self,
+        ring: KeyRing,
+        *,
+        new_vault: FloorVault,
+        key_id: int = 0,
+    ) -> int:
+        """Re-seal every retirement tombstone under ``new_vault``; return the count.
+
+        Retirement records are sealed under the master key like everything else.
+        Leaving them behind would produce a store whose F-1 protection no longer
+        authenticates - which reads, from the outside, as protection that
+        silently stopped working.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT legacy_id, tombstone_cipher FROM vault_legacy_retirements"
+            ).fetchall()
+
+        count = 0
+        for legacy_id, cipher in rows:
+            payload = json.loads(
+                ring.decrypt(
+                    cipher,
+                    table=self._TOMBSTONE_TABLE,
+                    record_id=legacy_id,
+                    column="tombstone",
+                )
+            )
+            self._write_tombstone(
+                legacy_id,
+                payload["modern_id"],
+                vault=new_vault,
+                key_id=key_id,
+                journal_rows=[("tombstone", legacy_id, "tombstone")],
+            )
+            count += 1
+        return count
+
     # ---- legacy retirement tombstones ------------------------------------
     #
     # Recorded under the master key with the same contextual AAD binding as
@@ -520,13 +725,27 @@ class VaultStore:
 
     _TOMBSTONE_TABLE = "vault_legacy_retirements"
 
-    def retire_legacy_id(self, legacy_id: str, modern_id: str) -> None:
-        """Permanently retire ``legacy_id``, mapping it to ``modern_id``."""
+    #: Columns sealed under their own ``meta:<column>`` AAD. Rotation must cover
+    #: every one of them; keeping the list here means adding a column later
+    #: cannot leave rotation silently behind.
+    _SEALED_META_COLUMNS = ("label", "origin", "identifier_type", "identifier", "created_at")
+
+    def _write_tombstone(
+        self,
+        legacy_id: str,
+        modern_id: str,
+        *,
+        vault: FloorVault,
+        key_id: int = 0,
+        journal_rows: Optional[Iterable[tuple[str, str, str]]] = None,
+    ) -> None:
+        """Seal ``legacy_id``'s retirement record with ``vault``."""
         if not legacy_id or not modern_id:
             raise VaultError("a retirement needs both a legacy id and a modern id")
         payload = json.dumps({"legacy_id": legacy_id, "modern_id": modern_id}, ensure_ascii=False)
-        cipher = self._crypto.encrypt(
+        cipher = vault.encrypt(
             payload,
+            key_id=key_id,
             table=self._TOMBSTONE_TABLE,
             record_id=legacy_id,
             column="tombstone",
@@ -540,6 +759,11 @@ class VaultStore:
                 """,
                 (legacy_id, cipher),
             )
+            self._write_journal_rows(conn, journal_rows, target_key_id=key_id)
+
+    def retire_legacy_id(self, legacy_id: str, modern_id: str) -> None:
+        """Permanently retire ``legacy_id``, mapping it to ``modern_id``."""
+        self._write_tombstone(legacy_id, modern_id, vault=self._crypto)
 
     def retired_modern_id(self, legacy_id: str) -> Optional[str]:
         """Return the modern id for a retired ``legacy_id``, or ``None``.
