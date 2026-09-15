@@ -1,5 +1,3 @@
-
-
 <div align="center">
 
 # 🔐 FloorVault
@@ -855,9 +853,3 @@ You may use either license at your option.
 **FloorVault**
 
 </div>
-'''
-
-path = Path("/mnt/data/README_FloorVault.md")
-path.write_text(readme, encoding="utf-8")
-
-print(f"Created {path} ({len(readme.splitlines())} lines, {path.stat().st_size:,} bytes)")
