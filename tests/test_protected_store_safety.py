@@ -453,6 +453,54 @@ def test_invalid_header_raises_its_own_error_type(tmp_path):
         read_protected(store, header=_HEADER)
 
 
+def test_opaque_payload_store_round_trips_a_variable_length_blob(tmp_path):
+    """The Windows DPAPI blob is not 32 bytes, but the store must carry it.
+
+    CryptProtectData chooses the payload size, so the Windows provider stores an
+    opaque blob. The 32-byte invariant still applies to the RECOVERED key, which
+    the provider verifies after unprotection - the correct place for it. This
+    mismatch is what made every Windows DPAPI test fail on the windows-latest CI
+    leg with "master key must be exactly 32 bytes".
+    """
+    store = tmp_path / "store"
+    blob = b"\x01" + os.urandom(180)
+    assert len(blob) != 32
+
+    write_protected(blob, store, header=_HEADER, expected_length=None)
+
+    assert read_protected(store, header=_HEADER, expected_length=None) == blob
+
+
+def test_default_expectation_still_refuses_a_wrong_length_payload(tmp_path):
+    """The strong 32-byte check must stay the default for key material."""
+    store = tmp_path / "store"
+
+    with pytest.raises(ProtectedStoreInvalidLength):
+        write_protected(b"\x02" * 180, store, header=_HEADER)
+
+
+def test_opaque_payload_store_refuses_an_empty_payload(tmp_path):
+    """Opting out of the length check must not mean accepting nothing."""
+    store = tmp_path / "store"
+
+    with pytest.raises(ProtectedStoreInvalidLength, match="empty"):
+        write_protected(b"", store, header=_HEADER, expected_length=None)
+
+
+def test_store_larger_than_the_read_buffer_is_refused(tmp_path):
+    """A partial read must never be validated as though it were the whole store.
+
+    With a fixed expected length a truncated read failed the length check anyway;
+    with an opaque payload it would otherwise be a silent truncation.
+    """
+    store = tmp_path / "store"
+    store.write_bytes(_HEADER + b"\x03" * 8192)
+    store.chmod(0o600)
+
+    with pytest.raises(ProtectedStoreError, match="read buffer"):
+        read_protected(store, header=_HEADER, expected_length=None)
+
+
 def test_fallback_publish_refuses_to_replace_an_existing_store(tmp_path, monkeypatch):
     """Without hard links the publish is check-then-replace, so it must still refuse.
 
@@ -497,11 +545,13 @@ def test_store_io_requests_binary_mode_on_windows(tmp_path, monkeypatch):
 
     def recording_open(path, flags, *args, **kwargs):
         seen.append(flags)
-        # Record what the code asked for, then strip the simulated bit before the
-        # real syscall: every candidate sentinel is a real flag on some platform
-        # (0x8000 is O_EVTONLY on macOS), so passing it through would make this
-        # test depend on unrelated kernel behaviour.
-        return real_open(path, flags & ~sentinel, *args, **kwargs)
+        # Record what the code asked for, then substitute the platform's REAL
+        # binary flag for the simulated one before the syscall. Stripping the
+        # sentinel without restoring O_BINARY would leave the descriptor in text
+        # mode on Windows and the round-trip below would fail for the very reason
+        # this test is about.
+        real_flags = (flags & ~sentinel) | getattr(os, "O_BINARY", 0)
+        return real_open(path, real_flags, *args, **kwargs)
 
     monkeypatch.setattr(custody.os, "open", recording_open)
     store = tmp_path / "store"

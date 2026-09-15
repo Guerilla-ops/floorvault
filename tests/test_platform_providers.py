@@ -36,6 +36,35 @@ def _assert_key_contract(provider: KeyProvider, second: KeyProvider) -> None:
     assert again.get_bytes() == raw
 
 
+def test_windows_dpapi_round_trips_a_variable_length_blob(tmp_path, monkeypatch):
+    """Simulates the real CryptProtectData payload shape: longer than 32 bytes.
+
+    On Windows the OS chooses the protected blob's size, so the store cannot
+    assume 32 bytes. Every DPAPI test failed on the windows-latest CI leg for
+    exactly this reason, with "master key must be exactly 32 bytes", before the
+    store learned to carry an opaque payload.
+    """
+    from floorvault.providers import windows_dpapi as wd_module
+
+    def fake_protect(key: bytes) -> bytes:
+        # Stand-in for a DPAPI blob: same key, but a size the OS would pick.
+        return b"\xaa\xbb" + bytes(byte ^ 0x5A for byte in key) + b"\xcc" * 96
+
+    def fake_unprotect(blob: bytes) -> bytes:
+        return bytes(byte ^ 0x5A for byte in blob[2:34])
+
+    store = tmp_path / "store"
+    first = wd_module.WindowsDPAPIKeyProvider(store_path=store, entropy=b"e")
+    second = wd_module.WindowsDPAPIKeyProvider(store_path=store, entropy=b"e")
+    for provider in (first, second):
+        monkeypatch.setattr(provider, "_protect", fake_protect)
+        monkeypatch.setattr(provider, "_unprotect", fake_unprotect)
+
+    _assert_key_contract(first, second)
+
+    assert len(store.read_bytes()) > 32 + len(b"FLOORWV1")
+
+
 def test_provider_interface_exists():
     from floorvault.providers.linux_keyring import LinuxSecretServiceKeyProvider
     from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider

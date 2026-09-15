@@ -202,6 +202,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        item.mkdir(mode=0o700, exist_ok=False)",
         "Directory creation loses tolerance for a directory created by another writer",
     ),
+    Mutation(
+        "PC-16",
+        "src/floorvault/providers/platform_custody.py",
+        "        os.O_RDONLY\n        | binary_mode_flag()",
+        "        os.O_RDONLY",
+        "Store read loses binary mode: Windows text mode truncates at 0x1A (found by CI)",
+    ),
+    Mutation(
+        "WD-2",
+        "src/floorvault/providers/windows_dpapi.py",
+        "blob = read_protected(self._path, header=_HEADER, expected_length=None)",
+        "blob = read_protected(self._path, header=_HEADER)",
+        "Windows store reverts to assuming a 32-byte payload and refuses its own DPAPI blob",
+    ),
 )
 
 # --------------------------------------------------------------------------

@@ -226,8 +226,8 @@ def test_adaptive_machine_key_file_is_written_in_binary_mode(tmp_path, monkeypat
 
     def recording_open(path, flags, *args, **kwargs):
         seen.append(flags)
-        # Strip the simulated bit before the real syscall; see the custody test.
-        return real_open(path, flags & ~sentinel, *args, **kwargs)
+        # Restore the platform's real binary flag; see the custody test.
+        return real_open(path, (flags & ~sentinel) | getattr(os, "O_BINARY", 0), *args, **kwargs)
 
     monkeypatch.setattr(adaptive_module.os, "open", recording_open)
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)

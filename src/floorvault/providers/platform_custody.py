@@ -31,6 +31,10 @@ from pathlib import Path
 
 from ..platform_support import binary_mode_flag, has_posix_group_or_other_access
 
+#: Upper bound for a protected store, i.e. the read buffer. A DPAPI blob is a few
+#: hundred bytes; anything approaching this is not a store we wrote.
+_MAX_STORE_BYTES = 4096
+
 
 class ProtectedStoreError(Exception):
     """Raised when the protected store is missing, corrupt, or insecurely owned."""
@@ -85,8 +89,15 @@ def _mkdir_owner_only(directory: Path) -> None:
         item.mkdir(mode=0o700, exist_ok=True)
 
 
-def write_protected(key: bytes, path: Path, *, header: bytes) -> None:
+def write_protected(
+    key: bytes, path: Path, *, header: bytes, expected_length: int | None = 32
+) -> None:
     """Atomically write ``header + key`` to ``path`` with 0600. Refuses symlinks.
+
+    ``expected_length`` pins the payload size (32 bytes of key material by
+    default). Pass ``None`` only for an opaque, variable-length payload - the
+    Windows DPAPI blob - where the size is chosen by the OS; the recovery check
+    then happens after unprotection, and an empty payload is still refused.
 
     The store is **created, never replaced**. No-clobber is enforced by
     :func:`_link_no_clobber`, which uses ``os.link`` - the OS fails that call if
@@ -94,8 +105,10 @@ def write_protected(key: bytes, path: Path, *, header: bytes) -> None:
     starting at once therefore cannot both conclude "no store yet" and silently
     rotate each other's key; exactly one wins and the loser fails loudly.
     """
-    if len(key) != 32:
-        raise ProtectedStoreInvalidLength("master key must be exactly 32 bytes")
+    if expected_length is not None and len(key) != expected_length:
+        raise ProtectedStoreInvalidLength(f"master key must be exactly {expected_length} bytes")
+    if expected_length is None and not key:
+        raise ProtectedStoreInvalidLength("refusing to write an empty protected payload")
     _mkdir_owner_only(path.parent)
     temporary = path.parent / f".{path.name}.{os.urandom(6).hex()}.tmp"
     descriptor: int | None = None
@@ -149,8 +162,11 @@ def _link_no_clobber(temporary: Path, path: Path) -> None:
         os.replace(temporary, path)
 
 
-def read_protected(path: Path, *, header: bytes) -> bytes:
-    """Read and validate a protected store; return the raw 32-byte key.
+def read_protected(path: Path, *, header: bytes, expected_length: int | None = 32) -> bytes:
+    """Read and validate a protected store; return the stored payload.
+
+    ``expected_length`` pins the payload size (32 bytes by default); ``None``
+    accepts an opaque variable-length payload such as a Windows DPAPI blob.
 
     Raises:
         ProtectedStoreMissing: the store does not exist (safe to create one).
@@ -169,14 +185,25 @@ def read_protected(path: Path, *, header: bytes) -> bytes:
     except FileNotFoundError as exc:
         raise ProtectedStoreMissing("protected store not present") from exc
     try:
-        raw = os.read(fd, 4096)
+        size = os.fstat(fd).st_size
+        raw = os.read(fd, _MAX_STORE_BYTES)
     finally:
         os.close(fd)
+    if size > len(raw):
+        # Reading stopped at the buffer, so the tail was never inspected. With a
+        # fixed expected length this was caught downstream; with an opaque
+        # payload it would be a silent truncation, so refuse it outright.
+        raise ProtectedStoreError(
+            f"protected store is larger ({size} bytes) than the read buffer "
+            f"({_MAX_STORE_BYTES} bytes); refusing to validate a partial read"
+        )
     if not raw.startswith(header):
         raise ProtectedStoreHeaderError("protected store has an unknown or missing header")
     key = raw[len(header) :]
-    if len(key) != 32:
+    if expected_length is not None and len(key) != expected_length:
         raise ProtectedStoreInvalidLength("protected store key has an unexpected length")
+    if expected_length is None and not key:
+        raise ProtectedStoreInvalidLength("protected store holds an empty payload")
     if has_posix_group_or_other_access(os.stat(path).st_mode):
         raise ProtectedStoreError(
             "protected store permissions grant group or other access (expected 0600)"

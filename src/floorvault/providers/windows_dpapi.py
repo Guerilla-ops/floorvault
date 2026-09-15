@@ -193,7 +193,11 @@ class WindowsDPAPIKeyProvider(KeyProvider):
 
     def resolve_key(self, *, allow_create: bool = True) -> HardenedMemoryKey:
         try:
-            blob = read_protected(self._path, header=_HEADER)
+            # expected_length=None: on Windows the stored payload is a DPAPI blob
+            # whose size is chosen by CryptProtectData, not a fixed 32 bytes. The
+            # key length is verified after unprotection (below), which is where
+            # the invariant that matters actually lives.
+            blob = read_protected(self._path, header=_HEADER, expected_length=None)
         except ProtectedStoreMissing:
             # Genuinely absent, so creating below is correct. Any other read
             # failure (corrupt header, unexpected length, insecure mode) raises
@@ -213,5 +217,5 @@ class WindowsDPAPIKeyProvider(KeyProvider):
         key = self._random_bytes(32)
         if len(key) != 32:
             raise ProtectedStoreError("random source must return 32 bytes")
-        write_protected(self._protect(key), self._path, header=_HEADER)
+        write_protected(self._protect(key), self._path, header=_HEADER, expected_length=None)
         return HardenedMemoryKey(key)
