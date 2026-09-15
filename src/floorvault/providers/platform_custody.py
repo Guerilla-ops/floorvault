@@ -1,8 +1,10 @@
 """Shared file-backed master-key custody for platform-native providers.
 
 Pure-Python, cross-platform, fail-closed:
-  * Writes the protected key with O_EXCL|O_NOFOLLOW to a temp then atomically
-    renames it, so the file is never group/world-readable mid-write.
+  * Writes the protected key with O_EXCL|O_NOFOLLOW to a temp file beside the
+    store, then publishes it with os.link, which fails if the destination
+    exists: the key is never group/world-readable mid-write and a store is
+    never silently replaced.
   * Refuses to overwrite an existing store. Losing the previous key silently is
     indistinguishable from destroying the user's data.
   * Reads refuse symlinks (O_NOFOLLOW), and distinguish *absent* from
