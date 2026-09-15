@@ -43,7 +43,9 @@ jobs:
           fetch-depth: 0
 
       - name: Set up uv and Python ${{ matrix.python }}
-        uses: astral-sh/setup-uv@v10
+        # Pinned to a full version: setup-uv only maintains moving major tags up
+        # to v7; v8+ exist as full versions only (v10 does not resolve).
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
           python-version: ${{ matrix.python }}
