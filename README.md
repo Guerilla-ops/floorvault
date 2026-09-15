@@ -228,11 +228,12 @@ for the measured comparison vs. Fernet and plain SQLite (reproduce with
 - [x] **Deterministic fuzz harness** (seeded, dependency-free: round-trip,
       splice-immunity, malformed-envelope, nonce-reuse, beacon exactness —
       `tests/test_fuzz.py`)
-- [x] **CI matrix** (macOS / Linux × py3.10–3.14 / Windows). The gate runs the
-      full suite, the universal-wheel check, and the curated mutation set on
-      every cell. All eight jobs green as of `815a4a0`; the three Windows-only
-      defects it caught on the way are written up in
-      [`docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md`](docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md)
+- [x] **CI matrix** — Linux on py3.10–3.14, plus macOS and Windows on **both** the
+      3.10 floor and 3.13: nine cells, each running the full suite, the
+      universal-wheel check and the curated mutation set. The three Windows-only
+      defects it caught are written up in
+      [`docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md`](docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md),
+      and `tests/test_ci_workflow.py` keeps the floor covered on every OS.
 - [ ] **Windows NT DACL verification** for the protected key store
       (`GetNamedSecurityInfoW` via ctypes). Windows currently relies on the
       user-profile ACL assumption described under [Security

@@ -118,3 +118,27 @@ exactly as the test expects.
 
 Each defect is also pinned as a curated mutant, so `scripts/mutation_check.py
 --mode curated` (gate step 11) fails if either of the first two regresses.
+
+## After the first green run: the floor is now tested on every OS
+
+The run above had macOS and Windows on 3.13 only — the newest interpreter — while
+`pyproject.toml` declares support from **3.10**. Since every defect found so far
+was platform-specific, testing only the newest version on those two operating
+systems left the floor itself unexercised there.
+
+The matrix now runs both ends of the range on every OS:
+
+```
+ubuntu-latest   3.10  3.11  3.12  3.13  3.14
+macos-latest    3.10                3.13
+windows-latest  3.10                3.13
+```
+
+`tests/test_ci_workflow.py` pins the invariant by reading the declared floor out
+of `pyproject.toml` and requiring every operating system in the matrix to test
+it, so a future edit cannot quietly drop the floor from a platform. Removing
+those two cells fails that test with:
+
+```
+AssertionError: macos-latest does not test the declared floor 3.10: it tests ['3.13']
+```
