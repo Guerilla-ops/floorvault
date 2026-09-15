@@ -51,6 +51,10 @@ dev = [
     # Second, independent AES-SIV implementation used by
     # tests/test_rfc5297_independent.py to cross-check the AES-256-SIV path.
     "pycryptodome>=3.20.0",
+    # Dependency CVE audit: gate step 2. Declared here so `uv sync --extra dev`
+    # installs it; without this the gate skipped the audit with only a warning
+    # while still reporting every security gate as passing.
+    "pip-audit>=2.7.0",
 ]
 # macOS Keychain (Tier 2 of AdaptiveKeyProvider) needs the Security framework
 # bindings. Without them the provider falls through to Tier 3 and, unless
