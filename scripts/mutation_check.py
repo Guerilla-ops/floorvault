@@ -52,6 +52,7 @@ CURATED_TESTS = [
     "tests/test_crypto_core.py",
     "tests/test_revision_binding.py",
     "tests/test_beacon.py",
+    "tests/test_migration_retirement.py",
 ]
 
 # --------------------------------------------------------------------------
@@ -132,6 +133,35 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        if has_posix_group_or_other_access(file_stat.st_mode):",
         "        if False:  # MUTANT",
         "Adaptive provider stops refusing group/other-accessible files",
+    ),
+    Mutation(
+        "MIG-1",
+        "src/floorvault/migration.py",
+        "            if modern_id is not None:\n                raise LegacyRetiredError(",
+        "            if False:  # MUTANT\n                raise LegacyRetiredError(",
+        "Retired-fallback refusal disabled: a deleted modern row resurrects the legacy value",
+    ),
+    Mutation(
+        "MIG-2",
+        "src/floorvault/migration.py",
+        "            self.modern.retire_legacy_id(item_id, meta.id)",
+        "            pass  # MUTANT",
+        "Migration stops recording the retirement tombstone at all",
+    ),
+    Mutation(
+        "MIG-3",
+        "src/floorvault/vaultkit/vault.py",
+        '                    table=self._TOMBSTONE_TABLE,\n                    record_id=legacy_id,\n                    column="tombstone",',
+        '                    table=self._TOMBSTONE_TABLE,\n                    record_id="unbound",\n                    column="tombstone",',
+        "Tombstone read loses its AAD coordinate binding, so a swapped record is not detected",
+    ),
+    Mutation(
+        "MIG-4",
+        "src/floorvault/vaultkit/vault.py",
+        "        except FloorVaultError as exc:\n            raise VaultError(\n                f\"legacy retirement record failed authentication for {legacy_id!r}; \"",
+        '        except FloorVaultError as exc:\n            return {"legacy_id": legacy_id, "modern_id": ""}  # MUTANT\n            raise VaultError(\n                f"legacy retirement record failed authentication for {legacy_id!r}; "',
+        "A tampered tombstone read as 'present but unmapped' instead of failing closed",
+        expect="killed",
     ),
     Mutation(
         "CANARY",

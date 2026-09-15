@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
-from ..core import FloorVault
+from ..core import FloorVault, FloorVaultError
 from ..providers.adaptive import AdaptiveKeyProvider
 
 VAULT_KINDS = ("login", "payment", "address", "generic")
@@ -221,6 +221,17 @@ class VaultStore:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_vault_origin ON vault_items(origin_idx)")
+            # Retirement tombstones for legacy ids that have been migrated. A
+            # migrated id must never be served from the pre-migration source
+            # again: without this, deleting a modern row makes a dual-read
+            # facade fall back to the legacy file and silently resurrect the
+            # value from before the credential was rotated.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS vault_legacy_retirements (
+                    legacy_id TEXT PRIMARY KEY,
+                    tombstone_cipher BLOB NOT NULL
+                )
+            """)
             self._migrate_plaintext_metadata(conn)
             conn.execute("PRAGMA user_version = 1")
 
@@ -493,6 +504,90 @@ class VaultStore:
 
     # Alias for compatibility
     delete_item = remove_item
+
+    # ---- legacy retirement tombstones ------------------------------------
+    #
+    # Recorded under the master key with the same contextual AAD binding as
+    # every other value, so a tombstone cannot be moved to another legacy id
+    # (record_id is bound) and cannot be silently altered (a flipped byte fails
+    # authentication and raises rather than reading as "not retired").
+    #
+    # Honest limit: because the tombstones live in the same database as the
+    # data, an attacker who can roll the whole database back can roll the
+    # tombstones back with it. This closes *silent* resurrection and makes a
+    # downgrade detectable; genuine freshness still requires caller-supplied
+    # trusted state (see FloorVault's `revision` binding).
+
+    _TOMBSTONE_TABLE = "vault_legacy_retirements"
+
+    def retire_legacy_id(self, legacy_id: str, modern_id: str) -> None:
+        """Permanently retire ``legacy_id``, mapping it to ``modern_id``."""
+        if not legacy_id or not modern_id:
+            raise VaultError("a retirement needs both a legacy id and a modern id")
+        payload = json.dumps({"legacy_id": legacy_id, "modern_id": modern_id}, ensure_ascii=False)
+        cipher = self._crypto.encrypt(
+            payload,
+            table=self._TOMBSTONE_TABLE,
+            record_id=legacy_id,
+            column="tombstone",
+        )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO vault_legacy_retirements (legacy_id, tombstone_cipher)
+                VALUES (?, ?)
+                ON CONFLICT(legacy_id) DO UPDATE SET tombstone_cipher = excluded.tombstone_cipher
+                """,
+                (legacy_id, cipher),
+            )
+
+    def retired_modern_id(self, legacy_id: str) -> Optional[str]:
+        """Return the modern id for a retired ``legacy_id``, or ``None``.
+
+        Raises VaultError if the stored tombstone fails authentication - a
+        tampered retirement record must never be read as "not retired".
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT tombstone_cipher FROM vault_legacy_retirements WHERE legacy_id = ?",
+                (legacy_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return self._decode_tombstone(legacy_id, row[0])["modern_id"]
+
+    def list_legacy_retirements(self) -> dict[str, str]:
+        """Every retired legacy id mapped to its modern id."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT legacy_id, tombstone_cipher FROM vault_legacy_retirements"
+            ).fetchall()
+        return {
+            legacy_id: self._decode_tombstone(legacy_id, cipher)["modern_id"]
+            for legacy_id, cipher in rows
+        }
+
+    def _decode_tombstone(self, legacy_id: str, cipher: Any) -> dict[str, Any]:
+        """Authenticate and decode one tombstone, refusing anything tampered."""
+        try:
+            payload = json.loads(
+                self._crypto.decrypt(
+                    cipher,
+                    table=self._TOMBSTONE_TABLE,
+                    record_id=legacy_id,
+                    column="tombstone",
+                )
+            )
+        except FloorVaultError as exc:
+            raise VaultError(
+                f"legacy retirement record failed authentication for {legacy_id!r}; "
+                "refusing to treat it as not retired"
+            ) from exc
+        except (ValueError, TypeError) as exc:
+            raise VaultError(f"legacy retirement record is malformed for {legacy_id!r}") from exc
+        if not isinstance(payload, dict) or payload.get("legacy_id") != legacy_id:
+            raise VaultError(f"legacy retirement record does not match {legacy_id!r}")
+        return payload
 
 
 # Drop-in compatibility aliases

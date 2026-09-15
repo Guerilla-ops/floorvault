@@ -29,6 +29,17 @@ class LegacyVaultError(VaultError):
     """Raised when the legacy source is missing, corrupt, or not decryptable."""
 
 
+class LegacyRetiredError(VaultError):
+    """Raised when a legacy id has been migrated and must not be read again.
+
+    A migrated id is *retired*: the pre-migration source is permanently
+    forbidden for it, even if the modern record has since disappeared. Serving
+    the legacy value instead would silently resurrect the value from before the
+    credential was rotated, and every cryptographic check would still pass
+    because the old value is an authentic one - just retired.
+    """
+
+
 def _base64url_decode(s: str) -> bytes:
     import base64
 
@@ -132,16 +143,50 @@ class MigratingVaultStore:
         except Exception as exc:  # noqa: BLE001
             raise VaultError(f"Could not lazily migrate item {item_id}: {exc}") from exc
         if meta is not None:
+            # Retire the legacy id permanently. From here on the pre-migration
+            # source must never answer for it again, even if this modern record
+            # is later deleted or rolled back - otherwise the facade would serve
+            # the value from before the credential was rotated.
+            self.modern.retire_legacy_id(item_id, meta.id)
             self._legacy_to_modern[item_id] = meta.id
             self._modern_to_legacy[meta.id] = item_id
 
     # ---- public dual-read API ----------------------------------------------
 
     def _modern_id_for(self, item_id: str) -> str:
-        """Map a legacy (or already-migrated) public id to the modern store id."""
+        """Map a legacy (or already-migrated) public id to the modern store id.
+
+        The in-memory map is only a cache. The authoritative record of what has
+        been migrated is the retirement tombstone in the modern store, so a
+        fresh process resolves a legacy id correctly without it.
+        """
         if item_id in self._legacy_to_modern:
             return self._legacy_to_modern[item_id]
+        retired = self.modern.retired_modern_id(item_id)
+        if retired is not None:
+            self._legacy_to_modern[item_id] = retired
+            self._modern_to_legacy.setdefault(retired, item_id)
+            return retired
         return item_id
+
+    def _refuse_retired_fallback(self, *candidate_ids: str) -> None:
+        """Refuse the pre-migration source for any id that has been retired.
+
+        Called only after the modern lookup has already failed, so reaching it
+        with a retired id means the modern record is gone. Falling through to
+        the legacy source at that point would silently serve the value from
+        before the credential was rotated.
+        """
+        for candidate in candidate_ids:
+            if not candidate:
+                continue
+            modern_id = self.modern.retired_modern_id(candidate)
+            if modern_id is not None:
+                raise LegacyRetiredError(
+                    f"legacy item {candidate!r} was migrated to {modern_id!r} and is "
+                    "retired; its modern record is missing, and reading the "
+                    "pre-migration source in its place is refused"
+                )
 
     def resolve_secret(self, item_id: str) -> dict[str, Any]:
         """Return the secret for ``item_id`` from modern, else legacy (lazy-upgraded)."""
@@ -150,6 +195,7 @@ class MigratingVaultStore:
             return self.modern.resolve_secret(modern_id)
         except VaultError:
             pass
+        self._refuse_retired_fallback(item_id, modern_id)
         legacy = self._legacy_items()
         if item_id not in legacy and modern_id not in legacy:
             raise VaultError(f"Vault item not found: {item_id}")
@@ -166,6 +212,7 @@ class MigratingVaultStore:
                 return modern
         except VaultError:
             pass
+        self._refuse_retired_fallback(item_id, modern_id)
         legacy = self._legacy_items()
         if item_id not in legacy and modern_id not in legacy:
             return None
@@ -221,10 +268,20 @@ class MigratingVaultStore:
         }
 
     def verify(self) -> bool:
-        """Decrypt every migrated (modern) item to confirm the migration is sound."""
+        """Decrypt every migrated (modern) item to confirm the migration is sound.
+
+        Also checks that every retired legacy id still has a modern record. A
+        tombstone whose record has disappeared means the value is unavailable -
+        the fallback is refused - so the migration is no longer sound and this
+        returns False rather than reporting success.
+        """
         try:
             ids = list(self.modern.list_items())
+            retirements = self.modern.list_legacy_retirements()
         except VaultError:
+            return False
+        present = {meta.id for meta in ids}
+        if any(modern_id not in present for modern_id in retirements.values()):
             return False
         for meta in ids:
             try:
