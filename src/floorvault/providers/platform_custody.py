@@ -60,17 +60,14 @@ class ProtectedStoreMissing(ProtectedStoreError):
 def write_protected(key: bytes, path: Path, *, header: bytes) -> None:
     """Atomically write ``header + key`` to ``path`` with 0600. Refuses symlinks.
 
-    Refuses to overwrite an existing store: the only reason to write is that no
-    key exists yet. A caller that has wrongly concluded "no store" therefore
-    fails loudly instead of destroying the previous key.
+    The store is **created, never replaced**. No-clobber is enforced by
+    :func:`_link_no_clobber`, which uses ``os.link`` - the OS fails that call if
+    the destination exists, so there is no check-then-use window. Two processes
+    starting at once therefore cannot both conclude "no store yet" and silently
+    rotate each other's key; exactly one wins and the loser fails loudly.
     """
     if len(key) != 32:
         raise ProtectedStoreError("master key must be exactly 32 bytes")
-    if path.exists():
-        # Defence in depth. The real fix is that callers distinguish
-        # ProtectedStoreMissing from ProtectedStoreError; this guard means a
-        # future call site cannot silently clobber a store either.
-        raise ProtectedStoreError(f"refusing to overwrite an existing protected store: {path}")
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary = path.parent / f".{path.name}.{os.urandom(6).hex()}.tmp"
     descriptor: int | None = None
@@ -88,7 +85,7 @@ def write_protected(key: bytes, path: Path, *, header: bytes) -> None:
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = None
-        os.replace(temporary, path)
+        _link_no_clobber(temporary, path)
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -96,6 +93,31 @@ def write_protected(key: bytes, path: Path, *, header: bytes) -> None:
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+def _link_no_clobber(temporary: Path, path: Path) -> None:
+    """Publish ``temporary`` as ``path``, failing if ``path`` already exists.
+
+    ``os.link`` is the atomic primitive here: it either creates the name or
+    fails with ``FileExistsError``, with no window between checking and acting.
+    (``renameat2(RENAME_NOREPLACE)`` would be the Linux-native equivalent but is
+    not exposed by Python's ``os`` module, and ``os.replace`` always clobbers.)
+    """
+    try:
+        os.link(temporary, path)
+    except FileExistsError as exc:
+        raise ProtectedStoreError(
+            f"refusing to overwrite an existing protected store: {path}"
+        ) from exc
+    except OSError:
+        # Hard links are unavailable on some filesystems (e.g. certain network or
+        # FAT volumes). Fall back to check-then-replace, which is NOT atomic: two
+        # concurrent writers could both win. Documented limitation, not a claim.
+        if path.exists():
+            raise ProtectedStoreError(
+                f"refusing to overwrite an existing protected store: {path}"
+            ) from None
+        os.replace(temporary, path)
 
 
 def read_protected(path: Path, *, header: bytes) -> bytes:

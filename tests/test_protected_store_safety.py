@@ -20,7 +20,11 @@ must fail loudly, and must never be replaced.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -153,6 +157,77 @@ def test_write_protected_leaves_nothing_behind_when_the_write_fails(tmp_path, mo
 
     assert not store.exists()
     assert list(tmp_path.glob(".*tmp")) == []
+
+
+def test_write_protected_does_not_check_then_use_the_destination(tmp_path, monkeypatch):
+    """Pin the absence of a TOCTOU-shaped guard.
+
+    The clobber decision must come from ``os.link`` failing (an OS-level atomic
+    operation), not from a prior ``path.exists()`` on the destination. If someone
+    reintroduces check-then-use, this fails.
+    """
+    store = tmp_path / "store"
+    real_exists = Path.exists
+
+    def guarded_exists(self: Path) -> bool:
+        if self == store:
+            raise AssertionError("write_protected consulted destination existence (TOCTOU shape)")
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", guarded_exists)
+    write_protected(_KEY, store, header=_HEADER)
+    assert read_protected(store, header=_HEADER) == _KEY
+
+
+def test_concurrent_first_run_has_exactly_one_winner(tmp_path):
+    """Four processes racing to create the store: exactly one may win.
+
+    This is the realistic failure mode behind the TOCTOU guard - not an
+    attacker, just two services starting at once, both seeing "no store yet".
+    With check-then-replace all four could report success and the last would
+    silently rotate the key.
+    """
+    store = tmp_path / "store"
+    repo_src = str(Path(__file__).resolve().parent.parent / "src")
+    env = {**os.environ, "PYTHONPATH": repo_src, "PYTHONDONTWRITEBYTECODE": "1"}
+
+    child = textwrap.dedent(
+        f"""
+        import sys
+        from pathlib import Path
+        from floorvault.providers.platform_custody import (
+            ProtectedStoreError, write_protected,
+        )
+
+        index = int(sys.argv[1])
+        try:
+            write_protected(bytes([index]) * 32, Path({str(store)!r}), header=b"FLOORWV1")
+        except ProtectedStoreError:
+            sys.exit(2)
+        print(index)
+        """
+    )
+
+    children = [
+        subprocess.Popen(
+            [sys.executable, "-c", child, str(i)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for i in range(1, 5)
+    ]
+    outcomes = []
+    for process in children:
+        out, _err = process.communicate()
+        outcomes.append((process.returncode, out.strip()))
+    winners = [out for code, out in outcomes if code == 0]
+
+    assert len(winners) == 1, f"expected exactly one winner, got {len(winners)}: {outcomes}"
+
+    stored = read_protected(store, header=b"FLOORWV1")
+    assert stored == bytes([int(winners[0])]) * 32, "store does not hold the winner's key"
 
 
 # --------------------------------------------------------------------------
