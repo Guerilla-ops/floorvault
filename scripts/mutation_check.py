@@ -50,6 +50,7 @@ CURATED_TESTS = [
     "tests/test_adaptive_provider.py",
     "tests/test_platform_support.py",
     "tests/test_crypto_core.py",
+    "tests/test_revision_binding.py",
 ]
 
 # --------------------------------------------------------------------------
@@ -215,6 +216,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "blob = read_protected(self._path, header=_HEADER, expected_length=None)",
         "blob = read_protected(self._path, header=_HEADER)",
         "Windows store reverts to assuming a 32-byte payload and refuses its own DPAPI blob",
+    ),
+    Mutation(
+        "CR-2",
+        "src/floorvault/core.py",
+        'payload["revision"] = revision',
+        "pass  # MUTANT",
+        "Revision dropped from the AAD: same-coordinate replay becomes undetectable",
     ),
 )
 

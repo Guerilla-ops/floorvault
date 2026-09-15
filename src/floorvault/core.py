@@ -62,11 +62,20 @@ def associated_data(
     schema_id: str = "floor.vault.v1",
     schema_version: int = 1,
     app_instance_id: str = "default",
+    revision: int | None = None,
 ) -> bytes:
     """Construct canonical Associated Authenticated Data (AAD) binding block.
 
     Locks the ciphertext to its exact database coordinates, preventing
     ciphertext cut-and-paste splicing across rows, columns, or tables.
+
+    ``revision`` is optional and, when supplied, is bound into the AAD. It
+    exists for same-coordinate replay (rollback) detection: read a record back
+    at its current revision, and an older ciphertext replayed into the same
+    coordinates fails authentication. The revision must come from state the
+    attacker cannot roll back together with the ciphertext — a revision stored
+    beside the ciphertext (or in the same database) provides no protection,
+    because an attacker who can rewrite one can rewrite both.
     """
     for name, val in [
         ("table", table),
@@ -78,7 +87,13 @@ def associated_data(
         if not isinstance(val, str) or not val.strip():
             raise ValueError(f"AAD parameter {name!r} must be a non-empty string")
 
-    payload = {
+    if revision is not None:
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise TypeError("AAD parameter 'revision' must be a non-negative integer")
+        if revision < 0:
+            raise ValueError("AAD parameter 'revision' must be a non-negative integer")
+
+    payload: dict[str, Any] = {
         "app_instance_id": app_instance_id,
         "column": column,
         "record_id": record_id,
@@ -86,6 +101,8 @@ def associated_data(
         "schema_version": int(schema_version),
         "table": table,
     }
+    if revision is not None:
+        payload["revision"] = revision
     return canonical_json_bytes(payload)
 
 
@@ -207,8 +224,15 @@ class FloorVault:
         column: str,
         schema_id: str = "floor.vault.v1",
         schema_version: int = 1,
+        revision: int | None = None,
     ) -> bytes:
-        """Encrypt plaintext with contextual AAD binding via AES-256-SIV."""
+        """Encrypt plaintext with contextual AAD binding via AES-256-SIV.
+
+        If ``revision`` is supplied it is bound into the AAD (see
+        ``associated_data``), so a caller holding a monotonic revision in
+        trusted state can detect a same-coordinate replay of an older
+        ciphertext at read time.
+        """
         if self._closed:
             raise RuntimeError("FloorVault has been wiped")
 
@@ -220,6 +244,7 @@ class FloorVault:
             schema_id=schema_id,
             schema_version=schema_version,
             app_instance_id=self.app_instance_id,
+            revision=revision,
         )
 
         nonce = os.urandom(16)
@@ -245,8 +270,14 @@ class FloorVault:
         column: str,
         schema_id: str = "floor.vault.v1",
         schema_version: int = 1,
+        revision: int | None = None,
     ) -> str:
         """Decrypt ciphertext and verify contextual AAD coordinates.
+
+        ``revision`` must match the value bound at encryption time. Reading at
+        a newer revision rejects a replayed older ciphertext (rollback
+        detection), provided the revision comes from trusted state; see
+        ``associated_data``.
 
         Returns:
             Decrypted plaintext string.
@@ -279,6 +310,7 @@ class FloorVault:
             schema_id=schema_id,
             schema_version=schema_version,
             app_instance_id=self.app_instance_id,
+            revision=revision,
         )
 
         try:
@@ -304,10 +336,12 @@ class FloorVault:
         column: str,
         schema_id: str = "floor.vault.v1",
         schema_version: int = 1,
+        revision: int | None = None,
     ) -> bytes:
         """Decrypt ciphertext and return raw bytes, without UTF-8 decoding.
 
         Use for values that were encrypted from bytes rather than str.
+        ``revision`` semantics match :meth:`decrypt`.
         """
         if self._closed:
             raise RuntimeError("FloorVault has been wiped")
@@ -331,6 +365,7 @@ class FloorVault:
             schema_id=schema_id,
             schema_version=schema_version,
             app_instance_id=self.app_instance_id,
+            revision=revision,
         )
         try:
             return self._aead_siv.decrypt(raw_cipher, [aad, nonce])
