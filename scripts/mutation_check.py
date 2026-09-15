@@ -54,6 +54,7 @@ CURATED_TESTS = [
     "tests/test_beacon.py",
     "tests/test_migration_retirement.py",
     "tests/test_envelope_versioning.py",
+    "tests/test_store_permissions.py",
 ]
 
 # --------------------------------------------------------------------------
@@ -131,9 +132,30 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AD-1",
         "src/floorvault/providers/adaptive.py",
-        "        if has_posix_group_or_other_access(file_stat.st_mode):",
-        "        if False:  # MUTANT",
-        "Adaptive provider stops refusing group/other-accessible files",
+        "            problem = store_permission_problem(key_file, file_stat.st_mode)",
+        "            problem = None  # MUTANT",
+        "Adaptive provider stops refusing group/other-accessible (or unverifiable) files",
+    ),
+    Mutation(
+        "WACL-1",
+        "src/floorvault/platform_support.py",
+        '        except OSError as exc:\n            return (\n                f"key store permissions could not be determined for {path} "',
+        '        except OSError as exc:\n            return None  # MUTANT\n            return (\n                f"key store permissions could not be determined for {path} "',
+        "Windows ACL query failure fails OPEN: an unverifiable store is trusted",
+    ),
+    Mutation(
+        "WACL-2",
+        "src/floorvault/platform_support.py",
+        "        offenders = acl_sids_granting_others_access(sids, owner_sid=owner_sid)\n        if offenders:",
+        "        offenders = acl_sids_granting_others_access(sids, owner_sid=owner_sid)\n        if False:  # MUTANT",
+        "A world-accessible key store ACL is no longer refused on Windows",
+    ),
+    Mutation(
+        "WACL-3",
+        "src/floorvault/platform_support.py",
+        "    if has_posix_group_or_other_access(mode):",
+        "    if False:  # MUTANT",
+        "POSIX branch of the store-permission gate disabled",
     ),
     Mutation(
         "MIG-1",

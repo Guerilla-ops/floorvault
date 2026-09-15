@@ -136,13 +136,26 @@ def test_machine_file_fallback_survives_a_synthesised_mode(monkeypatch, tmp_path
     reports 0o666, and the second resolve refused the provider's own key file
     with "Refusing key file with insecure permissions".
 
-    The permission helper itself is unit-tested in test_protected_store_safety.py.
+    The synthesised mode is still not a reason to refuse - the decision on
+    Windows now rests on the ACL, which this test supplies as owner-only. A
+    world-accessible ACL is refused (see test_windows_store_with_a_world_... in
+    test_protected_store_safety.py).
     """
     for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
 
-    # Simulate the platform the gate must treat as Windows.
+    # Simulate the platform the gate must treat as Windows, including the ACL
+    # the real query would return; patching only the platform flag would leave
+    # the verification unrunnable, which is a different code path.
     monkeypatch.setattr(platform_support, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        platform_support,
+        "windows_dacl_sids",
+        lambda path: (
+            frozenset({"S-1-5-18", "S-1-5-32-544", "S-1-5-21-1-2-3-1001"}),
+            "S-1-5-21-1-2-3-1001",
+        ),
+    )
 
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)
     monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)

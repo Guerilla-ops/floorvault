@@ -16,9 +16,9 @@ from typing import Optional
 from ..memory import HardenedMemoryKey
 from ..platform_support import (
     binary_mode_flag,
-    has_posix_group_or_other_access,
     is_macos,
     is_windows,
+    store_permission_problem,
 )
 from .base import CustodyDowngradeError, KeyProvider, KeyProviderError
 
@@ -164,8 +164,12 @@ class AdaptiveKeyProvider(KeyProvider):
                 raise KeyProviderError("Refusing non-regular key file")
             if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():
                 raise KeyProviderError("Refusing key file with unexpected owner")
-            if has_posix_group_or_other_access(file_stat.st_mode):
-                raise KeyProviderError("Refusing key file with insecure permissions")
+            # Platform-dispatched: the POSIX mode on POSIX, the effective DACL on
+            # Windows (where the mode is synthesised and meaningless), and a
+            # refusal if neither can be established.
+            problem = store_permission_problem(key_file, file_stat.st_mode)
+            if problem is not None:
+                raise KeyProviderError(f"Refusing key file: {problem}")
             key_bytes = key_file.read_bytes()
             if len(key_bytes) == 32:
                 return HardenedMemoryKey(key_bytes)

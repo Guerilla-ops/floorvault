@@ -109,12 +109,40 @@ def test_owner_only_modes_are_accepted_on_posix(tmp_path):
 
 
 def test_synthesised_windows_mode_is_not_refused(tmp_path, monkeypatch):
-    """Windows reports 0o666 for a writable file whatever its ACL."""
+    """Windows reports 0o666 for a writable file whatever its ACL.
+
+    The mode must not be the basis of the decision there. Since the ACL is now
+    verified instead, the store is accepted on the strength of an owner-only
+    DACL - and the synthesised mode plays no part.
+    """
     monkeypatch.setattr(platform_support, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        platform_support,
+        "windows_dacl_sids",
+        lambda path: (
+            frozenset({"S-1-5-18", "S-1-5-32-544", "S-1-5-21-1-2-3-1001"}),
+            "S-1-5-21-1-2-3-1001",
+        ),
+    )
     store = tmp_path / "store"
     write_protected(_KEY, store, header=_HEADER)
     store.chmod(0o666)
     assert read_protected(store, header=_HEADER) == _KEY
+
+
+def test_windows_store_with_a_world_accessible_acl_is_refused(tmp_path, monkeypatch):
+    """The synthesised-mode exemption must not become an ACL exemption."""
+    monkeypatch.setattr(platform_support, "IS_WINDOWS", True)
+    monkeypatch.setattr(
+        platform_support,
+        "windows_dacl_sids",
+        lambda path: (frozenset({"S-1-5-18", "S-1-1-0"}), "S-1-5-18"),
+    )
+    store = tmp_path / "store"
+    write_protected(_KEY, store, header=_HEADER)
+    store.chmod(0o600)
+    with pytest.raises(ProtectedStoreError, match="ACL"):
+        read_protected(store, header=_HEADER)
 
 
 def test_posix_check_still_refuses_when_not_windows(monkeypatch, tmp_path):

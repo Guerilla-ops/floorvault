@@ -14,8 +14,11 @@ Pure-Python, cross-platform, fail-closed:
   * On POSIX, reads require that the store grants no group or other access
     (0600, 0400, 0700 all qualify). Windows does not implement POSIX permission
     bits - os.stat() reports a synthesised mode (0o666 for a writable file)
-    whatever the ACL - so that check is POSIX-only; on Windows the file's
-    protection comes from the ACL of the directory holding it.
+    whatever the ACL - so the mode check is POSIX-only; on Windows the store's
+    effective DACL is verified instead (GetNamedSecurityInfoW, refusing a store
+    that grants access to any principal other than its owner, SYSTEM and
+    Administrators). A store whose protection cannot be established on either
+    platform is refused rather than trusted: "cannot tell" is never "fine".
   * The stored blob header marks the protection scheme so an on-disk value can
     never be mistaken for a raw key.
 
@@ -29,7 +32,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ..platform_support import binary_mode_flag, has_posix_group_or_other_access
+from ..platform_support import binary_mode_flag, store_permission_problem
 
 #: Upper bound for a protected store, i.e. the read buffer. A DPAPI blob is a few
 #: hundred bytes; anything approaching this is not a store we wrote.
@@ -204,8 +207,7 @@ def read_protected(path: Path, *, header: bytes, expected_length: int | None = 3
         raise ProtectedStoreInvalidLength("protected store key has an unexpected length")
     if expected_length is None and not key:
         raise ProtectedStoreInvalidLength("protected store holds an empty payload")
-    if has_posix_group_or_other_access(os.stat(path).st_mode):
-        raise ProtectedStoreError(
-            "protected store permissions grant group or other access (expected 0600)"
-        )
+    problem = store_permission_problem(path, os.stat(path).st_mode)
+    if problem is not None:
+        raise ProtectedStoreError(problem)
     return key
