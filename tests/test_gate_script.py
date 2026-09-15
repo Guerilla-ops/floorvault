@@ -33,3 +33,14 @@ def test_strict_mode_fails_when_a_gate_tool_is_missing():
 def test_secret_scan_can_be_skipped_for_non_linux_runners():
     """History is identical on every runner, so the scan runs once, on Linux."""
     assert "FLOORVAULT_SKIP_SECRET_SCAN" in TEXT
+
+
+def test_gate_runs_the_entire_test_suite():
+    """The gate must not run a hand-listed subset of test files.
+
+    It previously invoked pytest on 8 of 18 files, so test_platform_providers.py
+    (which would have exercised the DPAPI and keyring paths on Windows) and the
+    protected-store safety tests never ran in CI. A regression could pass the
+    gate while the suite failed locally.
+    """
+    assert "pytest -q tests/" in TEXT, "gate does not run the whole tests/ directory"

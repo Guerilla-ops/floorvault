@@ -87,7 +87,16 @@ pytest -q tests/test_fuzz.py
 echo "[PASS] Fuzz: round-trip, splice-immunity, malformed-envelope, beacon invariants verified."
 
 echo ""
-echo "=== 9. Verifying Universal Wheel Build (Zero-C Compilation) ==="
+echo "=== 9. Running the Full Test Suite ==="
+# Step 5-8 above cover the security-critical paths with readable labels, but the
+# gate MUST also run everything else: the enumerated subsets previously missed
+# test_platform_providers.py, test_protected_store_safety.py and others, so a
+# regression could pass CI while the suite failed locally.
+pytest -q tests/
+echo "[PASS] Full suite: every test file under tests/ passed."
+
+echo ""
+echo "=== 10. Verifying Universal Wheel Build (Zero-C Compilation) ==="
 rm -rf dist/
 uv build
 python scripts/verify_wheel.py dist

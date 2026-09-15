@@ -111,9 +111,16 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PC-7",
         "src/floorvault/providers/platform_custody.py",
-        "    if path.exists():",
-        "    if False:  # MUTANT",
-        "No-clobber guard removed",
+        "        os.link(temporary, path)",
+        "        os.replace(temporary, path)  # MUTANT",
+        "Atomic no-clobber replaced by os.replace, which always clobbers",
+    ),
+    Mutation(
+        "PC-8",
+        "src/floorvault/providers/adaptive.py",
+        "                # custody. This clause is why they are no longer dead code.\n                raise",
+        "                # custody. This clause is why they are no longer dead code.\n                return None  # MUTANT",
+        "Reinstates swallowing a deliberate provider error (silent custody downgrade)",
     ),
     Mutation(
         "AD-1",
