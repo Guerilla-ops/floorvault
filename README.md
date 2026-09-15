@@ -179,6 +179,15 @@ hostile table / column names are refused rather than interpolated.
 * **Memory hardening is best-effort.** Python, ctypes, and OpenSSL may still
   create transient heap copies. `strict` mode fails closed rather than running
   with an unpinned key.
+* **Windows has no POSIX permission bits.** `os.stat()` there reports a
+  synthesised mode whatever the file's ACL, so floorvault does not attempt a
+  mode check on Windows (doing so would reject its own 0600 file). Instead
+  `WindowsDPAPIKeyProvider` requires the key store to live inside the user
+  profile — the one location whose ACLs can reasonably be assumed owner-only —
+  and refuses anything else unless the caller passes
+  `allow_outside_user_profile=True` for a location it has secured itself. This
+  is an assumption, not a verification: reading the store's real NT ACL
+  (`GetNamedSecurityInfoW`) is a known gap, tracked in the roadmap below.
 
 ## Performance & functionality cost of the hardening
 
@@ -215,6 +224,12 @@ for the measured comparison vs. Fernet and plain SQLite (reproduce with
       splice-immunity, malformed-envelope, nonce-reuse, beacon exactness —
       `tests/test_fuzz.py`)
 - [ ] CI matrix (macOS / Linux / Windows runners)
+- [ ] **Windows NT DACL verification** for the protected key store
+      (`GetNamedSecurityInfoW` via ctypes). Windows currently relies on the
+      user-profile ACL assumption described under [Security
+      notes](#security-notes) rather than inspecting the store's actual
+      discretionary ACL; closing this needs a dedicated Windows host to develop
+      and test against.
 
 ---
 
