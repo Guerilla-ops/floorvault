@@ -250,6 +250,7 @@ class VaultStatus(enum.Enum):
     UNLOCKED = "unlocked"
     REVOKED = "revoked"
 
+
 @dataclass(frozen=True)
 class SessionInfo:
     session_id: str
@@ -257,6 +258,7 @@ class SessionInfo:
     expires_at: datetime
     idle_timeout_seconds: int
     provider_name: str
+
 
 class Vault:
     @classmethod
@@ -304,14 +306,29 @@ class Vault:
 ### 5.2 Records & Transactional CRUD API
 ```python
 class VaultTransaction:
-    def put(self, namespace: str, record_id: str, value: bytes | str | dict, *, metadata: Optional[dict] = None) -> None: ...
+    def put(
+        self,
+        namespace: str,
+        record_id: str,
+        value: bytes | str | dict,
+        *,
+        metadata: Optional[dict] = None,
+    ) -> None: ...
     def get(self, namespace: str, record_id: str) -> Optional[Record]: ...
     def delete(self, namespace: str, record_id: str) -> bool: ...
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
 
+
 class Vault:
-    def put(self, namespace: str, record_id: str, value: bytes | str | dict, *, metadata: Optional[dict] = None) -> None:
+    def put(
+        self,
+        namespace: str,
+        record_id: str,
+        value: bytes | str | dict,
+        *,
+        metadata: Optional[dict] = None,
+    ) -> None:
         """Encrypt and atomically store a record bound to its namespace and record_id coordinates."""
         ...
 
@@ -389,6 +406,7 @@ class SearchResult:
     matched_tokens: list[str]
     snippet: Optional[str] = None  # Reconstructed in-memory after post-decryption
 
+
 class VaultSearch:
     def search(
         self,
@@ -425,6 +443,7 @@ class AuditEvent:
     prev_event_hash: str
     payload_hash: str
     signature: str
+
 
 class VaultAuditLedger:
     def record(self, event_type: str, details: dict) -> None:
@@ -632,7 +651,9 @@ Automated test suite executes on every commit across a cross-platform matrix:
   def test_security_gate_runner():
       missing_tools = check_required_security_tools(["bandit", "pip-audit", "semgrep", "gitleaks"])
       if missing_tools:
-          raise SecurityGateFailure(f"Security tools missing: {missing_tools}. Skipping is forbidden!")
+          raise SecurityGateFailure(
+              f"Security tools missing: {missing_tools}. Skipping is forbidden!"
+          )
   ```
 - If a security tool, linter, or platform provider is absent in the test environment, the test run must report **`FAIL`**, never `SKIP` or `PASS`.
 

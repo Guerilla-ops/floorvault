@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/floorvault.svg)](https://pypi.org/project/floorvault/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-[![Python Versions](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://pypi.org/project/floorvault/)
+[![Python Versions](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://pypi.org/project/floorvault/)
 
 > **Contextual, misuse-resistant, searchable database encryption for SQLite and beyond — zero C compilation.**
 
@@ -99,16 +99,12 @@ conn.execute("""
 
 email = "scott@example.com"
 cipher = crypto.encrypt(email, table="users", record_id="usr-1", column="email")
-bucket = crypto.beacon(email, scope="users.email", bits=16)   # bounded bucket
-conn.execute(
-    "INSERT INTO users VALUES (?, ?, ?)", ("usr-1", cipher, bucket)
-)
+bucket = crypto.beacon(email, scope="users.email", bits=16)  # bounded bucket
+conn.execute("INSERT INTO users VALUES (?, ?, ?)", ("usr-1", cipher, bucket))
 
 # Exact-match search: find candidate rows via the bucket, then confirm.
 probe = crypto.beacon("scott@example.com", scope="users.email", bits=16)
-for row in conn.execute(
-    "SELECT id, email_cipher FROM users WHERE email_bucket = ?", (probe,)
-):
+for row in conn.execute("SELECT id, email_cipher FROM users WHERE email_bucket = ?", (probe,)):
     user_id, email_cipher = row
     print(crypto.decrypt(email_cipher, table="users", record_id=user_id, column="email"))
 ```
@@ -138,7 +134,7 @@ store = MigratingVaultStore(modern_store=modern, legacy_base_dir="~/.floor/vault
 secret = store.resolve_secret("some-legacy-item-id")
 
 # Batch-migrate everything, keeping a pre-migration backup and verifying.
-result = store.migrate_all()   # {"migrated": N, "verified": True, ...}
+result = store.migrate_all()  # {"migrated": N, "verified": True, ...}
 assert store.verify() is True  # only safe to delete legacy after this passes
 ```
 
