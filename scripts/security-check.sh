@@ -117,17 +117,37 @@ echo "[PASS] Wheel Build: Successfully packaged a universal (py3-none-any) wheel
 # Computed in Python rather than with sha256sum/shasum: the gate runs under bash
 # on Windows too, where neither tool is guaranteed to exist.
 python - <<'DIGESTS'
+import gzip  # noqa: F401  (documents that the sdist is gzip-compressed)
 import hashlib
 import pathlib
+import tarfile
+import zipfile
 
-artifacts = sorted(pathlib.Path("dist").glob("*.whl")) + sorted(
-    pathlib.Path("dist").glob("*.tar.gz")
-)
-if not artifacts:
-    raise SystemExit("[FAIL] no built artifact to digest")
-for artifact in artifacts:
-    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-    print(f"[DIGEST] sha256 {digest} {artifact.name}")
+dist = pathlib.Path("dist")
+wheels = sorted(dist.glob("*.whl"))
+sdists = sorted(dist.glob("*.tar.gz"))
+if not wheels or not sdists:
+    raise SystemExit("[FAIL] expected both a wheel and an sdist in dist/")
+
+for artifact in wheels + sdists:
+    print(f"[DIGEST] sha256 {hashlib.sha256(artifact.read_bytes()).hexdigest()} {artifact.name}")
+
+# Archive headers carry fields that vary by platform (the zip creating-system
+# byte, the gzip OS byte, tar member modes) and any of them would explain a
+# digest that differs between runners. Printing them turns the question into a
+# reading instead of another guess: see the artifact-identity note in
+# SECURITY.md, where two attributions have already been falsified by a run.
+for wheel in wheels:
+    with zipfile.ZipFile(wheel) as archive:
+        infos = archive.infolist()
+        creators = sorted({info.create_system for info in infos})
+        modes = sorted({info.external_attr >> 16 for info in infos})
+    print(f"[ARTIFACT] {wheel.name}: create_system={creators} modes={[oct(m) for m in modes]}")
+
+for sdist in sdists:
+    with tarfile.open(sdist, "r:gz") as archive:
+        tar_modes = sorted({member.mode for member in archive.getmembers()})
+    print(f"[ARTIFACT] {sdist.name}: gzip_os_byte={sdist.read_bytes()[9]} tar_modes={[oct(m) for m in tar_modes]}")
 DIGESTS
 
 echo ""

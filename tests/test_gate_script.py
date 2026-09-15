@@ -68,3 +68,16 @@ def test_gate_prints_the_artifact_digests():
         "gate reports no digest for the built artifacts"
     )
     assert "digest" in TEXT.lower(), "digest output is not labelled"
+
+
+def test_gate_reports_the_archive_metadata_that_varies_by_platform():
+    """Digests alone cannot explain a digest that differs between runners.
+
+    Two attributions of the platform delta have already been falsified by a CI
+    run, so the gate prints the fields that could actually cause one: the zip
+    creating-system byte, the gzip OS byte and the tar member modes. Without this
+    the next investigation starts by guessing again.
+    """
+    assert "[ARTIFACT]" in TEXT, "gate prints no archive metadata"
+    for field in ("create_system", "tar_modes", "gzip_os_byte"):
+        assert field in TEXT, f"gate does not report {field}"

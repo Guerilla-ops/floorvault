@@ -393,23 +393,38 @@ We prefer measured claims over marketing claims. Currently in place:
 - **Artifact identity — and what is explicitly NOT claimed.** The gate prints the
   SHA-256 of the wheel and sdist it built on every runner, and CI publishes the
   artifacts from one leg, so a download can be identified against a build from
-  source. **Reproducibility is per platform, not across platforms.** Measured for
-  one commit while line endings were still unpinned: `0c0e2ae7…` from the ubuntu
-  runners (py3.10, py3.13), the macOS runner and the maintainer's host;
-  `d17b4902…` from both Windows runners. Two causes were isolated by measurement,
-  not assumed:
-  - *Line endings.* No `.gitattributes` existed, so git's Windows default
-    (`core.autocrlf=true`) rewrote every text file to CRLF and the build packed
-    those bytes. Now pinned with `* text=auto eol=lf`, which removes this cause; a
-    CRLF-forced checkout of the pinned tree now yields the POSIX digest.
-  - *The executable bit.* The archive records whether a source file is executable
-    (non-executable modes are normalised, so `0666` and `0644` build identically),
-    and Windows cannot represent that bit. This affects only the **sdist**, which
-    contains `scripts/security-check.sh` (tracked `100755`): the same tree gave
-    `ad5d6de4…` at `0755` and `564ed501…` at `0644`.
-  Byte-identity across operating systems is therefore **not** claimed for the
-  sdist; a digest identifies the artifact for its platform, and the ubuntu-built
-  artifact is the release identity.
+  source. **Reproducibility is per platform, not across platforms, and two
+  attempts to attribute it precisely have each been falsified by the next run -
+  treat the per-platform digests as facts and the causes below as partial.**
+
+  Measured for a single commit, before line endings were pinned:
+
+  | Runner | wheel | sdist |
+  |---|---|---|
+  | ubuntu py3.10, py3.13 / macos py3.13 / maintainer host | `0c0e2ae7…` | `882a8a26…` |
+  | windows py3.10, py3.13 | `d17b4902…` | `1ec7155e…` |
+
+  After pinning line endings (`* text=auto eol=lf`), the Windows artifacts
+  *changed* — `26d36487…` and `9fdc6857…` — but still do not match the POSIX
+  values. So:
+
+  - *Line endings were a real cause and are fixed.* A CRLF-forced checkout of the
+    pinned tree now builds the POSIX digest. Every Windows artifact moved when
+    this landed.
+  - *The executable bit is a real cause, confirmed locally:* the same tree gives
+    `ad5d6de4…`/`564ed501…` for the sdist with `scripts/security-check.sh` at
+    `0755`/`0644`. It cannot explain the wheel, which contains no such file.
+  - *At least one further cause remains.* The strongest candidate is the zip
+    header's creating-system field: every wheel entry built here records
+    `create_system=3` (Unix), and CPython writes `0` when the archive is created
+    on Windows. That single byte per entry would change every wheel. **This is a
+    hypothesis, not a measurement** — the next CI run prints the field per runner
+    (`[ARTIFACT]`) so it can be confirmed or killed.
+
+  Byte-identity across operating systems is therefore **not** claimed for either
+  artifact. A digest identifies an artifact for its platform; the ubuntu-built
+  wheel is the release identity, and verifying a download means comparing it
+  against *that* artifact, not against a build from an arbitrary machine.
 
 **Not** (yet) in place, and not claimed:
 
