@@ -259,6 +259,19 @@ The database stores something like:
 
 The email itself stays encrypted.
 
+### Store metadata and format version
+
+The SQLite store uses `PRAGMA user_version = 2`. Opening an older store performs
+its metadata and origin-index migration before marking the store at version 2.
+The `origin_idx` column uses an 8-bit origin bucket (one byte, 256 possible
+buckets), not a full-width equality index. Bucket hits are candidates only and
+are confirmed by decrypting the origin metadata.
+
+The schema deliberately leaves a small metadata surface available for fast
+listing: item cardinality, item kind, and OTP presence remain observable to
+someone who can read the database. These are accepted design residuals; secret
+values remain encrypted.
+
 ## Example
 
 ```python

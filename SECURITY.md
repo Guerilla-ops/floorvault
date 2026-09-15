@@ -205,6 +205,19 @@ material.
   seeded by public constants): a copy of the store is enough to recover the
   key. The OS-native tiers (macOS Keychain, Windows DPAPI, Linux Secret
   Service) bind the key to the OS user instead.
+- **Schema metadata leakage is an accepted design residual.** To preserve fast
+  listing and filtering without decrypting every item, stored metadata such as
+  item cardinality, item kind, and whether an item contains an OTP is visible
+  to an attacker who can read the database. These fields do not reveal secret
+  values, but their presence, absence, and distribution are intentionally not
+  hidden by the design.
+- **Tier-3 local file custody is not a hardware or OS confidentiality boundary.**
+  When `~/.floorvault/master.key` is used, the key remains recoverable from the
+  local file by an attacker who can copy that file or its containing store. The
+  owner-only filesystem permissions reduce accidental exposure but do not
+  provide Keychain, DPAPI, Secure Enclave, or hardware-backed confidentiality.
+  Use an OS-native provider or external secret source when that boundary is
+  required.
 
 **A third limit, specific to migration:**
 

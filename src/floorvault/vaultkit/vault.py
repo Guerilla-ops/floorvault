@@ -146,12 +146,21 @@ def totp_now(seed: str, *, digits: int = 6, period: int = 30, at: Optional[float
     if "|" in seed:
         seed, d, p, a = seed.split("|", 3)
         digits, period, algo = int(d), int(p), _OTP_ALGOS.get(a.upper(), "sha1")
-    key = base64.b32decode(seed + "=" * (-len(seed) % 8), casefold=True)
+    key = bytearray(base64.b32decode(seed + "=" * (-len(seed) % 8), casefold=True))
     counter = int((at if at is not None else _time.time()) // period)
-    digest = hmac.new(key, struct.pack(">Q", counter), getattr(hashlib, algo)).digest()
-    offset = digest[-1] & 0x0F
-    code = (struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF) % (10**digits)
-    return str(code).zfill(digits)
+    digest = bytearray()
+    try:
+        digest = bytearray(
+            hmac.new(key, struct.pack(">Q", counter), getattr(hashlib, algo)).digest()
+        )
+        offset = digest[-1] & 0x0F
+        code = (struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF) % (10**digits)
+        return str(code).zfill(digits)
+    finally:
+        for index in range(len(key)):
+            key[index] = 0
+        for index in range(len(digest)):
+            digest[index] = 0
 
 
 def scrub_secret_from_text(text: str, secret: dict[str, Any]) -> str:

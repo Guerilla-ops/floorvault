@@ -76,11 +76,16 @@ def test_contextual_splicing_attack_detection():
 
 
 def test_ephemeral_master_key_destruction():
-    """Verify master key is wiped in memory within initialization."""
+    """Verify the source key is preserved unless wiping is explicitly requested."""
     master = HardenedMemoryKey(b"\x03" * 32, mode="disabled")
-    crypto = FloorVault(master, app_instance_id="inst-test-2", memory_mode="disabled")
+    crypto = FloorVault(
+        master,
+        app_instance_id="inst-test-2",
+        memory_mode="disabled",
+        wipe_source_key=True,
+    )
 
-    # Master key container must be wiped
+    # Caller-owned key containers are preserved by default; this test opts in.
     assert master.is_wiped is True
     with pytest.raises(RuntimeError, match="wiped"):
         master.get_bytes()

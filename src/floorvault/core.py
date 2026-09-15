@@ -38,7 +38,7 @@ class DecryptionVerificationError(FloorVaultError):
 
 
 class NonceReuseError(FloorVaultError):
-    """Raised when an encrypted record reuses a previously observed nonce."""
+    """Raised when encryption reuses a nonce within the process lifetime."""
 
 
 RECORD_MAGIC = b"FLRV"  # FloorVault v1 Envelope Magic
@@ -151,10 +151,13 @@ class FloorVault:
         *,
         maximum_tracked_nonces: int = 10000,
         memory_mode: str = "opportunistic",
+        wipe_source_key: bool = False,
     ) -> None:
         """Initialize FloorVault.
 
-        Wipes the master_key in memory in < 5 ms after deriving isolated subkeys.
+        Derives isolated subkeys from the master key. The master key handle
+        is preserved by default; set ``wipe_source_key=True`` to zero the
+        caller-provided source key after derivation.
         """
         if not isinstance(app_instance_id, str) or not app_instance_id.strip():
             raise ValueError("app_instance_id must be a non-empty string")
@@ -177,11 +180,13 @@ class FloorVault:
         self._siv_key: Any = None
         self._index_key: Any = None
 
-        # 1. Extract raw master key bytes for derivation into a mutable bytearray
-        master_buffer: bytearray
+        # 1. Extract the source key as a mutable or zero-copy buffer
+        master_buffer: bytearray | memoryview
         is_hardened = isinstance(master_key, HardenedMemoryKey)
         if is_hardened:
-            master_buffer = bytearray(master_key.get_bytes())
+            # Use the unmanaged buffer directly as HKDF input. This avoids
+            # creating a transient immutable bytes copy in FloorVault.
+            master_buffer = master_key.get_buffer()
         elif isinstance(master_key, (bytes, bytearray)):
             master_buffer = bytearray(master_key)
         else:
@@ -190,14 +195,17 @@ class FloorVault:
         if len(master_buffer) != 32:
             # Zero the copy before failing so no key material is left behind
             bad_len = len(master_buffer)
-            for idx in range(bad_len):
-                master_buffer[idx] = 0
+            if isinstance(master_buffer, bytearray):
+                for idx in range(len(master_buffer)):
+                    master_buffer[idx] = 0
             del master_buffer
             raise ValueError(f"master_key must be exactly 32 bytes (got {bad_len})")
 
         try:
             # 2. Derive functional subkeys using HKDF-SHA256 with domain separation
             # Subkey A: AES-256-SIV requires a 64-byte key (two 256-bit subkeys)
+            # Derive directly from the mutable buffer to avoid an extra bytes()
+            # materialization outside our control.
             raw_siv = HKDF(
                 algorithm=hashes.SHA256(),
                 length=64,
@@ -229,19 +237,28 @@ class FloorVault:
             del raw_index
 
         finally:
-            # 4. EPHEMERAL MASTER KEY DESTRUCTION: wipe master key in < 5 ms
-            if is_hardened:
+            # 4. EPHEMERAL MASTER KEY DESTRUCTION
+            if is_hardened and wipe_source_key:
+                # Wipe only when explicitly requested; preserves caller handle
+                # by default so multi-instance initialization works correctly.
                 master_key.wipe()
-            # Overwrite mutable buffer cleanly without ctypes.c_char_p null-byte truncation
-            for idx in range(len(master_buffer)):
-                master_buffer[idx] = 0
+            if isinstance(master_buffer, bytearray):
+                # Overwrite internally-owned mutable buffers. A hardened source
+                # buffer is owned by the caller and is wiped only on request.
+                for idx in range(len(master_buffer)):
+                    master_buffer[idx] = 0
             del master_buffer
 
         # Bounded sliding window for observed nonces (allocated earlier so that
         # failure paths and __del__ always find them present).
 
     def _track_nonce(self, nonce: bytes) -> None:
-        """Register nonce in sliding window to detect replay."""
+        """Deduplicate nonces in a process-lifetime sliding window.
+
+        This in-memory window is bounded and is not a cross-session freshness
+        mechanism. Cross-session freshness requires caller-managed revision
+        counters bound into the associated data.
+        """
         if nonce in self._nonce_set:
             raise NonceReuseError("Detected duplicate cryptographic nonce")
         if len(self._nonce_queue) >= self._max_nonces:

@@ -44,21 +44,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_PATHS = ("src/floorvault",)
 
-CURATED_TESTS = [
-    "tests/test_protected_store_safety.py",
-    "tests/test_platform_providers.py",
-    "tests/test_adaptive_provider.py",
-    "tests/test_platform_support.py",
-    "tests/test_crypto_core.py",
-    "tests/test_revision_binding.py",
-    "tests/test_beacon.py",
-    "tests/test_migration_retirement.py",
-    "tests/test_envelope_versioning.py",
-    "tests/test_store_permissions.py",
-    "tests/test_keyring.py",
-    "tests/test_rotation.py",
-    "tests/test_origin_index_bounded.py",
-]
+def _curated_tests() -> list[str]:
+    """Discover all test modules so new security suites cannot be omitted."""
+    tests_dir = REPO / "tests"
+    return sorted(
+        str(path.relative_to(REPO))
+        for path in tests_dir.glob("test_*.py")
+        if path.is_file()
+    )
+
 
 # --------------------------------------------------------------------------
 # Curated mutants (fast, contract-focused)
@@ -676,10 +670,11 @@ def _run_auto(mutants: list[AutoMutant], jobs: int, report_path: Path | None = N
 
 
 def _run_curated(verbose: bool) -> int:
+    curated_tests = _curated_tests()
     with tempfile.TemporaryDirectory(prefix="fv-mut-curated-") as tmp:
         workdir = Path(tmp) / "repo"
         _copy_repo(workdir)
-        if _run_tests(workdir, CURATED_TESTS, False) != 0:
+        if _run_tests(workdir, curated_tests, False) != 0:
             print("[FAIL] the unmutated copy is not green; aborting", file=sys.stderr)
             return 2
         print("[BASELINE] unmutated copy: tests pass\n")
@@ -697,7 +692,7 @@ def _run_curated(verbose: bool) -> int:
                 original.replace(mutation.find, mutation.replace, 1), encoding="utf-8"
             )
             try:
-                result = _classify(_run_tests(workdir, CURATED_TESTS, False))
+                result = _classify(_run_tests(workdir, curated_tests, False))
             finally:
                 target.write_text(original, encoding="utf-8")
             ok = result == mutation.expect

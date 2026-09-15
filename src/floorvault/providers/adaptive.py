@@ -17,7 +17,6 @@ from ..memory import HardenedMemoryKey
 from ..platform_support import (
     binary_mode_flag,
     is_macos,
-    is_windows,
     store_permission_problem,
 )
 from .base import CustodyDowngradeError, KeyProvider, KeyProviderError
@@ -43,18 +42,8 @@ class AdaptiveKeyProvider(KeyProvider):
         self.keychain_unavailable_reason: Optional[str] = None
 
     def _is_interactive_desktop(self) -> bool:
-        """Heuristic detecting whether a GUI keyring environment is present."""
-        if is_macos():
-            # On macOS, window server is active if not in a raw detached ssh without gui
-            return os.environ.get("SSH_CONNECTION") is None or bool(os.environ.get("DISPLAY"))
-        if is_windows():
-            return True
-        # Linux: check for X11 / Wayland / DBus session
-        return bool(
-            os.environ.get("DISPLAY")
-            or os.environ.get("WAYLAND_DISPLAY")
-            or os.environ.get("DBUS_SESSION_BUS_ADDRESS")
-        )
+        """Deprecated compatibility hook; capability probing is unconditional."""
+        return True
 
     def resolve_key(self, *, allow_create: bool = True) -> HardenedMemoryKey:
         """Resolve the master key across the three autonomous tiers."""
@@ -74,17 +63,14 @@ class AdaptiveKeyProvider(KeyProvider):
                     raise KeyProviderError("Environment key must be valid hexadecimal") from exc
                 return HardenedMemoryKey(raw_bytes)
 
-        # --- Tier 2: System Keyring (Desktop Workstation) ---
-        if self._is_interactive_desktop():
-            try:
-                key = self._resolve_from_system_keyring(allow_create=allow_create)
-                if key is not None:
-                    return key
-            except KeyProviderError:
-                raise
-            except Exception:
-                # If desktop keyring is unavailable, locked, or prompts are denied, fall through
-                pass
+        # --- Tier 2: Direct system-keyring capability probe ---
+        # Do not infer keyring availability from SSH_CONNECTION, DISPLAY, or
+        # other session environment variables. The provider itself is the
+        # capability probe; an installed but unusable Keychain fails closed.
+        key = self._resolve_from_system_keyring(allow_create=allow_create)
+        if key is not None:
+            return key
+
         # --- Tier 3: Zero-Config Machine-Bound Local File Key (Docker / SSH) ---
         return self._resolve_machine_bound_file_key(allow_create=allow_create)
 
@@ -148,7 +134,12 @@ class AdaptiveKeyProvider(KeyProvider):
         return None
 
     def _resolve_machine_bound_file_key(self, *, allow_create: bool) -> HardenedMemoryKey:
-        """Resolve an explicitly enabled 0600 local file key without GUI prompts."""
+        """Resolve an explicitly enabled 0600 local file key without GUI prompts.
+
+        WARNING: ``~/.floorvault/master.key`` is Tier 3 custody only. It does
+        not establish a hardware-backed or OS confidentiality boundary; anyone
+        able to copy the file can recover the master key.
+        """
         if self.strict or not self.allow_disk_fallback:
             raise KeyProviderError(
                 "Refusing headless fallback to plaintext disk key in strict mode. "

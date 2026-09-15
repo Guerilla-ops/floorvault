@@ -87,11 +87,21 @@ field would carry no meaning.
 - The encoding is injective for this schema: no two distinct coordinate sets produce
   the same bytes, and empty coordinates are rejected rather than encoded.
 
-Any change to this encoding is a format change.
+- Any change to this encoding is a format change.
 
----
+## 4. SQLite store version and origin index
 
-## 4. Retirement tombstones (migration)
+The SQLite store sets `PRAGMA user_version = 2` after the metadata and origin-index
+migration completes. Opening a pre-version-2 store re-seals legacy metadata and
+recomputes the origin index before setting the version.
+
+`origin_idx` is an 8-bit bucket (`ORIGIN_INDEX_BITS = 8`, one byte, 256 possible
+buckets). It intentionally does not preserve the full-width HMAC equality index.
+A bucket match is only candidate evidence; callers must decrypt and compare the
+normalized origin to confirm equality. The version-2 migration is idempotent and
+existing records remain readable.
+
+## 5. Retirement tombstones (migration)
 
 | Column | Type | Notes |
 |---|---|---|
@@ -113,7 +123,7 @@ attacker cannot roll back (see `SECURITY.md` §5).
 
 ---
 
-## 5. Changing the format
+## 6. Changing the format
 
 1. Bump `crypto_version` and give the new layout its own magic.
 2. Keep the previous reader path, and add a test that the previous format is still
