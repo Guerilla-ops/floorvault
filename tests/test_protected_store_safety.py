@@ -93,6 +93,24 @@ def test_read_protected_rejects_non_regular_store(tmp_path):
         read_protected(store, header=_HEADER)
 
 
+def test_read_protected_normalizes_windows_directory_open_error(tmp_path, monkeypatch):
+    """Windows may deny opening a directory before the fstat regular-file check."""
+    store = tmp_path / "store-dir"
+    store.mkdir()
+
+    real_open = custody.os.open
+
+    def deny_directory(path, flags, *args, **kwargs):
+        if Path(path) == store:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(custody.os, "open", deny_directory)
+
+    with pytest.raises(ProtectedStoreError, match="regular"):
+        read_protected(store, header=_HEADER)
+
+
 @pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership check")
 def test_read_protected_rejects_unexpected_owner(tmp_path, monkeypatch):
     store = tmp_path / "store"

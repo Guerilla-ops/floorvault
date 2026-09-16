@@ -188,6 +188,17 @@ def read_protected(path: Path, *, header: bytes, expected_length: int | None = 3
         fd = os.open(path, flags)
     except FileNotFoundError as exc:
         raise ProtectedStoreMissing("protected store not present") from exc
+    except OSError as exc:
+        # Windows may refuse to open a directory as a file before we can reach
+        # the descriptor-based regular-file check below. Classify that existing
+        # non-regular path consistently instead of leaking PermissionError.
+        try:
+            path_stat = path.lstat()
+        except FileNotFoundError:
+            raise ProtectedStoreError("protected store could not be opened") from exc
+        if not stat.S_ISREG(path_stat.st_mode):
+            raise ProtectedStoreError("protected store is not a regular file") from exc
+        raise ProtectedStoreError(f"could not open protected store: {exc}") from exc
     try:
         file_stat = os.fstat(fd)
         if not stat.S_ISREG(file_stat.st_mode):
