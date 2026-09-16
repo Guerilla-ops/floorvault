@@ -60,14 +60,14 @@ def envelope_header(ciphertext: bytes) -> dict[str, Any]:
     magic = bytes(ciphertext[:4])
     if magic not in (RECORD_MAGIC, RECORD_MAGIC_V2):
         raise DecryptionVerificationError("Invalid ciphertext magic header")
+    if magic == RECORD_MAGIC_V2 and len(ciphertext) < _HEADER_LEN_V2:
+        raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
     header: dict[str, Any] = {
         "magic": magic,
         "header_len": _envelope_header_len(magic),
         "nonce_len": ciphertext[4] if magic == RECORD_MAGIC else ciphertext[6],
     }
     if magic == RECORD_MAGIC_V2:
-        if len(ciphertext) < _HEADER_LEN_V2:
-            raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
         header["crypto_version"] = ciphertext[4]
         header["key_id"] = ciphertext[5]
     return header

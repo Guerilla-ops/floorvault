@@ -74,6 +74,13 @@ def test_envelope_header_rejects_a_non_envelope():
         envelope_header(b"not-an-envelope")
 
 
+@pytest.mark.parametrize("ciphertext", [b"FLV2", b"FLV2\x02", b"FLV2\x02\x00"])
+def test_envelope_header_rejects_truncated_v2_headers(ciphertext: bytes):
+    """Every truncated v2 header fails with the public verification error."""
+    with pytest.raises(DecryptionVerificationError):
+        envelope_header(ciphertext)
+
+
 # ---------------------------------------------------------------------------
 # The header must be AUTHENTICATED, not merely advisory
 # ---------------------------------------------------------------------------
