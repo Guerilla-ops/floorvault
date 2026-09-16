@@ -258,6 +258,13 @@ def _fake_security(monkeypatch, *, copy_result=None, copy_raises=None, add_resul
     import types
 
     monkeypatch.setattr(platform_support, "IS_MACOS", True)
+    # ``adaptive`` imports the predicate functions directly, so make the
+    # simulated platform visible at that module boundary as well. Without
+    # this, Linux CI correctly enters the Secret Service branch and these
+    # macOS-specific tests never exercise the injected Security module.
+    monkeypatch.setattr(adaptive_module, "is_macos", lambda: True)
+    monkeypatch.setattr(adaptive_module, "is_linux", lambda: False)
+    monkeypatch.setattr(adaptive_module, "is_windows", lambda: False)
     module = types.ModuleType("Security")
     for name in (
         "kSecClass",
