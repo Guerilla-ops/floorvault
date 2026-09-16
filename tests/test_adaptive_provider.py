@@ -380,6 +380,7 @@ def test_keychain_non_not_found_status_fails_closed(monkeypatch, tmp_path):
 
 def test_absent_keychain_still_falls_through_and_is_fail_closed(monkeypatch, tmp_path):
     """A genuinely absent tier is not a downgrade: fall-through must be preserved."""
+    _force_machine_file_tier(monkeypatch)
     monkeypatch.setitem(sys.modules, "Security", None)  # `import Security` -> ImportError
     provider = _interactive_provider(monkeypatch, tmp_path)
 
