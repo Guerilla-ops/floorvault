@@ -21,7 +21,12 @@ exists to ban.
 from __future__ import annotations
 
 import ast
+import sqlite3
 from pathlib import Path
+
+import floorvault
+from floorvault.core import FloorVault
+from floorvault.vaultkit.vault import VaultStore
 
 ROOT = Path(__file__).resolve().parent.parent
 SHIPPED_ROOTS = ("src", "tests", "scripts")
@@ -76,3 +81,16 @@ def test_the_benchmark_uses_a_temp_directory_that_cleans_up():
         "the benchmark must use a self-cleaning temporary directory; the previous "
         "mktemp form also leaked a .bench.db on every run"
     )
+
+
+def test_search_surface_is_removed_from_public_and_vault_store_apis(tmp_path):
+    assert not hasattr(floorvault, "compute_blind_index")
+    assert not hasattr(floorvault, "BlindIndexer")
+    assert not hasattr(FloorVault, "blind_index")
+    assert not hasattr(FloorVault, "beacon")
+    assert not hasattr(VaultStore, "find_by_origin")
+
+    VaultStore(tmp_path / "vault", crypto=FloorVault(b"x" * 32, memory_mode="disabled"))
+    with sqlite3.connect(tmp_path / "vault" / "vault.db") as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(vault_items)")}
+    assert "origin_idx" not in columns

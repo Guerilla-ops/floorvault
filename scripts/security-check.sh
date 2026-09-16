@@ -78,19 +78,19 @@ pytest -q tests/test_memory_custody.py
 echo "[PASS] Memory Custody: Page locking, anti-dumping, and zeroization verified."
 
 echo ""
-echo "=== 6. Running Core Crypto, Splicing Immunity, & Blind Index Tests ==="
-pytest -q tests/test_crypto_core.py tests/test_blind_index.py tests/test_sqlite_integration.py
-echo "[PASS] Core Crypto: Contextual AAD anti-splicing and B-Tree lookups verified."
+echo "=== 6. Running Core Crypto & Splicing Immunity Tests ==="
+pytest -q tests/test_crypto_core.py tests/test_sqlite_integration.py
+echo "[PASS] Core Crypto: Contextual AAD anti-splicing verified."
 
 echo ""
 echo "=== 7. Running Agent-Optimized Drop-in Adapter Tests ==="
 pytest -q tests/test_vaultkit_adapter.py tests/test_adaptive_provider.py
-echo "[PASS] Adapter: Vault lookups and FTS5 split-projection verified."
+echo "[PASS] Adapter: Vault storage and session encryption verified."
 
 echo ""
 echo "=== 8. Running Deterministic Fuzz Harness (adversarial crypto invariants) ==="
 pytest -q tests/test_fuzz.py
-echo "[PASS] Fuzz: round-trip, splice-immunity, malformed-envelope, beacon invariants verified."
+echo "[PASS] Fuzz: round-trip, splice-immunity, and malformed-envelope invariants verified."
 
 echo ""
 echo "=== 9. Running the Full Test Suite ==="

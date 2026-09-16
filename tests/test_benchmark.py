@@ -42,8 +42,6 @@ def test_benchmark_harness_runs_smoke(tmp_path):
         "fernet_decrypt",
         "floorvault_encrypt",
         "floorvault_decrypt",
-        "floorvault_beacon16",
-        "floorvault_beacon_matches",
     ):
         assert key in data and data[key] > 0, key
     # Sane ratios: floorvault should be in the same order as Fernet (not 100x).

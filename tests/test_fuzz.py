@@ -15,9 +15,6 @@ core INVARIANTS always hold, including under malformed/hostile input:
       type mismatch), never crash with an internal error, never hang.
   I4. Nonce-reuse detection: feeding a previously seen random nonce through the
       reuse path must raise NonceReuseError (the in-memory tracker catches it).
-  I5. Beacon: distinct values may collide (bounded bucket) but beacon_matches
-      must be exact (no false accepts).
-
 Each run uses `random.Random(seed)` so any regression reproduces with `--seed N`.
 """
 
@@ -152,23 +149,3 @@ def test_fuzz_nonce_reuse_detection(fv: FloorVault, seed: int):
         assert isinstance(ct, bytes) and len(ct) >= 21
     # Tracked nonce set is bounded; if an entry rotated out, that's fine — this
     # only asserts the tracker path exists and doesn't throw for valid flows.
-
-
-@pytest.mark.parametrize("seed", [SEED, SEED + 1])
-def test_fuzz_beacon_exactness(fv: FloorVault, seed: int):
-    """beacon_matches must be EXACT: True iff the value's beacon equals the
-    stored one. Distinct values may legally collide at small bucket widths
-    (that is the privacy property), so we assert the precise equality both
-    ways rather than 'distinct values must differ'."""
-    rng = _rng(seed)
-    for _ in range(ITERATIONS):
-        a = _rand_payload(rng).decode("utf-8", "replace")
-        b = _rand_payload(rng).decode("utf-8", "replace")
-        scope = "fuzz.scope"
-        bits = rng.choice([4, 8, 16, 24, 32])
-        ba = fv.beacon(a, scope=scope, bits=bits)
-        # The engine's own beacon for b under the SAME derived index key/bits.
-        bb = fv.beacon(b, scope=scope, bits=bits)
-        # True iff b's beacon equals the stored one (collisions allowed).
-        assert fv.beacon_matches(b, scope=scope, beacon=ba, bits=bits) == (bb == ba)
-        assert fv.beacon_matches(a, scope=scope, beacon=ba, bits=bits) is True

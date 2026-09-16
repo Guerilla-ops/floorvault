@@ -133,7 +133,7 @@ class MigratingVaultStore:
         elif kind == "login":
             # A legacy login item without a browsing origin has been imported
             # from a flat secret store; bind it to a local-sentinel origin so it
-            # is still searchable and upgradeable rather than silently dropped.
+            # is still upgradeable rather than silently dropped.
             kwargs["origin"] = "https://_local.migration"
         if identifier and identifier_type:
             secret.setdefault("identifier", identifier)

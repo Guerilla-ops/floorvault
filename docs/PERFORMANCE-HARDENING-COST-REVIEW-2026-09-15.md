@@ -1,5 +1,8 @@
 # Security Hardening Cost Review: Did the Beacon Upgrade Slow AI or Drop Features?
 
+> Historical note: this document describes a superseded beacon implementation. The
+> application-level blind-index and beacon APIs were removed from the current code.
+
 **Date:** 2026-09-15
 **Status:** Honest engineering measurement (no marketing)
 **Scope:** `Guerilla-ops/floorvault` — the hardening pass that (1) fixed an inspector SQL-injection

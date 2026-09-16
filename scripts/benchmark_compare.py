@@ -7,7 +7,6 @@ Measures median per-op latency (not marketing estimates):
   * plain SQLite     — baseline (no encryption)
   * Fernet           — the typical ad-hoc whole-field approach
   * floorvault       — AES-256-SIV contextual AEAD
-  * floorvault beacon — truncated-HMAC search index
 
 Run:  uv run python scripts/benchmark_compare.py  [--iterations N] [--json out.json]
 
@@ -90,15 +89,6 @@ def run(iterations: int = 2000) -> dict[str, float]:
         iterations,
     )
 
-    # --- floorvault beacon (searchable index) ------------------------------
-    results["floorvault_beacon16"] = _median_ms(
-        lambda: fv.beacon("alice@example.com", scope="users.email", bits=16), iterations
-    )
-    beacon = fv.beacon("alice@example.com", scope="users.email", bits=16)
-    results["floorvault_beacon_matches"] = _median_ms(
-        lambda: fv.beacon_matches("alice@example.com", scope="users.email", beacon=beacon, bits=16),
-        iterations,
-    )
     return results
 
 

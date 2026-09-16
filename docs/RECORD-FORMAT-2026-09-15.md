@@ -89,17 +89,12 @@ field would carry no meaning.
 
 - Any change to this encoding is a format change.
 
-## 4. SQLite store version and origin index
+## 4. SQLite store version and schema migration
 
-The SQLite store sets `PRAGMA user_version = 2` after the metadata and origin-index
-migration completes. Opening a pre-version-2 store re-seals legacy metadata and
-recomputes the origin index before setting the version.
-
-`origin_idx` is an 8-bit bucket (`ORIGIN_INDEX_BITS = 8`, one byte, 256 possible
-buckets). It intentionally does not preserve the full-width HMAC equality index.
-A bucket match is only candidate evidence; callers must decrypt and compare the
-normalized origin to confirm equality. The version-2 migration is idempotent and
-existing records remain readable.
+The SQLite store sets `PRAGMA user_version = 2` after metadata migration. Opening
+an older store re-seals legacy metadata and removes the retired application-level
+origin search column while preserving encrypted records. The migration is
+idempotent and existing records remain readable.
 
 ## 5. Retirement tombstones (migration)
 

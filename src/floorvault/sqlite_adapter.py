@@ -1,4 +1,4 @@
-"""High-level SQLite adapter for contextual encryption and blind indexing."""
+"""High-level SQLite adapter for contextual encryption."""
 
 from __future__ import annotations
 
@@ -57,11 +57,6 @@ class ContextualTable:
             schema_id=self.schema_id,
             schema_version=schema_version,
         )
-
-    def blind_index(self, column: str, value: str) -> bytes:
-        """Compute blind index scoped to table.column."""
-        scope = f"{self.table_name}.{column}"
-        return self.crypto.blind_index(value, scope=scope)
 
 
 class ContextualSQLite:

@@ -44,23 +44,11 @@ def main(argv: list[str] | None = None) -> int:
     inspect_parser.add_argument("record_id", type=str, help="Record primary key ID")
     inspect_parser.add_argument("column", type=str, help="Encrypted column name")
 
-    # Subcommand: index
-    index_parser = subparsers.add_parser("index", help="Compute blind index for a search term")
-    index_parser.add_argument("value", type=str, help="Plaintext search value")
-    index_parser.add_argument(
-        "--scope", type=str, required=True, help="Scope string (e.g. users.email)"
-    )
-
     args = parser.parse_args(argv)
 
     provider = AdaptiveKeyProvider()
     master_key = provider.resolve_key()
     crypto = FloorVault(master_key)
-
-    if args.command == "index":
-        digest = crypto.blind_index(args.value, scope=args.scope)
-        print(f"Blind Index (hex): {digest.hex()}")
-        return 0
 
     if args.command == "inspect":
         if not args.db_path.exists():

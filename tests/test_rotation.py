@@ -1,14 +1,10 @@
 """Master-key rotation: the store-side primitives.
 
-Rotation re-seals everything the master key protects. That is more than the payloads:
+Rotation re-seals everything the master key protects:
 
 * ``vault_items.payload_cipher`` — the secret;
 * the sealed metadata columns ``label``, ``origin``, ``identifier_type``,
   ``identifier``, ``created_at`` (each under its own ``meta:<column>`` AAD);
-* ``vault_items.origin_idx`` — an HMAC blind index whose key is derived from the
-  master key, so it MUST be recomputed or ``find_by_origin()`` silently stops
-  finding anything. This is the trap in the whole operation: everything still
-  decrypts, and search just returns nothing;
 * ``vault_legacy_retirements.tombstone_cipher`` — the F-1 retirement records, or a
   rotation would leave a store whose retirement records no longer authenticate.
 
@@ -20,7 +16,6 @@ from __future__ import annotations
 
 import base64
 import json
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -30,12 +25,7 @@ from floorvault.core import DecryptionVerificationError, FloorVault
 from floorvault.keyring import KeyRing, UnknownKeyIdError
 from floorvault.memory import HardenedMemoryKey
 from floorvault.migration import LegacyRetiredError, MigratingVaultStore
-from floorvault.vaultkit.vault import (
-    ORIGIN_INDEX_BITS,
-    ORIGIN_INDEX_SCOPE,
-    VaultError,
-    VaultStore,
-)
+from floorvault.vaultkit.vault import VaultError, VaultStore
 
 KEY_OLD = bytes.fromhex("11" * 32)
 KEY_NEW = bytes.fromhex("22" * 32)
@@ -158,57 +148,6 @@ def test_write_sealed_item_moves_every_column_to_the_new_key(tmp_path):
     wrong_ring = KeyRing({1: _vault(KEY_OLD)})
     with pytest.raises(DecryptionVerificationError):
         store.read_sealed_item(item.id, wrong_ring)
-
-
-def test_write_sealed_item_recomputes_the_blind_index(tmp_path):
-    """The trap: without this, everything decrypts and search returns nothing."""
-    store = _store(tmp_path)
-    item = store.add_item(
-        "login",
-        "My login",
-        {"password": "pw", "identifier": "me@example.com", "identifier_type": "email"},
-        origin="https://example.com",
-    )
-    before = sqlite3.connect(tmp_path / "vault" / "vault.db")
-    old_index = before.execute(
-        "SELECT origin_idx FROM vault_items WHERE id=?", (item.id,)
-    ).fetchone()[0]
-    before.close()
-
-    sealed = store.read_sealed_item(item.id, KeyRing({0: _vault(KEY_OLD)}))
-    store.write_sealed_item(item.id, sealed, new_vault=_vault(KEY_NEW), key_id=1)
-
-    after = sqlite3.connect(tmp_path / "vault" / "vault.db")
-    new_index = after.execute(
-        "SELECT origin_idx FROM vault_items WHERE id=?", (item.id,)
-    ).fetchone()[0]
-    after.close()
-    # Pin the exact value rather than "it changed": the index is now a truncated
-    # bucket, so two different keys can legitimately land in the same bucket and
-    # an inequality assertion would be flaky at ~1/256 per run.
-    assert old_index == _vault(KEY_OLD).beacon(
-        "https://example.com", scope=ORIGIN_INDEX_SCOPE, bits=ORIGIN_INDEX_BITS
-    )
-    assert new_index == _vault(KEY_NEW).beacon(
-        "https://example.com", scope=ORIGIN_INDEX_SCOPE, bits=ORIGIN_INDEX_BITS
-    ), "the blind index was not recomputed for the new key"
-
-
-def test_lookup_by_origin_still_works_after_a_re_seal(tmp_path):
-    """The end the index exists for: find_by_origin must still find the item."""
-    store = _store(tmp_path)
-    item = store.add_item(
-        "login",
-        "My login",
-        {"password": "pw", "identifier": "me@example.com", "identifier_type": "email"},
-        origin="https://example.com",
-    )
-    sealed = store.read_sealed_item(item.id, KeyRing({0: _vault(KEY_OLD)}))
-    store.write_sealed_item(item.id, sealed, new_vault=_vault(KEY_NEW), key_id=1)
-
-    rotated = VaultStore(tmp_path / "vault", crypto=_vault(KEY_NEW))
-    found = rotated.find_by_origin("https://example.com")
-    assert [meta.id for meta in found] == [item.id]
 
 
 def test_write_sealed_item_records_the_journal_row_in_the_same_transaction(tmp_path):

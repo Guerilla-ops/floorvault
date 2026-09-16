@@ -18,8 +18,6 @@ These are measured numbers to back the docs' claims — not marketing estimates.
 | Fernet decrypt | 0.00642 |
 | **floorvault encrypt** (AES-256-SIV + AAD) | **0.00550** |
 | **floorvault decrypt** (AES-256-SIV + AAD) | **0.00450** |
-| floorvault beacon (16-bit search index) | 0.00133 |
-| floorvault beacon_matches (confirm) | 0.00129 |
 
 ## Ratios (lower is better where compared)
 
@@ -35,9 +33,7 @@ These are measured numbers to back the docs' claims — not marketing estimates.
    encrypt/decrypt — and it additionally gives contextual AAD binding (splice
    immunity) that Fernet simply does not have. You are not trading security for
    speed; you are gaining security *and* speed over the typical baseline.
-2. **The search beacon is sub-1.4 µs** (0.0013 ms) — effectively free — versus
-   Fernet/naive approaches that pull rows into memory and decrypt to search.
-3. The only "penalty" vs. *plain unencrypted* SQLite (~8× on write) is the
+2. The only "penalty" vs. *plain unencrypted* SQLite (~8× on write) is the
    unavoidable cost of real authenticated encryption — and it is still ~microseconds.
    That is the price of any at-rest encryption; SQLCipher pays the same, with a
    C-build install tax and no contextual binding.

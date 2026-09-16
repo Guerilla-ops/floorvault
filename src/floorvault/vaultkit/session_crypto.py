@@ -1,4 +1,4 @@
-"""state.db session encryption helper with FTS5 search preservation."""
+"""state.db session encryption helper."""
 
 from __future__ import annotations
 
@@ -13,8 +13,6 @@ SECRET_PATTERNS = [
     re.compile(r"Bearer\s+[a-zA-Z0-9._-]{20,}", re.IGNORECASE),
     re.compile(r"[a-f0-9]{32,64}", re.IGNORECASE),  # Raw hex tokens
 ]
-FTS_SCOPE = "floor.messages.fts.v1"
-SEARCH_TERM_PATTERN = re.compile(r"\w+(?:[-']\w+)*")
 
 
 def scrub_secrets_for_fts(text: str) -> str:
@@ -25,20 +23,8 @@ def scrub_secrets_for_fts(text: str) -> str:
     return scrubbed
 
 
-def _secure_search_tokens(text: str, crypto: FloorVault) -> str:
-    """Return space-separated HMAC tokens suitable for an FTS index."""
-    tokens: list[str] = []
-    seen: set[str] = set()
-    for term in SEARCH_TERM_PATTERN.findall(text.casefold()):
-        token = crypto.blind_index(term, scope=FTS_SCOPE).hex()
-        if token not in seen:
-            tokens.append(token)
-            seen.add(token)
-    return " ".join(tokens)
-
-
 class SessionCrypto:
-    """Hybrid split-projection for state.db message history."""
+    """Encrypted state.db message history without a searchable projection."""
 
     def __init__(self, crypto: FloorVault, *, allow_plaintext_fts: bool = False) -> None:
         self.crypto = crypto
@@ -63,13 +49,7 @@ class SessionCrypto:
             column="content",
         )
         fts_text = scrub_secrets_for_fts(content) if self.allow_plaintext_fts else ""
-        if not self.allow_plaintext_fts:
-            fts_text = _secure_search_tokens(content, self.crypto)
         return payload_cipher, fts_text
-
-    def secure_search_query(self, query: str) -> str:
-        """Tokenize a query using the same keyed representation as the FTS index."""
-        return _secure_search_tokens(query, self.crypto)
 
     def decrypt_message(
         self,

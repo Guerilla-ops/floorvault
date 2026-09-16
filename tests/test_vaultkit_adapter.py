@@ -49,16 +49,7 @@ def test_vault_store_lifecycle(tmp_path):
     secret = store.get_secret(meta.id)
     assert secret["password"] == "super-secure-github-password"
 
-    # 3. Find by origin using HMAC blind index (0.18 ms lookup)
-    matches = store.find_by_origin("https://github.com")
-    assert len(matches) == 1
-    assert matches[0].id == meta.id
-
-    # Port normalization: https://github.com:443 must match https://github.com
-    port_matches = store.find_by_origin("https://github.com:443")
-    assert len(port_matches) == 1
-
-    # 4. List all items
+    # 3. List all items
     all_items = store.list_items()
     assert len(all_items) == 1
 
@@ -77,20 +68,19 @@ def test_vault_migrates_legacy_plaintext_metadata(tmp_path):
             """
             CREATE TABLE vault_items (
                 id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT NOT NULL,
-                origin TEXT, origin_idx BLOB NOT NULL, identifier_type TEXT,
+                origin TEXT, identifier_type TEXT,
                 identifier TEXT, has_otp INTEGER DEFAULT 0, created_at TEXT NOT NULL,
                 payload_cipher BLOB NOT NULL
             )
             """
         )
         conn.execute(
-            "INSERT INTO vault_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO vault_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 "vault_legacy",
                 "login",
                 "Legacy",
                 "https://example.com",
-                b"idx",
                 "email",
                 "u",
                 0,
@@ -105,6 +95,32 @@ def test_vault_migrates_legacy_plaintext_metadata(tmp_path):
         raw_db = db_file.read()
     assert b"Legacy" not in raw_db
     assert b"https://example.com" not in raw_db
+
+
+def test_vault_removes_legacy_origin_index_column(tmp_path):
+    db_dir = tmp_path / "legacy-index"
+    db_dir.mkdir()
+    db_path = db_dir / "vault.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE vault_items (
+                id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT NOT NULL,
+                origin TEXT, origin_idx BLOB NOT NULL, identifier_type TEXT,
+                identifier TEXT, has_otp INTEGER DEFAULT 0, created_at TEXT NOT NULL,
+                payload_cipher BLOB NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO vault_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("legacy", "generic", b"label", None, b"old-index", None, None, 0, b"date", b"payload"),
+        )
+
+    VaultStore(db_dir, crypto=FloorVault(b"\x28" * 32, memory_mode="disabled"))
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(vault_items)")}
+    assert "origin_idx" not in columns
 
 
 def test_vault_rejects_plaintext_metadata_after_migration(tmp_path):
@@ -154,7 +170,7 @@ def test_session_crypto_hybrid_split(tmp_path):
     assert decrypted == raw_content
 
 
-def test_session_crypto_tokenizes_fts_by_default():
+def test_session_crypto_has_no_search_projection_by_default():
     crypto = FloorVault(b"\x23" * 32, memory_mode="disabled")
     session_crypto = SessionCrypto(crypto)
 
@@ -164,25 +180,7 @@ def test_session_crypto_tokenizes_fts_by_default():
         content="private conversation and sk-1234567890123456789012345",
     )
 
-    assert fts_text
-    assert "private" not in fts_text
-
-
-def test_session_crypto_uses_hmac_tokens_for_secure_fts():
-    crypto = FloorVault(b"\x26" * 32, memory_mode="disabled")
-    session_crypto = SessionCrypto(crypto)
-
-    _, search_text = session_crypto.encrypt_message(
-        session_id="sess-001",
-        message_id="msg-001",
-        content="private conversation about a launch plan",
-    )
-
-    assert search_text
-    assert "private" not in search_text
-    query_tokens = session_crypto.secure_search_query("private launch").split()
-    assert query_tokens
-    assert all(token in search_text.split() for token in query_tokens)
+    assert fts_text == ""
 
 
 def test_session_crypto_plaintext_fts_requires_explicit_opt_in():
@@ -269,15 +267,13 @@ def test_session_crypto_unicode_and_legacy_ciphertext_is_rejected():
     crypto = FloorVault(b"\x31" * 32, memory_mode="disabled")
     session_crypto = SessionCrypto(crypto)
 
-    # 1. Unicode/multilingual tokenization
+    # 1. Search projections are disabled unless plaintext FTS is explicitly opted in.
     _, fts_text = session_crypto.encrypt_message(
         session_id="s1",
         message_id="m1",
         content="Deploying to 生产环境 with secret token",
     )
-    query_tokens = session_crypto.secure_search_query("生产环境").split()
-    assert query_tokens
-    assert query_tokens[0] in fts_text.split()
+    assert fts_text == ""
 
     # Legacy un-namespaced ciphertext must not bypass session binding.
     legacy_cipher = crypto.encrypt(

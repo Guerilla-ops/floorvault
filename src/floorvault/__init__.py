@@ -1,15 +1,7 @@
-"""floorvault: Contextual, misuse-resistant, searchable database encryption for SQLite."""
+"""floorvault: Contextual, misuse-resistant database encryption for SQLite."""
 
 from __future__ import annotations
 
-from .blind_index import (
-    BlindIndexer,
-    beacon_bucket_bytes,
-    beacon_matches,
-    compute_beacon,
-    compute_blind_index,
-    suggest_beacon_bits,
-)
 from .core import (
     AppStateCrypto,
     AppStateCryptoError,
@@ -45,13 +37,6 @@ __all__ = [
     "HardenedMemoryKey",
     "SecurityHardeningError",
     "disable_core_dumps",
-    # Blind Indexing
-    "BlindIndexer",
-    "beacon_bucket_bytes",
-    "beacon_matches",
-    "compute_beacon",
-    "compute_blind_index",
-    "suggest_beacon_bits",
     # SQLite Helpers
     "ContextualSQLite",
     "ContextualTable",

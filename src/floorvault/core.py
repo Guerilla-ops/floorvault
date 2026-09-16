@@ -1,4 +1,4 @@
-"""Contextual, misuse-resistant, searchable database encryption engine.
+"""Contextual, misuse-resistant database encryption engine.
 
 Implements AES-256-SIV (RFC 5297) with contextual AAD binding, ephemeral
 master key destruction (< 5 ms), and HKDF functional subkey separation.
@@ -7,7 +7,6 @@ master key destruction (< 5 ms), and HKDF functional subkey separation.
 from __future__ import annotations
 
 import collections
-import hmac
 import json
 import os
 from typing import Any, Mapping, Union
@@ -17,11 +16,6 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from .blind_index import (
-    beacon_matches,
-    compute_beacon,
-    compute_blind_index,
-)
 from .memory import HardenedMemoryKey
 
 
@@ -178,7 +172,6 @@ class FloorVault:
         self._nonce_set: set[bytes] = set()
         self._aead_siv: Any = None
         self._siv_key: Any = None
-        self._index_key: Any = None
 
         # 1. Extract the source key as a mutable or zero-copy buffer
         master_buffer: bytearray | memoryview
@@ -213,28 +206,14 @@ class FloorVault:
                 info=b"floorvault-v1-aes-siv",
             ).derive(bytes(master_buffer))
 
-            # Subkey B: HMAC Blind Indexing requires 32 bytes
-            raw_index = HKDF(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=None,
-                info=b"floorvault-v1-hmac-index",
-            ).derive(bytes(master_buffer))
-
-            # Assert key separation integrity
-            if hmac.compare_digest(raw_siv[:32], raw_index):
-                raise FloorVaultError("HKDF key separation failed")
-
             # 3. Pin derived subkeys into physical RAM containers
             self._siv_key = HardenedMemoryKey(raw_siv, mode=memory_mode)
-            self._index_key = HardenedMemoryKey(raw_index, mode=memory_mode)
 
             # Initialize AES-SIV engine
             siv_key_bytes = self._siv_key.get_bytes()
             self._aead_siv = AESSIV(siv_key_bytes)
             del siv_key_bytes
             del raw_siv
-            del raw_index
 
         finally:
             # 4. EPHEMERAL MASTER KEY DESTRUCTION
@@ -488,33 +467,6 @@ class FloorVault:
                 f"(record: {record_id}). Data was tampered with, spliced, or corrupted."
             ) from exc
 
-    def blind_index(self, value: str, *, scope: str) -> bytes:
-        """Compute an HMAC blind index for native SQLite B-Tree searching."""
-        if self._closed:
-            raise RuntimeError("FloorVault has been wiped")
-        return compute_blind_index(value, scope=scope, key=self._index_key)
-
-    def beacon(self, value: str, *, scope: str, bits: int = 4) -> bytes:
-        """Compute a truncated search beacon (bounded bucket assignment).
-
-        Unlike ``blind_index`` (full-width, leaks equality/frequency), the
-        beacon keeps only a byte-aligned prefix of the HMAC so the stored index
-        reveals a coarse bucket — not the exact value or its frequency. Look up
-        the bucket, use ``beacon_matches`` to narrow candidates, then confirm
-        exact equality by decrypting.
-        """
-        if self._closed:
-            raise RuntimeError("FloorVault has been wiped")
-        return compute_beacon(value, scope=scope, key=self._index_key, bits=bits)
-
-    def beacon_matches(self, value: str, *, scope: str, beacon: bytes, bits: int = 4) -> bool:
-        """True iff ``value``'s beacon equals the stored ``beacon``.
-
-        A True result proves bucket agreement only (collisions are by design);
-        confirm equality by decrypting the candidate.
-        """
-        return beacon_matches(value, scope=scope, key=self._index_key, beacon=beacon, bits=bits)
-
     def wipe(self) -> None:
         """Zero all internal functional subkeys and close engine."""
         if getattr(self, "_closed", True):
@@ -522,8 +474,6 @@ class FloorVault:
         self._closed = True
         if getattr(self, "_siv_key", None) is not None:
             self._siv_key.wipe()
-        if getattr(self, "_index_key", None) is not None:
-            self._index_key.wipe()
         self._aead_siv = None
         if getattr(self, "_nonce_set", None) is not None:
             self._nonce_set.clear()

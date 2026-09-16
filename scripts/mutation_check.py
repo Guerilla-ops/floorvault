@@ -44,13 +44,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_PATHS = ("src/floorvault",)
 
+
 def _curated_tests() -> list[str]:
     """Discover all test modules so new security suites cannot be omitted."""
     tests_dir = REPO / "tests"
     return sorted(
-        str(path.relative_to(REPO))
-        for path in tests_dir.glob("test_*.py")
-        if path.is_file()
+        str(path.relative_to(REPO)) for path in tests_dir.glob("test_*.py") if path.is_file()
     )
 
 
@@ -233,13 +232,6 @@ MUTATIONS: tuple[Mutation, ...] = (
         "Ring accepts a default_key_id it does not hold, deferring the failure to read time",
     ),
     Mutation(
-        "ROT-1",
-        "src/floorvault/vaultkit/vault.py",
-        "        origin_idx = new_vault.beacon(",
-        "        origin_idx = self._crypto.beacon(  # MUTANT",
-        "Origin index re-keyed under the OLD key: everything decrypts and search finds nothing",
-    ),
-    Mutation(
         "ROT-2",
         "src/floorvault/vaultkit/vault.py",
         "            self._write_journal_rows(conn, journal_rows, target_key_id=key_id)",
@@ -259,20 +251,6 @@ MUTATIONS: tuple[Mutation, ...] = (
         "            if cursor.rowcount != 1:\n                raise VaultError(",
         "            if False:  # MUTANT\n                raise VaultError(",
         "Rotation journal records missing items as completed",
-    ),
-    Mutation(
-        "OIDX-1",
-        "src/floorvault/vaultkit/vault.py",
-        "            if row_origin != norm_origin:",
-        "            if False:  # MUTANT",
-        "Bucket collision reported as a match: a truncated index is read as proof of equality",
-    ),
-    Mutation(
-        "OIDX-2",
-        "src/floorvault/vaultkit/vault.py",
-        '        if conn.execute("PRAGMA user_version").fetchone()[0] >= 2:',
-        "        if True:  # MUTANT: never re-seal",
-        "Existing full-width origin indexes left in place: the disclosure survives the version bump",
     ),
     Mutation(
         "CANARY",
@@ -384,7 +362,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PC-18",
         "src/floorvault/providers/platform_custody.py",
-        "        if hasattr(os, \"getuid\") and file_stat.st_uid != os.getuid():\n            raise ProtectedStoreError(",
+        '        if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():\n            raise ProtectedStoreError(',
         "        if False:  # MUTANT\n            raise ProtectedStoreError(",
         "Protected-store reader accepts a key file owned by another POSIX user",
     ),
@@ -401,13 +379,6 @@ MUTATIONS: tuple[Mutation, ...] = (
         'payload["revision"] = revision',
         "pass  # MUTANT",
         "Revision dropped from the AAD: same-coordinate replay becomes undetectable",
-    ),
-    Mutation(
-        "BE-1",
-        "src/floorvault/blind_index.py",
-        "    return bucket_bytes * 8",
-        "    return bucket_bytes * 4  # MUTANT",
-        "Width recommendation halved: buckets sized far below the dataset target",
     ),
 )
 
