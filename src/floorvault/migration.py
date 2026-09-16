@@ -15,6 +15,7 @@ Non-destructive guarantees:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -125,6 +126,7 @@ class MigratingVaultStore:
             "kind": kind,
             "label": label,
             "secret": secret,
+            "item_id": self._stable_modern_id(item_id),
         }
         if origin:
             kwargs["origin"] = origin
@@ -141,7 +143,13 @@ class MigratingVaultStore:
         except VaultError:
             raise
         except Exception as exc:  # noqa: BLE001
-            raise VaultError(f"Could not lazily migrate item {item_id}: {exc}") from exc
+            # A process may have written the deterministic modern row before
+            # crashing while recording its retirement tombstone. Reuse that row
+            # on retry instead of creating a duplicate.
+            existing = self.modern.get_meta(kwargs["item_id"])
+            if existing is None:
+                raise VaultError(f"Could not lazily migrate item {item_id}: {exc}") from exc
+            meta = existing
         if meta is not None:
             # Retire the legacy id permanently. From here on the pre-migration
             # source must never answer for it again, even if this modern record
@@ -150,6 +158,12 @@ class MigratingVaultStore:
             self.modern.retire_legacy_id(item_id, meta.id)
             self._legacy_to_modern[item_id] = meta.id
             self._modern_to_legacy[meta.id] = item_id
+
+    @staticmethod
+    def _stable_modern_id(legacy_id: str) -> str:
+        """Return a collision-resistant ID stable across migration retries."""
+        digest = hashlib.sha256(legacy_id.encode("utf-8")).hexdigest()[:24]
+        return f"vault_migration_{digest}"
 
     # ---- public dual-read API ----------------------------------------------
 
@@ -256,6 +270,14 @@ class MigratingVaultStore:
         # 2. Convert each legacy item lazily (idempotent for already-modern).
         migrated = 0
         for item_id, item in legacy.items():
+            retired_modern_id = self.modern.retired_modern_id(item_id)
+            if retired_modern_id is not None:
+                if self.modern.get_meta(retired_modern_id) is None:
+                    raise VaultError(
+                        f"legacy item {item_id!r} is retired but its modern record "
+                        f"{retired_modern_id!r} is missing"
+                    )
+                continue
             if self.modern.get_meta(item_id) is None:
                 self._upgrade_legacy_item(item_id, item)
                 migrated += 1

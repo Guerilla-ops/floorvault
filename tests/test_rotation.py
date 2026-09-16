@@ -221,6 +221,31 @@ def test_write_sealed_item_records_the_journal_row_in_the_same_transaction(tmp_p
     assert journal[("item", item.id, "payload")] == (1, "done")
 
 
+def test_write_sealed_item_rejects_missing_item_before_journaling(tmp_path):
+    store = _store(tmp_path)
+    sealed = {
+        "payload": json.dumps({"password": "pw"}),
+        "meta": {
+            "label": "missing",
+            "origin": None,
+            "identifier_type": None,
+            "identifier": None,
+            "created_at": "now",
+        },
+    }
+
+    with pytest.raises(VaultError, match="not found"):
+        store.write_sealed_item(
+            "vault_missing",
+            sealed,
+            new_vault=_vault(KEY_NEW),
+            key_id=1,
+            journal_rows=[("item", "vault_missing", "payload")],
+        )
+
+    assert store.rotation_journal() == {}
+
+
 def test_write_sealed_item_tolerates_a_null_metadata_column(tmp_path):
     store = _store(tmp_path)
     item = store.add_item("generic", "thing", {"password": "pw"})

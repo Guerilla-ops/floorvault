@@ -85,6 +85,25 @@ def test_read_protected_round_trips(tmp_path):
     assert read_protected(store, header=_HEADER) == _KEY
 
 
+def test_read_protected_rejects_non_regular_store(tmp_path):
+    store = tmp_path / "store-dir"
+    store.mkdir()
+
+    with pytest.raises(ProtectedStoreError, match="regular"):
+        read_protected(store, header=_HEADER)
+
+
+@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership check")
+def test_read_protected_rejects_unexpected_owner(tmp_path, monkeypatch):
+    store = tmp_path / "store"
+    write_protected(_KEY, store, header=_HEADER)
+    actual_owner = os.stat(store).st_uid
+    monkeypatch.setattr(os, "getuid", lambda: actual_owner + 1)
+
+    with pytest.raises(ProtectedStoreError, match="owner"):
+        read_protected(store, header=_HEADER)
+
+
 # --------------------------------------------------------------------------
 # read_protected: the permission check is POSIX-only
 # --------------------------------------------------------------------------

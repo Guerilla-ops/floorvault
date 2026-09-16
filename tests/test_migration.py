@@ -138,3 +138,43 @@ def test_migrate_all_raises_and_keeps_legacy_if_invalid(tmp_path):
     with pytest.raises(VaultError):
         facade.migrate_all()
     assert legacy_vault_path.exists()
+
+
+def test_migrate_all_is_idempotent(tmp_path):
+    """A repeated batch migration must not duplicate modern credentials."""
+    base = tmp_path / "vault"
+    modern = VaultStore(base / "modern", crypto=_make_crypto())
+    _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
+
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+
+    first = facade.migrate_all()
+    second = facade.migrate_all()
+
+    assert first["migrated"] == 1
+    assert second["migrated"] == 0
+    assert len(modern.list_items()) == 1
+    assert set(modern.list_legacy_retirements()) == {"legacy-1"}
+
+
+def test_migrate_all_recovers_after_modern_write_before_retirement(tmp_path, monkeypatch):
+    """A retry must finish an interrupted migration without duplicating it."""
+    base = tmp_path / "vault"
+    modern = VaultStore(base / "modern", crypto=_make_crypto())
+    _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+
+    monkeypatch.setattr(
+        modern,
+        "retire_legacy_id",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("simulated crash")),
+    )
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        facade.migrate_all()
+
+    monkeypatch.undo()
+    retry = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+    retry.migrate_all()
+
+    assert len(modern.list_items()) == 1
+    assert set(modern.list_legacy_retirements()) == {"legacy-1"}

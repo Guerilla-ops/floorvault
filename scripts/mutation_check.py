@@ -127,6 +127,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         "Reinstates swallowing a deliberate provider error (silent custody downgrade)",
     ),
     Mutation(
+        "AD-2",
+        "src/floorvault/providers/adaptive.py",
+        "        if is_windows():\n            return WindowsDPAPIKeyProvider(",
+        "        if False:  # MUTANT\n            return WindowsDPAPIKeyProvider(",
+        "Adaptive provider stops dispatching Windows native custody",
+    ),
+    Mutation(
+        "AD-3",
+        "src/floorvault/providers/adaptive.py",
+        "        if is_linux():\n            provider = LinuxSecretServiceKeyProvider(",
+        "        if False:  # MUTANT\n            provider = LinuxSecretServiceKeyProvider(",
+        "Adaptive provider stops dispatching Linux Secret Service custody",
+    ),
+    Mutation(
         "AD-1",
         "src/floorvault/providers/adaptive.py",
         "            problem = store_permission_problem(key_file, file_stat.st_mode)",
@@ -184,6 +198,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         expect="killed",
     ),
     Mutation(
+        "MIG-5",
+        "src/floorvault/migration.py",
+        "            if retired_modern_id is not None:\n                if self.modern.get_meta(retired_modern_id) is None:",
+        "            if False:  # MUTANT\n                if self.modern.get_meta(retired_modern_id) is None:",
+        "Migration loses its persisted idempotency guard and duplicates legacy records",
+    ),
+    Mutation(
+        "MIG-6",
+        "src/floorvault/migration.py",
+        '            "item_id": self._stable_modern_id(item_id),',
+        '            "item_id": None,  # MUTANT',
+        "Interrupted migration retries lose the stable modern identity",
+    ),
+    Mutation(
         "KR-1",
         "src/floorvault/keyring.py",
         "        except KeyError:\n            raise UnknownKeyIdError(",
@@ -214,8 +242,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "ROT-2",
         "src/floorvault/vaultkit/vault.py",
-        "                    item_id,\n                ),\n            )\n            self._write_journal_rows(conn, journal_rows, target_key_id=key_id)",
-        "                    item_id,\n                ),\n            )\n            pass  # MUTANT: journal not written with the data",
+        "            self._write_journal_rows(conn, journal_rows, target_key_id=key_id)",
+        "            pass  # MUTANT: journal not written with the data",
         "Journal row not written in the write's transaction: an interrupted rotation resumes blind",
     ),
     Mutation(
@@ -224,6 +252,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         '                payload["modern_id"],\n                vault=new_vault,',
         '                payload["modern_id"],\n                vault=self._crypto,  # MUTANT',
         "Retirement tombstones left under the old key, so F-1 protection stops authenticating",
+    ),
+    Mutation(
+        "ROT-4",
+        "src/floorvault/vaultkit/vault.py",
+        "            if cursor.rowcount != 1:\n                raise VaultError(",
+        "            if False:  # MUTANT\n                raise VaultError(",
+        "Rotation journal records missing items as completed",
     ),
     Mutation(
         "OIDX-1",
@@ -338,6 +373,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        os.O_RDONLY\n        | binary_mode_flag()",
         "        os.O_RDONLY",
         "Store read loses binary mode: Windows text mode truncates at 0x1A (found by CI)",
+    ),
+    Mutation(
+        "PC-17",
+        "src/floorvault/providers/platform_custody.py",
+        "        if not stat.S_ISREG(file_stat.st_mode):\n            raise ProtectedStoreError(",
+        "        if False:  # MUTANT\n            raise ProtectedStoreError(",
+        "Protected-store reader accepts a directory or other non-regular object",
+    ),
+    Mutation(
+        "PC-18",
+        "src/floorvault/providers/platform_custody.py",
+        "        if hasattr(os, \"getuid\") and file_stat.st_uid != os.getuid():\n            raise ProtectedStoreError(",
+        "        if False:  # MUTANT\n            raise ProtectedStoreError(",
+        "Protected-store reader accepts a key file owned by another POSIX user",
     ),
     Mutation(
         "WD-2",

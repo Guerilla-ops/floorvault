@@ -53,6 +53,11 @@ def test_gate_runs_the_entire_test_suite():
     assert "pytest -q tests/" in TEXT, "gate does not run the whole tests/ directory"
 
 
+def test_gate_runs_curated_mutation_checks():
+    """The security gate must detect regressions that ordinary tests miss."""
+    assert "scripts/mutation_check.py --mode curated" in TEXT
+
+
 def test_gate_prints_the_artifact_digests():
     """The built wheel and sdist must be reported by digest.
 

@@ -6,6 +6,7 @@ import sys
 import pytest
 
 from floorvault import platform_support
+from floorvault.memory import HardenedMemoryKey
 from floorvault.providers import adaptive as adaptive_module
 from floorvault.providers.adaptive import AdaptiveKeyProvider
 from floorvault.providers.base import CustodyDowngradeError, KeyProviderError
@@ -14,6 +15,8 @@ from floorvault.providers.base import CustodyDowngradeError, KeyProviderError
 def _force_machine_file_tier(monkeypatch):
     """Keep Tier 3 tests independent of a real host Keychain."""
     monkeypatch.setattr(adaptive_module, "is_macos", lambda: False)
+    monkeypatch.setattr(adaptive_module, "is_windows", lambda: False)
+    monkeypatch.setattr(adaptive_module, "is_linux", lambda: False)
 
 
 def test_adaptive_provider_env_variable(monkeypatch, tmp_path):
@@ -25,6 +28,58 @@ def test_adaptive_provider_env_variable(monkeypatch, tmp_path):
 
     assert key.get_bytes() == bytes.fromhex(hex_key)
     key.wipe()
+
+
+def test_adaptive_provider_dispatches_windows_native_custody(monkeypatch, tmp_path):
+    class FakeWindowsProvider:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def resolve_key(self, *, allow_create=True):
+            assert allow_create is True
+            return HardenedMemoryKey(b"W" * 32, mode="disabled")
+
+    monkeypatch.delenv("APPSTATE_KEY", raising=False)
+    monkeypatch.delenv("FLOOR_VAULT_KEY", raising=False)
+    monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
+    monkeypatch.setattr(adaptive_module, "is_macos", lambda: False)
+    monkeypatch.setattr(adaptive_module, "is_windows", lambda: True, raising=False)
+    monkeypatch.setattr(
+        adaptive_module, "WindowsDPAPIKeyProvider", FakeWindowsProvider, raising=False
+    )
+
+    key = AdaptiveKeyProvider(fallback_dir=tmp_path).resolve_key()
+
+    assert key.get_bytes() == b"W" * 32
+    assert not (tmp_path / "master.key").exists()
+
+
+def test_adaptive_provider_dispatches_linux_secret_service(monkeypatch, tmp_path):
+    class FakeLinuxProvider:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def _secret_service_available(self):
+            return True
+
+        def resolve_key(self, *, allow_create=True):
+            assert allow_create is True
+            return HardenedMemoryKey(b"L" * 32, mode="disabled")
+
+    monkeypatch.delenv("APPSTATE_KEY", raising=False)
+    monkeypatch.delenv("FLOOR_VAULT_KEY", raising=False)
+    monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
+    monkeypatch.setattr(adaptive_module, "is_macos", lambda: False)
+    monkeypatch.setattr(adaptive_module, "is_windows", lambda: False, raising=False)
+    monkeypatch.setattr(adaptive_module, "is_linux", lambda: True, raising=False)
+    monkeypatch.setattr(
+        adaptive_module, "LinuxSecretServiceKeyProvider", FakeLinuxProvider, raising=False
+    )
+
+    key = AdaptiveKeyProvider(fallback_dir=tmp_path).resolve_key()
+
+    assert key.get_bytes() == b"L" * 32
+    assert not (tmp_path / "master.key").exists()
 
 
 def test_adaptive_provider_rejects_implicit_weak_environment_keys(monkeypatch, tmp_path):

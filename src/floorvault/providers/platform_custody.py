@@ -30,6 +30,7 @@ identical and testable on every OS.
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
 from ..platform_support import binary_mode_flag, store_permission_problem
@@ -188,26 +189,32 @@ def read_protected(path: Path, *, header: bytes, expected_length: int | None = 3
     except FileNotFoundError as exc:
         raise ProtectedStoreMissing("protected store not present") from exc
     try:
-        size = os.fstat(fd).st_size
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ProtectedStoreError("protected store is not a regular file")
+        if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():
+            raise ProtectedStoreError("protected store has an unexpected owner")
+        size = file_stat.st_size
         raw = os.read(fd, _MAX_STORE_BYTES)
+        if size > len(raw):
+            # Reading stopped at the buffer, so the tail was never inspected.
+            # With a fixed expected length this was caught downstream; with an
+            # opaque payload it would be a silent truncation, so refuse it
+            # outright.
+            raise ProtectedStoreError(
+                f"protected store is larger ({size} bytes) than the read buffer "
+                f"({_MAX_STORE_BYTES} bytes); refusing to validate a partial read"
+            )
+        if not raw.startswith(header):
+            raise ProtectedStoreHeaderError("protected store has an unknown or missing header")
+        key = raw[len(header) :]
+        if expected_length is not None and len(key) != expected_length:
+            raise ProtectedStoreInvalidLength("protected store key has an unexpected length")
+        if expected_length is None and not key:
+            raise ProtectedStoreInvalidLength("protected store holds an empty payload")
+        problem = store_permission_problem(path, file_stat.st_mode)
+        if problem is not None:
+            raise ProtectedStoreError(problem)
+        return key
     finally:
         os.close(fd)
-    if size > len(raw):
-        # Reading stopped at the buffer, so the tail was never inspected. With a
-        # fixed expected length this was caught downstream; with an opaque
-        # payload it would be a silent truncation, so refuse it outright.
-        raise ProtectedStoreError(
-            f"protected store is larger ({size} bytes) than the read buffer "
-            f"({_MAX_STORE_BYTES} bytes); refusing to validate a partial read"
-        )
-    if not raw.startswith(header):
-        raise ProtectedStoreHeaderError("protected store has an unknown or missing header")
-    key = raw[len(header) :]
-    if expected_length is not None and len(key) != expected_length:
-        raise ProtectedStoreInvalidLength("protected store key has an unexpected length")
-    if expected_length is None and not key:
-        raise ProtectedStoreInvalidLength("protected store holds an empty payload")
-    problem = store_permission_problem(path, os.stat(path).st_mode)
-    if problem is not None:
-        raise ProtectedStoreError(problem)
-    return key

@@ -16,10 +16,14 @@ from typing import Optional
 from ..memory import HardenedMemoryKey
 from ..platform_support import (
     binary_mode_flag,
+    is_linux,
     is_macos,
+    is_windows,
     store_permission_problem,
 )
 from .base import CustodyDowngradeError, KeyProvider, KeyProviderError
+from .linux_keyring import LinuxSecretServiceKeyProvider
+from .windows_dpapi import WindowsDPAPIKeyProvider
 
 
 class AdaptiveKeyProvider(KeyProvider):
@@ -75,7 +79,24 @@ class AdaptiveKeyProvider(KeyProvider):
         return self._resolve_machine_bound_file_key(allow_create=allow_create)
 
     def _resolve_from_system_keyring(self, *, allow_create: bool) -> Optional[HardenedMemoryKey]:
-        """Attempt to read from macOS Keychain or generic system keyring."""
+        """Resolve from the native provider for the current platform."""
+        if is_windows():
+            return WindowsDPAPIKeyProvider(
+                store_path=self.fallback_dir / "master.key",
+            ).resolve_key(allow_create=allow_create)
+
+        if is_linux():
+            provider = LinuxSecretServiceKeyProvider(
+                store_path=self.fallback_dir / "master.key",
+                service=self.service_name,
+                attribute=self.account_name,
+            )
+            # A headless Linux session has no Secret Service capability. Preserve
+            # AdaptiveKeyProvider's explicit local-file policy in that case.
+            if provider._secret_service_available():
+                return provider.resolve_key(allow_create=allow_create)
+            return None
+
         if is_macos():
             try:
                 import Security  # type: ignore[import-not-found]

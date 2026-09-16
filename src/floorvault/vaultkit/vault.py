@@ -373,6 +373,8 @@ class VaultStore:
         label: str,
         secret: dict[str, Any],
         origin: Optional[str] = None,
+        *,
+        item_id: Optional[str] = None,
     ) -> VaultItemMeta:
         """Add credential item matching the reference agent's tool parameters."""
         if kind not in VAULT_KINDS:
@@ -420,7 +422,10 @@ class VaultStore:
             if origin:
                 norm_origin = normalize_origin(origin)
 
-        item_id = f"vault_{uuid.uuid4().hex[:12]}"
+        if item_id is None:
+            item_id = f"vault_{uuid.uuid4().hex[:12]}"
+        elif not isinstance(item_id, str) or not item_id.strip():
+            raise VaultError("item_id must be a non-empty string")
         created_at = datetime.now(timezone.utc).isoformat()
         origin_str = norm_origin or ""
         origin_idx = self._crypto.beacon(
@@ -725,7 +730,7 @@ class VaultStore:
         )
 
         with self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE vault_items
                 SET payload_cipher = ?, label = ?, origin = ?, identifier_type = ?,
@@ -743,6 +748,8 @@ class VaultStore:
                     item_id,
                 ),
             )
+            if cursor.rowcount != 1:
+                raise VaultError(f"Vault item not found during rotation: {item_id}")
             self._write_journal_rows(conn, journal_rows, target_key_id=key_id)
 
     def reseal_retirements(
