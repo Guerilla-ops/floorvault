@@ -117,6 +117,12 @@ class AdaptiveKeyProvider(KeyProvider):
                     if status != 0 or not data:
                         raise KeyProviderError(f"Keychain duplicate could not be read: {status}")
                     return HardenedMemoryKey(bytes(data))
+                if status == -25300:  # errSecItemNotFound, creation disallowed
+                    return None
+                raise CustodyDowngradeError(
+                    "macOS Keychain returned an unusable status "
+                    f"({status}); refusing to fall back to a weaker custody tier"
+                )
             except KeyProviderError:
                 # Our own deliberate failures (lines above) must not be mistaken
                 # for "tier unavailable" - swallowing them silently downgrades

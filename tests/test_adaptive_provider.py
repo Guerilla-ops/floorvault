@@ -11,6 +11,11 @@ from floorvault.providers.adaptive import AdaptiveKeyProvider
 from floorvault.providers.base import CustodyDowngradeError, KeyProviderError
 
 
+def _force_machine_file_tier(monkeypatch):
+    """Keep Tier 3 tests independent of a real host Keychain."""
+    monkeypatch.setattr(adaptive_module, "is_macos", lambda: False)
+
+
 def test_adaptive_provider_env_variable(monkeypatch, tmp_path):
     hex_key = "0123456789abcdef" * 4  # gitleaks:allow
     monkeypatch.setenv("APPSTATE_KEY", hex_key)
@@ -61,7 +66,8 @@ def test_adaptive_provider_machine_file_fallback(monkeypatch, tmp_path):
     monkeypatch.delenv("FLOOR_VAULT_KEY", raising=False)
     monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
 
-    # Mock non-desktop to force Tier 3 fallback
+    # Force Tier 3; the real macOS Keychain is intentionally capability-probed.
+    _force_machine_file_tier(monkeypatch)
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)
     monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)
 
@@ -81,6 +87,7 @@ def test_adaptive_provider_fails_closed_by_default(monkeypatch, tmp_path):
     for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
 
+    _force_machine_file_tier(monkeypatch)
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
     monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)
 
@@ -95,6 +102,7 @@ def test_adaptive_provider_strict_mode_refuses_disk_fallback(monkeypatch, tmp_pa
     monkeypatch.delenv("FLOOR_VAULT_KEY", raising=False)
     monkeypatch.delenv("VAULT_MASTER_KEY", raising=False)
 
+    _force_machine_file_tier(monkeypatch)
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, strict=True)
     monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)
 
@@ -119,6 +127,7 @@ def test_adaptive_provider_rejects_insecure_existing_key_file(monkeypatch, tmp_p
     for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
 
+    _force_machine_file_tier(monkeypatch)
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)
     monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)
     key_file = provider.fallback_dir / "master.key"
@@ -144,6 +153,7 @@ def test_machine_file_fallback_survives_a_synthesised_mode(monkeypatch, tmp_path
     for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
 
+    _force_machine_file_tier(monkeypatch)
     # Simulate the platform the gate must treat as Windows, including the ACL
     # the real query would return; patching only the platform flag would leave
     # the verification unrunnable, which is a different code path.
@@ -239,6 +249,7 @@ def test_adaptive_machine_key_file_is_written_in_binary_mode(tmp_path, monkeypat
     """
     sentinel = 0x40000000
     monkeypatch.setattr(adaptive_module, "binary_mode_flag", lambda: sentinel)
+    _force_machine_file_tier(monkeypatch)
     for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
 
@@ -289,6 +300,17 @@ def test_keychain_deliberate_failure_is_not_swallowed(monkeypatch, tmp_path):
     provider = _interactive_provider(monkeypatch, tmp_path, allow_disk_fallback=True)
 
     with pytest.raises(KeyProviderError, match="Keychain insert failed"):
+        provider.resolve_key()
+
+    assert not (tmp_path / "master.key").exists()
+
+
+def test_keychain_non_not_found_status_fails_closed(monkeypatch, tmp_path):
+    """A present Keychain error status must not downgrade to disk custody."""
+    _fake_security(monkeypatch, copy_result=(-25308, None))  # errSecInteractionNotAllowed
+    provider = _interactive_provider(monkeypatch, tmp_path, allow_disk_fallback=True)
+
+    with pytest.raises(CustodyDowngradeError, match="unusable"):
         provider.resolve_key()
 
     assert not (tmp_path / "master.key").exists()
