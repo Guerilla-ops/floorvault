@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 from ..core import FloorVault, FloorVaultError
 from ..keyring import KeyRing
 from ..providers.adaptive import AdaptiveKeyProvider
+from ..providers.platform_custody import _mkdir_owner_only
 
 VAULT_KINDS = ("login", "payment", "address", "generic")
 LOGIN_IDENTIFIER_TYPES = ("email", "phone", "username")
@@ -194,7 +195,7 @@ class VaultStore:
 
     def __init__(self, base_dir: Path | str, *, crypto: Optional[FloorVault] = None):
         self._base = Path(base_dir)
-        self._base.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _mkdir_owner_only(self._base)
         self._db_path = self._base / "vault.db"
         self._legacy_vault_path = self._base / "vault.json.enc"
         self._legacy_key_path = self._base / "vault.key"
