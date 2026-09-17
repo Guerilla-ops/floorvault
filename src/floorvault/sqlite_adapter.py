@@ -87,8 +87,55 @@ class EncryptedSQLiteTable:
         *,
         schema_version: int = 1,
         revision: int | None = None,
-    ) -> Union[str, bytes]:
-        """Load and decrypt one field from exactly one existing record."""
+    ) -> str:
+        """Load and decrypt one field from exactly one existing record.
+
+        Returns text. A value stored from ``bytes`` that is not valid UTF-8
+        cannot be returned here - use :meth:`load_bytes` for those, so the
+        binary path is not one-way.
+        """
+        column, ciphertext = self._fetch_ciphertext(record_id, encrypted_column)
+        return self.crypto.decrypt(
+            ciphertext,
+            table=self.table_name,
+            record_id=record_id,
+            column=column,
+            schema_id=self.schema_id,
+            schema_version=schema_version,
+            revision=revision,
+        )
+
+    def load_bytes(
+        self,
+        record_id: str,
+        encrypted_column: str,
+        *,
+        schema_version: int = 1,
+        revision: int | None = None,
+    ) -> bytes:
+        """Load and decrypt one field as raw bytes.
+
+        The counterpart to storing ``bytes``: :meth:`load` can only return text,
+        so without this a binary value could be written and never read back.
+        Text values decrypt to their UTF-8 bytes here.
+        """
+        column, ciphertext = self._fetch_ciphertext(record_id, encrypted_column)
+        return self.crypto.decrypt_bytes(
+            ciphertext,
+            table=self.table_name,
+            record_id=record_id,
+            column=column,
+            schema_id=self.schema_id,
+            schema_version=schema_version,
+            revision=revision,
+        )
+
+    def _fetch_ciphertext(self, record_id: str, encrypted_column: str) -> tuple[str, bytes]:
+        """Return ``(validated column name, ciphertext)`` for exactly one record.
+
+        Shared by both accessors so the "exactly one existing record" and NULL
+        invariants cannot drift apart between the text and bytes paths.
+        """
         column = _safe_identifier(encrypted_column)
         row = self.connection.execute(
             f"SELECT {column} FROM {self.table_name} WHERE {self.id_column} = ?",
@@ -98,15 +145,7 @@ class EncryptedSQLiteTable:
             raise LookupError(f"record not found: {record_id!r}")
         if row[0] is None:
             raise ValueError(f"encrypted field is NULL: {self.table_name}.{column}")
-        return self.crypto.decrypt(
-            row[0],
-            table=self.table_name,
-            record_id=record_id,
-            column=column,
-            schema_id=self.schema_id,
-            schema_version=schema_version,
-            revision=revision,
-        )
+        return column, row[0]
 
 
 class ContextualTable:

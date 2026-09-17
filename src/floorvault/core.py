@@ -1,7 +1,7 @@
 """Contextual, misuse-resistant database encryption engine.
 
-Implements AES-256-SIV (RFC 5297) with contextual AAD binding, ephemeral
-master key destruction (< 5 ms), and HKDF functional subkey separation.
+Implements AES-256-SIV (RFC 5297) with contextual AAD binding and HKDF-SHA256
+key derivation from a 32-byte master key.
 """
 
 from __future__ import annotations

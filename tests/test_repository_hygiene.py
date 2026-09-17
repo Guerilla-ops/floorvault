@@ -94,3 +94,29 @@ def test_search_surface_is_removed_from_public_and_vault_store_apis(tmp_path):
     with sqlite3.connect(tmp_path / "vault" / "vault.db") as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(vault_items)")}
     assert "origin_idx" not in columns
+
+
+# --------------------------------------------------------------------------
+# Public API surface
+#
+# SECURITY.md names the error types a caller is expected to handle. One of them
+# - LegacyRetiredError, the read failure when a migrated legacy id's modern
+# record has gone - was documented but not exported, so a caller following the
+# docs could not catch it without reaching into a private module path.
+# --------------------------------------------------------------------------
+
+
+def test_every_exported_name_is_actually_importable():
+    missing = [name for name in floorvault.__all__ if not hasattr(floorvault, name)]
+    assert not missing, f"__all__ lists names that are not exported: {missing}"
+
+
+def test_documented_read_failure_types_are_exported():
+    """The errors SECURITY.md tells callers to handle must be importable."""
+    for name in ("LegacyVaultError", "LegacyRetiredError"):
+        assert name in floorvault.__all__, f"{name} is missing from __all__"
+
+    from floorvault import LegacyRetiredError
+    from floorvault.migration import LegacyRetiredError as private_path
+
+    assert LegacyRetiredError is private_path

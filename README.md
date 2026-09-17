@@ -142,7 +142,20 @@ The local fallback is protected by the filesystem and OS-account boundary; it is
 Rotate a store under a new key with resumable progress and post-rotation verification:
 
 ```python
-from floorvault import KeyRing, rotate_vault_store
+from floorvault import AdaptiveKeyProvider, FloorVault, KeyRing, rotate_vault_store
+
+# VaultStore is the structured item store this rotation operates on; it is not
+# re-exported at the top level.
+from floorvault.vaultkit import VaultStore
+
+old_crypto = FloorVault(
+    AdaptiveKeyProvider(service_name="my-app").resolve_key(),
+    app_instance_id="my-app",
+)
+store = VaultStore("~/.floor/vault", crypto=old_crypto)
+
+# A new_master_key from your key provider, wrapped in its own engine.
+new_crypto = FloorVault(new_master_key, app_instance_id="my-app")
 
 rotate_vault_store(
     store,
@@ -151,6 +164,9 @@ rotate_vault_store(
     new_key_id=1,
 )
 ```
+
+After rotation returns, switch future reads to a `KeyRing` holding the new key; the
+helper does not reconfigure your key provider for you.
 
 Create an authenticated recovery bundle using a separately protected recovery key:
 
@@ -203,10 +219,11 @@ See [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](docs/COMPARATIVE-BENCHMARK-2026
 
 ## CLI
 
-Inspect an encrypted field without exposing its plaintext:
+`floorvault inspect` **decrypts** a field and prints the plaintext. Treat its
+output as secret:
 
 ```bash
-floorvault inspect local_vault.db users user-123 api_token_cipher
+floorvault inspect local_vault.db users user-123 private_value_cipher
 ```
 
 ## Development

@@ -18,7 +18,7 @@ from .memory import (
     SecurityHardeningError,
     disable_core_dumps,
 )
-from .migration import LegacyVaultError, MigratingVaultStore
+from .migration import LegacyRetiredError, LegacyVaultError, MigratingVaultStore
 from .providers.adaptive import AdaptiveKeyProvider
 from .providers.base import KeyProvider, KeyProviderError, MissingKeyError
 from .sqlite_adapter import ContextualSQLite, ContextualTable, EncryptedSQLiteTable
@@ -55,6 +55,10 @@ __all__ = [
     # Lazy Migration
     "MigratingVaultStore",
     "LegacyVaultError",
+    # Raised when a migrated legacy id is asked for and its modern record is
+    # gone. Named in SECURITY.md as the read-failure type callers should handle,
+    # so it belongs in the public surface rather than only in floorvault.migration.
+    "LegacyRetiredError",
     # Multi-generation reads (rotation)
     "KeyRing",
     "UnknownKeyIdError",
