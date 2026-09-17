@@ -15,7 +15,7 @@ FloorVault adds authenticated field-level encryption to ordinary Python `sqlite3
 - AES-256-SIV authenticated encryption (RFC 5297)
 - Context binding that rejects ciphertext relocation
 - HKDF-SHA256 key derivation
-- Best-effort hardened key memory with strict failure options
+- Best-effort hardened key memory (page locking; process core dumps disabled)
 - Native key custody for macOS, Windows, and Linux
 - Safe SQLite field storage and plaintext-to-encrypted migration
 - Resumable vault key rotation
@@ -40,11 +40,25 @@ macOS Keychain support is optional:
 uv add "floorvault[macos]"
 ```
 
+A stock `pip install floorvault` does **not** give the key provider an OS store
+on every host: the macOS Keychain tier needs that extra, Windows uses DPAPI
+built in, Linux uses the Secret Service, and the local-file tier is off unless you
+enable it. On a host where none of those apply (macOS without the extra, a
+headless Linux container) `resolve_key()` fails closed with a `KeyProviderError`
+that names the remedies rather than writing an unprotected key. See
+[Key custody](#key-custody).
+
 ## Quickstart
 
 ```python
 from floorvault import AdaptiveKeyProvider, FloorVault
 
+# Resolves from the OS store when one is available and usable: the macOS
+# Keychain (needs the `macos` extra), Windows DPAPI, or the Linux Secret Service.
+# Where no OS store applies, pass the key explicitly instead:
+#   from hex  -> FloorVault(bytes.fromhex(os.environ["APPSTATE_KEY"]), ...)
+# or opt in to a 0600 local key file:
+#   AdaptiveKeyProvider(service_name="my-app", allow_disk_fallback=True)
 master_key = AdaptiveKeyProvider(service_name="my-app").resolve_key()
 crypto = FloorVault(master_key, app_instance_id="my-app-instance")
 
@@ -130,12 +144,46 @@ The migration validates identifiers, refuses a populated destination, binds each
 
 `AdaptiveKeyProvider` selects an available custody tier rather than silently weakening an explicitly requested one:
 
-- macOS Keychain
-- Windows DPAPI
+- macOS Keychain (needs the `macos` extra)
+- Windows DPAPI (built in; a store outside the user profile is refused)
 - Linux Secret Service
 - protected local fallback where permitted
 
+Resolving a key without an OS store — the case the quickstart hits on macOS without
+the extra, or in a headless container — fails closed with a `KeyProviderError`. The
+three ways to resolve it:
+
+```python
+import os
+
+from floorvault import AdaptiveKeyProvider, FloorVault
+
+# 1. Explicit key, 64 hex characters, from your own secret source.
+crypto = FloorVault(
+    bytes.fromhex(os.environ["APPSTATE_KEY"]),
+    app_instance_id="my-app",
+)
+
+# 2. A 0600 local key file, created on first use and reused afterwards. This is
+#    Tier 3: anyone who can copy the file can recover the key.
+crypto = FloorVault(
+    AdaptiveKeyProvider(service_name="my-app", allow_disk_fallback=True).resolve_key(),
+    app_instance_id="my-app",
+)
+
+# 3. Install the OS-native tier for the platform (floorvault[macos] on macOS).
+crypto = FloorVault(
+    AdaptiveKeyProvider(service_name="my-app").resolve_key(),
+    app_instance_id="my-app",
+)
+```
+
+`APPSTATE_KEY`, `FLOOR_VAULT_KEY` and `VAULT_MASTER_KEY` are the recognised
+environment variables. Pass `strict=True` to forbid the local-file tier outright.
+
 The local fallback is protected by the filesystem and OS-account boundary; it is not equivalent to hardware-backed or OS-managed secret custody. If a native backend is present but unusable, FloorVault can fail closed with `CustodyDowngradeError`.
+
+Constructing a key handle also disables core dumps for the whole process (`RLIMIT_CORE` is set to 0 and not restored), since a core dump of a process holding a master key would write that key to disk. An application that needs its own crash dumps should know this happens on first key construction.
 
 Live CI coverage exists for Windows DPAPI only. The macOS Keychain and Linux Secret Service tiers are implemented and unit-tested but not live-verified — see the per-tier verification status in [`SECURITY.md`](SECURITY.md).
 

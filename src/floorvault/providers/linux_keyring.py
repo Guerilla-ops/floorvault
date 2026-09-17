@@ -2,9 +2,15 @@
 
 Primary: the freedesktop Secret Service (GNOME Keyring / KWallet via the
 `secretstorage` package) when it is reachable and a desktop session is present.
-Fallback (headless / no D-Bus / library absent): a fail-closed, entropy-masked
-protected file exactly like the DPAPI provider, so the round-trip contract is
-testable on any platform.
+Fallback (headless / no D-Bus / library absent): a fail-closed protected file
+exactly like the DPAPI provider, so the round-trip contract is testable on any
+platform.
+
+The fallback file is masked, NOT encrypted: the pad is a deterministic function
+of the service name, a public constant, so a copy of the store is enough to
+recover the key. Its protection is the 0600 owner-only file mode (and the ACL on
+Windows), not the mask. See the "file-based key fallbacks are not a
+confidentiality boundary" limit in SECURITY.md.
 
 Fail-closed: if Secret Service is expected (interactive desktop) but cannot be
 reached, and no key file exists yet, a MissingKeyError is raised rather than
@@ -232,6 +238,13 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
     # ---- fallback custody (masked protected file) -------------------------
 
     def _mask(self, plaintext: bytes) -> bytes:
+        """Mask with a deterministic pad derived from the service name.
+
+        A public constant: this is obfuscation, not encryption. It keeps the
+        stored blob from being raw key material (and gives the store a header
+        that says which scheme wrote it), and nothing more - the confidentiality
+        of this tier is the file mode. See SECURITY.md.
+        """
         pad = hashlib.sha256(self._service.encode()).digest()
         return bytes(a ^ b for a, b in zip(plaintext, pad))
 

@@ -339,6 +339,15 @@ For a full description see the README and the design notes in `docs/`.
 - **Zero C compilation:** FloorVault ships as a universal pure-Python wheel
   (`py3-none-any`) and does not compile native code at install time. Its
   cryptographic primitives come from the `cryptography` project (PyCA).
+- **Memory hardening is best-effort, and one part of it is process-wide.**
+  `mlock`/`VirtualLock` page-pinning and the Linux `MADV_DONTDUMP`/
+  `MADV_DONTFORK` advice depend on the platform and are reported through the key
+  handle rather than guaranteed; macOS implements neither `madvise` advice.
+  Separately, constructing a key handle sets `RLIMIT_CORE` to 0 for the **whole
+  process** and never restores it, so the host application's own crash dumps are
+  disabled from that point on. That is deliberate — a core dump of a process
+  holding a master key writes the key to disk — but it is a library side effect,
+  so an application that needs its own dumps must know about it.
 
 ---
 

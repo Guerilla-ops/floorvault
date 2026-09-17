@@ -37,7 +37,16 @@ class SecurityHardeningError(RuntimeError):
 
 
 def disable_core_dumps() -> None:
-    """Globally prevent the OS kernel from flushing process RAM to disk on crash."""
+    """Globally prevent the OS kernel from flushing process RAM to disk on crash.
+
+    PROCESS-WIDE AND PERMANENT: this sets ``RLIMIT_CORE`` to ``(0, 0)`` for the
+    whole process and is never restored. ``HardenedMemoryKey.__init__`` calls it,
+    so merely constructing a key handle (or a ``FloorVault``) silently disables
+    the host application's own core dumps from that point on. Deliberate - a core
+    dump of a process holding a master key writes that key to disk - but it is a
+    side effect of using the library, not something the caller opts into
+    per object. See SECURITY.md section 6.
+    """
     if resource is not None and (is_macos() or is_linux()):
         try:
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
