@@ -109,8 +109,8 @@ migrate_plaintext_column(
     crypto,
     table_name="users",
     id_column="id",
-    source_column="api_token",
-    destination_column="api_token_cipher",
+    source_column="private_value",
+    destination_column="private_value_cipher",
 )
 connection.commit()
 
@@ -119,8 +119,8 @@ assert verify_encrypted_column(
     crypto,
     table_name="users",
     id_column="id",
-    source_column="api_token",
-    destination_column="api_token_cipher",
+    source_column="private_value",
+    destination_column="private_value_cipher",
 )
 ```
 
