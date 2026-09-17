@@ -1,6 +1,9 @@
 # Gitleaks ignore file for synthetic test fixtures.
 # Format: <commit>:<file>:<rule-id>:<start-line> (gitleaks ignore semantics).
 # Keep pre-rename and post-rename paths; the fixtures live under both in history.
+# README schema identifiers were flagged as generic API keys; they are not secret values.
+001716712e2a069c4f5dbd5f2865582b4cf20ee5:README.md:generic-api-key:112
+001716712e2a069c4f5dbd5f2865582b4cf20ee5:README.md:generic-api-key:122
 04d25598a24fe3a757d871009cf42e7cd3951ae8:tests/test_hermes_adapter.py:generic-api-key:62
 04d25598a24fe3a757d871009cf42e7cd3951ae8:tests/test_vaultkit_adapter.py:generic-api-key:62
 ed8c6f7e85b74b42769a1458371f6ed9ada63dc8:tests/test_adaptive_provider.py:generic-api-key:9
