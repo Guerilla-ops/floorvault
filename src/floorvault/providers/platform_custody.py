@@ -12,7 +12,9 @@ Pure-Python, cross-platform, fail-closed:
     create", while any other ``ProtectedStoreError`` means the store exists but
     is corrupt or insecurely permissioned and MUST NOT be replaced.
   * On POSIX, reads require that the store grants no group or other access
-    (0600, 0400, 0700 all qualify). Windows does not implement POSIX permission
+    (0600, 0400, 0700 all qualify). Extended POSIX ACLs (macOS `chmod +a`,
+    Linux `setfacl`) are not queried; the check covers standard POSIX
+    permission bits only. Windows does not implement POSIX permission
     bits - os.stat() reports a synthesised mode (0o666 for a writable file)
     whatever the ACL - so the mode check is POSIX-only; on Windows the store's
     effective DACL is verified instead (GetNamedSecurityInfoW, refusing a store

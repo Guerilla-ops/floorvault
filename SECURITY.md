@@ -307,11 +307,19 @@ For a full description see the README and the design notes in `docs/`.
   a reader can select the right one and a rotation can be staged per record.
   `decrypt(..., key_id=)` can require a specific key. This build derives one
   subkey per instance and writes `0`.
+- **Zeroization scope:** `wipe()` zeroes the primary mlock'd key buffer, but
+  zeroization cannot reach every copy: immutable Python `bytes` objects derived
+  from the key, and the internal memory of the OpenSSL (Rust/C) AEAD
+  implementation, are outside the library's control. Integrators should treat
+  zeroization as best-effort and avoid holding key material in long-lived
+  immutable objects where possible.
 - **Key derivation:** the master key is expanded once with HKDF-SHA256 into the
   64-byte AES-256-SIV key, using the domain-separating info value
   `floorvault-v1-aes-siv`. No secondary index key is derived.
 - **Key-store protection:** the store is refused unless it is owner-only. On
-  POSIX that is the file mode; on Windows, where there are no POSIX permission
+  POSIX that is the standard file mode (extended ACLs such as macOS
+  `chmod +a` or Linux `setfacl` are not queried); on Windows, where there
+  are no POSIX permission
   bits and `os.stat()` reports a synthesised mode, the store's **effective NT
   DACL** is read (`GetNamedSecurityInfoW`) and a store granting access to any
   principal other than its owner, SYSTEM and Administrators is refused. If the
