@@ -314,9 +314,18 @@ class FloorVault:
 
     @staticmethod
     def _require_key_id(envelope_key_id: int | None, requested: int | None) -> None:
-        """Refuse a record written under a different key id than requested."""
-        if requested is None or envelope_key_id is None:
+        """Refuse a record written under a different key id than requested.
+
+        A v1 (``FLRV``) record carries no key id at all, so a requested key id
+        cannot be verified against it. Fail closed rather than silently accept a
+        record that may have been written under a different key.
+        """
+        if requested is None:
             return
+        if envelope_key_id is None:
+            raise DecryptionVerificationError(
+                "Record is a v1 envelope with no key id; a requested key id cannot be verified"
+            )
         if envelope_key_id != requested:
             raise DecryptionVerificationError(
                 f"Record was written under key id {envelope_key_id}, not the requested {requested}"

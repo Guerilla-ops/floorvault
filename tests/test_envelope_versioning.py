@@ -205,3 +205,17 @@ def test_v1_envelope_still_enforces_its_coordinates():
 
     with pytest.raises(DecryptionVerificationError):
         vault.decrypt(legacy, table="users", record_id="u-2", column="email")
+
+
+def test_v1_envelope_with_requested_key_id_is_refused():
+    """A v1 record carries no key id, so a requested key id cannot be verified.
+
+    Fail closed: refuse rather than silently accept a record that may have been
+    written under a different key. (F-2)
+    """
+    vault = _make_vault()
+    legacy = _write_v1_envelope("old-value", table="users", record_id="u-1", column="email")
+    with pytest.raises(DecryptionVerificationError):
+        vault.decrypt(legacy, table="users", record_id="u-1", column="email", key_id=0)
+    with pytest.raises(DecryptionVerificationError):
+        vault.decrypt_bytes(legacy, table="users", record_id="u-1", column="email", key_id=0)
