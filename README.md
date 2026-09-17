@@ -137,6 +137,8 @@ The migration validates identifiers, refuses a populated destination, binds each
 
 The local fallback is protected by the filesystem and OS-account boundary; it is not equivalent to hardware-backed or OS-managed secret custody. If a native backend is present but unusable, FloorVault can fail closed with `CustodyDowngradeError`.
 
+Live CI coverage exists for Windows DPAPI only. The macOS Keychain and Linux Secret Service tiers are implemented and unit-tested but not live-verified — see the per-tier verification status in [`SECURITY.md`](SECURITY.md).
+
 ## Rotation and recovery
 
 Rotate a store under a new key with resumable progress and post-rotation verification:

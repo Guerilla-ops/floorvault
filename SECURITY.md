@@ -321,6 +321,21 @@ For a full description see the README and the design notes in `docs/`.
   DPAPI with secondary entropy, Linux Secret Service), then — only if the caller
   explicitly enables it — a local file. A present-but-unusable OS store raises
   instead of quietly dropping to a weaker tier.
+
+  Each tier keeps its own store file (`master.key` for the local-file tier,
+  `master.key.dpapi` for DPAPI, `master.key.ss` for Secret Service). The three
+  formats are mutually unreadable, so sharing one path would let whichever tier
+  ran first lock the others out of the user's own data.
+
+  **Verification status by tier.** Windows DPAPI is exercised unmocked on the
+  `windows-latest` CI legs. macOS Keychain and Linux Secret Service are not:
+  the Keychain live test is opt-in and no workflow sets its flag, and no CI leg
+  runs a `dbus-run-session` + Secret Service environment. Both are therefore
+  **implemented and unit-tested against a faithful model of the library API,
+  but not live-verified**. The Linux client is checked against the real
+  `secretstorage` package by a contract test that derives the names it calls
+  from its own source and asserts each exists; that is an API-surface check,
+  not a live round trip.
 - **Zero C compilation:** FloorVault ships as a universal pure-Python wheel
   (`py3-none-any`) and does not compile native code at install time. Its
   cryptographic primitives come from the `cryptography` project (PyCA).
