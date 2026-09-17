@@ -163,8 +163,14 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AD-1",
         "src/floorvault/providers/adaptive.py",
-        "            problem = store_permission_problem(key_file, file_stat.st_mode)",
-        "            problem = None  # MUTANT",
+        '            return read_protected(key_file, header=b"", expected_length=None)\n'
+        "        except ProtectedStoreMissing:\n"
+        "            return None",
+        "            if not key_file.exists():  # MUTANT\n"
+        "                return None\n"
+        "            return key_file.read_bytes()\n"
+        "        except ProtectedStoreMissing:\n"
+        "            return None",
         "Adaptive provider stops refusing group/other-accessible (or unverifiable) files",
     ),
     Mutation(
