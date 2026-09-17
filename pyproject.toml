@@ -55,6 +55,13 @@ dev = [
     # installs it; without this the gate skipped the audit with only a warning
     # while still reporting every security gate as passing.
     "pip-audit>=2.7.0",
+    # The Linux Secret Service client calls secretstorage by name, and a name
+    # that does not exist silently disabled the whole tier (the import failed
+    # inside `except ImportError: return None`). The contract test asserts every
+    # name the client uses exists in the real package, so it must be installed
+    # wherever the suite runs - not only on Linux - or that assertion is skipped
+    # on the very hosts the defect was invisible from.
+    "secretstorage>=3.3",
 ]
 # macOS Keychain (Tier 2 of AdaptiveKeyProvider) needs the Security framework
 # bindings. Without them the provider falls through to Tier 3 and, unless

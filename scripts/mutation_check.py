@@ -407,6 +407,42 @@ MUTATIONS: tuple[Mutation, ...] = (
         "pass  # MUTANT",
         "Revision dropped from the AAD: same-coordinate replay becomes undetectable",
     ),
+    # --- Linux Secret Service client (F1, 2026-09-17) ------------------------
+    # The shipped defect was a client whose API names did not exist in the real
+    # secretstorage package; the ImportError was swallowed and the tier reported
+    # "unavailable" forever, so custody silently dropped to a key file while the
+    # docs promised native Secret Service custody.
+    Mutation(
+        "SS-1",
+        "src/floorvault/providers/linux_keyring.py",
+        "        gap = _secretstorage_api_gap(secretstorage, secretstorage_exceptions)\n"
+        "        if gap is not None:\n",
+        "        gap = _secretstorage_api_gap(secretstorage, secretstorage_exceptions)\n"
+        "        if gap is not None:\n"
+        "            return None  # MUTANT\n",
+        "A library this build cannot talk to reports as 'unavailable' again, so a "
+        "broken tier silently downgrades to file custody (the shipped defect)",
+    ),
+    Mutation(
+        "SS-2",
+        "src/floorvault/providers/linux_keyring.py",
+        "                if collection.is_locked():\n"
+        "                    raise CustodyDowngradeError(",
+        "                if False:  # MUTANT\n                    raise CustodyDowngradeError(",
+        "Locked collection proceeds anyway (unlock() returns True when the prompt "
+        "was DISMISSED), so a failed unlock walks on instead of failing closed",
+    ),
+    Mutation(
+        "SS-3",
+        "src/floorvault/providers/linux_keyring.py",
+        "                    if all(\n"
+        "                        candidate.get_attributes().get(key) == value for key, value "
+        "in query.items()\n"
+        "                    )",
+        "                    if True  # MUTANT",
+        "Entry matching stops checking attributes, so any service's item is "
+        "accepted as the master key",
+    ),
 )
 
 # --------------------------------------------------------------------------

@@ -30,6 +30,28 @@ from .platform_custody import (
 
 _HEADER = b"FLOORLV1"  # floorvault protected key store, linux/secret-service boundary
 
+#: ``secretstorage`` module-level callables this client calls by name.
+#:
+#: Pinned here so the contract test can assert each one exists in the installed
+#: package. The shipped defect was exactly this class of error: the client
+#: imported ``SecretServiceNotAvailable`` (the real class is
+#: ``SecretServiceNotAvailableException``) and called ``get_default_bus`` /
+#: ``DBusAddressConnection``, none of which the library defines. The import
+#: failed inside ``except ImportError: return None``, so the tier reported
+#: "unavailable" forever and no test could see it.
+_REQUIRED_SECRETSTORAGE_API = ("dbus_init", "get_default_collection")
+
+#: The exception raised by ``secretstorage`` when no session bus / service is
+#: reachable. Named as a string so the contract test compares names rather than
+#: importing a package that is absent on non-Linux hosts.
+_SECRET_SERVICE_UNAVAILABLE_EXCEPTION = "SecretServiceNotAvailableException"
+
+#: ``secretstorage`` attribute key naming the application boundary.
+_ATTRIBUTE_APPLICATION = "application"
+
+#: Attribute key binding an entry to a floorvault account within the service.
+_ATTRIBUTE_KEY = "floorvault"
+
 
 def _random(n: int) -> bytes:
     return os.urandom(n)
@@ -41,6 +63,20 @@ def _looks_interactive_desktop() -> bool:
         or os.environ.get("WAYLAND_DISPLAY")
         or os.environ.get("DBUS_SESSION_BUS_ADDRESS")
     )
+
+
+def _secretstorage_api_gap(secretstorage, exceptions) -> str | None:
+    """Names this client needs that the installed ``secretstorage`` lacks.
+
+    Returns ``None`` when the API surface matches. Checked at call time rather
+    than relying on an import to fail: an ``AttributeError`` deep inside the
+    tier is indistinguishable from a broken service, whereas a pre-flight check
+    produces an accurate message and a distinct failure.
+    """
+    missing = [name for name in _REQUIRED_SECRETSTORAGE_API if not hasattr(secretstorage, name)]
+    if not hasattr(exceptions, _SECRET_SERVICE_UNAVAILABLE_EXCEPTION):
+        missing.append(f"exceptions.{_SECRET_SERVICE_UNAVAILABLE_EXCEPTION}")
+    return ", ".join(missing) if missing else None
 
 
 class LinuxSecretServiceKeyProvider(KeyProvider):
@@ -74,46 +110,91 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
             return False
 
     def _resolve_via_secret_service(self, *, allow_create: bool) -> HardenedMemoryKey | None:
+        """Resolve the key through the freedesktop Secret Service.
+
+        Written against the real ``secretstorage`` API:
+        ``dbus_init()`` -> ``get_default_collection(connection)`` ->
+        ``Collection.search_items`` -> ``Item.get_attributes()``. Each name is
+        verified by :func:`_secretstorage_api_gap` before use, so a library this
+        build cannot talk to is reported as such instead of looking absent.
+
+        Returns ``None`` only when the service is genuinely unavailable on this
+        session (no session bus), which is not a custody downgrade. Every other
+        failure raises rather than falling through to a weaker tier.
+        """
         try:
             import secretstorage
-            from secretstorage.exceptions import SecretServiceNotAvailable
+            import secretstorage.exceptions as secretstorage_exceptions
         except ImportError:
             return None
+
+        gap = _secretstorage_api_gap(secretstorage, secretstorage_exceptions)
+        if gap is not None:
+            raise CustodyDowngradeError(
+                "the Secret Service library is present but unusable by this build "
+                f"(secretstorage does not provide {gap}); refusing to fall back to a "
+                "weaker custody tier"
+            )
+        unavailable = getattr(secretstorage_exceptions, _SECRET_SERVICE_UNAVAILABLE_EXCEPTION)
+
+        connection = None
         try:
-            bus = secretstorage.DBusAddressConnection(secretstorage.get_default_bus())
-            collection = secretstorage.get_default_collection(bus)
+            connection = secretstorage.dbus_init()
+            collection = secretstorage.get_default_collection(connection)
             if collection.is_locked():
+                # ``unlock()`` returns True when the prompt was DISMISSED, i.e.
+                # when the unlock did NOT happen - the opposite of the intuitive
+                # reading. Re-check the lock state instead of trusting it.
                 collection.unlock()
+                if collection.is_locked():
+                    raise CustodyDowngradeError(
+                        "the Secret Service collection is locked and could not be "
+                        "unlocked; refusing to fall back to a weaker custody tier"
+                    )
+            query = {
+                _ATTRIBUTE_APPLICATION: self._service,
+                _ATTRIBUTE_KEY: self._attribute,
+            }
             item = next(
                 (
-                    i
-                    for i in collection.search_items({"application": self._service})
-                    if i.get_attribute("floorvault") == self._attribute
+                    candidate
+                    for candidate in collection.search_items(query)
+                    # Exact re-check: a backend that ignores query filters would
+                    # otherwise hand back another application's entry.
+                    if all(
+                        candidate.get_attributes().get(key) == value for key, value in query.items()
+                    )
                 ),
                 None,
             )
             if item is not None:
                 secret = item.get_secret()
                 if secret is None or len(secret) != 32:
-                    raise ProtectedStoreError("Secret Service entry has an invalid key length")
+                    # KeyProviderError, not ProtectedStoreError: the latter is a
+                    # file-store implementation detail. A caller of any tier
+                    # should see one provider-level error type for "the store
+                    # holds something that is not a master key".
+                    raise KeyProviderError("Secret Service entry has an invalid key length")
                 return HardenedMemoryKey(secret)
             if not allow_create:
                 raise MissingKeyError("Secret Service master key not found; recovery is required")
             key = self._random_bytes(32)
             collection.create_item(
                 f"{self._service}:{self._attribute}",
-                {"application": self._service, "floorvault": self._attribute},
+                dict(query),
                 key,
                 replace=False,
             )
             return HardenedMemoryKey(key)
-        except SecretServiceNotAvailable:
+        except unavailable:
             # The tier is genuinely not present on this session: falling through
             # is correct and is not a downgrade.
             return None
         except (KeyProviderError, ProtectedStoreError):
-            # Deliberate failures (invalid key length, missing key, unavailable
-            # Secret Service when a desktop session exists) must surface.
+            # Deliberate failures (invalid key length, missing key, locked
+            # collection, unusable client) must surface rather than become a
+            # silent fall-through. This clause is why they are no longer dead
+            # code.
             raise
         except Exception as exc:
             raise CustodyDowngradeError(
@@ -121,6 +202,15 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
                 f"({type(exc).__name__}: {exc}); refusing to fall back to a "
                 "weaker custody tier"
             ) from exc
+        finally:
+            # The D-Bus socket is not closed automatically; leaving it open
+            # leaks a connection per resolve.
+            close = getattr(connection, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 - cleanup must not mask the result
+                    pass
 
     # ---- fallback custody (masked protected file) -------------------------
 
@@ -152,8 +242,9 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
         # fail closed rather than silently writing a key file.
         if _looks_interactive_desktop() and is_linux():
             raise MissingKeyError(
-                "Secret Service is unavailable but a desktop session is present; "
-                "refusing to fall back to a key file. Set a key explicitly."
+                "Secret Service is not available in this session (no reachable "
+                "session bus) but a desktop session is present; refusing to fall "
+                "back to a key file. Set a key explicitly."
             )
         key = self._random_bytes(32)
         if len(key) != 32:
