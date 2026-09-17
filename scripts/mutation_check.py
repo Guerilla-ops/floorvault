@@ -89,6 +89,21 @@ def expected_result(mutation: Mutation, *, on_windows: bool | None = None) -> st
     return mutation.expect
 
 
+def anchor_status(matches: int) -> str | None:
+    """Label for a mutant anchor's match count, or ``None`` when exactly one line matched.
+
+    A curated anchor must identify exactly ONE line. ``str.replace(..., 1)`` mutates
+    the first match, so an anchor that also matches elsewhere silently becomes a
+    mutant of a different check than the one it describes - PC-17's did (the reader's
+    ``except OSError`` branch carried the same two lines as its main path), and the
+    only symptom was a Windows CI leg reporting a kill the declaration said could not
+    happen. Neither case is a pass: 0 means the anchor moved, >1 means it is ambiguous.
+    """
+    if matches == 1:
+        return None
+    return "PATTERN?" if matches == 0 else "AMBIGUOUS"
+
+
 MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PC-1",
@@ -211,9 +226,19 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "MIG-3",
         "src/floorvault/vaultkit/vault.py",
-        '                    table=self._TOMBSTONE_TABLE,\n                    record_id=legacy_id,\n                    column="tombstone",',
-        '                    table=self._TOMBSTONE_TABLE,\n                    record_id="unbound",\n                    column="tombstone",',
-        "Tombstone read loses its AAD coordinate binding, so a swapped record is not detected",
+        "                self._crypto.decrypt(\n"
+        "                    cipher,\n"
+        "                    table=self._TOMBSTONE_TABLE,\n"
+        "                    record_id=legacy_id,\n"
+        '                    column="tombstone",',
+        "                self._crypto.decrypt(\n"
+        "                    cipher,\n"
+        "                    table=self._TOMBSTONE_TABLE,\n"
+        '                    record_id="unbound",\n'
+        '                    column="tombstone",',
+        "Tombstone read loses its AAD coordinate binding, so a swapped record is not detected "
+        "(the anchor names the read path's own decrypt call: the rotation path carries the "
+        "same argument block and would otherwise be mutated instead)",
     ),
     Mutation(
         "MIG-4",
@@ -261,9 +286,15 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "ROT-2",
         "src/floorvault/vaultkit/vault.py",
+        "            if cursor.rowcount != 1:\n"
+        '                raise VaultError(f"Vault item not found during rotation: {item_id}")\n'
         "            self._write_journal_rows(conn, journal_rows, target_key_id=key_id)",
+        "            if cursor.rowcount != 1:\n"
+        '                raise VaultError(f"Vault item not found during rotation: {item_id}")\n'
         "            pass  # MUTANT: journal not written with the data",
-        "Journal row not written in the write's transaction: an interrupted rotation resumes blind",
+        "Journal row not written in the write's transaction: an interrupted rotation resumes blind "
+        "(the anchor includes the row-count guard so it lands on the item write, not the "
+        "tombstone write that shares the same journal call)",
     ),
     Mutation(
         "ROT-3",
@@ -382,13 +413,16 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PC-17",
         "src/floorvault/providers/platform_custody.py",
-        "        if not stat.S_ISREG(path_stat.st_mode):\n            raise ProtectedStoreError(",
-        "        if False:  # MUTANT\n            raise ProtectedStoreError(",
-        "Protected-store reader accepts a directory or other non-regular object "
-        "(POSIX: the read then fails with a raw IsADirectoryError instead of the clean "
-        "ProtectedStoreError. Windows-only-equivalent: a Windows open() on a directory "
-        "raises first, and the OSError/lstat branch refuses it before this check runs)",
-        expect_on_windows="survived",
+        "        if not stat.S_ISREG(path_stat.st_mode):\n"
+        '            raise ProtectedStoreError("protected store is not a regular file")\n'
+        "        if (path_stat.st_dev, path_stat.st_ino) != (file_stat.st_dev, file_stat.st_ino):",
+        "        if False:  # MUTANT\n"
+        '            raise ProtectedStoreError("protected store is not a regular file")\n'
+        "        if (path_stat.st_dev, path_stat.st_ino) != (file_stat.st_dev, file_stat.st_ino):",
+        "Protected-store reader accepts a non-regular object at the store path "
+        "(the anchor includes the identity check that follows it, because the same "
+        "two-line check also appears in the OSError/lstat branch and an ambiguous "
+        "anchor mutates that one instead)",
     ),
     Mutation(
         "PC-18",
@@ -805,8 +839,10 @@ def _run_curated(verbose: bool) -> int:
         for mutation in MUTATIONS:
             target = workdir / mutation.path
             original = target.read_text(encoding="utf-8")
-            if mutation.find not in original:
-                print(f"{mutation.id:8} {'PATTERN?':9} {'-':9} not found in {mutation.path}")
+            matches = original.count(mutation.find)
+            status = anchor_status(matches)
+            if status is not None:
+                print(f"{mutation.id:8} {status:9} {'-':9} {matches} match(es) in {mutation.path}")
                 failures += 1
                 continue
             target.write_text(

@@ -135,6 +135,35 @@ def test_a_symlink_is_refused_where_the_platform_has_no_O_NOFOLLOW(tmp_path, mon
         read_protected(link, header=_HEADER)
 
 
+def test_read_protected_refuses_a_path_that_reports_a_non_regular_type(tmp_path, monkeypatch):
+    """The path-side type check must be killable on every platform, on its own.
+
+    The reader requires the path to name a regular file. On Windows the input that
+    used to cover this - a directory - is refused earlier, by the ``except OSError``
+    branch of the open, so nothing exercised *this* check there and the mutant that
+    deletes it could only die on POSIX. Faking the reported type - and nothing else -
+    makes the check observable everywhere: the descriptor still opens the real file,
+    so any refusal must come from the path check.
+    """
+    store = tmp_path / "store"
+    write_protected(_KEY, store, header=_HEADER)
+
+    real_lstat = custody.os.lstat
+
+    def directory_typed(path, *args, **kwargs):
+        found = real_lstat(path, *args, **kwargs)
+        if Path(path) == store:
+            fields = list(found)
+            fields[stat.ST_MODE] = stat.S_IFDIR | 0o600
+            return os.stat_result(fields)
+        return found
+
+    monkeypatch.setattr(custody.os, "lstat", directory_typed)
+
+    with pytest.raises(ProtectedStoreError, match="regular"):
+        read_protected(store, header=_HEADER)
+
+
 def test_store_that_changed_identity_under_the_open_is_refused(tmp_path, monkeypatch):
     """The two stats must agree, so a swap between the check and the open is caught.
 
