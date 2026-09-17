@@ -14,7 +14,7 @@
 ## 1. Executive Summary & Strategic Positioning
 
 ### 1.1 The "Serious Contender" Mandate
-FloorVault is currently a hardened application-layer cryptographic component providing contextual AES-256-SIV encryption and blind indexing for SQLite rows. To compete with mature solutions, it must advance from an envelope-encryption utility to a **universal production-grade secure-storage platform**. the agent is one optional consumer, not the product boundary. The capabilities in this document are targets, not current implementation claims.
+FloorVault is currently a hardened application-layer cryptographic component providing contextual AES-256-SIV encryption for SQLite rows. Application-level search and indexing are not part of the current implementation; the future platform may add separately reviewed optional integrations. The capabilities in this document are targets, not current implementation claims.
 
 A serious contender cannot rely on marketing claims, partial memory zeroing, or hand-waving around SQLite metadata leakage. It must provide:
 1. **Verifiable cryptographic integrity and confidentiality** across the entire storage lifecycle (data at rest, data in flight, WAL frames, spillover caches, and crash states).

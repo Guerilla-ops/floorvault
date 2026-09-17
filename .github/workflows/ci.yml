@@ -47,14 +47,14 @@ jobs:
     steps:
       # fetch-depth: 0 is required because gitleaks scans history, not just the
       # tip; a shallow checkout would make the scan meaningless.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
 
       - name: Set up uv and Python ${{ matrix.python }}
         # Pinned to a full version: setup-uv only maintains moving major tags up
         # to v7; v8+ exist as full versions only (v10 does not resolve).
-        uses: astral-sh/setup-uv@v10.1.0
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
         with:
           enable-cache: true
           python-version: ${{ matrix.python }}
@@ -89,7 +89,7 @@ jobs:
       # would collide, and upload-artifact cannot merge them meaningfully.
       - name: Publish the built artifacts
         if: matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: floorvault-dist
           path: |
@@ -117,7 +117,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           # A shallow checkout would make a history scan meaningless.
           fetch-depth: 0

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import stat
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -173,6 +174,13 @@ class AdaptiveKeyProvider(KeyProvider):
                 "Set APPSTATE_KEY or FLOOR_VAULT_KEY environment variable."
             )
 
+        warnings.warn(
+            "FloorVault is using Tier-3 file-based key custody "
+            "(~/.floorvault/master.key); this is not a hardware or OS "
+            "confidentiality boundary.",
+            UserWarning,
+            stacklevel=2,
+        )
         self.fallback_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         key_file = self.fallback_dir / "master.key"
 
@@ -192,7 +200,13 @@ class AdaptiveKeyProvider(KeyProvider):
             if len(key_bytes) == 32:
                 return HardenedMemoryKey(key_bytes)
             if len(key_bytes) == 64:
-                return HardenedMemoryKey(bytes.fromhex(key_bytes.decode("ascii").strip()))
+                try:
+                    return HardenedMemoryKey(bytes.fromhex(key_bytes.decode("ascii").strip()))
+                except (UnicodeDecodeError, ValueError) as exc:
+                    raise KeyProviderError("Refusing malformed hexadecimal key file") from exc
+            raise KeyProviderError(
+                f"Refusing key file with unexpected length ({len(key_bytes)} bytes)"
+            )
 
         if not allow_create:
             raise KeyProviderError(f"Master key file not found: {key_file}")

@@ -158,7 +158,7 @@ echo "=== 11. Verifying the Security Tests Actually Detect Regressions (Mutation
 # mutants' anchors (they silently reported 'pattern not found' rather than
 # failing) went unnoticed by this gate.
 python scripts/mutation_check.py --mode curated
-echo "[PASS] Mutation: every curated security mutant was killed (canary survived)."
+echo "[PASS] Mutation: all required curated security mutants were killed; declared equivalent mutants are documented."
 
 echo ""
 echo "============================================================"

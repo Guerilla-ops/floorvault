@@ -127,7 +127,7 @@ def write_protected(
             | getattr(os, "O_NOFOLLOW", 0),
             0o600,
         )
-        os.write(descriptor, header + key)
+        _write_all(descriptor, header + key)
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = None
@@ -139,6 +139,16 @@ def write_protected(
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    """Write all bytes, handling the short-write contract of ``os.write``."""
+    view = memoryview(data)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("protected-store write made no progress")
+        view = view[written:]
 
 
 def _link_no_clobber(temporary: Path, path: Path) -> None:

@@ -2,9 +2,9 @@
 
 # 🔐 FloorVault
 
-### Context-aware, misuse-resistant, searchable encryption for SQLite
+### Context-aware, misuse-resistant encryption for SQLite
 
-**Secure local data without replacing SQLite, compiling database extensions, or decrypting entire tables to search them.**
+**Secure local data without replacing SQLite or compiling database extensions.**
 
 [![PyPI version](https://img.shields.io/pypi/v/floorvault.svg)](https://pypi.org/project/floorvault/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
@@ -14,7 +14,6 @@
 
 [**Quickstart**](#-quickstart) ·
 [**Why FloorVault?**](#-why-floorvault) ·
-[**Searchable Encryption**](#-searchable-encryption) ·
 [**Security Model**](#-security-model) ·
 [**Performance**](#-performance) ·
 [**Roadmap**](#-roadmap)
@@ -26,7 +25,7 @@
 > [!IMPORTANT]
 > **FloorVault is an application-layer encryption library, not a replacement database.**
 >
-> It works with standard Python `sqlite3` and PyCA `cryptography`, giving applications field- and record-level authenticated encryption, contextual tamper resistance, searchable encrypted fields, hardened key handling, and migration tooling without requiring SQLCipher or a custom SQLite build.
+> It works with standard Python `sqlite3` and PyCA `cryptography`, giving applications field- and record-level authenticated encryption, contextual tamper resistance, hardened key handling, and migration tooling without requiring SQLCipher or a custom SQLite build.
 
 ## ✨ What FloorVault Does
 
@@ -36,8 +35,7 @@ It provides:
 
 - 🔗 **Contextual AEAD binding** — ciphertext is cryptographically tied to the table, record, column, schema, and application instance where it belongs.
 - 🛡️ **AES-256-SIV encryption** — deterministic, misuse-resistant authenticated encryption based on RFC 5297.
-- 🔎 **Searchable encrypted fields** — truncated HMAC beacons allow indexed exact-match lookup without storing plaintext values.
-- 🧠 **Short-lived master-key handling** — functional subkeys are derived with HKDF-SHA256 before the mutable master-key buffer is wiped.
+- 🧠 **Short-lived master-key handling** — the AEAD subkey is derived with HKDF-SHA256 before the mutable master-key buffer is wiped.
 - 🔒 **Best-effort locked memory** — derived keys can be pinned with `mlock()` or `VirtualLock()`, with additional platform-specific hardening.
 - 🗝️ **Cross-platform key custody** — adaptive key resolution plus macOS Keychain, Windows DPAPI, and Linux Secret Service support.
 - ♻️ **Non-destructive Fernet migration** — modern-first dual reads, migration on first touch, backups, and explicit verification.
@@ -49,7 +47,7 @@ It provides:
 |---|---|
 | 🤖 Autonomous AI agents | Protect local credentials, memory, state, and sensitive tool data |
 | 🖥️ Desktop apps | Works with Tauri, Electron, PyQt, and other local applications |
-| 📦 Local-first software | Keeps encrypted application data searchable without a remote service |
+| 📦 Local-first software | Protects encrypted application data without a remote service |
 | 🌐 Edge services | Uses standard Python and SQLite with minimal deployment friction |
 | 🔑 Credential/config stores | Context binding prevents ciphertext from being silently moved to the wrong record |
 
@@ -151,8 +149,6 @@ FloorVault is built around that combination.
 | Contextual AAD binding | ❌ | Usually ❌ | **✅** |
 | Row/column/table splice resistance | ❌ | Usually ❌ | **✅** |
 | Misuse-resistant encryption | Depends on mode | ❌ | **✅ AES-256-SIV** |
-| Search encrypted fields | Custom/decrypt workflow | Full scan | **✅ Beacon index** |
-| Exact-match encrypted lookup | Limited | ❌ | **✅** |
 | Reduced master-key lifetime | ❌ | Usually ❌ | **✅** |
 | Best-effort locked memory | ❌ | ❌ | **✅** |
 | Legacy Fernet migration tooling | ❌ | N/A | **✅** |
@@ -231,160 +227,6 @@ flowchart TD
 
 ---
 
-# 🔎 Searchable Encryption
-
-Traditional field encryption creates a practical problem:
-
-> How do you query an encrypted field without decrypting every row?
-
-FloorVault uses **truncated HMAC beacons**.
-
-A beacon is a deliberately bounded search bucket stored beside the encrypted value.
-
-```mermaid
-flowchart LR
-    Q["Search value"] --> B["Derive beacon"]
-    B --> I["SQLite B-Tree lookup"]
-    I --> C["Candidate rows"]
-    C --> V["Decrypt + verify candidates"]
-    V --> M["Exact match"]
-```
-
-The database stores something like:
-
-| `id` | `email_cipher` | `email_bucket` |
-|---|---|---|
-| `usr-1` | `BLOB` | `BLOB` |
-| `usr-2` | `BLOB` | `BLOB` |
-
-The email itself stays encrypted.
-
-### Store metadata and format version
-
-The SQLite store uses `PRAGMA user_version = 2`. Opening an older store performs
-its metadata and origin-index migration before marking the store at version 2.
-The `origin_idx` column uses an 8-bit origin bucket (one byte, 256 possible
-buckets), not a full-width equality index. Bucket hits are candidates only and
-are confirmed by decrypting the origin metadata.
-
-The schema deliberately leaves a small metadata surface available for fast
-listing: item cardinality, item kind, and OTP presence remain observable to
-someone who can read the database. These are accepted design residuals; secret
-values remain encrypted.
-
-## Example
-
-```python
-import sqlite3
-
-from floorvault import AdaptiveKeyProvider, FloorVault
-
-crypto = FloorVault(
-    AdaptiveKeyProvider(
-        service_name="my-app"
-    ).resolve_key()
-)
-
-conn = sqlite3.connect("local_vault.db")
-
-conn.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        email_cipher BLOB NOT NULL,
-        email_bucket BLOB NOT NULL
-    )
-""")
-```
-
-Encrypt and index:
-
-```python
-email = "scott@example.com"
-
-cipher = crypto.encrypt(
-    email,
-    table="users",
-    record_id="usr-1",
-    column="email",
-)
-
-bucket = crypto.beacon(
-    email,
-    scope="users.email",
-    bits=16,
-)
-
-conn.execute(
-    "INSERT INTO users VALUES (?, ?, ?)",
-    ("usr-1", cipher, bucket),
-)
-```
-
-Search:
-
-```python
-probe = crypto.beacon(
-    "scott@example.com",
-    scope="users.email",
-    bits=16,
-)
-
-for row in conn.execute(
-    """
-    SELECT id, email_cipher
-    FROM users
-    WHERE email_bucket = ?
-    """,
-    (probe,),
-):
-    user_id, email_cipher = row
-
-    decrypted = crypto.decrypt(
-        email_cipher,
-        table="users",
-        record_id=user_id,
-        column="email",
-    )
-
-    if decrypted == "scott@example.com":
-        print("exact match:", user_id)
-```
-
-The beacon narrows the search to candidate rows.  
-The ciphertext still provides the final cryptographic verification: bucket hits are collisions by design, so only decrypting and comparing the plaintext proves an exact match.
-
-`crypto.beacon_matches(...)` can narrow candidates without decrypting, but it proves bucket agreement — not equality.
-
-## Choosing a beacon width
-
-Beacon width is a **privacy ↔ efficiency** trade-off.
-
-Buckets are byte-aligned: a width of `bits` stores `ceil(bits/8)` bytes, so the index holds `256**ceil(bits/8)` possible buckets, and an `N`-row dataset averages about `N / 256**ceil(bits/8)` candidate rows per bucket.
-
-| Beacon width | Privacy | Candidate collisions | Typical use |
-|---:|:---:|:---:|---|
-| `4–8 bits` | 🔒🔒🔒 High | Higher | Maximum privacy, small datasets |
-| `16 bits` | 🔒🔒 Strong | Moderate | Typical app datasets (10²–10⁵ rows) |
-| `32–64 bits` | 🔒 Lower | Low | Low-volume uniqueness / faster narrowing |
-
-There is no universally safe width. Pick the average bucket occupancy you are willing to decrypt-confirm, then derive the width:
-
-```python
-from floorvault import suggest_beacon_bits
-
-suggest_beacon_bits(
-    expected_rows=100_000,
-    target_bucket_size=8,
-)  # -> 16
-```
-
-> [!CAUTION]
-> Searchable encryption necessarily leaks some information. FloorVault beacons expose a **bounded bucket**, not the plaintext value, but the bucket is still information. Do not index values that cannot tolerate that leakage.
->
-> **Do not index low-entropy domains.** A beacon key stops an offline attacker from reversing an index, but it does not stop anyone who can *call* `beacon()` — including your own application under an attacker's control. A `country` (≈200 values), a `role` (≈5) or a boolean can be enumerated bucket by bucket. Beacons are for high-entropy values such as emails, tokens and identifiers.
-
----
-
 # 🗝️ Key Lifecycle
 
 FloorVault separates **master-key custody** from the keys used for individual cryptographic functions.
@@ -393,13 +235,9 @@ FloorVault separates **master-key custody** from the keys used for individual cr
 flowchart TD
     M["Master key"] --> H["HKDF-SHA256"]
     H --> E["Encryption / SIV key"]
-    H --> I["Index / beacon key"]
-    H --> O["Other domain-separated subkeys"]
     H --> W["Wipe mutable master-key buffer"]
 
     E --> HM["Hardened memory"]
-    I --> HM
-    O --> HM
 ```
 
 ## Ephemeral master-key handling
@@ -561,12 +399,6 @@ Inspect an encrypted field:
 floorvault inspect local_vault.db users usr-1 email
 ```
 
-Generate a search index / beacon:
-
-```bash
-floorvault index 'scott@example.com' --scope users.email
-```
-
 Table and column identifiers are validated against a strict allowlist before SQL is constructed.
 
 Unexpected identifiers are rejected rather than blindly interpolated into a query.
@@ -580,16 +412,8 @@ Current project benchmarks report approximately:
 | Operation | Measured result |
 |---|---:|
 | 1 KB encryption / decryption | `~5–10 µs` |
-| Beacon operation | `~1.37 µs` |
-| Previous beacon implementation | `~1.29 µs` |
 | Encrypt vs Fernet | `~21% faster` |
 | Decrypt vs Fernet | `~30% faster` |
-
-The measured beacon hardening change was approximately:
-
-```text
-1.29 µs → 1.37 µs
-```
 
 For methodology and reproduction details, see:
 
@@ -616,26 +440,8 @@ FloorVault is primarily intended to protect sensitive application data:
 - against ciphertext relocation
 - against accidental cryptographic misuse
 - against some forms of memory scraping
-- while retaining constrained encrypted lookup
 
 It is **not** a replacement for process isolation, endpoint security, or a hardware trust boundary.
-
-<details>
-<summary><strong>🔍 Search beacon leakage</strong></summary>
-
-<br>
-
-Searchable encryption introduces an intentional leakage trade-off.
-
-FloorVault's beacons expose a **bounded search bucket**, not the original plaintext value.
-
-That bucket is still observable information.
-
-Applications handling values that cannot tolerate equality leakage should avoid indexing them or explicitly choose a beacon width that matches their threat model.
-
-Re-keying changes the generated buckets.
-
-</details>
 
 <details>
 <summary><strong>🕰️ Replay / rollback of an older ciphertext</strong></summary>
@@ -751,7 +557,6 @@ FloorVault includes a deterministic fuzz harness covering:
 - ✅ contextual splice resistance
 - ✅ malformed envelopes
 - ✅ nonce-reuse scenarios
-- ✅ beacon exactness
 
 ## CI matrix
 
@@ -841,13 +646,11 @@ Application
 │
 ├── normal SQLite schema
 │   ├── public / non-sensitive columns
-│   ├── encrypted field
-│   └── optional beacon column
+│   └── encrypted field
 │
 ├── FloorVault
 │   ├── contextual AES-256-SIV
-│   ├── HKDF key separation
-│   ├── beacon generation
+│   ├── HKDF-derived AEAD key
 │   └── hardened derived-key memory
 │
 └── Key Provider
@@ -862,7 +665,6 @@ A typical fit looks like:
 ```text
 SQLite
 + encrypted fields
-+ exact-match search
 + contextual tamper detection
 + cross-platform deployment
 ```
@@ -877,10 +679,7 @@ without replacing SQLite itself.
 
 - [x] Contextual AES-256-SIV encryption
 - [x] Optional revision binding for replay / rollback detection
-- [x] HKDF-SHA256 key separation
-- [x] Searchable HMAC beacons
-- [x] `beacon()` and `beacon_matches()`
-- [x] Dataset-sized beacon width guidance (`suggest_beacon_bits`)
+- [x] HKDF-SHA256-derived AEAD key
 - [x] Hardened memory key custody
 - [x] `mlock()` / `VirtualLock()`
 - [x] Anti-dump protections where supported

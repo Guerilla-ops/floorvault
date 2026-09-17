@@ -1,7 +1,7 @@
 # Comparative Micro-Benchmark: floorvault vs. Fernet vs. plain SQLite
 
 **Date:** 2026-09-15
-**Measurer:** SecEngineer (self-measured, reproducible)
+**Measurer:** project benchmark harness (self-measured, reproducible)
 **Harness:** `scripts/benchmark_compare.py` (medians, 3000 iterations)
 **Payload:** ~1,019-byte message (realistic AI-agent tool-result / session text)
 **Host:** macOS arm64, PyCA/OpenSSL, Python 3.13

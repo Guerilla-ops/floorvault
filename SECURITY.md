@@ -8,7 +8,7 @@ what to expect after you do, and the guarantees — and the non-guarantees — o
 the design.
 
 - **Project:** FloorVault (`floorvault` on PyPI)
-- **Repository:** https://github.com/Guerilla-ops/floorvault
+- **Repository:** https://github.com/vaultfloor/floorvault
 - **Maintainer:** Scott Lee `<floorbond@pm.me>`
 
 ---
@@ -40,7 +40,7 @@ Use one of the private channels below:
 
 1. **GitHub private vulnerability reporting (preferred).**
    Open a draft advisory at:
-   https://github.com/Guerilla-ops/floorvault/security/advisories/new
+   https://github.com/vaultfloor/floorvault/security/advisories/new
    This keeps the report private, gives us a shared workspace to collaborate in,
    and lets us request a CVE through GitHub when one is warranted.
 
@@ -121,12 +121,8 @@ we want to know.
 - **Failure to fail closed**: any case where tampered, truncated, or malformed
   input is accepted, returns wrong plaintext, or raises a raw/internal error
   instead of a clean verification failure.
-- **Key-separation failures** — e.g. the same key material used for both the SIV
-  subkey and the blind-index/beacon subkey, or a derivation that is not
-  domain-separated.
-- Weakness in the **blind index / beacon** that leaks more than the documented
-  bound (equality within a bucket, frequency, or ordering information beyond
-  what the configured bucket width permits).
+- A derivation that is not domain-separated or otherwise reuses key material across
+  cryptographic purposes.
 - A **non-fork-safe** or otherwise unsafe source of randomness.
 - Mishandling of an error condition in the underlying `cryptography`/OpenSSL
   primitives that leads to unsafe behaviour.
@@ -144,8 +140,7 @@ we want to know.
   can be articulated.
 - The absence of a feature that was never claimed (e.g. protection against a
   compromised dependency, or against an attacker who can read process memory).
-- Documentation typos, or a design trade-off that is explicitly documented (for
-  example, the intentional bucket-collision behaviour of the search beacons).
+- Documentation typos, or a design trade-off that is explicitly documented.
 - Reports produced solely by a pattern-matching scanner with no analysis of
   reachability (we are happy to receive these, but please note the tool and why
   you believe the finding is reachable).
@@ -168,8 +163,8 @@ material.
 - Silent modification of stored ciphertext — including **splicing** a ciphertext
   into a different row, column, or table, which the contextual AAD binding is
   designed to detect.
-- Offline analysis of the stored data: no plaintext, and only bounded equality /
-  frequency information via the search beacons.
+- Offline analysis of the stored data: no plaintext is exposed by the encrypted
+  fields or metadata values.
 
 **Explicitly out of scope (not protected):**
 
@@ -239,7 +234,7 @@ cannot be mistaken for one that is covered.
 
 | Attacker | Can read store | Can modify store | Can read the process | Controls the account | Expected protection |
 |---|:---:|:---:|:---:|:---:|---|
-| A1 — stolen database file | ✅ | ❌ | ❌ | ❌ | **Strong**: no plaintext, bounded beacon leakage |
+| A1 — stolen database file | ✅ | ❌ | ❌ | ❌ | **Strong**: no plaintext in protected fields |
 | A2 — stolen disk / backup files | ✅ | ❌ | ❌ | ❌ | **Strong**, minus what the key store itself gives up (see the fallback limit above) |
 | A3 — malicious store writer | ✅ | ✅ | ❌ | ❌ | **Partial**: values cannot be forged or spliced; rows can be deleted, duplicated or replayed (see freshness above) |
 | A4 — malicious same-UID process | ✅ | ✅ | Possibly | ✅ | **Weak**: it can use the same custody the application uses |
@@ -312,16 +307,9 @@ For a full description see the README and the design notes in `docs/`.
   a reader can select the right one and a rotation can be staged per record.
   `decrypt(..., key_id=)` can require a specific key. This build derives one
   subkey per instance and writes `0`.
-- **Key separation:** a single master key is expanded with HKDF-SHA256 into
-  domain-separated subkeys — one for the AEAD and one for the blind-index/beacon
-  MAC — which are never reused across purposes.
-- **Searchable encryption:** deterministic search uses truncated HMAC-SHA256
-  *beacons* over a bounded bucket. Exact matches are confirmed by decrypting the
-  candidate. Beacons deliberately trade exact-match precision for a bounded
-  leakage profile; collisions within a bucket are by design, not a defect.
-  Beacons are for high-entropy values: a keyed index does not stop anyone who
-  can call `beacon()` from enumerating a low-entropy domain such as a country or
-  a boolean, one bucket at a time.
+- **Key derivation:** the master key is expanded once with HKDF-SHA256 into the
+  64-byte AES-256-SIV key, using the domain-separating info value
+  `floorvault-v1-aes-siv`. No secondary index key is derived.
 - **Key-store protection:** the store is refused unless it is owner-only. On
   POSIX that is the file mode; on Windows, where there are no POSIX permission
   bits and `os.stat()` reports a synthesised mode, the store's **effective NT
@@ -397,7 +385,7 @@ We prefer measured claims over marketing claims. Currently in place:
   the memory-custody/zeroization tests, the core crypto and splice-immunity
   tests, the fuzz harness, and a universal-wheel build.
 - **Mutation testing of the security gate itself**: curated behavioural mutants
-  of the custody, migration, envelope and beacon code must all be killed before
+  of the custody, migration and envelope code must all be killed before
   the gate passes, with a canary mutant that must survive to prove the harness
   can still detect a live mutant. A green suite proves nothing if the tests
   cannot fail.
@@ -478,8 +466,8 @@ If in doubt, ask first. We would much rather answer a question than litigate one
 
 Published advisories for FloorVault:
 
-- GitHub Security Advisories: https://github.com/Guerilla-ops/floorvault/security/advisories
-- Dependabot alerts (dependency issues): https://github.com/Guerilla-ops/floorvault/security/dependabot
+- GitHub Security Advisories: https://github.com/vaultfloor/floorvault/security/advisories
+- Dependabot alerts (dependency issues): https://github.com/vaultfloor/floorvault/security/dependabot
 
 Dependency vulnerabilities can be tracked through the ecosystem databases
 (for example [osv.dev](https://osv.dev)) and audited locally with `pip-audit`.

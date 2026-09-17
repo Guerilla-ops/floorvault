@@ -44,6 +44,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_PATHS = ("src/floorvault",)
 
+#: Platform flag for platform-conditional mutant expectations (see ``Mutation``).
+IS_WINDOWS = os.name == "nt"
+
 
 def _curated_tests() -> list[str]:
     """Discover all test modules so new security suites cannot be omitted."""
@@ -66,6 +69,24 @@ class Mutation:
     replace: str
     why: str
     expect: str = "killed"
+    #: What this mutant must produce on Windows, when that differs.
+    #:
+    #: A mutant that targets a POSIX-only check is an *equivalent mutant* on
+    #: Windows - the guard it removes is already dead there - so no test can
+    #: kill it and demanding a kill makes the Windows legs fail for a reason
+    #: unrelated to the code under test. Declaring the platform-specific
+    #: expectation keeps the POSIX kill (which is the point of the mutant)
+    #: instead of deleting the mutant to make Windows green.
+    expect_on_windows: str | None = None
+
+
+def expected_result(mutation: Mutation, *, on_windows: bool | None = None) -> str:
+    """The result ``mutation`` must produce on the platform being tested."""
+    if on_windows is None:
+        on_windows = IS_WINDOWS
+    if on_windows and mutation.expect_on_windows is not None:
+        return mutation.expect_on_windows
+    return mutation.expect
 
 
 MUTATIONS: tuple[Mutation, ...] = (
@@ -357,14 +378,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         "src/floorvault/providers/platform_custody.py",
         "        if not stat.S_ISREG(file_stat.st_mode):\n            raise ProtectedStoreError(",
         "        if False:  # MUTANT\n            raise ProtectedStoreError(",
-        "Protected-store reader accepts a directory or other non-regular object",
+        "Protected-store reader accepts a directory or other non-regular object "
+        "(POSIX-only: a Windows open() on a directory raises first, and the "
+        "OSError/lstat branch already refuses it - equivalent mutant there)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "PC-18",
         "src/floorvault/providers/platform_custody.py",
         '        if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():\n            raise ProtectedStoreError(',
         "        if False:  # MUTANT\n            raise ProtectedStoreError(",
-        "Protected-store reader accepts a key file owned by another POSIX user",
+        "Protected-store reader accepts a key file owned by another POSIX user "
+        "(POSIX-only: os.getuid does not exist on Windows, so the guard is "
+        "already dead there - equivalent mutant)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "WD-2",
@@ -715,17 +742,22 @@ def _run_curated(verbose: bool) -> int:
                 result = _classify(_run_tests(workdir, curated_tests, False))
             finally:
                 target.write_text(original, encoding="utf-8")
-            ok = result == mutation.expect
+            expected = expected_result(mutation)
+            ok = result == expected
             failures += 0 if ok else 1
             print(
-                f"{mutation.id:8} {result:9} {mutation.expect:9} [{'OK ' if ok else 'BAD'}] {mutation.why}"
+                f"{mutation.id:8} {result:9} {expected:9} [{'OK ' if ok else 'BAD'}] {mutation.why}"
             )
         print("-" * 92)
         if failures:
             print(f"[FAIL] {failures} mutation(s) did not behave as expected")
             return 1
-        killed = sum(1 for m in MUTATIONS if m.expect == "killed")
-        print(f"[PASS] {killed} behavioural mutants killed; canary survived")
+        killed = sum(1 for m in MUTATIONS if expected_result(m) == "killed")
+        survived = sum(1 for m in MUTATIONS if expected_result(m) == "survived")
+        print(
+            f"[PASS] {killed} behavioural mutants killed; "
+            f"{survived} declared equivalent mutant(s) survived"
+        )
         return 0
 
 
