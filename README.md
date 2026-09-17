@@ -407,27 +407,35 @@ Unexpected identifiers are rejected rather than blindly interpolated into a quer
 
 # ⚡ Performance
 
-Current project benchmarks report approximately:
+A fresh comparison was run on 2026-09-17 at commit
+[`aa1b2d8`](https://github.com/vaultfloor/floorvault/commit/aa1b2d8), using five independent
+10,000-iteration runs of the current benchmark harness and a 1,019-byte payload.
 
-| Operation | Measured result |
-|---|---:|
-| 1 KB encryption / decryption | `~5–10 µs` |
-| Encrypt vs Fernet | `~21% faster` |
-| Decrypt vs Fernet | `~30% faster` |
+| Operation | FloorVault | Fernet | FloorVault / Fernet |
+|---|---:|---:|---:|
+| Encrypt | `0.00583 ms` | `0.00700 ms` | `0.83329x` |
+| Decrypt | `0.00517 ms` | `0.00629 ms` | `0.82117x` |
 
-For methodology and reproduction details, see:
+On that host and workload, FloorVault's median encryption latency was approximately 16.7%
+lower than Fernet's, and median decryption latency was approximately 17.9% lower. The observed
+between-run ratios were `0.82832x–0.84328x` for encryption and `0.81035x–0.83117x` for decryption.
 
-- [`docs/PERFORMANCE-HARDENING-COST-REVIEW-2026-09-15.md`](docs/PERFORMANCE-HARDENING-COST-REVIEW-2026-09-15.md)
-- [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](docs/COMPARATIVE-BENCHMARK-2026-09-15.md)
+For the same payload, the measured ciphertext sizes were 1,058 bytes for FloorVault v2 and
+1,444 bytes for Fernet. This is not a pure cryptographic-overhead comparison: Fernet emits
+URL-safe base64 while FloorVault emits a binary envelope.
 
-Reproduce the comparative benchmark with:
+Reproduce the comparison with:
 
 ```bash
-uv run python scripts/benchmark_compare.py
+uv run python scripts/benchmark_compare.py --iterations 10000 --json /tmp/floorvault-fernet.json
 ```
 
-> [!NOTE]
-> Benchmark results depend on hardware, Python version, operating system, payload size, and workload. Treat repository measurements as reference results rather than production guarantees.
+The benchmark includes contextual AAD construction for FloorVault and Fernet token encoding,
+but no database I/O in the cryptographic comparison. Results are host-, Python-version-,
+backend-, payload-, and workload-specific; they do not establish universal performance,
+concurrent throughput, or cross-platform behaviour. Full methodology and raw results are in
+[`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](docs/COMPARATIVE-BENCHMARK-2026-09-15.md) and the
+fresh audit record maintained with the release evidence.
 
 ---
 
