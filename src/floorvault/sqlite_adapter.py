@@ -2,10 +2,111 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from typing import Union
 
 from .core import FloorVault
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?$")
+
+
+def _safe_identifier(name: str) -> str:
+    """Validate an SQL identifier before it is inserted into query text."""
+    if not isinstance(name, str) or not name.strip() or len(name) > 128:
+        raise ValueError("Identifier must be a non-empty string of at most 128 characters")
+    if _IDENTIFIER_RE.fullmatch(name) is None:
+        raise ValueError(f"{name!r} is not a valid SQL identifier")
+    return name
+
+
+class EncryptedSQLiteTable:
+    """Store and load encrypted fields in an existing SQLite table.
+
+    The caller owns schema creation and transaction commits. Table, ID-column and
+    encrypted-column names are validated before query construction; record IDs and
+    plaintext values remain bound parameters or cryptographic inputs. The record
+    ID is always included in FloorVault's associated data, so callers must use the
+    same ID for ``store`` and ``load``.
+    """
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        crypto: FloorVault,
+        table_name: str,
+        *,
+        id_column: str = "id",
+        schema_id: str = "floor.vault.v1",
+    ) -> None:
+        if not isinstance(connection, sqlite3.Connection):
+            raise TypeError("connection must be a sqlite3.Connection")
+        if not isinstance(crypto, FloorVault):
+            raise TypeError("crypto must be a FloorVault")
+        self.connection = connection
+        self.crypto = crypto
+        self.table_name = _safe_identifier(table_name)
+        self.id_column = _safe_identifier(id_column)
+        self.schema_id = schema_id
+
+    def store(
+        self,
+        record_id: str,
+        encrypted_column: str,
+        value: Union[str, bytes],
+        *,
+        schema_version: int = 1,
+        revision: int | None = None,
+    ) -> None:
+        """Encrypt ``value`` and update exactly one existing record.
+
+        The caller must call ``connection.commit()``. A missing record raises
+        ``LookupError`` and does not insert a new row accidentally.
+        """
+        column = _safe_identifier(encrypted_column)
+        ciphertext = self.crypto.encrypt(
+            value,
+            table=self.table_name,
+            record_id=record_id,
+            column=column,
+            schema_id=self.schema_id,
+            schema_version=schema_version,
+            revision=revision,
+        )
+        cursor = self.connection.execute(
+            f"UPDATE {self.table_name} SET {column} = ? WHERE {self.id_column} = ?",
+            (ciphertext, record_id),
+        )
+        if cursor.rowcount != 1:
+            raise LookupError(f"record not found: {record_id!r}")
+
+    def load(
+        self,
+        record_id: str,
+        encrypted_column: str,
+        *,
+        schema_version: int = 1,
+        revision: int | None = None,
+    ) -> Union[str, bytes]:
+        """Load and decrypt one field from exactly one existing record."""
+        column = _safe_identifier(encrypted_column)
+        row = self.connection.execute(
+            f"SELECT {column} FROM {self.table_name} WHERE {self.id_column} = ?",
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"record not found: {record_id!r}")
+        if row[0] is None:
+            raise ValueError(f"encrypted field is NULL: {self.table_name}.{column}")
+        return self.crypto.decrypt(
+            row[0],
+            table=self.table_name,
+            record_id=record_id,
+            column=column,
+            schema_id=self.schema_id,
+            schema_version=schema_version,
+            revision=revision,
+        )
 
 
 class ContextualTable:

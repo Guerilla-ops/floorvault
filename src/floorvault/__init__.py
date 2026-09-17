@@ -20,7 +20,7 @@ from .memory import (
 from .migration import LegacyVaultError, MigratingVaultStore
 from .providers.adaptive import AdaptiveKeyProvider
 from .providers.base import KeyProvider, KeyProviderError, MissingKeyError
-from .sqlite_adapter import ContextualSQLite, ContextualTable
+from .sqlite_adapter import ContextualSQLite, ContextualTable, EncryptedSQLiteTable
 
 __version__ = "0.1.0"
 
@@ -40,6 +40,7 @@ __all__ = [
     # SQLite Helpers
     "ContextualSQLite",
     "ContextualTable",
+    "EncryptedSQLiteTable",
     # Key Providers
     "KeyProvider",
     "KeyProviderError",
