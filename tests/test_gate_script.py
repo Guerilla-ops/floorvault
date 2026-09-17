@@ -58,6 +58,20 @@ def test_gate_runs_curated_mutation_checks():
     assert "scripts/mutation_check.py --mode curated" in TEXT
 
 
+def test_lint_covers_the_whole_shipped_tree():
+    """Linting must cover scripts/, not only src/ and tests/.
+
+    Step 3 ran ``ruff check src/ tests/``. ``scripts/`` holds the gate helper,
+    the mutation harness whose verdict *is* step 11, the wheel verifier whose
+    verdict is step 10, and the benchmark harness the README quotes - none of
+    which CI linted, even though the README tells developers to run
+    ``ruff check .``. A harness that decides a gate step can therefore regress
+    unlinted.
+    """
+    assert "ruff check src/ tests/ scripts/" in TEXT, "gate lints only part of the tree"
+    assert "ruff format --check src/ tests/ scripts/" in TEXT, "gate formats only part of the tree"
+
+
 def test_gate_prints_the_artifact_digests():
     """The built wheel and sdist must be reported by digest.
 

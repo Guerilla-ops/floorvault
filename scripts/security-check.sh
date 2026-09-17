@@ -63,8 +63,12 @@ fi
 
 echo ""
 echo "=== 3. Running Static Analysis & Linting (Ruff) ==="
-ruff check src/ tests/
-ruff format --check src/ tests/
+# scripts/ is linted too: it holds the gate helper, the mutation harness that
+# decides step 11 and the wheel verifier that decides step 10, so a regression
+# there must not be the one part of the tree CI never checks. The README tells
+# developers to run `ruff check .`; this keeps the gate and the docs agreed.
+ruff check src/ tests/ scripts/
+ruff format --check src/ tests/ scripts/
 echo "[PASS] Ruff: Zero lint or code quality violations."
 
 echo ""
