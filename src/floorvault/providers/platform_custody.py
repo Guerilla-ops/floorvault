@@ -271,8 +271,29 @@ def read_protected(path: Path, *, header: bytes, expected_length: int | None = 3
         raise ProtectedStoreError(f"could not open protected store: {exc}") from exc
     try:
         file_stat = os.fstat(fd)
-        if not stat.S_ISREG(file_stat.st_mode):
+        # ``O_NOFOLLOW`` does not exist on Windows, so the flag alone cannot be the
+        # control there: the descriptor may be the *target* of a symlink planted at
+        # the store path. Check the path itself with ``lstat`` - which reports a link
+        # as a link - and require it to name the same object the descriptor holds.
+        # On POSIX the flag already refuses a link at the open (ELOOP); this is the
+        # platform-independent check behind it, and it also catches a path that was
+        # repointed between the open and the check.
+        try:
+            path_stat = os.lstat(path)
+        except FileNotFoundError as exc:
+            raise ProtectedStoreError("protected store vanished while it was being opened") from exc
+        except OSError as exc:
+            raise ProtectedStoreError(f"protected store path could not be examined: {exc}") from exc
+        if not stat.S_ISREG(path_stat.st_mode):
             raise ProtectedStoreError("protected store is not a regular file")
+        if (path_stat.st_dev, path_stat.st_ino) != (file_stat.st_dev, file_stat.st_ino):
+            raise ProtectedStoreError(
+                "protected store changed identity between the path check and the open"
+            )
+        # No separate regular-file check on the descriptor: the path is a regular
+        # file and the two stats are the same object, so the descriptor holds that
+        # regular file. A second check here would be unkillable by mutation - one of
+        # the two would always mask the other on the same input.
         if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():
             raise ProtectedStoreError("protected store has an unexpected owner")
         size = file_stat.st_size

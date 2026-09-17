@@ -382,11 +382,12 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PC-17",
         "src/floorvault/providers/platform_custody.py",
-        "        if not stat.S_ISREG(file_stat.st_mode):\n            raise ProtectedStoreError(",
+        "        if not stat.S_ISREG(path_stat.st_mode):\n            raise ProtectedStoreError(",
         "        if False:  # MUTANT\n            raise ProtectedStoreError(",
         "Protected-store reader accepts a directory or other non-regular object "
-        "(POSIX-only: a Windows open() on a directory raises first, and the "
-        "OSError/lstat branch already refuses it - equivalent mutant there)",
+        "(POSIX: the read then fails with a raw IsADirectoryError instead of the clean "
+        "ProtectedStoreError. Windows-only-equivalent: a Windows open() on a directory "
+        "raises first, and the OSError/lstat branch refuses it before this check runs)",
         expect_on_windows="survived",
     ),
     Mutation(

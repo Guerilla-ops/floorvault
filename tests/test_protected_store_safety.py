@@ -111,6 +111,57 @@ def test_read_protected_normalizes_windows_directory_open_error(tmp_path, monkey
         read_protected(store, header=_HEADER)
 
 
+def test_a_symlink_is_refused_where_the_platform_has_no_O_NOFOLLOW(tmp_path, monkeypatch):
+    """The flag alone cannot be the control: Windows has no ``O_NOFOLLOW``.
+
+    Found by CI on the windows legs, and it is not a Windows-only defect - it is a
+    Windows-only *detection* of a control that was never exercised anywhere.
+    ``getattr(os, "O_NOFOLLOW", 0)`` is 0 there, so the reader followed a symlink
+    planted at the store path and returned the *target's* bytes as the stored key.
+    The path is now ``lstat``-ed and must name the same regular file the descriptor
+    holds, which is platform-independent; the flag remains as the POSIX fast path.
+
+    The platform behaviour is simulated on every runner by removing the constant,
+    so this cannot silently pass on Linux and macOS again.
+    """
+    attacker = tmp_path / "attacker-store"
+    write_protected(b"A" * 32, attacker, header=_HEADER)
+    link = tmp_path / "store"
+    link.symlink_to(attacker)
+
+    monkeypatch.delattr(custody.os, "O_NOFOLLOW", raising=False)  # behave like Windows
+
+    with pytest.raises(ProtectedStoreError, match="regular"):
+        read_protected(link, header=_HEADER)
+
+
+def test_store_that_changed_identity_under_the_open_is_refused(tmp_path, monkeypatch):
+    """The two stats must agree, so a swap between the check and the open is caught.
+
+    The path is checked with ``lstat`` and the descriptor with ``fstat``; requiring
+    them to name the same device and inode closes the window in which the path could
+    be repointed after the check. Simulated by reporting a different inode for the
+    path than the descriptor holds.
+    """
+    store = tmp_path / "store"
+    write_protected(_KEY, store, header=_HEADER)
+
+    real_lstat = custody.os.lstat
+
+    def different_object(path, *args, **kwargs):
+        found = real_lstat(path, *args, **kwargs)
+        if Path(path) == store:
+            fields = list(found)
+            fields[stat.ST_INO] = found.st_ino + 1
+            return os.stat_result(fields)
+        return found
+
+    monkeypatch.setattr(custody.os, "lstat", different_object)
+
+    with pytest.raises(ProtectedStoreError, match="identity|changed"):
+        read_protected(store, header=_HEADER)
+
+
 @pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership check")
 def test_read_protected_rejects_unexpected_owner(tmp_path, monkeypatch):
     store = tmp_path / "store"
