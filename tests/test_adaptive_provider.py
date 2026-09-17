@@ -2,12 +2,14 @@
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
 from floorvault import platform_support
 from floorvault.memory import HardenedMemoryKey
 from floorvault.providers import adaptive as adaptive_module
+from floorvault.providers import platform_custody as custody_module
 from floorvault.providers.adaptive import AdaptiveKeyProvider
 from floorvault.providers.base import CustodyDowngradeError, KeyProviderError
 from floorvault.providers.linux_keyring import LinuxSecretServiceKeyProvider
@@ -321,7 +323,6 @@ def test_adaptive_machine_key_file_is_written_in_binary_mode(tmp_path, monkeypat
     used rather than a real O_* bit, which differs across platforms.
     """
     sentinel = 0x40000000
-    monkeypatch.setattr(adaptive_module, "binary_mode_flag", lambda: sentinel)
     _force_machine_file_tier(monkeypatch)
     for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
@@ -334,7 +335,10 @@ def test_adaptive_machine_key_file_is_written_in_binary_mode(tmp_path, monkeypat
         # Restore the platform's real binary flag; see the custody test.
         return real_open(path, (flags & ~sentinel) | getattr(os, "O_BINARY", 0), *args, **kwargs)
 
+    # The tier-3 file is written by the shared protected-store writer, so the
+    # binary-mode flag comes from that module's binding, not this one's.
     monkeypatch.setattr(adaptive_module.os, "open", recording_open)
+    monkeypatch.setattr(custody_module, "binary_mode_flag", lambda: sentinel)
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)
     monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)
 
@@ -344,6 +348,155 @@ def test_adaptive_machine_key_file_is_written_in_binary_mode(tmp_path, monkeypat
     assert seen, "the machine-bound key file was not written"
     for flags in seen:
         assert flags & sentinel, f"key file opened without the binary-mode flag: {flags:#x}"
+
+
+# --------------------------------------------------------------------------
+# Tier 3 gets the same write/read hardening as the platform custody stores
+# --------------------------------------------------------------------------
+
+
+def _tier3_provider(monkeypatch, tmp_path):
+    """An explicitly opted-in provider forced onto its local-file tier."""
+    for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    _force_machine_file_tier(monkeypatch)
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)
+    monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)
+    return provider
+
+
+def test_machine_key_file_short_write_is_retried(monkeypatch, tmp_path):
+    """A short ``os.write`` must not leave a truncated key file behind.
+
+    Regression: tier 3 issued one bare ``os.write`` where the DPAPI/Secret
+    Service stores already used a full-write loop. A short write left a 16-byte
+    ``master.key`` that nothing reported at write time, and because the file
+    then existed no replacement was ever minted - a later resolve refused it
+    ("unexpected length") and the user's data was stranded behind it.
+    """
+    provider = _tier3_provider(monkeypatch, tmp_path)
+    real_write = os.write
+    lengths: list[int] = []
+
+    def short_first(fd, data):
+        lengths.append(len(data))
+        if len(lengths) == 1:
+            return real_write(fd, bytes(data)[:16])
+        return real_write(fd, data)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "write", short_first)
+        key = provider.resolve_key(allow_create=True)
+
+    key_file = tmp_path / "master.key"
+    assert key_file.stat().st_size == 32, "the short write was not retried"
+    assert key_file.read_bytes() == key.get_bytes()
+    assert len(lengths) == 2, "the writer must continue from where the short write stopped"
+    assert provider.resolve_key(allow_create=False).get_bytes() == key.get_bytes()
+
+
+def test_machine_key_file_write_is_never_partially_visible(monkeypatch, tmp_path):
+    """The key file must be published atomically, not written in place.
+
+    Nothing may observe a partially written store at the live path: the writer
+    fills a temporary file beside the target and links it into place.
+    """
+    provider = _tier3_provider(monkeypatch, tmp_path)
+    key_file = tmp_path / "master.key"
+    real_link = os.link
+    observed: list[bytes] = []
+
+    def observing_link(src, dst, *args, **kwargs):
+        observed.append(Path(src).read_bytes())
+        assert not key_file.exists(), "the live path was occupied before the publish step"
+        return real_link(src, dst, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "link", observing_link)
+        key = provider.resolve_key(allow_create=True)
+
+    assert observed == [key.get_bytes()], "the publish source was not the complete key"
+    assert len(key.get_bytes()) == 32
+
+
+def test_machine_key_file_read_refuses_a_symlink(monkeypatch, tmp_path):
+    """Property guard: a symlink at the key path is refused, never followed.
+
+    The ``lstat`` check already refused a symlink that is in place before the
+    read; the read now goes through a descriptor opened ``O_NOFOLLOW`` so the
+    swap-in window between the check and the open is closed as well. This pins
+    the outcome so a later refactor cannot reintroduce a path-following read.
+    """
+    provider = _tier3_provider(monkeypatch, tmp_path)
+    provider.resolve_key(allow_create=True)
+    key_file = tmp_path / "master.key"
+    attacker = tmp_path / "attacker.key"
+    attacker.write_bytes(b"A" * 32)
+    attacker.chmod(0o600)
+    key_file.unlink()
+    key_file.symlink_to(attacker)
+
+    with pytest.raises(KeyProviderError):
+        provider.resolve_key(allow_create=False)
+
+
+def test_machine_key_file_write_refuses_to_replace_an_existing_store(monkeypatch, tmp_path):
+    """Creating a key must never clobber one that is already there."""
+    provider = _tier3_provider(monkeypatch, tmp_path)
+    first = provider.resolve_key(allow_create=True)
+    key_file = tmp_path / "master.key"
+    existing = key_file.read_bytes()
+
+    (key_file).chmod(0o600)
+    again = provider.resolve_key(allow_create=True)
+
+    assert again.get_bytes() == first.get_bytes()
+    assert key_file.read_bytes() == existing
+
+
+def test_disk_fallback_refusal_names_the_real_gate_and_the_remedy(monkeypatch, tmp_path):
+    """The refusal must name the gate that actually fired.
+
+    Regression: the message said "in strict mode" even when ``strict`` was
+    False and the real cause was ``allow_disk_fallback`` not being enabled -
+    pointing an operator at a switch that was never the problem - and it omitted
+    the remedies the code already knew about. This message is the first thing a
+    user on a stock install sees, because the README quickstart reaches it.
+    """
+    for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    _force_machine_file_tier(monkeypatch)
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
+    monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)
+
+    with pytest.raises(KeyProviderError) as excinfo:
+        provider.resolve_key()
+
+    message = str(excinfo.value)
+    assert "allow_disk_fallback" in message, message
+    assert "strict mode" not in message, message
+    assert "APPSTATE_KEY" in message, message
+
+
+def test_disk_fallback_refusal_repeats_the_native_tier_reason(monkeypatch, tmp_path):
+    """When the OS-native tier explained why it was unavailable, say so.
+
+    On macOS without ``floorvault[macos]`` the provider records the fix
+    ("install floorvault[macos]") and previously never surfaced it.
+    """
+    for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(adaptive_module, "is_macos", lambda: True)
+    monkeypatch.setattr(adaptive_module, "is_linux", lambda: False)
+    monkeypatch.setattr(adaptive_module, "is_windows", lambda: False)
+    monkeypatch.setitem(sys.modules, "Security", None)  # `import Security` -> ImportError
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
+    with pytest.raises(KeyProviderError) as excinfo:
+        provider.resolve_key()
+
+    assert "floorvault[macos]" in str(excinfo.value)
+    assert "allow_disk_fallback" in str(excinfo.value)
 
 
 def test_keychain_error_fails_closed_instead_of_downgrading(monkeypatch, tmp_path):

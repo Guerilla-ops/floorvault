@@ -9,21 +9,24 @@ Scales from interactive desktop storage to headless cloud/Docker environments:
 from __future__ import annotations
 
 import os
-import stat
 import warnings
 from pathlib import Path
 from typing import Optional
 
 from ..memory import HardenedMemoryKey
 from ..platform_support import (
-    binary_mode_flag,
     is_linux,
     is_macos,
     is_windows,
-    store_permission_problem,
 )
 from .base import CustodyDowngradeError, KeyProvider, KeyProviderError
 from .linux_keyring import LinuxSecretServiceKeyProvider
+from .platform_custody import (
+    ProtectedStoreError,
+    ProtectedStoreMissing,
+    read_protected,
+    write_protected,
+)
 from .windows_dpapi import WindowsDPAPIKeyProvider
 
 
@@ -161,18 +164,49 @@ class AdaptiveKeyProvider(KeyProvider):
                 ) from exc
         return None
 
+    def _disk_fallback_refusal(self) -> str:
+        """Explain precisely why Tier 3 is refusing, and what would enable it.
+
+        The message names the *actual* gate. A previous version blamed "strict
+        mode" even when ``strict`` was False and the real cause was
+        ``allow_disk_fallback`` not being enabled, which sent an operator
+        looking for a flag that was not the problem.
+        """
+        cause = (
+            "strict=True forbids it"
+            if self.strict
+            else "allow_disk_fallback was not explicitly enabled"
+        )
+        missing_tier = (
+            f" The OS-native tier reported: {self.keychain_unavailable_reason}"
+            if self.keychain_unavailable_reason
+            else ""
+        )
+        return (
+            f"Refusing headless fallback to plaintext disk key ({cause}).{missing_tier} "
+            "Provide the key explicitly (APPSTATE_KEY, FLOOR_VAULT_KEY or "
+            "VAULT_MASTER_KEY as 64 hexadecimal characters), install the OS-native "
+            "custody extra for this platform, or opt in to a 0600 local key file with "
+            "AdaptiveKeyProvider(allow_disk_fallback=True)."
+        )
+
     def _resolve_machine_bound_file_key(self, *, allow_create: bool) -> HardenedMemoryKey:
         """Resolve an explicitly enabled 0600 local file key without GUI prompts.
 
         WARNING: ``~/.floorvault/master.key`` is Tier 3 custody only. It does
         not establish a hardware-backed or OS confidentiality boundary; anyone
         able to copy the file can recover the master key.
+
+        The file is read and written through the shared protected-store helpers
+        rather than a second implementation of the same job: a temporary file
+        beside the target published with ``os.link`` (no-clobber, no partially
+        written store ever visible at the live path), a full-write loop, an
+        ``fsync``, and a read through a descriptor opened ``O_NOFOLLOW`` that
+        re-checks regular-file-ness, ownership and permissions on the descriptor
+        it actually holds.
         """
         if self.strict or not self.allow_disk_fallback:
-            raise KeyProviderError(
-                "Refusing headless fallback to plaintext disk key in strict mode. "
-                "Set APPSTATE_KEY or FLOOR_VAULT_KEY environment variable."
-            )
+            raise KeyProviderError(self._disk_fallback_refusal())
 
         warnings.warn(
             "FloorVault is using Tier-3 file-based key custody "
@@ -181,49 +215,46 @@ class AdaptiveKeyProvider(KeyProvider):
             UserWarning,
             stacklevel=2,
         )
-        self.fallback_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         key_file = self.fallback_dir / "master.key"
 
-        if key_file.exists():
-            file_stat = key_file.lstat()
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise KeyProviderError("Refusing non-regular key file")
-            if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():
-                raise KeyProviderError("Refusing key file with unexpected owner")
-            # Platform-dispatched: the POSIX mode on POSIX, the effective DACL on
-            # Windows (where the mode is synthesised and meaningless), and a
-            # refusal if neither can be established.
-            problem = store_permission_problem(key_file, file_stat.st_mode)
-            if problem is not None:
-                raise KeyProviderError(f"Refusing key file: {problem}")
-            key_bytes = key_file.read_bytes()
-            if len(key_bytes) == 32:
-                return HardenedMemoryKey(key_bytes)
-            if len(key_bytes) == 64:
+        stored = self._read_raw_key_file(key_file)
+        if stored is not None:
+            if len(stored) == 32:
+                return HardenedMemoryKey(stored)
+            if len(stored) == 64:
                 try:
-                    return HardenedMemoryKey(bytes.fromhex(key_bytes.decode("ascii").strip()))
+                    return HardenedMemoryKey(bytes.fromhex(stored.decode("ascii").strip()))
                 except (UnicodeDecodeError, ValueError) as exc:
                     raise KeyProviderError("Refusing malformed hexadecimal key file") from exc
             raise KeyProviderError(
-                f"Refusing key file with unexpected length ({len(key_bytes)} bytes)"
+                f"Refusing key file with unexpected length ({len(stored)} bytes)"
             )
 
         if not allow_create:
             raise KeyProviderError(f"Master key file not found: {key_file}")
 
-        # Generate new 32-byte key and write with strict 0600 permissions
+        # Generate new 32-byte key and publish it with the hardened writer.
         new_key = os.urandom(32)
-        fd = os.open(
-            str(key_file), os.O_WRONLY | os.O_CREAT | os.O_EXCL | binary_mode_flag(), 0o600
-        )
         try:
-            os.write(fd, new_key)
-        finally:
-            os.close(fd)
-
-        try:
-            os.chmod(key_file, 0o600)
-        except OSError:
-            pass
+            write_protected(new_key, key_file, header=b"", expected_length=32)
+        except ProtectedStoreError as exc:
+            # The writer creates and never replaces, so an existing store is a
+            # hard error rather than a silent rotation of the master key.
+            raise KeyProviderError(f"Refusing to overwrite the key file: {exc}") from exc
 
         return HardenedMemoryKey(new_key)
+
+    def _read_raw_key_file(self, key_file: Path) -> Optional[bytes]:
+        """Return the raw key file's bytes, or ``None`` when it does not exist.
+
+        ``None`` means *absent*, which is the only condition under which the
+        caller may create a key. Anything else - a symlink, a non-regular file,
+        another owner, group/other access, or an unverifiable ACL - raises, so an
+        unreadable store is never mistaken for a missing one and replaced.
+        """
+        try:
+            return read_protected(key_file, header=b"", expected_length=None)
+        except ProtectedStoreMissing:
+            return None
+        except ProtectedStoreError as exc:
+            raise KeyProviderError(f"Refusing key file: {exc}") from exc
