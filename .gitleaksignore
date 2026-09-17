@@ -2,9 +2,26 @@
 # Format: <commit>:<file>:<rule-id>:<start-line> (gitleaks ignore semantics).
 # Keep pre-rename and post-rename paths; the fixtures live under both in history.
 # README schema identifiers were flagged as generic API keys; they are not secret values.
+#
+# DO NOT "tidy" this file. Every entry here was measured by deleting it and
+# re-running the history scan with the same gitleaks version CI pins (8.30.1):
+#   * deleting the file outright -> 5 findings, all in synthetic fixtures under
+#     paths that do not exist at HEAD;
+#   * removing README.md:112 -> 1 finding; removing README.md:122 -> 1 finding.
+#     They look like a duplicated pair but suppress two distinct findings in one
+#     commit, and the start-line number is exact rather than a wildcard;
+#   * removing tests/test_adaptive_provider.py -> 1 finding;
+#   * removing tests/test_blind_index.py -> 1 finding;
+#   * removing the entry for the renamed adapter fixture -> 1 finding. That path is
+#     superseded and absent from HEAD, but its historical object is still
+#     reachable, and this entry is the only thing suppressing that finding. The
+#     name could only be removed from history, and since every fingerprint embeds a
+#     commit id, all of them would change - a deliberate, coordinated decision, not
+#     a tidy-up.
+# One entry for a third path in the same commit was measured redundant (deleting it
+# left the scan at 0 findings) and has been dropped.
 001716712e2a069c4f5dbd5f2865582b4cf20ee5:README.md:generic-api-key:112
 001716712e2a069c4f5dbd5f2865582b4cf20ee5:README.md:generic-api-key:122
 04d25598a24fe3a757d871009cf42e7cd3951ae8:tests/test_hermes_adapter.py:generic-api-key:62
-04d25598a24fe3a757d871009cf42e7cd3951ae8:tests/test_vaultkit_adapter.py:generic-api-key:62
 ed8c6f7e85b74b42769a1458371f6ed9ada63dc8:tests/test_adaptive_provider.py:generic-api-key:9
 0f2dea78a1478c6dad01d32614223b4301135f14:tests/test_blind_index.py:generic-api-key:30
