@@ -11,6 +11,7 @@ from .core import (
     NonceReuseError,
     associated_data,
 )
+from .key_recovery import recover_master_key, wrap_master_key
 from .keyring import KeyRing, UnknownKeyIdError
 from .memory import (
     HardenedMemoryKey,
@@ -57,4 +58,6 @@ __all__ = [
     # Multi-generation reads (rotation)
     "KeyRing",
     "UnknownKeyIdError",
+    "wrap_master_key",
+    "recover_master_key",
 ]
