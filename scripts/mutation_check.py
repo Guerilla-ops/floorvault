@@ -396,8 +396,9 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "WD-2",
         "src/floorvault/providers/windows_dpapi.py",
-        "blob = read_protected(self._path, header=_HEADER, expected_length=None)",
-        "blob = read_protected(self._path, header=_HEADER)",
+        "                expected_length=None,\n"
+        "                legacy_path=self._legacy_store_path(),",
+        "                legacy_path=self._legacy_store_path(),",
         "Windows store reverts to assuming a 32-byte payload and refuses its own DPAPI blob",
     ),
     Mutation(
@@ -442,6 +443,36 @@ MUTATIONS: tuple[Mutation, ...] = (
         "                    if True  # MUTANT",
         "Entry matching stops checking attributes, so any service's item is "
         "accepted as the master key",
+    ),
+    # --- Custody store paths (F2, 2026-09-17) --------------------------------
+    # Three mutually unreadable formats shared ``master.key``, so whichever tier
+    # ran first locked the others out of the user's data.
+    Mutation(
+        "KP-1",
+        "src/floorvault/providers/platform_custody.py",
+        '    return base / f"{LEGACY_STORE_NAME}.{scheme}"',
+        "    return base / LEGACY_STORE_NAME  # MUTANT",
+        "Schemes share one key-store path again, so one format's file blocks another",
+    ),
+    Mutation(
+        "KP-2",
+        "src/floorvault/providers/platform_custody.py",
+        "    except (ProtectedStoreMissing, ProtectedStoreHeaderError):\n"
+        "        # Absent, or another scheme's file: neither is this scheme's store.",
+        "    except ProtectedStoreMissing:  # MUTANT\n"
+        "        # Absent, or another scheme's file: neither is this scheme's store.",
+        "A foreign scheme's file at the legacy path is no longer ignored, so a "
+        "legitimate create is blocked by another tier's store",
+    ),
+    Mutation(
+        "KP-3",
+        "src/floorvault/providers/platform_custody.py",
+        "    if legacy_path is None or legacy_path == path:\n"
+        '        raise ProtectedStoreMissing("protected store not present")',
+        "    if True:  # MUTANT\n"
+        '        raise ProtectedStoreMissing("protected store not present")',
+        "Pre-split stores stop being adopted, so the split strands existing data "
+        "behind a freshly minted key",
     ),
 )
 

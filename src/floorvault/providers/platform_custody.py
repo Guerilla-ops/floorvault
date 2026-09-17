@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import stat
+import warnings
 from pathlib import Path
 
 from ..platform_support import binary_mode_flag, store_permission_problem
@@ -38,6 +39,15 @@ from ..platform_support import binary_mode_flag, store_permission_problem
 #: Upper bound for a protected store, i.e. the read buffer. A DPAPI blob is a few
 #: hundred bytes; anything approaching this is not a store we wrote.
 _MAX_STORE_BYTES = 4096
+
+#: The bare key-file name used by ``AdaptiveKeyProvider`` tier 3 (a raw 32-byte
+#: or 64-hex-character key with no header) and, historically, by *every* scheme.
+#:
+#: It is kept as the tier-3 name rather than renamed so an existing raw key file
+#: is still found. The header-bearing schemes moved to suffixed names because
+#: three incompatible formats could not share one path: each reader refused the
+#: others' file, so the first tier to run locked the rest out of the user's data.
+LEGACY_STORE_NAME = "master.key"
 
 
 class ProtectedStoreError(Exception):
@@ -73,6 +83,56 @@ class ProtectedStoreHeaderError(ProtectedStoreError):
     class cannot tell those two paths apart, which is how a mutant that deleted
     this raise survived until the test asserted this type specifically.
     """
+
+
+def store_path_for(base_dir: str | Path, scheme: str | None) -> Path:
+    """Path of the protected store for ``scheme`` under ``base_dir``.
+
+    ``scheme=None`` is the header-less tier-3 raw key file; every other scheme
+    gets ``master.key.<scheme>`` so two formats can never share one path.
+    """
+    base = Path(base_dir)
+    if not scheme:
+        return base / LEGACY_STORE_NAME
+    return base / f"{LEGACY_STORE_NAME}.{scheme}"
+
+
+def read_scheme_store(
+    path: Path,
+    *,
+    header: bytes,
+    expected_length: int | None = 32,
+    legacy_path: Path | None = None,
+) -> bytes:
+    """Read this scheme's store, adopting a pre-split store when that is what it is.
+
+    ``legacy_path`` is where an earlier build wrote this scheme's store, before
+    the schemes were separated onto their own paths. It is adopted only when it
+    parses with *this* scheme's ``header``: a file belonging to another scheme is
+    ignored, so a raw tier-3 key file no longer blocks the Secret Service tier,
+    while a genuine pre-split store is still found. Minting a fresh key beside an
+    existing store would leave the user's data undecryptable.
+
+    Raises ``ProtectedStoreMissing`` when neither location holds this scheme's
+    store, which is the only condition under which the caller may create one.
+    """
+    try:
+        return read_protected(path, header=header, expected_length=expected_length)
+    except ProtectedStoreMissing:
+        pass
+    if legacy_path is None or legacy_path == path:
+        raise ProtectedStoreMissing("protected store not present")
+    try:
+        adopted = read_protected(legacy_path, header=header, expected_length=expected_length)
+    except (ProtectedStoreMissing, ProtectedStoreHeaderError):
+        # Absent, or another scheme's file: neither is this scheme's store.
+        raise ProtectedStoreMissing("protected store not present") from None
+    warnings.warn(
+        f"adopting the pre-split key store at {legacy_path}; future writes use {path}",
+        UserWarning,
+        stacklevel=2,
+    )
+    return adopted
 
 
 def _mkdir_owner_only(directory: Path) -> None:

@@ -22,9 +22,11 @@ from ..memory import HardenedMemoryKey
 from ..platform_support import is_linux
 from .base import CustodyDowngradeError, KeyProvider, KeyProviderError, MissingKeyError
 from .platform_custody import (
+    LEGACY_STORE_NAME,
     ProtectedStoreError,
     ProtectedStoreMissing,
-    read_protected,
+    read_scheme_store,
+    store_path_for,
     write_protected,
 )
 
@@ -81,6 +83,21 @@ def _secretstorage_api_gap(secretstorage, exceptions) -> str | None:
 
 class LinuxSecretServiceKeyProvider(KeyProvider):
     """Linux Secret Service master-key provider (with fail-closed fallback)."""
+
+    #: Names this scheme's on-disk store: ``master.key.ss``. Distinct from the
+    #: tier-3 raw key file (``master.key``) and the DPAPI store
+    #: (``master.key.dpapi``) because the three formats are mutually unreadable
+    #: and sharing one path locked whichever tier ran second out of the data.
+    STORE_SCHEME = "ss"
+
+    @classmethod
+    def default_store_path(cls, base_dir: str | Path) -> Path:
+        """Canonical store path for this scheme under ``base_dir``."""
+        return store_path_for(base_dir, cls.STORE_SCHEME)
+
+    def _legacy_store_path(self) -> Path:
+        """Where this scheme's store lived before the schemes were separated."""
+        return self._path.with_name(LEGACY_STORE_NAME)
 
     def __init__(
         self,
@@ -226,7 +243,11 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
                 return via_ss
         # Fallback: masked protected file.
         try:
-            blob = read_protected(self._path, header=_HEADER)
+            blob = read_scheme_store(
+                self._path,
+                header=_HEADER,
+                legacy_path=self._legacy_store_path(),
+            )
         except ProtectedStoreMissing:
             # Absent: creating below is correct. Other read failures propagate,
             # so an unreadable store is never replaced by a fresh key.

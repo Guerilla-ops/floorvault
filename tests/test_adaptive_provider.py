@@ -10,6 +10,8 @@ from floorvault.memory import HardenedMemoryKey
 from floorvault.providers import adaptive as adaptive_module
 from floorvault.providers.adaptive import AdaptiveKeyProvider
 from floorvault.providers.base import CustodyDowngradeError, KeyProviderError
+from floorvault.providers.linux_keyring import LinuxSecretServiceKeyProvider
+from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
 
 def _force_machine_file_tier(monkeypatch):
@@ -35,6 +37,11 @@ def test_adaptive_provider_dispatches_windows_native_custody(monkeypatch, tmp_pa
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
+        # The real store-path helper: the dispatch contract includes asking the
+        # provider where its store lives, so the fake delegates rather than
+        # inventing a path.
+        default_store_path = staticmethod(WindowsDPAPIKeyProvider.default_store_path)
+
         def resolve_key(self, *, allow_create=True):
             assert allow_create is True
             return HardenedMemoryKey(b"W" * 32, mode="disabled")
@@ -51,6 +58,7 @@ def test_adaptive_provider_dispatches_windows_native_custody(monkeypatch, tmp_pa
     key = AdaptiveKeyProvider(fallback_dir=tmp_path).resolve_key()
 
     assert key.get_bytes() == b"W" * 32
+    # The DPAPI store must not be the tier-3 raw key file.
     assert not (tmp_path / "master.key").exists()
 
 
@@ -58,6 +66,9 @@ def test_adaptive_provider_dispatches_linux_secret_service(monkeypatch, tmp_path
     class FakeLinuxProvider:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+
+        # Delegates to the real helper; see the Windows dispatch test.
+        default_store_path = staticmethod(LinuxSecretServiceKeyProvider.default_store_path)
 
         def _secret_service_available(self):
             return True

@@ -83,12 +83,12 @@ class AdaptiveKeyProvider(KeyProvider):
         """Resolve from the native provider for the current platform."""
         if is_windows():
             return WindowsDPAPIKeyProvider(
-                store_path=self.fallback_dir / "master.key",
+                store_path=WindowsDPAPIKeyProvider.default_store_path(self.fallback_dir),
             ).resolve_key(allow_create=allow_create)
 
         if is_linux():
             provider = LinuxSecretServiceKeyProvider(
-                store_path=self.fallback_dir / "master.key",
+                store_path=LinuxSecretServiceKeyProvider.default_store_path(self.fallback_dir),
                 service=self.service_name,
                 attribute=self.account_name,
             )

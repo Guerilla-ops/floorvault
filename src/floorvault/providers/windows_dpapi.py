@@ -25,9 +25,11 @@ from ..memory import HardenedMemoryKey
 from ..platform_support import is_windows
 from .base import KeyProvider, MissingKeyError
 from .platform_custody import (
+    LEGACY_STORE_NAME,
     ProtectedStoreError,
     ProtectedStoreMissing,
-    read_protected,
+    read_scheme_store,
+    store_path_for,
     write_protected,
 )
 
@@ -52,6 +54,21 @@ class WindowsDPAPIKeyProvider(KeyProvider):
     it. Pass ``allow_outside_user_profile=True`` only when that location has been
     secured independently, e.g. by an ACL you control and have verified.
     """
+
+    #: Names this scheme's on-disk store: ``master.key.dpapi``. Distinct from the
+    #: tier-3 raw key file (``master.key``) and the Secret Service store
+    #: (``master.key.ss``) - the three formats are mutually unreadable, and
+    #: sharing one path locked whichever tier ran second out of the data.
+    STORE_SCHEME = "dpapi"
+
+    @classmethod
+    def default_store_path(cls, base_dir: str | Path) -> Path:
+        """Canonical store path for this scheme under ``base_dir``."""
+        return store_path_for(base_dir, cls.STORE_SCHEME)
+
+    def _legacy_store_path(self) -> Path:
+        """Where this scheme's store lived before the schemes were separated."""
+        return self._path.with_name(LEGACY_STORE_NAME)
 
     def __init__(
         self,
@@ -197,7 +214,12 @@ class WindowsDPAPIKeyProvider(KeyProvider):
             # whose size is chosen by CryptProtectData, not a fixed 32 bytes. The
             # key length is verified after unprotection (below), which is where
             # the invariant that matters actually lives.
-            blob = read_protected(self._path, header=_HEADER, expected_length=None)
+            blob = read_scheme_store(
+                self._path,
+                header=_HEADER,
+                expected_length=None,
+                legacy_path=self._legacy_store_path(),
+            )
         except ProtectedStoreMissing:
             # Genuinely absent, so creating below is correct. Any other read
             # failure (corrupt header, unexpected length, insecure mode) raises
