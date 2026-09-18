@@ -20,6 +20,7 @@ FloorVault adds authenticated field-level encryption to ordinary Python `sqlite3
 - Safe SQLite field storage and plaintext-to-encrypted migration
 - Resumable vault key rotation
 - Authenticated master-key recovery bundles
+- Opt-in searchable beacons over encrypted fields (`floorvault.beacons`) — a deliberate, documented leakage trade; off unless you ask for it
 - Standard-library-friendly integration with existing SQLite applications
 
 ## Install
@@ -110,6 +111,45 @@ token = fields.load("user-123", "api_token_cipher")
 ```
 
 Table and column identifiers are validated before SQL is constructed. Record IDs and values remain bound parameters or cryptographic inputs. A missing record is an error; the adapter never inserts one accidentally.
+
+## Searchable beacons (opt-in)
+
+Exact-match lookups over an encrypted column need an indexed value beside the ciphertext. Storing one leaks something, so this is opt-in and it is a trade you make deliberately.
+
+The snippet continues the example above (`connection` and `master_key`); this workflow is executed by `tests/test_searchable_beacons.py` rather than only described.
+
+```python
+from floorvault import FloorVault
+from floorvault.beacons import BeaconIndexer, derive_beacon_key, suggest_beacon_bits
+
+crypto = FloorVault(master_key, app_instance_id="my-app")
+
+# Size the width to the table, don't pick a constant: the anonymity a beacon
+# gives is roughly one bucket's occupancy.
+indexer = BeaconIndexer(derive_beacon_key(master_key), bits=suggest_beacon_bits(200_000))
+
+# On write: store the ciphertext and the beacon in an indexed column.
+connection.execute(
+    "INSERT INTO users (id, email_cipher, email_beacon) VALUES (?, ?, ?)",
+    (record_id, crypto.encrypt(email, table="users", record_id=record_id, column="email_cipher"),
+     indexer.beacon(email, scope="users.email")),
+)
+
+# On read: the bucket narrows candidates; decryption confirms the match.
+bucket = indexer.beacon(email, scope="users.email")
+for candidate_id, ciphertext in connection.execute(
+    "SELECT id, email_cipher FROM users WHERE email_beacon = ?", (bucket,)
+):
+    plaintext = crypto.decrypt(
+        ciphertext, table="users", record_id=candidate_id, column="email_cipher"
+    )
+    if plaintext == email:
+        break  # confirmed
+```
+
+What this costs: equal values produce equal beacons, so unequal beacons prove unequal values; and bucket occupancy still tracks the distribution of the plaintext, so a heavily skewed column shows a correspondingly skewed beacon histogram. Truncation makes the index non-injective — it does not make the data uniform. A small table with a narrow beacon is close to exact equality, so size the width to the row count. Do not beacon a low-cardinality column, and do not beacon a column you never look up by equality. Full statement: [SECURITY.md §5](SECURITY.md).
+
+Widths are byte-aligned, so 4 and 8 bits are the same index; `BeaconIndexer` rejects a width it cannot store rather than rounding it and describing it as something else. A beacon hit is not proof of equality — always confirm by decrypting.
 
 ## Migrate existing plaintext columns
 

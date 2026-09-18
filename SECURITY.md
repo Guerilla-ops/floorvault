@@ -206,6 +206,25 @@ material.
   to an attacker who can read the database. These fields do not reveal secret
   values, but their presence, absence, and distribution are intentionally not
   hidden by the design.
+- **Searchable beacons are opt-in and are the one feature that deliberately
+  re-introduces query leakage.** The default library stores no derived search
+  index, so nothing below applies unless an application calls
+  `floorvault.beacons` itself. When it does, the stored beacon is a
+  deterministic keyed function of the plaintext, which discloses: coarse
+  equality (unequal beacons prove unequal values); bucket frequency, since
+  occupancy remains a function of the plaintext distribution even though
+  truncation makes the index non-injective; and query access patterns. The
+  anonymity a beacon provides is roughly the bucket occupancy `rows / 256**k`
+  for a stored width of `k` bytes, so **a small table with a one-byte beacon is
+  close to exact equality** — size the width to the data with
+  `suggest_beacon_bits()` rather than choosing a constant. Do not beacon a
+  low-cardinality column (a status flag, a country, a boolean): with few
+  distinct values the beacon histogram mirrors the plaintext histogram
+  regardless of width. A beacon hit is not proof of equality — collisions are
+  by design — so the confirmation step is to decrypt the candidate row and
+  compare the plaintext. Applications whose threat model cannot accept any
+  structural or statistical exposure should not enable beacons and should
+  filter client-side after decrypting.
 - **Tier-3 local file custody is not a hardware or OS confidentiality boundary.**
   When `~/.floorvault/master.key` is used, the key remains recoverable from the
   local file by an attacker who can copy that file or its containing store. The
@@ -315,7 +334,14 @@ For a full description see the README and the design notes in `docs/`.
   immutable objects where possible.
 - **Key derivation:** the master key is expanded once with HKDF-SHA256 into the
   64-byte AES-256-SIV key, using the domain-separating info value
-  `floorvault-v1-aes-siv`. No secondary index key is derived.
+  `floorvault-v1-aes-siv`. **The default library derives no secondary index
+  key** — decryption and context binding use the AEAD key alone. The opt-in
+  `floorvault.beacons` module additionally derives a separate 32-byte beacon
+  subkey under the distinct info value `floorvault-v1-beacon-index` (see
+  `derive_beacon_key()`), so the search index never shares key material with
+  the AEAD; that key is derived only when a caller asks for it, never by
+  constructing a `FloorVault` or `VaultStore`. The leakage this opt-in enables
+  is stated in §5.
 - **Key-store protection:** the store is refused unless it is owner-only. On
   POSIX that is the standard file mode (extended ACLs such as macOS
   `chmod +a` or Linux `setfacl` are not queried); on Windows, where there
