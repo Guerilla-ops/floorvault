@@ -561,3 +561,13 @@ def test_working_keychain_still_returns_the_key(monkeypatch, tmp_path):
     provider = _interactive_provider(monkeypatch, tmp_path)
 
     assert provider.resolve_key().get_bytes() == b"\x11" * 32
+
+
+def test_adaptive_provider_accepts_string_fallback_dir(tmp_path):
+    """AdaptiveKeyProvider must accept string paths for fallback_dir without TypeError."""
+    provider = AdaptiveKeyProvider(
+        fallback_dir=str(tmp_path),
+        allow_disk_fallback=True,
+    )
+    assert isinstance(provider.fallback_dir, Path)
+    assert provider.fallback_dir == tmp_path

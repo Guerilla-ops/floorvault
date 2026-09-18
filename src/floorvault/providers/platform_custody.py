@@ -146,6 +146,14 @@ def _mkdir_owner_only(directory: Path) -> None:
     existing base must not bypass the owner-only custody policy.
     """
     directory = Path(directory)
+    try:
+        if stat.S_ISLNK(directory.lstat().st_mode):
+            raise ValueError(f"vault directory must not be a symlink: {directory}")
+    except FileNotFoundError:
+        pass
+
+    directory = directory.parent.resolve() / directory.name
+
     missing: list[Path] = []
     current = directory
     while current != current.parent:

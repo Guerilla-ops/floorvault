@@ -38,13 +38,15 @@ class AdaptiveKeyProvider(KeyProvider):
         service_name: str = "floorvault",
         account_name: str = "default-v1",
         *,
-        fallback_dir: Optional[Path] = None,
+        fallback_dir: Optional[Path | str] = None,
         strict: bool = False,
         allow_disk_fallback: bool = False,
     ) -> None:
         self.service_name = service_name
         self.account_name = account_name
-        self.fallback_dir = fallback_dir or (Path.home() / ".floorvault")
+        self.fallback_dir = (
+            Path(fallback_dir) if fallback_dir is not None else (Path.home() / ".floorvault")
+        )
         self.strict = strict
         self.allow_disk_fallback = allow_disk_fallback and not strict
         self.keychain_unavailable_reason: Optional[str] = None

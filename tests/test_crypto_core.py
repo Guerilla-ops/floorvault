@@ -185,3 +185,43 @@ def test_reencryption_is_not_deterministic():
             crypto.decrypt(ciphertext, table="users", record_id="u-1", column="email")
             == "identical-value"
         )
+
+
+def test_concurrent_encryption_thread_safety():
+    """FloorVault encrypt and decrypt must be thread-safe across concurrent threads."""
+    import concurrent.futures
+
+    crypto = FloorVault(b"\x09" * 32, memory_mode="disabled", maximum_tracked_nonces=500)
+    num_threads = 16
+    items_per_thread = 50
+
+    def worker(thread_idx: int):
+        results = []
+        for i in range(items_per_thread):
+            plaintext = f"thread-{thread_idx}-payload-{i}"
+            ct = crypto.encrypt(
+                plaintext,
+                table="concurrent_test",
+                record_id=f"rec-{thread_idx}-{i}",
+                column="val",
+            )
+            recovered = crypto.decrypt(
+                ct,
+                table="concurrent_test",
+                record_id=f"rec-{thread_idx}-{i}",
+                column="val",
+            )
+            assert recovered == plaintext
+            results.append(ct)
+        return results
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(worker, i) for i in range(num_threads)]
+        all_results = [f.result() for f in futures]
+
+    total_encryptions = num_threads * items_per_thread
+    all_ciphertexts = [ct for sublist in all_results for ct in sublist]
+    assert len(all_ciphertexts) == total_encryptions
+    # Verify nonces in queue match expected window size
+    assert len(crypto._nonce_queue) == min(total_encryptions, 500)
+    assert len(crypto._nonce_set) == min(total_encryptions, 500)

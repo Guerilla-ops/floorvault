@@ -9,6 +9,7 @@ from __future__ import annotations
 import collections
 import json
 import os
+import threading
 from typing import Any, Mapping, Union
 
 from cryptography.exceptions import InvalidTag
@@ -169,6 +170,7 @@ class FloorVault:
         # failure path can run, otherwise __del__/wipe() raise AttributeError
         # on a partially initialised instance and leave the engine unclosed.
         self._max_nonces = maximum_tracked_nonces
+        self._lock = threading.Lock()
         self._nonce_queue: collections.deque[bytes] = collections.deque(
             maxlen=max(1, maximum_tracked_nonces)
         )
@@ -241,13 +243,14 @@ class FloorVault:
         mechanism. Cross-session freshness requires caller-managed revision
         counters bound into the associated data.
         """
-        if nonce in self._nonce_set:
-            raise NonceReuseError("Detected duplicate cryptographic nonce")
-        if len(self._nonce_queue) >= self._max_nonces:
-            oldest = self._nonce_queue.popleft()
-            self._nonce_set.discard(oldest)
-        self._nonce_queue.append(nonce)
-        self._nonce_set.add(nonce)
+        with self._lock:
+            if nonce in self._nonce_set:
+                raise NonceReuseError("Detected duplicate cryptographic nonce")
+            if len(self._nonce_queue) >= self._max_nonces:
+                oldest = self._nonce_queue.popleft()
+                self._nonce_set.discard(oldest)
+            self._nonce_queue.append(nonce)
+            self._nonce_set.add(nonce)
 
     def encrypt(
         self,
@@ -481,6 +484,14 @@ class FloorVault:
 
     def wipe(self) -> None:
         """Zero all internal functional subkeys and close engine."""
+        lock = getattr(self, "_lock", None)
+        if lock is not None:
+            with lock:
+                self._wipe_locked()
+        else:
+            self._wipe_locked()
+
+    def _wipe_locked(self) -> None:
         if getattr(self, "_closed", True):
             return
         self._closed = True

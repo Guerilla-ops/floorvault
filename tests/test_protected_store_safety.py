@@ -729,3 +729,37 @@ def test_creation_tolerates_a_directory_appearing_after_the_check(tmp_path, monk
 
     write_protected(_KEY, target / "store", header=_HEADER)
     assert read_protected(target / "store", header=_HEADER) == _KEY
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-specific test for system symlinks (e.g., /tmp -> /private/tmp)",
+)
+def test_mkdir_owner_only_under_symlinked_parent_dir():
+    """Verify directories under system symlinks (such as /tmp on macOS) succeed.
+
+    On macOS, /tmp is a symlink to /private/tmp. _mkdir_owner_only must resolve
+    parent ancestors so system symlinks do not cause false-positive rejections,
+    while still rejecting a direct symlink to the vault base itself.
+    """
+    test_dir = Path("/tmp") / f".test_floorvault_syslink_{os.urandom(4).hex()}"
+    try:
+        custody._mkdir_owner_only(test_dir)
+        assert test_dir.exists()
+        assert stat.S_IMODE(os.lstat(test_dir).st_mode) == 0o700
+    finally:
+        if test_dir.exists():
+            test_dir.rmdir()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows symlink creation in pytest tmp dirs is unreliable",
+)
+def test_mkdir_owner_only_rejects_direct_symlink(tmp_path):
+    real = tmp_path / "real_dir"
+    real.mkdir()
+    link = tmp_path / "symlink_dir"
+    link.symlink_to(real, target_is_directory=True)
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        custody._mkdir_owner_only(link)
