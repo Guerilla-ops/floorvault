@@ -116,6 +116,9 @@ def associated_data(
         if not isinstance(val, str) or not val.strip():
             raise ValueError(f"AAD parameter {name!r} must be a non-empty string")
 
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise TypeError("AAD parameter 'schema_version' must be an integer")
+
     if revision is not None:
         if isinstance(revision, bool) or not isinstance(revision, int):
             raise TypeError("AAD parameter 'revision' must be a non-negative integer")

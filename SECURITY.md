@@ -421,6 +421,13 @@ We prefer measured claims over marketing claims. Currently in place:
   the gate passes, with a canary mutant that must survive to prove the harness
   can still detect a live mutant. A green suite proves nothing if the tests
   cannot fail.
+- The **deep-dive security regression scan** (`tests/test_security_scan.py`) runs in
+  the gate and deterministically covers five reviewed vulnerability classes:
+  rotation/write handoff, exact schema-version typing in authenticated context,
+  migration collision equivalence, memory-mode validation, and existing vault
+  directory custody. Its five curated mutants (`DS-1` through `DS-5`) are required
+  to be killed; the scan is regression coverage, not a claim of complete static
+  analysis or security certification.
 - A **universal wheel** build verified on every push, so the published artifact
   matches the audited source and carries no unexpected native code.
 - **Artifact identity — and what is explicitly NOT claimed.** The gate prints the

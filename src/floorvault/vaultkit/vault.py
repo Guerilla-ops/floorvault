@@ -257,6 +257,18 @@ class VaultStore:
                     PRIMARY KEY (record_kind, record_id, column_name)
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS vault_rotation_state (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    active INTEGER NOT NULL CHECK (active IN (0, 1)),
+                    target_key_id INTEGER NOT NULL
+                )
+            """)
+            conn.execute("""
+                INSERT INTO vault_rotation_state (singleton, active, target_key_id)
+                VALUES (1, 0, 0)
+                ON CONFLICT(singleton) DO NOTHING
+            """)
             self._migrate_plaintext_metadata(conn)
             self._remove_origin_index(conn)
             conn.execute("PRAGMA user_version = 2")
@@ -351,6 +363,25 @@ class VaultStore:
             column=f"meta:{column}",
         )
 
+    def _assert_writes_allowed(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute("SELECT active FROM vault_rotation_state WHERE singleton = 1").fetchone()
+        if row is not None and bool(row[0]):
+            raise VaultError("vault rotation is in progress; write refused")
+
+    def begin_rotation(self, target_key_id: int) -> None:
+        """Persist the rotation write barrier before taking a source snapshot."""
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT active, target_key_id FROM vault_rotation_state WHERE singleton = 1"
+            ).fetchone()
+            if row is not None and bool(row[0]) and int(row[1]) != target_key_id:
+                raise VaultError("another vault rotation is already in progress")
+            conn.execute(
+                "UPDATE vault_rotation_state SET active = 1, target_key_id = ? WHERE singleton = 1",
+                (target_key_id,),
+            )
+
     def add_item(
         self,
         kind: str,
@@ -422,6 +453,8 @@ class VaultStore:
         )
 
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_writes_allowed(conn)
             conn.execute(
                 """
                 INSERT INTO vault_items (
@@ -530,6 +563,8 @@ class VaultStore:
     def remove_item(self, item_id: str) -> bool:
         """Delete item by ID."""
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_writes_allowed(conn)
             cursor = conn.execute("DELETE FROM vault_items WHERE id = ?", (item_id,))
             return cursor.rowcount > 0
 
@@ -584,9 +619,11 @@ class VaultStore:
             self._write_journal_rows(conn, rows, target_key_id=target_key_id)
 
     def clear_rotation_journal(self) -> None:
-        """Empty the journal once a rotation has completed and been verified."""
+        """Commit rotation completion and reopen application writes atomically."""
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("DELETE FROM vault_rotation_journal")
+            conn.execute("UPDATE vault_rotation_state SET active = 0 WHERE singleton = 1")
 
     def read_sealed_item(self, item_id: str, ring: KeyRing) -> dict[str, Any]:
         """Return one item's plaintext as sealed today, read through ``ring``.
@@ -757,6 +794,9 @@ class VaultStore:
             column="tombstone",
         )
         with self._connect() as conn:
+            if journal_rows is None:
+                conn.execute("BEGIN IMMEDIATE")
+                self._assert_writes_allowed(conn)
             conn.execute(
                 """
                 INSERT INTO vault_legacy_retirements (legacy_id, tombstone_cipher)

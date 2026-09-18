@@ -310,6 +310,42 @@ MUTATIONS: tuple[Mutation, ...] = (
         "            if False:  # MUTANT\n                raise VaultError(",
         "Rotation journal records missing items as completed",
     ),
+    # --- Deep-dive security regression scan (2026-09-18) ----------------------
+    Mutation(
+        "DS-1",
+        "src/floorvault/vaultkit/vault.py",
+        '            self._assert_writes_allowed(conn)\n            conn.execute(\n                """\n                INSERT INTO vault_items (',
+        '            pass  # MUTANT: writer barrier disabled\n            conn.execute(\n                """\n                INSERT INTO vault_items (',
+        "Rotation barrier removed: a late old-key writer is accepted",
+    ),
+    Mutation(
+        "DS-2",
+        "src/floorvault/core.py",
+        "    if isinstance(schema_version, bool) or not isinstance(schema_version, int):",
+        "    if False:  # MUTANT: schema version validation disabled",
+        "Non-integer schema versions collapse into integer AAD contexts",
+    ),
+    Mutation(
+        "DS-3",
+        "src/floorvault/migration.py",
+        "            if (\n                existing.kind != kind",
+        "            if False and (  # MUTANT: collision equivalence check disabled\n                existing.kind != kind",
+        "Migration retires a legacy id onto unrelated pre-existing data",
+    ),
+    Mutation(
+        "DS-4",
+        "src/floorvault/memory.py",
+        '        if mode not in {"disabled", "opportunistic", "required"}:',
+        "        if False:  # MUTANT: invalid modes accepted",
+        "Invalid memory mode silently downgrades from required enforcement",
+    ),
+    Mutation(
+        "DS-5",
+        "src/floorvault/providers/platform_custody.py",
+        "    os.chmod(directory, 0o700)",
+        "    pass  # MUTANT: existing directory is not hardened",
+        "Existing permissive vault base bypasses owner-only policy",
+    ),
     Mutation(
         "CANARY",
         "src/floorvault/platform_support.py",
@@ -321,8 +357,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PC-9",
         "src/floorvault/providers/platform_custody.py",
-        "        item.mkdir(mode=0o700, exist_ok=True)",
-        "        item.mkdir(mode=0o777, exist_ok=True)",
+        "    for item in reversed(missing):\n        item.mkdir(mode=0o700, exist_ok=False)",
+        "    for item in reversed(missing):\n        item.mkdir(mode=0o777, exist_ok=False)",
         "Ancestor custody directory created world-searchable (0o777)",
     ),
     Mutation(
@@ -399,9 +435,12 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PC-15",
         "src/floorvault/providers/platform_custody.py",
-        "        item.mkdir(mode=0o700, exist_ok=True)",
-        "        item.mkdir(mode=0o700, exist_ok=False)",
-        "Directory creation loses tolerance for a directory created by another writer",
+        "    for item in reversed(missing):\n        item.mkdir(mode=0o700, exist_ok=False)",
+        "    for item in reversed(missing):\n        item.mkdir(mode=0o700, exist_ok=True)",
+        "Directory creation loses tolerance for a directory created by another writer; "
+        "the new lstat-before-mkdir contract makes this an availability-only mutant "
+        "with no covered security distinction",
+        expect="survived",
     ),
     Mutation(
         "PC-16",

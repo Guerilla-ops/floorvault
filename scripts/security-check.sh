@@ -96,6 +96,12 @@ echo "=== 8. Running Deterministic Fuzz Harness (adversarial crypto invariants) 
 pytest -q tests/test_fuzz.py
 echo "[PASS] Fuzz: round-trip, splice-immunity, and malformed-envelope invariants verified."
 
+# The deep-dive regression scan pins the five reviewed vulnerability classes:
+# rotation/write handoff, schema-version type binding, migration collision
+# recovery, memory-mode validation, and existing-directory custody policy.
+pytest -q tests/test_security_scan.py
+echo "[PASS] Security scan: five deep-dive vulnerability classes detected and fixed."
+
 echo ""
 echo "=== 9. Running the Full Test Suite ==="
 # Step 5-8 above cover the security-critical paths with readable labels, but the

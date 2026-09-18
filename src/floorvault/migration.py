@@ -18,12 +18,13 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sqlite3
 from pathlib import Path
 from typing import Any, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from .vaultkit.vault import VaultError, VaultStore
+from .vaultkit.vault import VaultError, VaultStore, normalize_origin, normalize_otp_secret
 
 
 class LegacyVaultError(VaultError):
@@ -140,15 +141,32 @@ class MigratingVaultStore:
             secret.setdefault("identifier_type", identifier_type)
         try:
             meta = self.modern.add_item(**kwargs)
-        except VaultError:
-            raise
-        except Exception as exc:  # noqa: BLE001
+        except sqlite3.IntegrityError as exc:
             # A process may have written the deterministic modern row before
             # crashing while recording its retirement tombstone. Reuse that row
-            # on retry instead of creating a duplicate.
+            # only after proving it is the same normalized legacy item. Any
+            # unrelated collision must fail closed and must not retire the source.
             existing = self.modern.get_meta(kwargs["item_id"])
             if existing is None:
-                raise VaultError(f"Could not lazily migrate item {item_id}: {exc}") from exc
+                raise VaultError(f"Could not lazily migrate item {item_id}") from exc
+            expected_origin = normalize_origin(origin) if origin else None
+            expected_secret = {
+                key: str(value) for key, value in secret.items() if str(value or "").strip()
+            }
+            if kind == "login" and "otp_secret" in expected_secret:
+                expected_secret["otp_secret"] = normalize_otp_secret(expected_secret["otp_secret"])
+            existing_secret = self.modern.resolve_secret(existing.id)
+            if (
+                existing.kind != kind
+                or existing.label != str(label or "").strip()
+                or existing.origin != expected_origin
+                or existing.identifier != (str(identifier).strip() if identifier else None)
+                or existing.identifier_type != identifier_type
+                or existing_secret != expected_secret
+            ):
+                raise VaultError(
+                    f"deterministic migration target conflicts for legacy item {item_id!r}"
+                ) from exc
             meta = existing
         if meta is not None:
             # Retire the legacy id permanently. From here on the pre-migration

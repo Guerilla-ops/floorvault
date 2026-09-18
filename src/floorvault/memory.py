@@ -73,6 +73,9 @@ class HardenedMemoryKey:
         self._size = 0
         self._mode = mode
 
+        if mode not in {"disabled", "opportunistic", "required"}:
+            raise ValueError("mode must be one of 'disabled', 'opportunistic', or 'required'")
+
         if not isinstance(key_bytes, (bytes, bytearray)):
             raise TypeError("Key material must be bytes or bytearray")
         if len(key_bytes) not in (32, 64):

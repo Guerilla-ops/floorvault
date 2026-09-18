@@ -76,6 +76,7 @@ def rotate_vault_store(
     if not 0 <= new_key_id <= 255:
         raise ValueError("new_key_id must be an integer in [0, 255]")
 
+    store.begin_rotation(new_key_id)
     journal = store.rotation_journal()
     migrated = 0
     unit_columns = ("payload", *tuple(f"meta:{column}" for column in store._SEALED_META_COLUMNS))

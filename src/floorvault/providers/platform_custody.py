@@ -138,21 +138,38 @@ def read_scheme_store(
 
 
 def _mkdir_owner_only(directory: Path) -> None:
-    """Create ``directory`` and every missing ancestor with mode 0700.
+    """Create or harden ``directory`` and every missing ancestor with mode 0700.
 
-    ``Path.mkdir(parents=True, mode=0o700)`` applies the mode **only to the final
-    component**: its recursive call for ancestors uses the default 0o777 (masked
-    by umask), so a path like ``~/.floor/vault/keys/store`` would leave
-    ``.floor/vault/keys`` world-searchable. The custody chain should be
-    owner-only throughout, so each component is created explicitly.
+    Existing paths are inspected with ``lstat`` rather than ``exists`` so a
+    symlink cannot be accepted as a vault-controlled directory. The requested
+    final directory is hardened even when it already exists; a permissive
+    existing base must not bypass the owner-only custody policy.
     """
+    directory = Path(directory)
     missing: list[Path] = []
     current = directory
-    while not current.exists() and current != current.parent:
-        missing.append(current)
-        current = current.parent
+    while current != current.parent:
+        try:
+            current_stat = current.lstat()
+        except FileNotFoundError:
+            missing.append(current)
+            current = current.parent
+            continue
+        if stat.S_ISLNK(current_stat.st_mode):
+            raise ValueError(f"vault directory must not be a symlink: {current}")
+        if not stat.S_ISDIR(current_stat.st_mode):
+            raise ValueError(f"vault path is not a directory: {current}")
+        break
+
     for item in reversed(missing):
-        item.mkdir(mode=0o700, exist_ok=True)
+        item.mkdir(mode=0o700, exist_ok=False)
+
+    final_stat = directory.lstat()
+    if stat.S_ISLNK(final_stat.st_mode) or not stat.S_ISDIR(final_stat.st_mode):
+        raise ValueError(f"vault path is not an owner-controlled directory: {directory}")
+    if hasattr(os, "getuid") and final_stat.st_uid != os.getuid():
+        raise ValueError(f"vault directory is not owned by the current user: {directory}")
+    os.chmod(directory, 0o700)
 
 
 def write_protected(
