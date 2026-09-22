@@ -530,3 +530,78 @@ def test_missing_library_is_not_a_custody_failure(monkeypatch, tmp_path):
 
     with pytest.raises(MissingKeyError, match="not available in this session"):
         provider.resolve_key()
+
+
+# --------------------------------------------------------------------------
+# The masked-file tier obeys the caller's disk-custody policy
+# --------------------------------------------------------------------------
+
+
+def _seed_ss_store(tmp_path, key: bytes) -> "LinuxSecretServiceKeyProvider":
+    """Write a valid master.key.ss via the provider's own headless fallback."""
+    seed = LinuxSecretServiceKeyProvider(
+        store_path=tmp_path / "master.key.ss",
+        service="floorvault",
+        attribute="master-key",
+        random_bytes=lambda n: key[:n],
+    )
+    created = seed.resolve_key()
+    created.wipe()
+    return seed
+
+
+def test_existing_ss_store_is_not_read_when_file_fallback_is_forbidden(monkeypatch, tmp_path):
+    """allow_file_fallback=False must gate READS, not only creation.
+
+    Regression: AdaptiveKeyProvider passed no policy, so strict=True still
+    resolved a key from an existing masked store when Secret Service was
+    unreachable - a deterministic public pad is disk custody, not a boundary.
+    """
+    stored_key = b"\x5c" * 32
+    # Seed the store headless (no desktop), fallback allowed by default.
+    for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(lk_module, "is_linux", lambda: False)
+    _seed_ss_store(tmp_path, stored_key)
+    assert (tmp_path / "master.key.ss").exists()
+
+    # Now the session looks like an interactive desktop with the service down.
+    monkeypatch.setattr(lk_module, "is_linux", lambda: True)
+    monkeypatch.setenv("DISPLAY", ":0")
+    _install_fake_secretstorage(
+        monkeypatch, collection=_FakeCollection(), dbus_init_unavailable=True
+    )
+
+    provider = LinuxSecretServiceKeyProvider(
+        store_path=tmp_path / "master.key.ss",
+        service="floorvault",
+        attribute="master-key",
+        allow_file_fallback=False,
+    )
+    with pytest.raises(MissingKeyError, match="file-based key custody"):
+        provider.resolve_key()
+
+
+def test_existing_ss_store_is_read_when_file_fallback_is_allowed(monkeypatch, tmp_path):
+    """Guard against over-blocking: the documented opt-in still works."""
+    stored_key = b"\x6d" * 32
+    for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(lk_module, "is_linux", lambda: False)
+    _seed_ss_store(tmp_path, stored_key)
+
+    monkeypatch.setattr(lk_module, "is_linux", lambda: True)
+    monkeypatch.setenv("DISPLAY", ":0")
+    _install_fake_secretstorage(
+        monkeypatch, collection=_FakeCollection(), dbus_init_unavailable=True
+    )
+
+    provider = LinuxSecretServiceKeyProvider(
+        store_path=tmp_path / "master.key.ss",
+        service="floorvault",
+        attribute="master-key",
+        allow_file_fallback=True,
+    )
+    key = provider.resolve_key()
+    assert key.get_bytes() == stored_key
+    key.wipe()

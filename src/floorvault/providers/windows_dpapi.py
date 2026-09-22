@@ -1,9 +1,12 @@
 """Windows DPAPI-backed master key provider.
 
 On Windows 10/11/Server this wraps the Win32 CryptProtectData /
-CryptUnprotectData calls (via ctypes) with a caller-supplied secondary entropy,
-so an automated infostealer that can call CryptUnprotectData but does not know
-the secondary entropy still cannot decrypt the master key.
+CryptUnprotectData calls (via ctypes) with a secondary entropy parameter.
+When the caller supplies ``entropy``, an automated infostealer that can call
+CryptUnprotectData but does not know the entropy still cannot decrypt the
+master key. When it is omitted the provider uses a public constant
+(``b"floorvault-dpapi"``): the blob is still bound to the Windows user account
+by DPAPI, but the constant adds no secrecy - it is a label, not a key.
 
 On non-Windows hosts (CI, test bundles, macOS) it degrades to a deterministic
 entropy-derived mask over the shared protected-file custody so the round-trip
@@ -81,6 +84,9 @@ class WindowsDPAPIKeyProvider(KeyProvider):
         if entropy is not None and not isinstance(entropy, bytes):
             raise TypeError("entropy must be bytes")
         self._path = Path(store_path)
+        # NOTE: the default is a public constant - a label that keeps the blob
+        # domain-separated, not a secret. Only caller-supplied entropy adds the
+        # "infostealer cannot unprotect" property described in the docstring.
         self._entropy = bytes(entropy or b"floorvault-dpapi")
         self._random_bytes = random_bytes
         self._allow_outside_user_profile = allow_outside_user_profile

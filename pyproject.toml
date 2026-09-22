@@ -1,5 +1,8 @@
 [build-system]
-requires = ["hatchling"]
+# Pinned: the build backend runs on every wheel/sdist build but is not covered
+# by uv.lock, so an unpinned spec would let a future hatchling release change
+# (or compromise) the artifact toolchain.
+requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -40,7 +43,10 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "cryptography>=43.0.0",
+    # 50.0.0 fixed PYSEC-2026-3552 (distinguishable PKCS#7/S/MIME decryption
+    # failure). FloorVault does not call those APIs, but a floor of 43 still
+    # let a downstream resolver pick the vulnerable release.
+    "cryptography>=50.0.0",
 ]
 
 [project.optional-dependencies]
@@ -68,6 +74,12 @@ dev = [
 # allow_disk_fallback is enabled, fails closed.
 macos = [
     "pyobjc-framework-Security>=10.0",
+]
+# Linux Secret Service (Tier 2) needs the secretstorage client; without it the
+# tier reports unavailable and the provider fails closed rather than writing a
+# key file.
+linux = [
+    "secretstorage>=3.3",
 ]
 
 [project.scripts]

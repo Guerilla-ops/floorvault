@@ -41,6 +41,7 @@ class AdaptiveKeyProvider(KeyProvider):
         fallback_dir: Optional[Path | str] = None,
         strict: bool = False,
         allow_disk_fallback: bool = False,
+        dpapi_entropy: Optional[bytes] = None,
     ) -> None:
         self.service_name = service_name
         self.account_name = account_name
@@ -49,6 +50,10 @@ class AdaptiveKeyProvider(KeyProvider):
         )
         self.strict = strict
         self.allow_disk_fallback = allow_disk_fallback and not strict
+        # Optional secondary entropy for the Windows DPAPI tier. When omitted
+        # the provider uses a public constant - still user-bound through DPAPI,
+        # but without the extra secret an infostealer cannot guess.
+        self.dpapi_entropy = dpapi_entropy
         self.keychain_unavailable_reason: Optional[str] = None
 
     def _is_interactive_desktop(self) -> bool:
@@ -89,6 +94,7 @@ class AdaptiveKeyProvider(KeyProvider):
         if is_windows():
             return WindowsDPAPIKeyProvider(
                 store_path=WindowsDPAPIKeyProvider.default_store_path(self.fallback_dir),
+                entropy=self.dpapi_entropy,
             ).resolve_key(allow_create=allow_create)
 
         if is_linux():
@@ -96,6 +102,10 @@ class AdaptiveKeyProvider(KeyProvider):
                 store_path=LinuxSecretServiceKeyProvider.default_store_path(self.fallback_dir),
                 service=self.service_name,
                 attribute=self.account_name,
+                # The provider's masked-file tier is disk custody too, so it is
+                # gated on the same opt-in as Tier 3: strict mode, or a caller
+                # that never enabled disk fallback, must not read master.key.ss.
+                allow_file_fallback=self.allow_disk_fallback,
             )
             # A headless Linux session has no Secret Service capability. Preserve
             # AdaptiveKeyProvider's explicit local-file policy in that case.

@@ -352,9 +352,13 @@ For a full description see the README and the design notes in `docs/`.
   protection cannot be established on either platform, the store is refused
   rather than trusted.
 - **Key custody tiers:** the environment, the OS store (macOS Keychain, Windows
-  DPAPI with secondary entropy, Linux Secret Service), then — only if the caller
+  DPAPI, Linux Secret Service), then — only if the caller
   explicitly enables it — a local file. A present-but-unusable OS store raises
-  instead of quietly dropping to a weaker tier.
+  instead of quietly dropping to a weaker tier. The DPAPI tier accepts optional
+  caller-supplied secondary entropy (`dpapi_entropy=` on `AdaptiveKeyProvider`,
+  `entropy=` on `WindowsDPAPIKeyProvider`); without it the blob uses a public
+  constant, so it is bound to the Windows user account but carries no extra
+  secret a same-user process could not reproduce.
 
   Each tier keeps its own store file (`master.key` for the local-file tier,
   `master.key.dpapi` for DPAPI, `master.key.ss` for Secret Service). The three

@@ -571,3 +571,81 @@ def test_adaptive_provider_accepts_string_fallback_dir(tmp_path):
     )
     assert isinstance(provider.fallback_dir, Path)
     assert provider.fallback_dir == tmp_path
+
+
+# --------------------------------------------------------------------------
+# The Linux provider's masked-file tier obeys the caller's disk policy
+# --------------------------------------------------------------------------
+
+
+def _seed_ss_store(monkeypatch, tmp_path: Path, key: bytes) -> Path:
+    """Write a valid master.key.ss through the provider's own fallback writer."""
+    ss_path = LinuxSecretServiceKeyProvider.default_store_path(tmp_path)
+    for name in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"):
+        monkeypatch.delenv(name, raising=False)
+    seed = LinuxSecretServiceKeyProvider(
+        store_path=ss_path,
+        service="floorvault",
+        attribute="default-v1",
+        random_bytes=lambda n: key[:n],
+    )
+    created = seed.resolve_key()
+    created.wipe()
+    assert ss_path.exists()
+    return ss_path
+
+
+def _linux_dispatch_with_unavailable_service(monkeypatch):
+    """Make the adaptive provider dispatch to a real Linux provider whose
+    Secret Service resolves nothing, so resolve_key reaches the file tier."""
+    for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(adaptive_module, "is_macos", lambda: False)
+    monkeypatch.setattr(adaptive_module, "is_windows", lambda: False)
+    monkeypatch.setattr(adaptive_module, "is_linux", lambda: True)
+    monkeypatch.setattr(
+        LinuxSecretServiceKeyProvider, "_secret_service_available", lambda self: True
+    )
+    monkeypatch.setattr(
+        LinuxSecretServiceKeyProvider,
+        "_resolve_via_secret_service",
+        lambda self, *, allow_create=True: None,
+    )
+
+
+def test_strict_mode_refuses_an_existing_secret_service_file_store(monkeypatch, tmp_path):
+    """strict=True must forbid reading master.key.ss, not only master.key.
+
+    Regression: the Linux provider's internal masked-file fallback never saw
+    the caller's disk policy, so an existing .ss store was read even under
+    strict=True - silently resolving the key from disk custody the caller had
+    explicitly forbidden.
+    """
+    _seed_ss_store(monkeypatch, tmp_path, b"\x77" * 32)
+    _linux_dispatch_with_unavailable_service(monkeypatch)
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, strict=True)
+    with pytest.raises(KeyProviderError, match="file-based key custody"):
+        provider.resolve_key()
+
+
+def test_default_policy_refuses_an_existing_secret_service_file_store(monkeypatch, tmp_path):
+    """The default (no allow_disk_fallback) must not read the .ss file either."""
+    _seed_ss_store(monkeypatch, tmp_path, b"\x77" * 32)
+    _linux_dispatch_with_unavailable_service(monkeypatch)
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
+    with pytest.raises(KeyProviderError, match="file-based key custody"):
+        provider.resolve_key()
+
+
+def test_disk_fallback_opt_in_reads_the_secret_service_file_store(monkeypatch, tmp_path):
+    """The explicit opt-in still works: allow_disk_fallback=True reads .ss."""
+    stored = b"\x77" * 32
+    _seed_ss_store(monkeypatch, tmp_path, stored)
+    _linux_dispatch_with_unavailable_service(monkeypatch)
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)
+    key = provider.resolve_key(allow_create=False)
+    assert key.get_bytes() == stored
+    key.wipe()

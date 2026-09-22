@@ -321,8 +321,8 @@ floorvault inspect local_vault.db users user-123 private_value_cipher
 ```bash
 uv sync --extra dev
 uv run pytest
-uv run ruff check .
-uv run ruff format --check .
+uv run ruff check src/ tests/ scripts/
+uv run ruff format --check src/ tests/ scripts/
 ```
 
 The project tests on Linux, macOS, and Windows across supported Python versions. Security-gate details and cross-platform findings are documented in [`SECURITY.md`](SECURITY.md) and [`docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md`](docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md).

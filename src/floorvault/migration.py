@@ -296,9 +296,15 @@ class MigratingVaultStore:
                         f"{retired_modern_id!r} is missing"
                     )
                 continue
-            if self.modern.get_meta(item_id) is None:
-                self._upgrade_legacy_item(item_id, item)
-                migrated += 1
+            # A modern record that merely shares the legacy id proves nothing
+            # about the legacy item - it may be unrelated data - and skipping on
+            # that basis reported a verified migration while the legacy value
+            # was never carried over or retired. Every unretired legacy id is
+            # migrated onto its deterministic target and tombstoned; an
+            # unrelated pre-existing record keeps its id and remains directly
+            # readable from the modern store.
+            self._upgrade_legacy_item(item_id, item)
+            migrated += 1
         # 3. Verify every migrated item decrypts.
         verified = self.verify()
         return {
@@ -314,14 +320,22 @@ class MigratingVaultStore:
         tombstone whose record has disappeared means the value is unavailable -
         the fallback is refused - so the migration is no longer sound and this
         returns False rather than reporting success.
+
+        Finally, every id still present in the legacy source must have a
+        retirement tombstone. A legacy item that was never migrated (for
+        example because an unrelated modern record happened to share its id)
+        means the "migration" silently dropped it, so verification must fail.
         """
         try:
             ids = list(self.modern.list_items())
             retirements = self.modern.list_legacy_retirements()
+            legacy = self._legacy_items()
         except VaultError:
             return False
         present = {meta.id for meta in ids}
         if any(modern_id not in present for modern_id in retirements.values()):
+            return False
+        if any(legacy_id not in retirements for legacy_id in legacy):
             return False
         for meta in ids:
             try:

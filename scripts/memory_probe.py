@@ -16,16 +16,32 @@ if str(_SRC_PATH) not in sys.path:
 from floorvault.memory import MADV_DONTDUMP, MADV_DONTFORK, HardenedMemoryKey  # noqa: E402
 
 
+def _actual_rlimit_core() -> list[int] | None:
+    """The process's real RLIMIT_CORE, or None where the mechanism is absent."""
+    try:
+        import resource
+    except ImportError:
+        return None
+    try:
+        return list(resource.getrlimit(resource.RLIMIT_CORE))
+    except Exception:  # noqa: BLE001 - a probe reports, it does not enforce
+        return None
+
+
 def main() -> int:
     key = HardenedMemoryKey(b"\x29" * 32, mode="opportunistic")
     try:
         dump_supported = MADV_DONTDUMP is not None
         fork_supported = MADV_DONTFORK is not None
+        rlimit_core = _actual_rlimit_core()
         result = {
             "os": platform.system(),
             "platform": sys.platform,
             "memory_locked": key.is_locked,
-            "core_dump_limit_applied": sys.platform in ("darwin", "linux"),
+            # Report the observed result, not the platform name: a failed
+            # setrlimit must not masquerade as applied.
+            "core_dump_limit_applied": rlimit_core == [0, 0],
+            "rlimit_core": rlimit_core,
             "crash_dump_exclusion": key._dump_excluded,
             "crash_dump_exclusion_supported": dump_supported,
             "fork_exclusion": key._fork_excluded,

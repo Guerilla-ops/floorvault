@@ -156,6 +156,49 @@ def test_tampered_retirement_record_is_refused(tmp_path):
         modern.list_legacy_retirements()
 
 
+def test_same_id_modern_record_is_not_proof_of_migration(tmp_path):
+    """A modern row sharing the legacy id must not silently satisfy migrate_all.
+
+    Regression: migrate_all() treated ``modern.get_meta(item_id)`` as proof the
+    legacy item had been migrated, so an unrelated modern record shadowed the
+    legacy value, no tombstone was written, and verify() still reported the
+    migration as sound - had the operator then removed the legacy source, the
+    original value would have been gone.
+    """
+    base = tmp_path / "vault"
+    modern = VaultStore(base / "modern", crypto=_make_crypto())
+    _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "legacy-secret"}})
+    modern.add_item("generic", "unrelated", {"password": "modern-secret"}, item_id="legacy-1")
+
+    facade = _facade(modern, base)
+    result = facade.migrate_all()
+
+    # The legacy value must be carried over and retired, not shadowed.
+    assert result["migrated"] == 1
+    assert result["verified"] is True
+    assert set(modern.list_legacy_retirements()) == {"legacy-1"}
+    migrated_id = modern.list_legacy_retirements()["legacy-1"]
+    assert migrated_id != "legacy-1"
+    assert modern.resolve_secret(migrated_id)["password"] == "legacy-secret"
+    # The facade now resolves the public id to the migrated record, while the
+    # unrelated modern record is untouched and still directly readable.
+    assert facade.resolve_secret("legacy-1")["password"] == "legacy-secret"
+    assert modern.resolve_secret("legacy-1")["password"] == "modern-secret"
+
+
+def test_verify_fails_when_a_legacy_item_was_never_migrated(tmp_path):
+    """verify() must not report success while a legacy id lacks a tombstone."""
+    base = tmp_path / "vault"
+    modern = VaultStore(base / "modern", crypto=_make_crypto())
+    _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
+    modern.add_item("generic", "unrelated", {"password": "other"}, item_id="legacy-1")
+
+    facade = _facade(modern, base)
+    # No migrate_all() ran: the legacy item is unretired, so verification must
+    # fail rather than certify a migration that never carried the value over.
+    assert facade.verify() is False
+
+
 def test_verify_reports_false_when_a_retired_item_is_missing(tmp_path):
     """verify() must not report a sound migration once a retired item's modern
     record has disappeared: the tombstone says it was migrated, but there is

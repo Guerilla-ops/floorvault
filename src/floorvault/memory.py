@@ -36,7 +36,7 @@ class SecurityHardeningError(RuntimeError):
     code = "memory_hardening_failed"
 
 
-def disable_core_dumps() -> None:
+def disable_core_dumps() -> bool:
     """Globally prevent the OS kernel from flushing process RAM to disk on crash.
 
     PROCESS-WIDE AND PERMANENT: this sets ``RLIMIT_CORE`` to ``(0, 0)`` for the
@@ -46,12 +46,19 @@ def disable_core_dumps() -> None:
     dump of a process holding a master key writes that key to disk - but it is a
     side effect of using the library, not something the caller opts into
     per object. See SECURITY.md section 6.
+
+    Returns ``True`` only when the limit was actually applied, so callers that
+    require it (``mode="required"``, the status probe) distinguish "the platform
+    does not have RLIMIT_CORE" from "setting it failed" instead of inferring
+    success from the platform name.
     """
-    if resource is not None and (is_macos() or is_linux()):
-        try:
-            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        except Exception:
-            pass
+    if resource is None or not (is_macos() or is_linux()):
+        return False
+    try:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except Exception:
+        return False
+    return True
 
 
 class HardenedMemoryKey:
@@ -72,6 +79,7 @@ class HardenedMemoryKey:
         self._buffer: Any = None
         self._size = 0
         self._mode = mode
+        self._core_dumps_disabled = False
 
         if mode not in {"disabled", "opportunistic", "required"}:
             raise ValueError("mode must be one of 'disabled', 'opportunistic', or 'required'")
@@ -81,7 +89,12 @@ class HardenedMemoryKey:
         if len(key_bytes) not in (32, 64):
             raise ValueError(f"Key must be exactly 32 or 64 bytes (got {len(key_bytes)})")
 
-        disable_core_dumps()
+        self._core_dumps_disabled = disable_core_dumps()
+        if mode == "required" and (is_macos() or is_linux()) and not self._core_dumps_disabled:
+            raise SecurityHardeningError(
+                "RLIMIT_CORE could not be set to 0; refusing to hold a master key "
+                "in a process whose crash would write it to a core dump"
+            )
 
         self._size = len(key_bytes)
         # Allocate a page-aligned unmanaged buffer outside Python's interning
@@ -182,6 +195,13 @@ class HardenedMemoryKey:
                 if self._mode == "required":
                     raise SecurityHardeningError(f"VirtualLock error: {exc}") from exc
 
+        # 3. No supported locking backend on this platform
+        elif self._mode == "required":
+            raise SecurityHardeningError(
+                "No supported memory-locking backend on this platform; refusing "
+                "to operate with an unpinned master key in production"
+            )
+
     @property
     def is_locked(self) -> bool:
         """Whether the memory buffer is actively pinned in physical RAM."""
@@ -196,9 +216,20 @@ class HardenedMemoryKey:
         """Return a zero-copy memoryview directly to the unmanaged buffer.
 
         Avoids creating transient immutable Python bytes objects on the heap.
+
+        The view is taken over the object that OWNS the memory - the mmap, or
+        on the malloc fallback path the ctypes array itself - never over the
+        non-owning ``from_address`` alias in ``self._buffer``. A caller that
+        retains the view past ``wipe()`` therefore keeps the underlying
+        allocation alive and observes zeroed pages, instead of dereferencing a
+        released mapping (which crashed the interpreter). ``wipe()``'s close of
+        a mapping with outstanding views raises BufferError and is skipped; the
+        zeroed mapping is released only when the last view is.
         """
         if self._closed:
             raise RuntimeError("Attempted to access wiped HardenedMemoryKey")
+        if self._mapping is not None:
+            return memoryview(self._mapping)[: self._size]
         return memoryview(self._buffer)[: self._size]
 
     def get_bytes(self) -> bytes:

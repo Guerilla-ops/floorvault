@@ -58,6 +58,10 @@ jobs:
         with:
           enable-cache: true
           python-version: ${{ matrix.python }}
+          # Pin the uv binary too: setup-uv otherwise resolves its latest
+          # release, so the tool building the artifacts would move even with
+          # the action pinned by SHA.
+          version: "0.12.5"
 
       - name: Sync environment
         shell: bash

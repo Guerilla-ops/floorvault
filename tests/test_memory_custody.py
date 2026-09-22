@@ -102,3 +102,69 @@ def test_wipe_releases_mapping_and_is_repeatable():
     key.wipe()
     del key
     gc.collect()
+
+
+def test_retained_buffer_view_reads_zeroed_pages_after_wipe():
+    """Regression: a retained get_buffer() view must not outlive the mapping.
+
+    The view was previously taken over the non-owning ctypes ``from_address``
+    alias, so wipe() closed the mmap underneath it and reading the retained
+    view dereferenced released pages (SIGSEGV in a subprocess). The view is now
+    taken over the owning mmap itself, so a stale view keeps the allocation
+    alive and observes the zeroed pages wipe() wrote.
+    """
+    key = HardenedMemoryKey(b"\x43" * 32, mode="disabled")
+    view = key.get_buffer()
+    assert bytes(view) == b"\x43" * 32
+
+    key.wipe()
+    assert key.is_wiped is True
+
+    # Safe to touch: the view kept the mapping alive, and wipe zeroed it.
+    assert bytes(view) == b"\x00" * 32
+    view.release()
+    del key
+    gc.collect()
+
+
+def test_required_mode_fails_closed_without_a_lock_backend(monkeypatch):
+    """mode='required' must not silently run on an unsupported platform."""
+    import floorvault.memory as mem
+
+    monkeypatch.setattr(mem, "is_macos", lambda: False)
+    monkeypatch.setattr(mem, "is_linux", lambda: False)
+    monkeypatch.setattr(mem, "is_windows", lambda: False)
+
+    with pytest.raises(mem.SecurityHardeningError, match="locking backend"):
+        mem.HardenedMemoryKey(b"\x80" * 32, mode="required")
+
+    # Opportunistic still constructs on the same platform - it never promised.
+    key = mem.HardenedMemoryKey(b"\x80" * 32, mode="opportunistic")
+    assert key.is_locked is False
+    key.wipe()
+
+
+def test_required_mode_fails_when_core_dumps_cannot_be_disabled(monkeypatch):
+    """A failed setrlimit must not masquerade as protection under 'required'.
+
+    On POSIX the required guarantee includes RLIMIT_CORE=0; setrlimit failing
+    silently left a 'required' key in a process whose crash would dump it.
+    """
+    import floorvault.memory as mem
+
+    monkeypatch.setattr(mem, "is_macos", lambda: True)
+    monkeypatch.setattr(mem, "is_linux", lambda: False)
+    monkeypatch.setattr(mem, "is_windows", lambda: False)
+    monkeypatch.setattr(
+        mem.resource,
+        "setrlimit",
+        lambda *args: (_ for _ in ()).throw(OSError("denied")),
+    )
+
+    with pytest.raises(mem.SecurityHardeningError, match="RLIMIT_CORE"):
+        mem.HardenedMemoryKey(b"\x81" * 32, mode="required")
+
+    # Opportunistic reports the failure instead of refusing to run.
+    key = mem.HardenedMemoryKey(b"\x81" * 32, mode="opportunistic")
+    assert key._core_dumps_disabled is False
+    key.wipe()
