@@ -646,12 +646,36 @@ def test_store_larger_than_the_read_buffer_is_refused(tmp_path):
         read_protected(store, header=_HEADER, expected_length=None)
 
 
-def test_fallback_publish_refuses_to_replace_an_existing_store(tmp_path, monkeypatch):
-    """Without hard links the publish is check-then-replace, so it must still refuse.
+def test_publish_without_hard_links_fails_closed(tmp_path, monkeypatch):
+    """Filesystems without hard-link support get a loud refusal, not a race.
 
-    Monkeypatches os.link to raise OSError, the way a FAT or some network volume
-    behaves. The no-clobber check in that fallback is the only thing standing
-    between a second writer and the first writer's key.
+    Monkeypatches os.link to raise OSError, the way a FAT or some network
+    volume behaves. The old check-then-replace fallback let two concurrent
+    creators pass the existence check and silently overwrite each other's
+    master key, so the publish now refuses rather than degrading to a
+    non-atomic replace.
+    """
+    store = tmp_path / "store"
+
+    def hard_links_unavailable(*_args, **_kwargs):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(custody.os, "link", hard_links_unavailable)
+
+    with pytest.raises(ProtectedStoreError, match="atomic no-clobber"):
+        write_protected(_KEY, store, header=_HEADER)
+
+    assert not store.exists(), "a failed publish must not leave a store behind"
+    assert list(tmp_path.glob(".*tmp")) == [], "the temp file must be cleaned up"
+
+
+def test_unsupported_filesystem_never_replaces_an_existing_store(tmp_path, monkeypatch):
+    """On a no-hard-link filesystem an existing store is left byte-identical.
+
+    The first write succeeds normally; the second hits a filesystem that has
+    'lost' hard-link support. Refusal must come from the link failure itself,
+    not from a prior existence check - the replace path that could clobber the
+    store no longer exists.
     """
     store = tmp_path / "store"
     write_protected(_KEY, store, header=_HEADER)
@@ -662,10 +686,10 @@ def test_fallback_publish_refuses_to_replace_an_existing_store(tmp_path, monkeyp
 
     monkeypatch.setattr(custody.os, "link", hard_links_unavailable)
 
-    with pytest.raises(ProtectedStoreError, match="refusing to overwrite"):
+    with pytest.raises(ProtectedStoreError):
         write_protected(b"\x33" * 32, store, header=_HEADER)
 
-    assert store.read_bytes() == original, "the fallback clobbered an existing store"
+    assert store.read_bytes() == original, "the publish modified an existing store"
 
 
 def test_store_io_requests_binary_mode_on_windows(tmp_path, monkeypatch):
