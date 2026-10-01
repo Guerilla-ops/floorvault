@@ -305,15 +305,17 @@ class MigratingVaultStore:
             # readable from the modern store.
             self._upgrade_legacy_item(item_id, item)
             migrated += 1
-        # 3. Verify every migrated item decrypts.
-        verified = self.verify()
+        # 3. Verify every migrated item decrypts.  Pass the legacy items already
+        # loaded above so verify() does not decrypt and parse the legacy source a
+        # second time; the legacy source is unchanged by this method.
+        verified = self.verify(legacy=legacy)
         return {
             "migrated": migrated,
             "verified": verified,
             "removed_legacy": False,  # the caller removes only after verify
         }
 
-    def verify(self) -> bool:
+    def verify(self, legacy: dict[str, dict[str, Any]] | None = None) -> bool:
         """Decrypt every migrated (modern) item to confirm the migration is sound.
 
         Also checks that every retired legacy id still has a modern record. A
@@ -329,7 +331,8 @@ class MigratingVaultStore:
         try:
             ids = list(self.modern.list_items())
             retirements = self.modern.list_legacy_retirements()
-            legacy = self._legacy_items()
+            if legacy is None:
+                legacy = self._legacy_items()
         except VaultError:
             return False
         present = {meta.id for meta in ids}
