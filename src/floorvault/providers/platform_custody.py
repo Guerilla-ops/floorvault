@@ -137,6 +137,26 @@ def read_scheme_store(
     return adopted
 
 
+def _is_system_symlink(path: Path) -> bool:
+    """True for a root-owned symlink pointing at a root-owned directory.
+
+    macOS ships system firmlinks such as ``/tmp -> /private/tmp`` and
+    ``/var -> /private/var``. A vault base beneath the system temp dir must keep
+    working, but a symlink an attacker planted in a user-writable parent must not
+    be followed. Only root can create a link inside a root-owned directory, so a
+    root-owned link to a root-owned target is a system link, not an attack.
+    """
+    if not hasattr(os, "getuid"):
+        return False
+    try:
+        link_stat = path.lstat()
+        if not stat.S_ISLNK(link_stat.st_mode) or link_stat.st_uid != 0:
+            return False
+        return path.resolve().stat().st_uid == 0
+    except OSError:
+        return False
+
+
 def _mkdir_owner_only(directory: Path) -> None:
     """Create or harden ``directory`` and every missing ancestor with mode 0700.
 
@@ -151,6 +171,18 @@ def _mkdir_owner_only(directory: Path) -> None:
             raise ValueError(f"vault directory must not be a symlink: {directory}")
     except FileNotFoundError:
         pass
+
+    # Reject a symlinked *ancestor* before resolving: ``resolve()`` below follows
+    # every ancestor link, so without this an attacker-controlled parent symlink
+    # would silently redirect the vault to a location of their choosing. Only
+    # root-owned system firmlinks (macOS /tmp, /var) are exempt.
+    for ancestor in directory.parents:
+        try:
+            ancestor_stat = ancestor.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(ancestor_stat.st_mode) and not _is_system_symlink(ancestor):
+            raise ValueError(f"vault ancestor must not be a symlink: {ancestor}")
 
     directory = directory.parent.resolve() / directory.name
 
