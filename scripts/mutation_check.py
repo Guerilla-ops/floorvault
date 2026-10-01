@@ -428,9 +428,19 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PC-14",
         "src/floorvault/providers/platform_custody.py",
-        "        if path.exists():",
-        "        if False:  # MUTANT",
-        "No-clobber check disabled in the no-hard-link fallback, which then replaces the store",
+        "    except OSError as exc:\n"
+        "        raise ProtectedStoreError(\n"
+        '            f"atomic no-clobber publication is unavailable on the filesystem "\n'
+        '            f"holding {path} ({exc}); the store must live on a filesystem that "\n'
+        '            "supports hard links - refusing a non-atomic replace that could "\n'
+        '            "silently overwrite a concurrent writer\'s key"\n'
+        "        ) from exc",
+        "    except OSError:\n"
+        "        if path.exists():\n"
+        '            raise ProtectedStoreError("refusing to overwrite")  # MUTANT\n'
+        "        os.replace(temporary, path)  # MUTANT",
+        "Non-atomic check-then-replace publication fallback reintroduced: the "
+        "no-hard-links tests must kill it",
     ),
     Mutation(
         "PC-15",

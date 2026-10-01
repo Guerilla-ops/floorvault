@@ -194,7 +194,9 @@ def write_protected(
     :func:`_link_no_clobber`, which uses ``os.link`` - the OS fails that call if
     the destination exists, so there is no check-then-use window. Two processes
     starting at once therefore cannot both conclude "no store yet" and silently
-    rotate each other's key; exactly one wins and the loser fails loudly.
+    rotate each other's key; exactly one wins and the loser fails loudly. A
+    filesystem that cannot provide that atomicity fails closed rather than
+    falling back to a racy check-then-replace.
     """
     if expected_length is not None and len(key) != expected_length:
         raise ProtectedStoreInvalidLength(f"master key must be exactly {expected_length} bytes")
@@ -245,6 +247,13 @@ def _link_no_clobber(temporary: Path, path: Path) -> None:
     fails with ``FileExistsError``, with no window between checking and acting.
     (``renameat2(RENAME_NOREPLACE)`` would be the Linux-native equivalent but is
     not exposed by Python's ``os`` module, and ``os.replace`` always clobbers.)
+
+    There is deliberately no check-then-replace fallback. On a filesystem where
+    hard links are unavailable (some network or FAT volumes) a check followed
+    by ``os.replace`` is racy: two concurrent creators could each pass the
+    existence check and replace each other's store - silently rotating the
+    master key. A loud failure is the safe outcome, so other link failures are
+    refused rather than degraded.
     """
     try:
         os.link(temporary, path)
@@ -252,15 +261,13 @@ def _link_no_clobber(temporary: Path, path: Path) -> None:
         raise ProtectedStoreError(
             f"refusing to overwrite an existing protected store: {path}"
         ) from exc
-    except OSError:
-        # Hard links are unavailable on some filesystems (e.g. certain network or
-        # FAT volumes). Fall back to check-then-replace, which is NOT atomic: two
-        # concurrent writers could both win. Documented limitation, not a claim.
-        if path.exists():
-            raise ProtectedStoreError(
-                f"refusing to overwrite an existing protected store: {path}"
-            ) from None
-        os.replace(temporary, path)
+    except OSError as exc:
+        raise ProtectedStoreError(
+            f"atomic no-clobber publication is unavailable on the filesystem "
+            f"holding {path} ({exc}); the store must live on a filesystem that "
+            "supports hard links - refusing a non-atomic replace that could "
+            "silently overwrite a concurrent writer's key"
+        ) from exc
 
 
 def read_protected(path: Path, *, header: bytes, expected_length: int | None = 32) -> bytes:
