@@ -1,27 +1,46 @@
-# FloorVault
+<div align="center">
+  <h1>FloorVault</h1>
+  <p><strong>Context-bound, misuse-resistant field encryption for SQLite.</strong><br>
+  Protect sensitive values in ordinary Python <code>sqlite3</code> databases—without SQLCipher, a custom SQLite build, or a C extension.</p>
+  <p><a href="#quickstart">Quickstart</a> · <a href="#existing-sqlite-tables">SQLite adapter</a> · <a href="SECURITY.md">Security model</a></p>
+  <p>
+    <a href="https://pypi.org/project/floorvault/"><img src="https://img.shields.io/pypi/v/floorvault.svg" alt="PyPI version"></a>
+    <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10 and newer"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg" alt="MIT or Apache 2.0 license"></a>
+  </p>
+</div>
 
-[![PyPI](https://img.shields.io/pypi/v/floorvault.svg)](https://pypi.org/project/floorvault/)
-[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://www.python.org/)
-[![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg)](LICENSE)
+> **Beta software:** Review the [security model](SECURITY.md) before using FloorVault for production secrets.
 
-Contextual, misuse-resistant encryption for SQLite and local application data.
+## How it works
 
-FloorVault adds authenticated field-level encryption to ordinary Python `sqlite3` databases. Ciphertext is bound to the table, record, column, schema, and application instance where it belongs—without SQLCipher, a custom SQLite build, or a C extension.
+FloorVault authenticates each encrypted value against the place it belongs. A different table, record, column, schema, or application instance causes authentication to fail.
 
-> Beta software. Review the [security model](SECURITY.md) before using FloorVault for production secrets.
+```mermaid
+flowchart LR
+  value["Plaintext value"] --> seal["AES-256-SIV"]
+  master["32-byte master key"] --> derive["HKDF-SHA256"] --> seal
+  context["Authenticated context<br/>table · record · column<br/>schema/version · app instance"] -->|associated data| seal
+  seal --> ciphertext["Authenticated ciphertext"]
+  ciphertext --> database[("Your existing SQLite column")]
+  database --> verify["Authenticate and decrypt"]
+  context --> verify
+  changed["Changed context"] -->|different associated data| verify
+  verify -->|valid| plaintext["Plaintext"]
+  verify -->|authentication fails| reject["Reject ciphertext"]
+```
 
 ## Why FloorVault?
 
-- AES-256-SIV authenticated encryption (RFC 5297)
-- Context binding that rejects ciphertext relocation
-- HKDF-SHA256 key derivation
-- Best-effort hardened key memory (page locking; process core dumps disabled)
-- Native key custody for macOS, Windows, and Linux
-- Safe SQLite field storage and plaintext-to-encrypted migration
-- Resumable vault key rotation
-- Authenticated master-key recovery bundles
-- Opt-in searchable beacons over encrypted fields (`floorvault.beacons`) — a deliberate, documented leakage trade; off unless you ask for it
-- Standard-library-friendly integration with existing SQLite applications
+| Capability | What it gives you |
+| --- | --- |
+| **Authenticated encryption** | AES-256-SIV (RFC 5297) with HKDF-SHA256 key derivation. |
+| **Context binding** | Ciphertext is tied to its table, record, column, schema, and application instance. |
+| **Ordinary SQLite** | Field-level encryption for existing Python `sqlite3` databases; no SQLCipher, custom build, or C extension. |
+| **Key custody** | Native providers for macOS, Windows, and Linux; fail-closed behavior instead of a silent downgrade. |
+| **Lifecycle tools** | Safe field migration, resumable key rotation, and authenticated master-key recovery bundles. |
+| **Memory hardening** | Best-effort page locking and process core-dump limits, where supported. |
+| **Optional search** | Searchable beacons are opt-in and make their leakage trade explicit; see [Searchable beacons](#searchable-beacons-opt-in). |
 
 ## Install
 
@@ -41,25 +60,30 @@ macOS Keychain support is optional:
 uv add "floorvault[macos]"
 ```
 
+Linux Secret Service support is optional too:
+
+```bash
+uv add "floorvault[linux]"
+```
+
 A stock `pip install floorvault` does **not** give the key provider an OS store
-on every host: the macOS Keychain tier needs that extra, Windows uses DPAPI
-built in, Linux uses the Secret Service, and the local-file tier is off unless you
-enable it. On a host where none of those apply (macOS without the extra, a
-headless Linux container) `resolve_key()` fails closed with a `KeyProviderError`
-that names the remedies rather than writing an unprotected key. See
+on every host: macOS Keychain and Linux Secret Service need their platform extras,
+Windows uses DPAPI built in, and the local-file tier is off unless you enable it.
+If no usable provider applies (for example, macOS without its extra or a headless
+Linux container), `resolve_key()` fails closed with a `KeyProviderError` that
+names the remedies rather than writing an unprotected key. See
 [Key custody](#key-custody).
 
 ## Quickstart
 
+This example uses an available OS-backed key store. macOS Keychain support needs
+the `macos` extra; Linux Secret Service support needs the `linux` extra; Windows
+uses DPAPI. If no usable provider is available, key resolution fails closed. See
+[Key custody](#key-custody) for the options.
+
 ```python
 from floorvault import AdaptiveKeyProvider, FloorVault
 
-# Resolves from the OS store when one is available and usable: the macOS
-# Keychain (needs the `macos` extra), Windows DPAPI, or the Linux Secret Service.
-# Where no OS store applies, pass the key explicitly instead:
-#   from hex  -> FloorVault(bytes.fromhex(os.environ["APPSTATE_KEY"]), ...)
-# or opt in to a 0600 local key file:
-#   AdaptiveKeyProvider(service_name="my-app", allow_disk_fallback=True)
 master_key = AdaptiveKeyProvider(service_name="my-app").resolve_key()
 crypto = FloorVault(master_key, app_instance_id="my-app-instance")
 
