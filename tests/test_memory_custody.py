@@ -155,11 +155,16 @@ def test_required_mode_fails_when_core_dumps_cannot_be_disabled(monkeypatch):
     monkeypatch.setattr(mem, "is_macos", lambda: True)
     monkeypatch.setattr(mem, "is_linux", lambda: False)
     monkeypatch.setattr(mem, "is_windows", lambda: False)
-    monkeypatch.setattr(
-        mem.resource,
-        "setrlimit",
-        lambda *args: (_ for _ in ()).throw(OSError("denied")),
-    )
+    # The resource module is absent on Windows (memory.py imports it defensively),
+    # so there is nothing to patch there. The test body still holds on Windows:
+    # disable_core_dumps() returns False when resource is None, which drives the
+    # same SecurityHardeningError path below.
+    if mem.resource is not None:
+        monkeypatch.setattr(
+            mem.resource,
+            "setrlimit",
+            lambda *args: (_ for _ in ()).throw(OSError("denied")),
+        )
 
     with pytest.raises(mem.SecurityHardeningError, match="RLIMIT_CORE"):
         mem.HardenedMemoryKey(b"\x81" * 32, mode="required")
