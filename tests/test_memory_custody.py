@@ -2,6 +2,7 @@
 
 import gc
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -147,18 +148,22 @@ def test_required_mode_fails_closed_without_a_lock_backend(monkeypatch):
 def test_required_mode_fails_when_core_dumps_cannot_be_disabled(monkeypatch):
     """A failed setrlimit must not masquerade as protection under 'required'.
 
-    On POSIX the required guarantee includes RLIMIT_CORE=0; setrlimit failing
-    silently left a 'required' key in a process whose crash would dump it.
+    Simulate the POSIX resource API so this failure path is exercised on every
+    platform, including Windows where Python does not provide ``resource``.
     """
     import floorvault.memory as mem
 
     monkeypatch.setattr(mem, "is_macos", lambda: True)
     monkeypatch.setattr(mem, "is_linux", lambda: False)
     monkeypatch.setattr(mem, "is_windows", lambda: False)
+
+    def fail_setrlimit(*_args):
+        raise OSError("denied")
+
     monkeypatch.setattr(
-        mem.resource,
-        "setrlimit",
-        lambda *args: (_ for _ in ()).throw(OSError("denied")),
+        mem,
+        "resource",
+        SimpleNamespace(RLIMIT_CORE=0, setrlimit=fail_setrlimit),
     )
 
     with pytest.raises(mem.SecurityHardeningError, match="RLIMIT_CORE"):
