@@ -344,7 +344,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         "src/floorvault/providers/platform_custody.py",
         "    os.chmod(directory, 0o700)",
         "    pass  # MUTANT: existing directory is not hardened",
-        "Existing permissive vault base bypasses owner-only policy",
+        "Existing permissive vault base bypasses owner-only policy (POSIX-only: "
+        "on Windows os.chmod cannot set owner-only modes - ACLs govern access "
+        "and WD-* mutants cover that gate - so no test can kill this mutant)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "CANARY",
