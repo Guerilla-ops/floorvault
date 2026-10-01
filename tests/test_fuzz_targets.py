@@ -95,6 +95,22 @@ def test_the_envelope_target_detects_a_forgery(monkeypatch):
         module.TestOneInput(genuine)
 
 
+@pytest.mark.parametrize("path", TARGETS, ids=lambda path: path.stem)
+def test_seeds_written_by_one_process_hold_in_another(path: Path):
+    """ClusterFuzzLite writes the seed corpus at build time and fuzzes in a new process.
+
+    The envelope target once kept only envelopes encrypted (with random nonces)
+    by the *current* process as genuine. Its build-time seeds were real envelopes
+    under the fixed key, so the fuzzing process saw them authenticate, did not
+    recognise them, and reported its own seed corpus as a forgery - the first
+    ClusterFuzzLite run found exactly that. Loading the module twice reproduces
+    the two processes.
+    """
+    builder, fuzzer = _load(path), _load(path)
+    for seed in builder.seed_inputs():
+        fuzzer.TestOneInput(seed)
+
+
 def test_clusterfuzzlite_compiles_every_target_and_ships_its_seeds():
     build = (ROOT / ".clusterfuzzlite" / "build.sh").read_text(encoding="utf-8")
     assert "fuzz/fuzz_*.py" in build, "build.sh does not compile every fuzz target"

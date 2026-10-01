@@ -225,3 +225,8 @@ def test_clusterfuzzlite_builds_and_runs_with_the_token_a_private_repo_needs():
     assert cflite.count("github-token: ${{ secrets.GITHUB_TOKEN }}") == 2
     assert "language: python" in cflite
     assert "pull_request" in cflite, "a crash introduced by a PR would not fail the PR"
+
+
+def test_clusterfuzzlite_does_not_discard_a_crash_it_cannot_reproduce():
+    """The first run found a real crash, timed out reproducing it, and went green."""
+    assert "report-unreproducible-crashes: true" in _workflow("cflite.yml")

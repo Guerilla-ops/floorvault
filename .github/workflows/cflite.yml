@@ -26,6 +26,11 @@ jobs:
   fuzz:
     name: fuzz (${{ github.event_name == 'pull_request' && 'code-change' || 'batch' }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Lets run_fuzzers list previous runs' artifacts (corpus, builds); without
+      # it the download fails with 403 and every run starts from the seeds.
+      actions: read
     concurrency:
       group: cflite-${{ github.ref }}
       cancel-in-progress: true
@@ -44,3 +49,8 @@ jobs:
           sanitizer: address
           mode: ${{ github.event_name == 'pull_request' && 'code-change' || 'batch' }}
           fuzz-seconds: ${{ github.event_name == 'pull_request' && 300 || 1800 }}
+          # Fail on a crash even when the reproduction step cannot confirm it.
+          # Python fuzzer start-up is slow enough that reproduction can time out;
+          # the first run of this workflow found a real crash, failed to
+          # reproduce it for exactly that reason, discarded it, and went green.
+          report-unreproducible-crashes: true

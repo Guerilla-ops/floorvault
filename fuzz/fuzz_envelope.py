@@ -2,9 +2,14 @@
 
 Property: for *any* byte string, ``envelope_header`` and ``decrypt_bytes``
 either return or raise ``DecryptionVerificationError`` - never an internal error
-(``IndexError``, ``struct.error``, ...) - and decryption only succeeds for an
-envelope this process actually produced. Anything else authenticating would be
-a forgery.
+(``IndexError``, ``struct.error``, ...) - and decryption only succeeds for one of
+the genuine envelopes below. Anything else authenticating would be a forgery.
+
+The genuine envelopes are built with fixed nonces, so they are byte-identical in
+every process. The seed corpus is written by a different process (at build time)
+than the one fuzzing; with random nonces its genuine seeds would authenticate
+under the fixed key yet be missing from this process's set, and the forgery
+check would fire on its own seeds.
 
 Run under Atheris (ClusterFuzzLite does this): ``python fuzz/fuzz_envelope.py``.
 ``tests/test_fuzz_targets.py`` replays the same entry point without Atheris so
@@ -14,6 +19,7 @@ the property is also checked on every OS in the ordinary suite.
 from __future__ import annotations
 
 import sys
+from unittest import mock
 
 from floorvault import FloorVault
 from floorvault.core import RECORD_MAGIC, RECORD_MAGIC_V2, DecryptionVerificationError
@@ -21,12 +27,18 @@ from floorvault.core import envelope_header as parse_header
 
 _VAULT = FloorVault(bytes(range(32)), memory_mode="disabled")
 _COORDS = {"table": "t", "record_id": "r", "column": "c"}
-#: Genuine envelopes from this process. Decrypting anything else must fail.
-_GENUINE = {
-    _VAULT.encrypt(b"seed", **_COORDS): b"seed",
-    _VAULT.encrypt(b"", **_COORDS): b"",
-    _VAULT.encrypt("h\u00e9llo-\U0001f9ca", **_COORDS): "h\u00e9llo-\U0001f9ca".encode(),
-}
+_PLAINTEXTS = (b"seed", b"", "h\u00e9llo-\U0001f9ca".encode())
+
+
+def _genuine_envelopes() -> dict[bytes, bytes]:
+    """Encrypt each plaintext under a fixed, distinct nonce (deterministic output)."""
+    nonces = iter(bytes([index + 1]) * 16 for index in range(len(_PLAINTEXTS)))
+    with mock.patch("floorvault.core.os.urandom", side_effect=lambda size: next(nonces)):
+        return {_VAULT.encrypt(plaintext, **_COORDS): plaintext for plaintext in _PLAINTEXTS}
+
+
+#: The only envelopes that may authenticate. Decrypting anything else must fail.
+_GENUINE = _genuine_envelopes()
 
 
 def _require(condition: bool, message: str) -> None:
