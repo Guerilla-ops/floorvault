@@ -16,7 +16,7 @@ import json
 import os
 import secrets
 import sqlite3
-import subprocess
+import subprocess  # drives the inspector CLI as a real subprocess  # nosec B404
 import sys
 import tempfile
 import threading
@@ -488,9 +488,9 @@ def main() -> int:
     mig_dir.mkdir()
     fernet_key = Fernet.generate_key()
     legacy_items = {
-        "legacy-1": {"password": "pw-one", "label": "Old One"},
+        "legacy-1": {"password": "pw-one", "label": "Old One"},  # fixture  # nosec B105
         "legacy-2": {
-            "password": "pw-two",
+            "password": "pw-two",  # fixture  # nosec B105
             "identifier": "bob",
             "identifier_type": "username",
             "origin": "https://old.example",
@@ -734,7 +734,7 @@ def main() -> int:
     py = sys.executable
 
     def cli(*args) -> subprocess.CompletedProcess:
-        return subprocess.run(
+        return subprocess.run(  # argv is sys.executable plus fixed arguments  # nosec B603
             [py, "-m", "floorvault.inspector", *args],
             capture_output=True,
             text=True,
@@ -757,7 +757,7 @@ def main() -> int:
     r = cli("inspect", str(root / "nope.db"), "t", "r", "c")
     check("cli missing db -> exit 1", r.returncode == 1)
     env2 = dict(env, APPSTATE_KEY=secrets.token_bytes(32).hex())
-    r2 = subprocess.run(
+    r2 = subprocess.run(  # argv is sys.executable plus fixed arguments  # nosec B603
         [py, "-m", "floorvault.inspector", "inspect", str(idb), "secrets", "rec-1", "value"],
         capture_output=True,
         text=True,

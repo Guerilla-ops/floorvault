@@ -52,7 +52,7 @@ _REQUIRED_SECRETSTORAGE_API = ("dbus_init", "get_default_collection")
 #: The exception raised by ``secretstorage`` when no session bus / service is
 #: reachable. Named as a string so the contract test compares names rather than
 #: importing a package that is absent on non-Linux hosts.
-_SECRET_SERVICE_UNAVAILABLE_EXCEPTION = "SecretServiceNotAvailableException"
+_SECRET_SERVICE_UNAVAILABLE_EXCEPTION = "SecretServiceNotAvailableException"  # nosec B105
 
 #: ``secretstorage`` attribute key naming the application boundary.
 _ATTRIBUTE_APPLICATION = "application"
@@ -238,7 +238,7 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
             if callable(close):
                 try:
                     close()
-                except Exception:  # noqa: BLE001 - cleanup must not mask the result
+                except Exception:  # noqa: BLE001 - cleanup must not mask the result  # nosec B110
                     pass
 
     # ---- fallback custody (masked protected file) -------------------------

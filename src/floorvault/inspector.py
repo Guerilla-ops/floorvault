@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as error:
                 print(f"Error: {error}", file=sys.stderr)
                 return 1
-            query = f"SELECT {column} FROM {table} WHERE id = ?"
+            query = f"SELECT {column} FROM {table} WHERE id = ?"  # identifiers allow-listed  # nosec B608
             row = conn.execute(query, (args.record_id,)).fetchone()
             if not row:
                 print(

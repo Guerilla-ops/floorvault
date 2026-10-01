@@ -100,3 +100,29 @@ def test_gate_reports_the_archive_metadata_that_varies_by_platform():
     assert "[ARTIFACT]" in TEXT, "gate prints no archive metadata"
     for field in ("create_system", "tar_modes", "gzip_os_byte"):
         assert field in TEXT, f"gate does not report {field}"
+
+
+def test_lint_covers_the_fuzz_targets():
+    """fuzz/ decides what ClusterFuzzLite checks, so it is linted like scripts/."""
+    assert "ruff check src/ tests/ scripts/ fuzz/" in TEXT
+    assert "ruff format --check src/ tests/ scripts/ fuzz/" in TEXT
+
+
+def test_gate_runs_bandit_over_the_shipped_and_tooling_trees():
+    assert "require_tool bandit" in TEXT, "a missing Bandit must fail the strict gate"
+    assert "bandit -q -r src/ scripts/ fuzz/" in TEXT
+
+
+def test_gate_runs_semgrep_with_an_explicit_skip_knob():
+    """Semgrep runs once in CI, so the matrix legs need a documented opt-out."""
+    assert "require_tool semgrep" in TEXT
+    assert "semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/" in TEXT
+    assert "FLOORVAULT_SKIP_SEMGREP" in TEXT
+
+
+def test_gate_runs_the_third_party_wycheproof_vectors():
+    assert "pytest -q tests/test_wycheproof_vectors.py" in TEXT
+
+
+def test_gate_replays_the_coverage_guided_fuzz_targets():
+    assert "pytest -q tests/test_fuzz_targets.py" in TEXT

@@ -209,6 +209,7 @@ def _mkdir_owner_only(directory: Path) -> None:
         raise ValueError(f"vault path is not an owner-controlled directory: {directory}")
     if hasattr(os, "getuid") and final_stat.st_uid != os.getuid():
         raise ValueError(f"vault directory is not owned by the current user: {directory}")
+    # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
     os.chmod(directory, 0o700)
 
 

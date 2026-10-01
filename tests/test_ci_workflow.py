@@ -165,3 +165,63 @@ def test_the_secret_scanner_is_pinned_and_its_checksum_verified():
 def test_the_secret_scan_still_runs_over_full_history():
     """A shallow checkout would make a history scan meaningless."""
     assert "fetch-depth: 0" in TEXT
+
+
+# ---------------------------------------------------------------------------
+# Third-party assurance tooling
+#
+# Bandit, Semgrep CE, OpenSSF Scorecard and ClusterFuzzLite are external checks
+# on the repository. Each is only worth its green tick if it runs the command the
+# local gate runs, against pinned inputs, with no more token scope than it needs.
+# ---------------------------------------------------------------------------
+
+WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+GATE = (ROOT / "scripts" / "security-check.sh").read_text(encoding="utf-8")
+USES = re.compile(r"^\s*-?\s*uses:\s*(\S+)", re.MULTILINE)
+
+
+def _workflow(name: str) -> str:
+    return (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+
+
+def test_every_action_in_every_workflow_is_pinned_to_a_commit():
+    """A tag can be moved; a 40-hex commit cannot. Covers every workflow file."""
+    unpinned = [
+        f"{path.name}: {ref}"
+        for path in WORKFLOWS
+        for ref in USES.findall(path.read_text(encoding="utf-8"))
+        if not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", ref)
+    ]
+    assert not unpinned, f"actions not pinned to a full commit SHA: {unpinned}"
+
+
+def test_sast_job_runs_the_gates_own_commands():
+    for command in (
+        "bandit -q -r src/ scripts/ fuzz/",
+        "semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/",
+    ):
+        assert command in GATE, f"the gate no longer runs: {command}"
+        assert command in TEXT, f"the sast job does not run the gate's command: {command}"
+
+
+def test_semgrep_is_version_pinned_and_skipped_on_the_matrix_legs():
+    assert re.search(r"SEMGREP_VERSION=\d+\.\d+\.\d+", TEXT), "Semgrep version is not pinned"
+    assert "semgrep==${SEMGREP_VERSION}" in TEXT
+    assert 'FLOORVAULT_SKIP_SEMGREP: "1"' in TEXT, "every matrix leg would rerun Semgrep"
+
+
+def test_scorecard_runs_read_only_and_does_not_publish_a_private_repo():
+    scorecard = _workflow("scorecard.yml")
+    assert re.search(r"^permissions:\s*read-all\s*$", scorecard, re.MULTILINE)
+    assert "publish_results: false" in scorecard
+    assert "persist-credentials: false" in scorecard
+    assert "upload-sarif" in scorecard, "Scorecard findings never reach code scanning"
+
+
+def test_clusterfuzzlite_builds_and_runs_with_the_token_a_private_repo_needs():
+    cflite = _workflow("cflite.yml")
+    assert "clusterfuzzlite/actions/build_fuzzers@" in cflite
+    assert "clusterfuzzlite/actions/run_fuzzers@" in cflite
+    assert cflite.count("github-token: ${{ secrets.GITHUB_TOKEN }}") == 2
+    assert "language: python" in cflite
+    assert "pull_request" in cflite, "a crash introduced by a PR would not fail the PR"
