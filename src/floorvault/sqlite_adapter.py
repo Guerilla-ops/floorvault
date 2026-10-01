@@ -74,7 +74,7 @@ class EncryptedSQLiteTable:
             revision=revision,
         )
         cursor = self.connection.execute(
-            f"UPDATE {self.table_name} SET {column} = ? WHERE {self.id_column} = ?",
+            f"UPDATE {self.table_name} SET {column} = ? WHERE {self.id_column} = ?",  # identifiers allow-listed  # nosec B608
             (ciphertext, record_id),
         )
         if cursor.rowcount != 1:
@@ -138,7 +138,7 @@ class EncryptedSQLiteTable:
         """
         column = _safe_identifier(encrypted_column)
         row = self.connection.execute(
-            f"SELECT {column} FROM {self.table_name} WHERE {self.id_column} = ?",
+            f"SELECT {column} FROM {self.table_name} WHERE {self.id_column} = ?",  # identifiers allow-listed  # nosec B608
             (record_id,),
         ).fetchone()
         if row is None:

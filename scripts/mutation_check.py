@@ -35,7 +35,7 @@ import ast
 import concurrent.futures
 import os
 import shutil
-import subprocess
+import subprocess  # runs pytest on mutated checkouts  # nosec B404
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -760,7 +760,9 @@ def _run_tests(workdir: Path, tests: list[str], first_failure_only: bool) -> int
     # bytecode - the mutant then appears to survive because the original code
     # ran. Two full sweeps disagreed by 28 mutants until this was pinned down.
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    return subprocess.run(argv, cwd=workdir, capture_output=True, text=True, env=env).returncode
+    return subprocess.run(  # harness-built argv, no shell  # nosec B603
+        argv, cwd=workdir, capture_output=True, text=True, env=env
+    ).returncode
 
 
 def _classify(code: int) -> str:

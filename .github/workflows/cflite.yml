@@ -1,0 +1,56 @@
+name: ClusterFuzzLite
+
+# Coverage-guided fuzzing of the Atheris targets in fuzz/ (envelope parsing,
+# canonical AAD, the protected key-store reader, SQL identifier validation and
+# beacon encoding). Build integration lives in .clusterfuzzlite/.
+#
+# Pull requests fuzz for 5 minutes in code-change mode, so a crash introduced by
+# the PR fails it. Pushes to main and a weekly schedule run longer batch fuzzing.
+# There is no storage repository yet, so the corpus does not persist between
+# runs; each run starts from the seeds declared by the targets.
+#
+# The private repository needs the token passed to both steps.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 2 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz (${{ github.event_name == 'pull_request' && 'code-change' || 'batch' }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Lets run_fuzzers list previous runs' artifacts (corpus, builds); without
+      # it the download fails with 403 and every run starts from the seeds.
+      actions: read
+    concurrency:
+      group: cflite-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Build fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: python
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: address
+
+      - name: Run fuzzers
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: address
+          mode: ${{ github.event_name == 'pull_request' && 'code-change' || 'batch' }}
+          fuzz-seconds: ${{ github.event_name == 'pull_request' && 300 || 1800 }}
+          # Fail on a crash even when the reproduction step cannot confirm it.
+          # Python fuzzer start-up is slow enough that reproduction can time out;
+          # the first run of this workflow found a real crash, failed to
+          # reproduce it for exactly that reason, discarded it, and went green.
+          report-unreproducible-crashes: true

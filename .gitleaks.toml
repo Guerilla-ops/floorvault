@@ -1,0 +1,20 @@
+# Gitleaks configuration: the default ruleset, plus one path allowlist.
+#
+# The Project Wycheproof AES-SIV-CMAC vectors are public test data published by
+# C2SP: every "key" in them is a test key whose ciphertext is printed beside it.
+# The generic-api-key rule flags ~630 of those hex strings. They are allowlisted
+# by path rather than by .gitleaksignore fingerprint, because a fingerprint per
+# finding would be 630 commit-pinned lines that change whenever the files do.
+#
+# Why a path allowlist is safe here: tests/test_wycheproof_vectors.py pins both
+# files by SHA-256, so any edit to them - including smuggling a real secret into
+# an allowlisted file - fails the suite. The regex matches exactly those two
+# files and nothing else in the repository; tests/test_wycheproof_vectors.py
+# pins that too. Synthetic-fixture findings stay in .gitleaksignore.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Project Wycheproof public test vectors, pinned by SHA-256"
+paths = ['''^tests/vectors/wycheproof/(aes_siv_cmac|aead_aes_siv_cmac)_test\.json$''']

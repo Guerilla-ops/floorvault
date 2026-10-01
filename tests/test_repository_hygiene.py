@@ -29,7 +29,7 @@ from floorvault.core import FloorVault
 from floorvault.vaultkit.vault import VaultStore
 
 ROOT = Path(__file__).resolve().parent.parent
-SHIPPED_ROOTS = ("src", "tests", "scripts")
+SHIPPED_ROOTS = ("src", "tests", "scripts", "fuzz")
 
 
 def _mktemp_call_lines(source: str) -> list[int]:

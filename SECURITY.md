@@ -443,9 +443,26 @@ We prefer measured claims over marketing claims. Currently in place:
   round-trip, splice-immunity, and fail-closed behaviour on malformed input.
 - Static analysis, secret scanning, and dependency auditing in the automated
   checks run on every push (`scripts/security-check.sh`): `gitleaks` (secrets),
-  `ruff` (lint/format), `pip-audit` (dependency CVEs), the RFC vector suites,
+  `ruff` (lint/format), `bandit` and Semgrep CE (`p/python`) for security static
+  analysis, `pip-audit` (dependency CVEs), the RFC vector suites,
   the memory-custody/zeroization tests, the core crypto and splice-immunity
-  tests, the fuzz harness, and a universal-wheel build.
+  tests, the fuzz harness, and a universal-wheel build. Every accepted
+  static-analysis finding is a per-line suppression carrying its reason; none is
+  a blanket rule skip.
+- **Third-party test vectors**: all 1,342 Project Wycheproof AES-SIV-CMAC vectors
+  (deterministic and nonce-based, including FloorVault's exact 512-bit-key /
+  16-byte-nonce instantiation), vendored from a pinned upstream commit and
+  verified by SHA-256, run against PyCA and the independent RFC 5297
+  implementation (`tests/test_wycheproof_vectors.py`).
+- **Coverage-guided fuzzing** with ClusterFuzzLite (Atheris/libFuzzer) of the
+  envelope parser, canonical AAD encoding, the protected key-store reader, SQL
+  identifier validation and beacon encoding (`fuzz/`): five minutes on every
+  pull request, longer batch runs on `main` and weekly. The same properties are
+  replayed without Atheris on every OS in the ordinary suite.
+- **OpenSSF Scorecard** runs weekly and on `main`, reporting supply-chain posture
+  (pinned dependencies, token permissions, branch protection, ...) to code
+  scanning. Results are not published to the public Scorecard API while the
+  repository is private.
 - **Mutation testing of the security gate itself**: curated behavioural mutants
   of the custody, migration and envelope code must all be killed before
   the gate passes, with a canary mutant that must survive to prove the harness

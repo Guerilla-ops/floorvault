@@ -143,7 +143,7 @@ class HardenedMemoryKey:
                                 )
                                 == 0
                             )
-                        except Exception:
+                        except Exception:  # madvise hardening is best-effort  # nosec B110
                             pass
                     # Shield from child process fork copies
                     if MADV_DONTFORK is not None:
@@ -156,7 +156,7 @@ class HardenedMemoryKey:
                                 )
                                 == 0
                             )
-                        except Exception:
+                        except Exception:  # madvise hardening is best-effort  # nosec B110
                             pass
                 elif self._mode == "required":
                     raise SecurityHardeningError(
@@ -255,13 +255,13 @@ class HardenedMemoryKey:
                 try:
                     libc = ctypes.CDLL(None)
                     libc.munlock(self._buffer, ctypes.c_size_t(self._locked_size))
-                except Exception:
+                except Exception:  # best-effort unlock  # nosec B110
                     pass
             elif is_windows():
                 try:
                     kernel32 = ctypes.windll.kernel32
                     kernel32.VirtualUnlock(self._buffer, ctypes.c_size_t(self._locked_size))
-                except Exception:
+                except Exception:  # best-effort unlock  # nosec B110
                     pass
             self._locked = False
 
@@ -270,7 +270,7 @@ class HardenedMemoryKey:
         if self._mapping is not None:
             try:
                 self._mapping.close()
-            except Exception:
+            except Exception:  # mapping holds no key material by this point  # nosec B110
                 pass
             self._mapping = None
         self._mmap_base = None

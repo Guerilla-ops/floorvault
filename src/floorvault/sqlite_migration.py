@@ -53,14 +53,14 @@ def migrate_plaintext_column(
     )
     with connection:
         conflict = connection.execute(
-            f"SELECT 1 FROM {table} WHERE {source_column} IS NOT NULL "
+            f"SELECT 1 FROM {table} WHERE {source_column} IS NOT NULL "  # identifiers allow-listed  # nosec B608
             f"AND {destination_column} IS NOT NULL LIMIT 1"
         ).fetchone()
         if conflict is not None:
             raise ValueError("destination column already contains data")
 
         rows = connection.execute(
-            f"SELECT {id_column}, {source_column} FROM {table} WHERE {source_column} IS NOT NULL"
+            f"SELECT {id_column}, {source_column} FROM {table} WHERE {source_column} IS NOT NULL"  # identifiers allow-listed  # nosec B608
         ).fetchall()
         migrated = 0
         for record_id, plaintext in rows:
@@ -75,7 +75,7 @@ def migrate_plaintext_column(
                 column=destination_column,
             )
             cursor = connection.execute(
-                f"UPDATE {table} SET {destination_column} = ? WHERE {id_column} = ?",
+                f"UPDATE {table} SET {destination_column} = ? WHERE {id_column} = ?",  # identifiers allow-listed  # nosec B608
                 (ciphertext, record_id),
             )
             if cursor.rowcount != 1:
@@ -83,7 +83,7 @@ def migrate_plaintext_column(
             migrated += 1
 
         skipped_null = connection.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE {source_column} IS NULL"
+            f"SELECT COUNT(*) FROM {table} WHERE {source_column} IS NULL"  # identifiers allow-listed  # nosec B608
         ).fetchone()[0]
     return {"migrated": migrated, "skipped_null": int(skipped_null)}
 
@@ -102,7 +102,7 @@ def verify_encrypted_column(
         connection, crypto, table, id_column, source_column, destination_column
     )
     rows = connection.execute(
-        f"SELECT {id_column}, {source_column}, {destination_column} FROM {table} "
+        f"SELECT {id_column}, {source_column}, {destination_column} FROM {table} "  # identifiers allow-listed  # nosec B608
         f"WHERE {source_column} IS NOT NULL"
     ).fetchall()
     verified = 0

@@ -10,6 +10,10 @@
 #                                  fail closed, so a missing tool can never be
 #                                  mistaken for a passing check.
 #   FLOORVAULT_SKIP_SECRET_SCAN=1  skip the gitleaks history scan
+#   FLOORVAULT_SKIP_SEMGREP=1      skip the Semgrep CE scan (CI runs it once, on
+#                                  Linux, in its own job: the result does not
+#                                  depend on the OS, and each run fetches the
+#                                  registry rules over the network)
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -67,14 +71,37 @@ echo "=== 3. Running Static Analysis & Linting (Ruff) ==="
 # decides step 11 and the wheel verifier that decides step 10, so a regression
 # there must not be the one part of the tree CI never checks. The README's dev
 # commands are scoped to these same directories so the gate and the docs agree.
-ruff check src/ tests/ scripts/
-ruff format --check src/ tests/ scripts/
+ruff check src/ tests/ scripts/ fuzz/
+ruff format --check src/ tests/ scripts/ fuzz/
 echo "[PASS] Ruff: Zero lint or code quality violations."
+
+echo ""
+echo "=== 3a. Python Security Static Analysis (Bandit) ==="
+# tests/ is excluded deliberately: its asserts and fixture secrets are the point
+# of the tests, and every reviewed exception in the scanned tree is a per-line
+# `# nosec <id>` with its reason, never a blanket skip.
+if require_tool bandit; then
+    bandit -q -r src/ scripts/ fuzz/
+    echo "[PASS] Bandit: Zero unreviewed findings in src/, scripts/ and fuzz/."
+fi
+
+echo ""
+echo "=== 3b. Semgrep Community Edition (p/python) ==="
+if [ "${FLOORVAULT_SKIP_SEMGREP:-0}" = "1" ]; then
+    echo "[SKIP] Semgrep disabled (FLOORVAULT_SKIP_SEMGREP=1)."
+elif require_tool semgrep; then
+    semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/
+    echo "[PASS] Semgrep: Zero unreviewed findings in src/, scripts/ and fuzz/."
+fi
 
 echo ""
 echo "=== 4. Verifying Official RFC 5297 (AES-SIV) & RFC 5869 Test Vectors ==="
 pytest -q tests/test_rfc_vectors.py
 echo "[PASS] RFC Test Vectors: 100% byte-for-byte mathematical alignment."
+# Third-party adversarial vectors (Project Wycheproof, pinned by SHA-256): 1,342
+# AES-SIV-CMAC cases against PyCA and the independent from-spec implementation.
+pytest -q tests/test_wycheproof_vectors.py
+echo "[PASS] Wycheproof: every AES-SIV-CMAC vector agrees with both SIV implementations."
 
 echo ""
 echo "=== 5. Testing Hardware Memory Custody & Zeroization (mlock) ==="
@@ -95,6 +122,10 @@ echo ""
 echo "=== 8. Running Deterministic Fuzz Harness (adversarial crypto invariants) ==="
 pytest -q tests/test_fuzz.py
 echo "[PASS] Fuzz: round-trip, splice-immunity, and malformed-envelope invariants verified."
+# The coverage-guided ClusterFuzzLite targets (fuzz/), replayed without Atheris
+# so their properties are checked on every OS, not only on the Linux fuzzer.
+pytest -q tests/test_fuzz_targets.py
+echo "[PASS] Fuzz targets: every ClusterFuzzLite property holds over seeds and mutations."
 
 # The deep-dive regression scan pins the five reviewed vulnerability classes:
 # rotation/write handoff, schema-version type binding, migration collision
