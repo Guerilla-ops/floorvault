@@ -20,6 +20,18 @@ def _safe_identifier(name: str) -> str:
     return name
 
 
+def _quoted_identifier(name: str) -> str:
+    """Validate ``name`` and return it bracket-quoted for SQL interpolation.
+
+    Validation alone is not enough: allow-listed names such as ``TRUE`` or
+    ``CURRENT_TIMESTAMP`` still resolve as expressions when interpolated
+    unquoted. Brackets fail closed - an unmatched ``[name]`` is an error -
+    while a double-quoted unknown name silently degrades to a string literal.
+    The allow-list charset cannot produce ``]``, so no escape step is needed.
+    """
+    return ".".join(f"[{part}]" for part in _safe_identifier(name).split("."))
+
+
 class EncryptedSQLiteTable:
     """Store and load encrypted fields in an existing SQLite table.
 
@@ -48,6 +60,8 @@ class EncryptedSQLiteTable:
         self.table_name = _safe_identifier(table_name)
         self.id_column = _safe_identifier(id_column)
         self.schema_id = schema_id
+        self._table_sql = _quoted_identifier(table_name)
+        self._id_sql = _quoted_identifier(id_column)
 
     def store(
         self,
@@ -64,6 +78,7 @@ class EncryptedSQLiteTable:
         ``LookupError`` and does not insert a new row accidentally.
         """
         column = _safe_identifier(encrypted_column)
+        column_sql = _quoted_identifier(encrypted_column)
         ciphertext = self.crypto.encrypt(
             value,
             table=self.table_name,
@@ -74,7 +89,7 @@ class EncryptedSQLiteTable:
             revision=revision,
         )
         cursor = self.connection.execute(
-            f"UPDATE {self.table_name} SET {column} = ? WHERE {self.id_column} = ?",  # identifiers allow-listed  # nosec B608
+            f"UPDATE {self._table_sql} SET {column_sql} = ? WHERE {self._id_sql} = ?",  # identifiers allow-listed + quoted  # nosec B608
             (ciphertext, record_id),
         )
         if cursor.rowcount != 1:
@@ -137,8 +152,9 @@ class EncryptedSQLiteTable:
         invariants cannot drift apart between the text and bytes paths.
         """
         column = _safe_identifier(encrypted_column)
+        column_sql = _quoted_identifier(encrypted_column)
         row = self.connection.execute(
-            f"SELECT {column} FROM {self.table_name} WHERE {self.id_column} = ?",  # identifiers allow-listed  # nosec B608
+            f"SELECT {column_sql} FROM {self._table_sql} WHERE {self._id_sql} = ?",  # identifiers allow-listed + quoted  # nosec B608
             (record_id,),
         ).fetchone()
         if row is None:
