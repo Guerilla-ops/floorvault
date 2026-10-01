@@ -1,5 +1,15 @@
 # FloorVault Architecture and Cryptography Report
 
+> **SUPERSEDED (2026-10-01).** This report is a dated snapshot of commit
+> `123d1b97` and is **no longer accurate for `main`**. In particular, the
+> "search surface removed" statements below (including the §"Security impact of
+> removing search" section) were **reversed**: commit `133aa3b` (2026-09-23)
+> re-added `floorvault.beacons` as an opt-in public module, now documented in
+> `README.md` and `SECURITY.md` §5. The baseline figures here (`234 passed, 5
+> skipped`; commit `123d1b97`) are also stale — HEAD is `2aa9569` with `358
+> passed, 4 skipped`. Treat the beacon/search claims as historical only. See
+> `docs/DEEP-DIVE-REVIEW-2026-10-01.md` for the current state.
+
 **Reviewed commit:** `123d1b97a2ed93bcadd19853f6578e84acfcd503` plus the local search-surface removal change.
 
 **Evidence boundary:** This report uses executable source, tests, package configuration, security scripts, and `SECURITY.md`. `README.md` was not used as evidence.
@@ -9,6 +19,8 @@
 FloorVault is a Python application-layer encryption library built around `FloorVault`, a contextual AES-256-SIV engine, and `VaultStore`, a structured SQLite credential store. Key custody is separate from data encryption and supports explicit environment keys, Windows DPAPI, Linux Secret Service, macOS Keychain, and an explicitly enabled weaker file fallback.
 
 The application-level search surface has now been removed: `origin_idx`, `VaultStore.find_by_origin()`, full blind-index APIs, beacon APIs, and keyed FTS search projections are no longer part of the implementation. SQLite records are now retrieved by known identifiers or by an outer database/query layer such as SQLCipher.
+
+> **Correction (2026-10-01):** the beacon element of the above is no longer true. `floorvault.beacons` was re-added in commit `133aa3b` and is a shipped, opt-in public module (`README.md`, `SECURITY.md` §5). `origin_idx`, `find_by_origin()`, and the full blind-index APIs remain removed.
 
 ## Architecture
 

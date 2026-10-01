@@ -305,8 +305,10 @@ class MigratingVaultStore:
             # readable from the modern store.
             self._upgrade_legacy_item(item_id, item)
             migrated += 1
-        # 3. Verify every migrated item decrypts.
-        verified = self.verify()
+        # 3. Verify every migrated item decrypts.  Pass the legacy items already
+        # loaded above so verification does not decrypt and parse the legacy
+        # source a second time; the legacy source is unchanged by this method.
+        verified = self._verify(legacy)
         return {
             "migrated": migrated,
             "verified": verified,
@@ -325,11 +327,21 @@ class MigratingVaultStore:
         retirement tombstone. A legacy item that was never migrated (for
         example because an unrelated modern record happened to share its id)
         means the "migration" silently dropped it, so verification must fail.
+
+        The legacy source is always read fresh: a caller-supplied snapshot
+        could be incomplete or stale and would certify a migration that left
+        untombstoned items behind.
         """
+        try:
+            return self._verify(self._legacy_items())
+        except VaultError:
+            return False
+
+    def _verify(self, legacy: dict[str, dict[str, Any]]) -> bool:
+        """Verify against an authoritative legacy snapshot (never caller-supplied)."""
         try:
             ids = list(self.modern.list_items())
             retirements = self.modern.list_legacy_retirements()
-            legacy = self._legacy_items()
         except VaultError:
             return False
         present = {meta.id for meta in ids}

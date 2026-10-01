@@ -276,8 +276,13 @@ class FloorVault:
         reader can select the right key without guessing; this build uses a
         single derived subkey and writes ``0``.
         """
-        if self._closed:
-            raise RuntimeError("FloorVault has been wiped")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("FloorVault has been wiped")
+            # Snapshot the engine under the lock: a concurrent wipe() that clears
+            # the slot cannot tear this call mid-flight (the local reference keeps
+            # the engine alive), and the closed-check is atomic with the snapshot.
+            aead = self._aead_siv
         if isinstance(key_id, bool) or not isinstance(key_id, int):
             raise TypeError("key_id must be an integer in [0, 255]")
         if not 0 <= key_id <= 255:
@@ -312,7 +317,7 @@ class FloorVault:
         # AES-SIV encrypts with associated data components. The cleartext header
         # is one of them: a rewritten crypto_version or key_id is not merely
         # ignored, it fails authentication.
-        ciphertext = self._aead_siv.encrypt(data_bytes, [aad, header, nonce])
+        ciphertext = aead.encrypt(data_bytes, [aad, header, nonce])
 
         return bytes(header) + nonce + ciphertext
 
@@ -414,8 +419,10 @@ class FloorVault:
         Raises:
             DecryptionVerificationError: If tag check fails or coordinates were spliced.
         """
-        if self._closed:
-            raise RuntimeError("FloorVault has been wiped")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("FloorVault has been wiped")
+            aead = self._aead_siv
 
         header, _crypto_version, envelope_key_id, nonce, raw_cipher = self._split_envelope(
             ciphertext
@@ -433,9 +440,7 @@ class FloorVault:
         )
 
         try:
-            decrypted_bytes = self._aead_siv.decrypt(
-                raw_cipher, self._ad_components(aad, header, nonce)
-            )
+            decrypted_bytes = aead.decrypt(raw_cipher, self._ad_components(aad, header, nonce))
         except InvalidTag as exc:
             raise DecryptionVerificationError(
                 f"Contextual decryption verification failed for {table}.{column} "
@@ -465,8 +470,10 @@ class FloorVault:
         Use for values that were encrypted from bytes rather than str.
         ``revision`` and ``key_id`` semantics match :meth:`decrypt`.
         """
-        if self._closed:
-            raise RuntimeError("FloorVault has been wiped")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("FloorVault has been wiped")
+            aead = self._aead_siv
 
         header, _crypto_version, envelope_key_id, nonce, raw_cipher = self._split_envelope(
             ciphertext
@@ -483,7 +490,7 @@ class FloorVault:
             revision=revision,
         )
         try:
-            return self._aead_siv.decrypt(raw_cipher, self._ad_components(aad, header, nonce))
+            return aead.decrypt(raw_cipher, self._ad_components(aad, header, nonce))
         except InvalidTag as exc:
             raise DecryptionVerificationError(
                 f"Contextual decryption verification failed for {table}.{column} "
