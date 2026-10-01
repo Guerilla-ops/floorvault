@@ -151,6 +151,7 @@ def test_tampered_retirement_record_is_refused(tmp_path):
             (bytes([blob[0] ^ 0x01]) + blob[1:], legacy_id),
         )
         conn.commit()
+    conn.close()
 
     with pytest.raises(VaultError):
         modern.list_legacy_retirements()

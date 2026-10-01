@@ -10,7 +10,8 @@ import json
 import re
 import sqlite3
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -273,13 +274,24 @@ class VaultStore:
             self._remove_origin_index(conn)
             conn.execute("PRAGMA user_version = 2")
 
-    def _connect(self) -> sqlite3.Connection:
-        """Open a connection with residue-reduction pragmas applied."""
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a transaction-scoped connection that is always closed.
+
+        ``sqlite3.Connection`` as a context manager commits or rolls back but
+        never closes, so ``with conn`` alone leaks the handle to GC. Wrap both
+        boundaries here: the inner ``with conn`` preserves commit/rollback
+        semantics, the ``finally`` closes the descriptor.
+        """
         conn = sqlite3.connect(self._db_path)
-        conn.execute("PRAGMA secure_delete = ON")
-        conn.execute("PRAGMA journal_mode = DELETE")
-        conn.execute("PRAGMA synchronous = FULL")
-        return conn
+        try:
+            conn.execute("PRAGMA secure_delete = ON")
+            conn.execute("PRAGMA journal_mode = DELETE")
+            conn.execute("PRAGMA synchronous = FULL")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _migrate_plaintext_metadata(self, conn: sqlite3.Connection) -> None:
         """Encrypt legacy metadata rows while preserving their public API."""
