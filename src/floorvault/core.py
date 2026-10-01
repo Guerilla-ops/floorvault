@@ -254,7 +254,7 @@ class FloorVault:
 
     def encrypt(
         self,
-        plaintext: Union[str, bytes],
+        plaintext: Union[str, bytes, bytearray, memoryview],
         *,
         table: str,
         record_id: str,
@@ -283,7 +283,15 @@ class FloorVault:
         if not 0 <= key_id <= 255:
             raise ValueError("key_id must be an integer in [0, 255]")
 
-        data_bytes = plaintext.encode("utf-8") if isinstance(plaintext, str) else bytes(plaintext)
+        if isinstance(plaintext, str):
+            data_bytes = plaintext.encode("utf-8")
+        elif isinstance(plaintext, (bytes, bytearray, memoryview)):
+            data_bytes = bytes(plaintext)
+        else:
+            raise TypeError(
+                "plaintext must be str, bytes, bytearray, or memoryview, "
+                f"got {type(plaintext).__name__}"
+            )
         aad = associated_data(
             table=table,
             record_id=record_id,
