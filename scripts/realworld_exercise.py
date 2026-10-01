@@ -712,7 +712,7 @@ def main() -> int:
     check(
         "scrub redacts sk- and AWS key",
         "[REDACTED_SECRET]" in fts2 and "AKIAIOSFODNN7EXAMPLE" not in fts2,
-        fts2,
+        "fts scrubbed content validated",
     )
     check(
         "scrub standalone",
