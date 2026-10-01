@@ -285,3 +285,59 @@ def test_concurrent_encryption_thread_safety():
     # Verify nonces in queue match expected window size
     assert len(crypto._nonce_queue) == min(total_encryptions, 500)
     assert len(crypto._nonce_set) == min(total_encryptions, 500)
+
+
+def test_wipe_after_nonce_tracking_does_not_tear_encrypt(monkeypatch):
+    """A wipe() racing an in-flight encrypt() must not crash with AttributeError.
+
+    Deterministic reproduction of the wipe/encrypt race: wipe() is invoked from
+    inside _track_nonce, which runs *after* encrypt() has taken its engine
+    reference. The pre-fix code dereferenced ``self._aead_siv`` at the engine
+    call and crashed with ``AttributeError: 'NoneType' object has no attribute
+    'encrypt'``; the fix snapshots the engine first, so the call completes.
+    """
+    crypto = FloorVault(b"\x0b" * 32, memory_mode="disabled")
+    original_track = crypto._track_nonce
+
+    def track_then_wipe(nonce):
+        original_track(nonce)
+        crypto.wipe()
+
+    monkeypatch.setattr(crypto, "_track_nonce", track_then_wipe)
+    ciphertext = crypto.encrypt("payload", table="t", record_id="r", column="c")
+    # Completed without AttributeError: the engine snapshot kept the call alive.
+    assert isinstance(ciphertext, bytes)
+    # The wipe did land: a subsequent operation is correctly refused.
+    with pytest.raises(RuntimeError, match="wiped"):
+        crypto.encrypt("again", table="t", record_id="r2", column="c")
+
+
+def test_concurrent_wipe_never_raises_attribute_error():
+    """Stress the wipe/encrypt race: only RuntimeError('wiped') is acceptable."""
+    import concurrent.futures
+    import threading
+
+    for _ in range(25):
+        crypto = FloorVault(b"\x0c" * 32, memory_mode="disabled")
+        barrier = threading.Barrier(2)
+
+        def encrypt_worker():
+            barrier.wait()
+            for i in range(300):
+                try:
+                    ct = crypto.encrypt("payload", table="t", record_id=f"r{i}", column="c")
+                    crypto.decrypt(ct, table="t", record_id=f"r{i}", column="c")
+                except RuntimeError as exc:
+                    assert "wiped" in str(exc)
+                    return
+                except AttributeError as exc:  # the defect under test
+                    raise AssertionError(f"wipe() tore an in-flight operation: {exc}") from exc
+
+        def wipe_worker():
+            barrier.wait()
+            crypto.wipe()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(encrypt_worker), executor.submit(wipe_worker)]
+            for future in futures:
+                future.result()
