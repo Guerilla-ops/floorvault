@@ -56,6 +56,7 @@ def expect_raises(name: str, exc_types: tuple, fn, *args, **kwargs) -> bool:
 
 
 def main() -> int:
+    """Run end-to-end checks and print a report; return 1 on failures, otherwise 0."""
     import floorvault as fv
     from floorvault import beacons
     from floorvault.core import RECORD_MAGIC_V2
