@@ -365,4 +365,4 @@ FloorVault is dual-licensed under:
 - [MIT](LICENSE-MIT)
 - [Apache License 2.0](LICENSE-APACHE)
 
-Copyright © Scott Lee.
+
