@@ -7,10 +7,20 @@ uv and friends); we assert its shape so a refactor cannot silently break CI.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "security-check.sh"
 TEXT = SCRIPT.read_text(encoding="utf-8")
+
+
+def _has_line(expected: str) -> bool:
+    """True iff ``expected`` is a whole, uncommented line of the script.
+
+    A substring check also passes when the command is commented out, which is
+    exactly the regression these assertions exist to catch.
+    """
+    return re.search(rf"^[ \t]*{re.escape(expected)}[ \t]*$", TEXT, re.MULTILINE) is not None
 
 
 def test_script_is_fail_fast():
@@ -104,25 +114,25 @@ def test_gate_reports_the_archive_metadata_that_varies_by_platform():
 
 def test_lint_covers_the_fuzz_targets():
     """fuzz/ decides what ClusterFuzzLite checks, so it is linted like scripts/."""
-    assert "ruff check src/ tests/ scripts/ fuzz/" in TEXT
-    assert "ruff format --check src/ tests/ scripts/ fuzz/" in TEXT
+    assert _has_line("ruff check src/ tests/ scripts/ fuzz/")
+    assert _has_line("ruff format --check src/ tests/ scripts/ fuzz/")
 
 
 def test_gate_runs_bandit_over_the_shipped_and_tooling_trees():
-    assert "require_tool bandit" in TEXT, "a missing Bandit must fail the strict gate"
-    assert "bandit -q -r src/ scripts/ fuzz/" in TEXT
+    assert _has_line("if require_tool bandit; then"), "a missing Bandit must fail the strict gate"
+    assert _has_line("bandit -q -r src/ scripts/ fuzz/")
 
 
 def test_gate_runs_semgrep_with_an_explicit_skip_knob():
     """Semgrep runs once in CI, so the matrix legs need a documented opt-out."""
-    assert "require_tool semgrep" in TEXT
-    assert "semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/" in TEXT
-    assert "FLOORVAULT_SKIP_SEMGREP" in TEXT
+    assert _has_line("elif require_tool semgrep; then")
+    assert _has_line("semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/")
+    assert _has_line('if [ "${FLOORVAULT_SKIP_SEMGREP:-0}" = "1" ]; then')
 
 
 def test_gate_runs_the_third_party_wycheproof_vectors():
-    assert "pytest -q tests/test_wycheproof_vectors.py" in TEXT
+    assert _has_line("pytest -q tests/test_wycheproof_vectors.py")
 
 
 def test_gate_replays_the_coverage_guided_fuzz_targets():
-    assert "pytest -q tests/test_fuzz_targets.py" in TEXT
+    assert _has_line("pytest -q tests/test_fuzz_targets.py")
