@@ -122,6 +122,66 @@ def test_binary_payload_round_trip():
         crypto.decrypt(ct, table="t", record_id="r", column="c")
 
 
+@pytest.mark.parametrize("bad", [10, [104, 105], None, object()])
+def test_encrypt_rejects_non_string_plaintext_types(tmp_path, bad):
+    """Unrelated bytes-convertible inputs must not be silently authenticated.
+
+    bytes(10) is ten zero bytes, not "10" — encrypting it would mint valid
+    ciphertext for a value the caller never meant to write. The annotation
+    says str | bytes; the runtime contract must match.
+    """
+    crypto = FloorVault(b"\x09" * 32, memory_mode="disabled")
+    with pytest.raises(TypeError, match="plaintext"):
+        crypto.encrypt(bad, table="t", record_id="r", column="c")
+
+
+def test_encrypt_type_rejection_consumes_no_nonce(tmp_path):
+    """Rejected plaintext must fail before nonce generation/tracking.
+
+    A rejected call has no cryptographic side effects: callers cannot burn
+    bounded nonce-window capacity through API misuse.
+    """
+    crypto = FloorVault(b"\x0a" * 32, maximum_tracked_nonces=4, memory_mode="disabled")
+    for _ in range(8):
+        with pytest.raises(TypeError):
+            crypto.encrypt(42, table="t", record_id="r", column="c")
+    assert len(crypto._nonce_queue) == 0
+    assert len(crypto._nonce_set) == 0
+
+    # The engine is unaffected and still functional.
+    crypto.encrypt("ok", table="t", record_id="r", column="c")
+
+
+@pytest.mark.parametrize(
+    "buf",
+    [
+        bytearray(b"mutable payload"),
+        memoryview(b"view payload"),
+    ],
+    ids=["bytearray", "memoryview"],
+)
+def test_encrypt_accepts_explicit_binary_buffers(tmp_path, buf):
+    """Mutable/buffer inputs are part of the contract: bytes-equivalent."""
+    crypto = FloorVault(b"\x0b" * 32, memory_mode="disabled")
+    ct = crypto.encrypt(buf, table="t", record_id="r", column="c")
+    assert crypto.decrypt_bytes(ct, table="t", record_id="r", column="c") == bytes(buf)
+
+
+def test_bytearray_plaintext_matches_bytes_ciphertext_contract(tmp_path):
+    """A bytearray encrypts identically to the equivalent bytes value.
+
+    SIV is deterministic given identical inputs; encrypting the same
+    coordinate+nonce is impossible, so compare the *decrypted* bytes and
+    verify the bytearray path produces a standard envelope.
+    """
+    crypto = FloorVault(b"\x0c" * 32, memory_mode="disabled")
+    from floorvault.core import RECORD_MAGIC_V2
+
+    ct = crypto.encrypt(bytearray(b"same"), table="t", record_id="r", column="c")
+    assert ct[: len(RECORD_MAGIC_V2)] == RECORD_MAGIC_V2
+    assert crypto.decrypt_bytes(ct, table="t", record_id="r", column="c") == b"same"
+
+
 def test_engine_wipe_lifecycle():
     crypto = FloorVault(b"\x05" * 32, memory_mode="disabled")
     ciphertext = crypto.encrypt("data", table="t", record_id="r", column="c")
