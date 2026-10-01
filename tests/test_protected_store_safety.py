@@ -787,3 +787,28 @@ def test_mkdir_owner_only_rejects_direct_symlink(tmp_path):
     link.symlink_to(real, target_is_directory=True)
     with pytest.raises(ValueError, match="must not be a symlink"):
         custody._mkdir_owner_only(link)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows symlink creation in pytest tmp dirs is unreliable",
+)
+def test_mkdir_owner_only_rejects_a_symlinked_ancestor(tmp_path):
+    """A user-controlled symlink in a *parent* must not redirect the vault.
+
+    Regression: before this check, ``_mkdir_owner_only`` resolved every ancestor
+    with ``Path.resolve()`` before validating them, so a symlinked parent was
+    silently followed to an attacker-chosen target. Only root-owned system
+    firmlinks (macOS /tmp, /var) are exempt; a symlink in a user-writable parent
+    is refused.
+    """
+    real = tmp_path / "real_dir"
+    real.mkdir()
+    link = tmp_path / "ancestor_link"
+    link.symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="ancestor must not be a symlink"):
+        custody._mkdir_owner_only(link / "nested" / "vault")
+
+    # The redirect target was never populated through the link.
+    assert not (real / "nested").exists()
