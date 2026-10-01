@@ -93,6 +93,7 @@ def test_search_surface_is_removed_from_public_and_vault_store_apis(tmp_path):
     VaultStore(tmp_path / "vault", crypto=FloorVault(b"x" * 32, memory_mode="disabled"))
     with sqlite3.connect(tmp_path / "vault" / "vault.db") as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(vault_items)")}
+    conn.close()
     assert "origin_idx" not in columns
 
 

@@ -416,6 +416,8 @@ def test_documented_beacon_workflow_round_trips_in_sqlite(tmp_path):
 
         assert confirmed == ["user-137"], "decrypt-and-compare must isolate exactly one row"
 
+    connection.close()
+
 
 def test_documented_workflow_finds_nothing_for_an_absent_value(tmp_path):
     """A lookup for a value that was never stored must confirm nothing."""
@@ -451,6 +453,7 @@ def test_documented_workflow_finds_nothing_for_an_absent_value(tmp_path):
         rows = connection.execute(
             "SELECT id, email_cipher FROM users WHERE email_beacon = ?", (bucket,)
         ).fetchall()
+    connection.close()
 
     for candidate_id, ciphertext in rows:
         assert (

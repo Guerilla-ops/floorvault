@@ -59,6 +59,25 @@ def test_vault_store_lifecycle(tmp_path):
     assert len(store.list_items()) == 0
 
 
+def test_connect_closes_the_connection_on_normal_exit(tmp_path):
+    crypto = FloorVault(b"\x29" * 32, memory_mode="disabled")
+    store = VaultStore(tmp_path / "vault", crypto=crypto)
+    with store._connect() as conn:
+        captured = conn
+    with pytest.raises(sqlite3.ProgrammingError):
+        captured.execute("SELECT 1")
+
+
+def test_connect_closes_the_connection_on_error(tmp_path):
+    crypto = FloorVault(b"\x2a" * 32, memory_mode="disabled")
+    store = VaultStore(tmp_path / "vault", crypto=crypto)
+    with pytest.raises(sqlite3.IntegrityError), store._connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO vault_items (id) VALUES (NULL)")
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
+
+
 def test_vault_migrates_legacy_plaintext_metadata(tmp_path):
     db_dir = tmp_path / "legacy"
     db_dir.mkdir()
@@ -88,6 +107,7 @@ def test_vault_migrates_legacy_plaintext_metadata(tmp_path):
                 b"cipher",
             ),
         )
+    conn.close()
 
     store = VaultStore(db_dir, crypto=FloorVault(b"\x25" * 32, memory_mode="disabled"))
     assert store.list_items()[0].label == "Legacy"
@@ -116,10 +136,12 @@ def test_vault_removes_legacy_origin_index_column(tmp_path):
             "INSERT INTO vault_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             ("legacy", "generic", b"label", None, b"old-index", None, None, 0, b"date", b"payload"),
         )
+    conn.close()
 
     VaultStore(db_dir, crypto=FloorVault(b"\x28" * 32, memory_mode="disabled"))
     with sqlite3.connect(db_path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(vault_items)")}
+    conn.close()
     assert "origin_idx" not in columns
 
 
@@ -135,6 +157,7 @@ def test_vault_rejects_plaintext_metadata_after_migration(tmp_path):
 
     with sqlite3.connect(tmp_path / "vault" / "vault.db") as conn:
         conn.execute("UPDATE vault_items SET label = ? WHERE id = ?", ("forged", item.id))
+    conn.close()
 
     with pytest.raises(VaultError, match="plaintext metadata"):
         VaultStore(tmp_path / "vault", crypto=FloorVault(b"\x26" * 32, memory_mode="disabled"))
