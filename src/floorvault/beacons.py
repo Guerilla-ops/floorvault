@@ -72,14 +72,26 @@ _BEACON_KEY_INFO = b"floorvault-v1-beacon-index"
 _KEY_BYTES = 32
 
 
+def _coerce_key_material(
+    key: Union[bytes, bytearray, HardenedMemoryKey], *, what: str
+) -> bytes | bytearray:
+    """Coerce a key argument to raw key bytes, accepting a hardened handle.
+
+    Shared by :func:`compute_beacon` (key, at least ``_KEY_BYTES``) and
+    :func:`derive_beacon_key` (master key, exactly ``_KEY_BYTES``) so the
+    isinstance dispatch and type error live in one place. Callers apply their
+    own length contract on top.
+    """
+    if isinstance(key, HardenedMemoryKey):
+        return key.get_bytes()
+    if isinstance(key, (bytes, bytearray)):
+        return key
+    raise TypeError(f"{what} must be bytes, bytearray, or HardenedMemoryKey")
+
+
 def _validate_key(key: Union[bytes, bytearray, HardenedMemoryKey]) -> bytes:
     """Return 32+ bytes of key material, accepting a hardened handle."""
-    if isinstance(key, HardenedMemoryKey):
-        key_bytes: bytes | bytearray = key.get_bytes()
-    elif isinstance(key, (bytes, bytearray)):
-        key_bytes = key
-    else:
-        raise TypeError("beacon key must be bytes, bytearray, or HardenedMemoryKey")
+    key_bytes = _coerce_key_material(key, what="beacon key")
     if len(key_bytes) < _KEY_BYTES:
         raise ValueError(f"beacon key must be at least {_KEY_BYTES} bytes")
     return bytes(key_bytes)
@@ -180,12 +192,7 @@ def derive_beacon_key(master_key: Union[bytes, bytearray, HardenedMemoryKey]) ->
     handle, the derived key is returned to the caller and is that caller's to
     wipe; :class:`BeaconIndexer` never retains more than the object it is given.
     """
-    if isinstance(master_key, HardenedMemoryKey):
-        source: bytes | bytearray = master_key.get_bytes()
-    elif isinstance(master_key, (bytes, bytearray)):
-        source = master_key
-    else:
-        raise TypeError("master key must be bytes, bytearray, or HardenedMemoryKey")
+    source = _coerce_key_material(master_key, what="master key")
     if len(source) != _KEY_BYTES:
         raise ValueError(f"master key must be exactly {_KEY_BYTES} bytes")
     return HKDF(
