@@ -321,8 +321,11 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "DS-2",
         "src/floorvault/core.py",
-        "    if isinstance(schema_version, bool) or not isinstance(schema_version, int):",
-        "    if False:  # MUTANT: schema version validation disabled",
+        # The \n pins the anchor to line start: the same schema_version check
+        # also exists inside _validate_aad_mid at method indent, and a
+        # substring anchor would match inside that deeper-indented line.
+        "\n    if isinstance(schema_version, bool) or not isinstance(schema_version, int):",
+        "\n    if False:  # MUTANT: schema version validation disabled",
         "Non-integer schema versions collapse into integer AAD contexts",
     ),
     Mutation(
