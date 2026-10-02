@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from typing import Union
+from typing import Mapping, Union
 
 from .core import FloorVault
 
@@ -140,6 +140,111 @@ class EncryptedSQLiteTable:
             table=self.table_name,
             record_id=record_id,
             column=column,
+            schema_id=self.schema_id,
+            schema_version=schema_version,
+            revision=revision,
+        )
+
+    def store_fields(
+        self,
+        record_id: str,
+        fields: Mapping[str, Union[str, bytes]],
+        *,
+        schema_version: int = 1,
+        revision: int | None = None,
+    ) -> None:
+        """Encrypt several columns and update one record in a single statement.
+
+        Equivalent to calling :meth:`store` per field, but one ``UPDATE`` and
+        one shared AAD build replace a statement and a full AAD construction
+        per field. The caller must still call ``connection.commit()``.
+        """
+        columns = [_safe_identifier(name) for name in fields]
+        if not columns:
+            raise ValueError("fields must not be empty")
+        envelopes = self.crypto.encrypt_fields(
+            fields,
+            table=self.table_name,
+            record_id=record_id,
+            schema_id=self.schema_id,
+            schema_version=schema_version,
+            revision=revision,
+        )
+        assignments = ", ".join(f"{_quoted_identifier(column)} = ?" for column in columns)
+        cursor = self.connection.execute(
+            f"UPDATE {self._table_sql} SET {assignments} WHERE {self._id_sql} = ?",  # identifiers allow-listed + quoted  # nosec B608
+            (*(envelopes[column] for column in columns), record_id),
+        )
+        if cursor.rowcount != 1:
+            raise LookupError(f"record not found: {record_id!r}")
+
+    def load_fields(
+        self,
+        record_id: str,
+        encrypted_columns: list[str] | tuple[str, ...],
+        *,
+        schema_version: int = 1,
+        revision: int | None = None,
+    ) -> dict[str, str]:
+        """Load and decrypt several fields of one record with one SELECT.
+
+        Same "exactly one existing record" and NULL invariants as
+        :meth:`load`; values must decode as UTF-8 (use :meth:`load_fields_bytes`
+        for columns stored from ``bytes``).
+        """
+        raw = self._fetch_and_decrypt_fields(
+            record_id, encrypted_columns, schema_version=schema_version, revision=revision
+        )
+        decoded: dict[str, str] = {}
+        for column, value in raw.items():
+            try:
+                decoded[column] = value.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError(
+                    f"encrypted field {self.table_name}.{column} is not valid UTF-8; "
+                    "use load_fields_bytes() for binary values"
+                ) from exc
+        return decoded
+
+    def load_fields_bytes(
+        self,
+        record_id: str,
+        encrypted_columns: list[str] | tuple[str, ...],
+        *,
+        schema_version: int = 1,
+        revision: int | None = None,
+    ) -> dict[str, bytes]:
+        """Load and decrypt several fields of one record as raw bytes."""
+        return self._fetch_and_decrypt_fields(
+            record_id, encrypted_columns, schema_version=schema_version, revision=revision
+        )
+
+    def _fetch_and_decrypt_fields(
+        self,
+        record_id: str,
+        encrypted_columns: list[str] | tuple[str, ...],
+        *,
+        schema_version: int,
+        revision: int | None,
+    ) -> dict[str, bytes]:
+        columns = [_safe_identifier(name) for name in encrypted_columns]
+        if not columns:
+            return {}
+        row = self.connection.execute(
+            f"SELECT {', '.join(_quoted_identifier(c) for c in columns)} "
+            f"FROM {self._table_sql} WHERE {self._id_sql} = ?",  # identifiers allow-listed + quoted  # nosec B608
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            raise LookupError(f"record not found: {record_id!r}")
+        envelopes = dict(zip(columns, row))
+        for column, value in envelopes.items():
+            if value is None:
+                raise ValueError(f"encrypted field is NULL: {self.table_name}.{column}")
+        return self.crypto.decrypt_fields(
+            envelopes,
+            table=self.table_name,
+            record_id=record_id,
             schema_id=self.schema_id,
             schema_version=schema_version,
             revision=revision,
