@@ -36,7 +36,7 @@ import stat
 import warnings
 from pathlib import Path
 
-from ..platform_support import binary_mode_flag, is_windows, store_permission_problem
+from ..platform_support import binary_mode_flag, store_permission_problem
 
 #: Upper bound for a protected store, i.e. the read buffer. A DPAPI blob is a few
 #: hundred bytes; anything approaching this is not a store we wrote.
@@ -271,9 +271,13 @@ def _fsync_directory(directory: Path) -> None:
     ``os.fsync`` on the file alone does not durable-publish its directory
     entry: a power cut between the link and the kernel's next metadata flush
     can still lose the store. NTFS journals directory metadata itself and
-    Python cannot fsync a directory on Windows, so this is a no-op there.
+    Python cannot open a directory for fsync on Windows, so this is a no-op
+    there. The check is ``os.name`` rather than ``is_windows()`` on purpose:
+    tests simulate POSIX custody checks on Windows by monkeypatching the
+    latter, but the real kernel decides whether a directory fsync is even
+    possible.
     """
-    if is_windows():
+    if os.name != "posix":
         return
     descriptor = os.open(
         directory,
