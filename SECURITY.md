@@ -443,7 +443,9 @@ We prefer measured claims over marketing claims. Currently in place:
   round-trip, splice-immunity, and fail-closed behaviour on malformed input.
 - Static analysis, secret scanning, and dependency auditing in the automated
   checks run on every push (`scripts/security-check.sh`): `gitleaks` (secrets),
-  `ruff` (lint/format), `bandit` and Semgrep CE (`p/python`) for security static
+  `ruff` (lint/format), `bandit` and Semgrep CE (vendored ruleset
+  `.semgrep/floorvault.yml`, so CI does not float on registry updates) for
+  security static
   analysis, `pip-audit` (dependency CVEs), the RFC vector suites,
   the memory-custody/zeroization tests, the core crypto and splice-immunity
   tests, the fuzz harness, and a universal-wheel build. Every accepted
