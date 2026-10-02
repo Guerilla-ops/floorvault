@@ -191,7 +191,18 @@ class VaultItemMeta:
 
 
 class VaultStore:
-    """floorvault-backed vault store backed by FloorVault."""
+    """floorvault-backed vault store backed by FloorVault.
+
+    Storage leakage contract: every secret payload and all descriptive
+    metadata (label, origin, identifier_login/url, created_at) is sealed
+    under contextual AAD. ``id``, ``kind``, ``has_otp`` and
+    ``decommissioned_at`` stay cleartext columns so item listings, OTP status
+    and tombstoning stay queryable without decrypting every row - an observer
+    of the file therefore learns item count, ids and kinds, but nothing that
+    identifies or reconstructs a secret. Callers for whom even item kinds are
+    sensitive should encrypt them into the metadata JSON instead (at the cost
+    of losing indexed listings), not widen this schema.
+    """
 
     def __init__(self, base_dir: Path | str, *, crypto: Optional[FloorVault] = None):
         self._base = Path(base_dir)

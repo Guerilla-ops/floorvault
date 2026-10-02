@@ -232,6 +232,21 @@ material.
   provide Keychain, DPAPI, Secure Enclave, or hardware-backed confidentiality.
   Use an OS-native provider or external secret source when that boundary is
   required.
+- **`wipe()` zeroes only the buffers FloorVault manages.** `FloorVault.wipe()`
+  and `HardenedMemoryKey.wipe()` deterministically zero the locked/mapped key
+  buffers under the library's control. They cannot reach key copies made
+  inside the `cryptography` library's AEAD engine (released unzeroed on
+  garbage collection), `bytes` intermediates held by the caller or produced
+  during derivation, or copies made by providers before custody transfers.
+  Treat `wipe()` as relinquishing FloorVault's own custody, not as proof that
+  no key material remains anywhere in the process.
+- **Removing a migrated plaintext column requires residue-aware cleanup.**
+  `migrate_plaintext_column` never deletes the plaintext source, and a plain
+  `DROP COLUMN` afterwards leaves the plaintext readable in freed pages and
+  the WAL. `drop_plaintext_column` arms `secure_delete`, truncates the WAL,
+  and optionally `VACUUM`s — which scrubs the database file's pages but still
+  cannot erase filesystem-level block slack; only destroying the file
+  guarantees complete removal.
 
 **A third limit, specific to migration:**
 
