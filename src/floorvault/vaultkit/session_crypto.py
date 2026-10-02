@@ -5,6 +5,37 @@ from __future__ import annotations
 import re
 
 from ..core import FloorVault
+from .vault import VaultError
+
+
+def _compose_record_id(session_id: str, message_id: str, *, allow_empty: bool) -> str:
+    """Join session and message ids into one bound ``record_id``.
+
+    ``\x00`` is the separator, so it must not occur inside either component:
+    ``("a", "b\\x00c")`` and ``("a\\x00b", "c")`` would otherwise map to the
+    same record_id, and a ciphertext sealed under one logical
+    (session, message) coordinate would decrypt under the other - the
+    splice-resistance the AAD binding exists for. The same class of defect was
+    removed from beacons by length-prefixing; here the invariant is enforced
+    instead, keeping existing NUL-free records readable.
+
+    With NUL banned the composition is injective even over empty parts, so
+    emptiness is refused only where it matters: the write path
+    (``allow_empty=False``) keeps new records well-formed, while the read path
+    (``allow_empty=True``) must still open records written before the refusal
+    existed, which can carry an empty component.
+    """
+    for name, part in (("session_id", session_id), ("message_id", message_id)):
+        if not isinstance(part, str) or (not part and not allow_empty):
+            raise VaultError(f"{name} must be a non-empty string")
+        if "\x00" in part:
+            raise VaultError(
+                f"{name} must not contain NUL bytes: the \\x00 separator would "
+                "make distinct (session_id, message_id) pairs bind to the same "
+                "record_id"
+            )
+    return f"{session_id}\x00{message_id}"
+
 
 # Common secret regex patterns (API keys, bearer tokens) for FTS5 scrubbing
 SECRET_PATTERNS = [
@@ -59,7 +90,7 @@ class SessionCrypto:
         payload_cipher = self.crypto.encrypt(
             content,
             table="messages",
-            record_id=f"{session_id}\x00{message_id}",
+            record_id=_compose_record_id(session_id, message_id, allow_empty=False),
             column="content",
         )
         fts_text = scrub_secrets_for_fts(content) if self.allow_plaintext_fts else ""
@@ -76,6 +107,6 @@ class SessionCrypto:
         return self.crypto.decrypt(
             payload_cipher,
             table="messages",
-            record_id=f"{session_id}\x00{message_id}",
+            record_id=_compose_record_id(session_id, message_id, allow_empty=True),
             column="content",
         )

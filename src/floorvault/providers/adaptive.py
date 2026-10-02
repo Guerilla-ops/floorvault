@@ -66,6 +66,15 @@ class AdaptiveKeyProvider(KeyProvider):
         for var_name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
             val = os.environ.get(var_name)
             if val:
+                if var_name == "APPSTATE_KEY":
+                    warnings.warn(
+                        "APPSTATE_KEY is a legacy, non-namespaced variable name; "
+                        "prefer FLOOR_VAULT_KEY or VAULT_MASTER_KEY so a value "
+                        "set for another tool cannot be silently adopted as the "
+                        "vault master key",
+                        UserWarning,
+                        stacklevel=2,
+                    )
                 raw_bytes: bytes
                 clean_val = val.strip()
                 if len(clean_val) != 64:

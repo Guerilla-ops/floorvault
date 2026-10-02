@@ -209,15 +209,16 @@ class FloorVault:
                 length=64,
                 salt=None,
                 info=b"floorvault-v1-aes-siv",
-            ).derive(bytes(master_buffer))
+            ).derive(master_buffer)
 
             # 3. Pin derived subkeys into physical RAM containers
             self._siv_key = HardenedMemoryKey(raw_siv, mode=memory_mode)
 
-            # Initialize AES-SIV engine
-            siv_key_bytes = self._siv_key.get_bytes()
-            self._aead_siv = AESSIV(siv_key_bytes)
-            del siv_key_bytes
+            # Initialize AES-SIV engine straight from the locked buffer: a
+            # get_bytes() copy would leave an un-wipeable immutable ghost on
+            # the Python heap. (The engine's own internal copy is made inside
+            # the cryptography library regardless - see wipe().)
+            self._aead_siv = AESSIV(self._siv_key.get_buffer())
             del raw_siv
 
         finally:
@@ -498,7 +499,15 @@ class FloorVault:
             ) from exc
 
     def wipe(self) -> None:
-        """Zero all internal functional subkeys and close engine."""
+        """Zero the managed key buffers and close the engine.
+
+        Scope: this covers the ``HardenedMemoryKey`` buffers FloorVault
+        controls. It cannot reach the AEAD engine's internal key copy inside
+        the ``cryptography`` library - that memory is released to the
+        allocator unzeroed on garbage collection - nor any caller-held
+        ``bytes`` intermediates. Treat wipe() as reclaiming FloorVault's own
+        custody, not as proof no key material remains in the process.
+        """
         lock = getattr(self, "_lock", None)
         if lock is not None:
             with lock:
