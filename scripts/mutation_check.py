@@ -575,6 +575,33 @@ MUTATIONS: tuple[Mutation, ...] = (
         "SQL boundary loses bracket quoting: allow-listed names like TRUE or "
         "CURRENT_TIMESTAMP resolve as expressions instead of columns again",
     ),
+    Mutation(
+        "DUR-1",
+        "src/floorvault/providers/platform_custody.py",
+        "        _fsync_directory(path.parent)",
+        "        pass  # MUTANT",
+        "Published name loses its durability barrier: a power cut after link() "
+        "can drop the store entry even though the payload was fsynced",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "DUR-2",
+        "src/floorvault/providers/platform_custody.py",
+        "        _fsync_directory(item.parent)",
+        "        pass  # MUTANT",
+        "A freshly created vault directory's entry is not durable: power loss "
+        "can drop the directory the store is about to be published into",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "DUR-3",
+        "src/floorvault/providers/platform_custody.py",
+        "    try:\n        os.fsync(descriptor)\n    finally:\n        os.close(descriptor)",
+        "    try:\n        pass  # MUTANT\n    finally:\n        os.close(descriptor)",
+        "The directory fsync body is neutered: the barrier opens and closes "
+        "the directory without flushing its metadata",
+        expect_on_windows="survived",
+    ),
 )
 
 # --------------------------------------------------------------------------
