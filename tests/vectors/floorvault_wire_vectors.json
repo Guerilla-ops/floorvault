@@ -1,0 +1,156 @@
+{
+  "format": "floorvault-wire-vectors-v1",
+  "comment": "Deterministic wire-format pins for ports. aad_json/ctx_json are the exact canonical-JSON bytes that must enter the SIV AD vector. Envelopes are independently constructed and must decrypt under FloorVault; FloorVault output with the same nonce must equal them.",
+  "kdf": {
+    "algo": "HKDF-SHA256",
+    "salt": null,
+    "info": "floorvault-v1-aes-siv",
+    "length": 64
+  },
+  "master_key_hex": "fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+  "vectors": [
+    {
+      "name": "v2-basic",
+      "envelope": "v2",
+      "aad_fields": {
+        "table": "users",
+        "record_id": "u-1001",
+        "column": "email",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "app_instance_id": "default",
+        "revision": null
+      },
+      "aad_json": "{\"app_instance_id\":\"default\",\"column\":\"email\",\"record_id\":\"u-1001\",\"schema_id\":\"floor.vault.v1\",\"schema_version\":1,\"table\":\"users\"}",
+      "key_id": 0,
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f",
+      "plaintext_utf8": "alice@example.com",
+      "envelope_hex": "464c5632020010000102030405060708090a0b0c0d0e0f00ed913a49ea8d5be0001162e031e4af2329dbf9d30b8c95fc35acf49658fcd9b1"
+    },
+    {
+      "name": "v2-unicode-escape",
+      "envelope": "v2",
+      "aad_fields": {
+        "table": "users",
+        "record_id": "rec-\"日本語\"\\\n\t",
+        "column": "na\u0000me",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "app_instance_id": "default",
+        "revision": null
+      },
+      "aad_json": "{\"app_instance_id\":\"default\",\"column\":\"na\\u0000me\",\"record_id\":\"rec-\\\"日本語\\\"\\\\\\n\\t\",\"schema_id\":\"floor.vault.v1\",\"schema_version\":1,\"table\":\"users\"}",
+      "key_id": 0,
+      "nonce_hex": "101112131415161718191a1b1c1d1e1f",
+      "plaintext_utf8": "valeur-日本語-🔒",
+      "envelope_hex": "464c5632020010101112131415161718191a1b1c1d1e1ffe211756481431417f55bbaa9caacc03910d64499a95b5023d3168685cdfed8e6d916fe036"
+    },
+    {
+      "name": "v2-revision-keyid",
+      "envelope": "v2",
+      "aad_fields": {
+        "table": "users",
+        "record_id": "u-1001",
+        "column": "ssn",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "app_instance_id": "default",
+        "revision": 7
+      },
+      "aad_json": "{\"app_instance_id\":\"default\",\"column\":\"ssn\",\"record_id\":\"u-1001\",\"revision\":7,\"schema_id\":\"floor.vault.v1\",\"schema_version\":1,\"table\":\"users\"}",
+      "key_id": 42,
+      "nonce_hex": "202122232425262728292a2b2c2d2e2f",
+      "plaintext_utf8": "000-00-0000",
+      "envelope_hex": "464c5632022a10202122232425262728292a2b2c2d2e2f69dc05209fd047c5c5f19a242f0b05672a172edef1598c47a3fb8d"
+    },
+    {
+      "name": "v1-legacy",
+      "envelope": "v1",
+      "aad_fields": {
+        "table": "users",
+        "record_id": "legacy-1",
+        "column": "token",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "app_instance_id": "default",
+        "revision": null
+      },
+      "aad_json": "{\"app_instance_id\":\"default\",\"column\":\"token\",\"record_id\":\"legacy-1\",\"schema_id\":\"floor.vault.v1\",\"schema_version\":1,\"table\":\"users\"}",
+      "nonce_hex": "303132333435363738393a3b3c3d3e3f",
+      "plaintext_utf8": "legacy-token",
+      "envelope_hex": "464c525610303132333435363738393a3b3c3d3e3fb616d2d92e4b0b1cd32effd1a56f061baaaa3bc9016ba153ab3357a2"
+    },
+    {
+      "name": "v3-basic",
+      "envelope": "v3",
+      "purpose": "pw-reset",
+      "aad_fields": {
+        "table": "_fv.token",
+        "record_id": "pw-reset",
+        "column": "payload",
+        "schema_id": "floor.vault.token.v1",
+        "schema_version": 1,
+        "app_instance_id": "default",
+        "revision": null
+      },
+      "aad_json": "{\"app_instance_id\":\"default\",\"column\":\"payload\",\"record_id\":\"pw-reset\",\"schema_id\":\"floor.vault.token.v1\",\"schema_version\":1,\"table\":\"_fv.token\"}",
+      "ctx_json": "{\"app_instance_id\":\"default\",\"purpose\":\"pw-reset\"}",
+      "key_id": 0,
+      "exp": 0,
+      "nbf": 0,
+      "iat": 1759459200,
+      "nonce_hex": "404142434445464748494a4b4c4d4e4f",
+      "plaintext_utf8": "reset-payload",
+      "envelope_hex": "464c56330200000000000000000000000000000000000000000068df378000327b226170705f696e7374616e63655f6964223a2264656661756c74222c22707572706f7365223a2270772d7265736574227d10404142434445464748494a4b4c4d4e4f372fd199f1a497fb88d9e25a0b0a459cff8c06dceb64019c06a25e5dff",
+      "expect_ok": true
+    },
+    {
+      "name": "v3-full-claims",
+      "envelope": "v3",
+      "purpose": "email-verify-日本語",
+      "aad_fields": {
+        "table": "_fv.token",
+        "record_id": "email-verify-日本語",
+        "column": "payload",
+        "schema_id": "floor.vault.token.v1",
+        "schema_version": 1,
+        "app_instance_id": "default",
+        "revision": null
+      },
+      "aad_json": "{\"app_instance_id\":\"default\",\"column\":\"payload\",\"record_id\":\"email-verify-日本語\",\"schema_id\":\"floor.vault.token.v1\",\"schema_version\":1,\"table\":\"_fv.token\"}",
+      "ctx_json": "{\"app_instance_id\":\"default\",\"purpose\":\"email-verify-日本語\"}",
+      "key_id": 3,
+      "exp": 1759460100,
+      "nbf": 1759459260,
+      "iat": 1759459200,
+      "nonce_hex": "505152535455565758595a5b5c5d5e5f",
+      "plaintext_utf8": "verify-日本語",
+      "envelope_hex": "464c563302030000000068df3b040000000068df37bc0000000068df378000407b226170705f696e7374616e63655f6964223a2264656661756c74222c22707572706f7365223a22656d61696c2d7665726966792de697a5e69cace8aa9e227d10505152535455565758595a5b5c5d5e5f689b3941e28abcbd47714306d0373b941e8330c06725010c322403d34eaa4b19",
+      "expect_ok": true
+    },
+    {
+      "name": "v3-expired",
+      "envelope": "v3",
+      "purpose": "one-shot",
+      "aad_fields": {
+        "table": "_fv.token",
+        "record_id": "one-shot",
+        "column": "payload",
+        "schema_id": "floor.vault.token.v1",
+        "schema_version": 1,
+        "app_instance_id": "default",
+        "revision": null
+      },
+      "aad_json": "{\"app_instance_id\":\"default\",\"column\":\"payload\",\"record_id\":\"one-shot\",\"schema_id\":\"floor.vault.token.v1\",\"schema_version\":1,\"table\":\"_fv.token\"}",
+      "ctx_json": "{\"app_instance_id\":\"default\",\"purpose\":\"one-shot\"}",
+      "key_id": 0,
+      "exp": 1759459260,
+      "nbf": 0,
+      "iat": 1759459200,
+      "nonce_hex": "606162636465666768696a6b6c6d6e6f",
+      "plaintext_utf8": "stale",
+      "envelope_hex": "464c563302000000000068df37bc00000000000000000000000068df378000327b226170705f696e7374616e63655f6964223a2264656661756c74222c22707572706f7365223a226f6e652d73686f74227d10606162636465666768696a6b6c6d6e6f21cb6c0070d073915262c591784c0285fab1e0bdd2",
+      "expect_ok": false
+    }
+  ]
+}

@@ -9,6 +9,8 @@ from .core import (
     FloorVault,
     FloorVaultError,
     NonceReuseError,
+    TokenExpiredError,
+    TokenNotYetValidError,
     associated_data,
 )
 from .key_recovery import recover_master_key, wrap_master_key
@@ -39,6 +41,8 @@ __all__ = [
     "AppStateCryptoError",
     "DecryptionVerificationError",
     "NonceReuseError",
+    "TokenExpiredError",
+    "TokenNotYetValidError",
     "associated_data",
     # Hardware Memory Custody
     "HardenedMemoryKey",

@@ -395,15 +395,17 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "CR-1",
         "src/floorvault/core.py",
-        "encrypt(data_bytes, [aad, header, nonce])",
-        "encrypt(data_bytes, [aad, header])  # MUTANT",
-        "Static AD vector: SIV becomes deterministic and leaks plaintext equality",
+        "        ciphertext = aead.encrypt(data_bytes, [aad, header, nonce])",
+        "        ciphertext = aead.encrypt(data_bytes, [aad, header])  # MUTANT",
+        "Static AD vector: SIV becomes deterministic and leaks plaintext equality "
+        "(the assignment prefix pins the field-path call site; encrypt_token "
+        "contains the same call shape)",
     ),
     Mutation(
         "CR-3",
         "src/floorvault/core.py",
-        "encrypt(data_bytes, [aad, header, nonce])",
-        "encrypt(data_bytes, [aad, nonce])  # MUTANT",
+        "        ciphertext = aead.encrypt(data_bytes, [aad, header, nonce])",
+        "        ciphertext = aead.encrypt(data_bytes, [aad, nonce])  # MUTANT",
         "Cleartext header stops being authenticated: a rewritten key id is accepted",
     ),
     Mutation(
@@ -420,6 +422,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         "            if False:  # MUTANT",
         "Version check removed - refused anyway by the header AD binding",
         expect="survived",
+    ),
+    Mutation(
+        "CR-6",
+        "src/floorvault/core.py",
+        "        return header + nonce + aead.encrypt(data_bytes, [aad, header, nonce])",
+        "        return header + nonce + aead.encrypt(data_bytes, [aad, header])  # MUTANT",
+        "Token path drops nonce from AD: deterministic SIV leaks token equality",
+    ),
+    Mutation(
+        "CR-7",
+        "src/floorvault/core.py",
+        "        return header + nonce + aead.encrypt(data_bytes, [aad, header, nonce])",
+        "        return header + nonce + aead.encrypt(data_bytes, [aad, nonce])  # MUTANT",
+        "Token header (key_id, exp/nbf/iat, ctx claim) stops being authenticated",
     ),
     Mutation(
         "PC-13",

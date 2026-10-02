@@ -11,6 +11,7 @@ import json
 import os
 import re
 import threading
+import time
 from typing import Any, Mapping, Union
 
 from cryptography.exceptions import InvalidTag
@@ -37,42 +38,100 @@ class NonceReuseError(FloorVaultError):
     """Raised when encryption reuses a nonce within the process lifetime."""
 
 
+class TokenExpiredError(FloorVaultError):
+    """Raised when a token's writer-fixed expiry or a caller's max_age policy
+    places it outside its validity window."""
+
+
+class TokenNotYetValidError(FloorVaultError):
+    """Raised when a token's not-before claim lies in the future."""
+
+
 RECORD_MAGIC = b"FLRV"  # FloorVault v1 Envelope Magic
 RECORD_MAGIC_V2 = b"FLV2"  # FloorVault v2 Envelope Magic (versioned header)
+RECORD_MAGIC_V3 = b"FLV3"  # FloorVault v3 Envelope Magic (token: ctx + time claims)
 CRYPTO_VERSION = 2  # crypto_version written by this build's encrypt()
 _HEADER_LEN_V2 = 7  # magic(4) + crypto_version(1) + key_id(1) + nonce_len(1)
 _NONCE_LEN = 16
 
+# v3 token envelope: FLV3(4) ‖ crypto_version(1) ‖ key_id(1) ‖ exp(8) ‖ nbf(8)
+# ‖ iat(8) ‖ ctx_len(2, big-endian) ‖ ctx ‖ nonce_len(1) ‖ nonce ‖ ct.
+# Everything before the nonce is the authenticated header component, so the
+# time claims and the embedded context are integrity-protected like v2's
+# key_id — they travel with the ciphertext but cannot be rewritten.
+_V3_FIXED_LEN = 32  # magic+ver+key_id+exp+nbf+iat+ctx_len
+_V3_CTX_LEN_MAX = 0xFFFF
 
-def _envelope_header_len(magic: bytes) -> int:
-    return _HEADER_LEN_V2 if magic == RECORD_MAGIC_V2 else 5
+# Token records bind to fixed coordinates; the caller-chosen ``purpose`` takes
+# the record_id slot and the writer's app_instance_id rides in ``ctx`` so the
+# token self-describes the context it was sealed for.
+_TOKEN_TABLE = "_fv.token"
+_TOKEN_COLUMN = "payload"
+_TOKEN_SCHEMA_ID = "floor.vault.token.v1"
+
+
+def _parse_v3_ctx(ctx: bytes) -> dict[str, str]:
+    """Decode a v3 ctx claim to its exact required shape.
+
+    Must be a JSON object with exactly ``{"app_instance_id": str,
+    "purpose": str}`` - silently ignoring unknown claims is a downgrade
+    vector, so unknown or mis-typed keys fail closed.
+    """
+    try:
+        parsed = json.loads(ctx.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DecryptionVerificationError("Malformed v3 ctx claim") from exc
+    if (
+        not isinstance(parsed, dict)
+        or set(parsed) != {"app_instance_id", "purpose"}
+        or not isinstance(parsed["app_instance_id"], str)
+        or not isinstance(parsed["purpose"], str)
+    ):
+        raise DecryptionVerificationError("Malformed v3 ctx claim")
+    return parsed
 
 
 def envelope_header(ciphertext: bytes) -> dict[str, Any]:
     """Describe an envelope's cleartext header without decrypting it.
 
-    Returns ``magic``, ``header_len``, ``nonce_len`` and - for a v2 envelope -
-    ``crypto_version`` and ``key_id``. Useful for tooling that must decide which
-    key a record needs before it can decrypt it.
+    Returns ``magic``, ``header_len``, ``nonce_len`` and - for a v2 or v3
+    envelope - ``crypto_version`` and ``key_id``. A v3 token envelope
+    additionally reports ``exp``, ``nbf``, ``iat`` and the embedded ``ctx``
+    claim. These are integrity-protected claims, not yet verified ones -
+    deciding on them before decryption is fine for key selection, not for
+    authorisation.
     """
     if not isinstance(ciphertext, (bytes, bytearray)):
         raise TypeError("Ciphertext must be bytes")
     if len(ciphertext) < 5:
         raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
     magic = bytes(ciphertext[:4])
-    if magic not in (RECORD_MAGIC, RECORD_MAGIC_V2):
-        raise DecryptionVerificationError("Invalid ciphertext magic header")
-    if magic == RECORD_MAGIC_V2 and len(ciphertext) < _HEADER_LEN_V2:
-        raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
-    header: dict[str, Any] = {
-        "magic": magic,
-        "header_len": _envelope_header_len(magic),
-        "nonce_len": ciphertext[4] if magic == RECORD_MAGIC else ciphertext[6],
-    }
+    if magic == RECORD_MAGIC:
+        return {"magic": magic, "header_len": 5, "nonce_len": ciphertext[4]}
     if magic == RECORD_MAGIC_V2:
-        header["crypto_version"] = ciphertext[4]
-        header["key_id"] = ciphertext[5]
-    return header
+        if len(ciphertext) < _HEADER_LEN_V2:
+            raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
+        return {
+            "magic": magic,
+            "header_len": _HEADER_LEN_V2,
+            "nonce_len": ciphertext[6],
+            "crypto_version": ciphertext[4],
+            "key_id": ciphertext[5],
+        }
+    if magic != RECORD_MAGIC_V3:
+        raise DecryptionVerificationError("Invalid ciphertext magic header")
+    v3 = _parse_v3_header_fields(memoryview(ciphertext))
+    return {
+        "magic": magic,
+        "header_len": v3["header_len"],
+        "nonce_len": ciphertext[v3["header_len"] - 1],
+        "crypto_version": v3["crypto_version"],
+        "key_id": v3["key_id"],
+        "exp": v3["exp"],
+        "nbf": v3["nbf"],
+        "iat": v3["iat"],
+        "ctx": _parse_v3_ctx(v3["ctx"]),
+    }
 
 
 def canonical_json_bytes(data: Mapping[str, Any]) -> bytes:
@@ -158,6 +217,32 @@ def associated_data(
     if revision is not None:
         payload["revision"] = revision
     return canonical_json_bytes(payload)
+
+
+def _parse_v3_header_fields(view: memoryview) -> dict[str, Any]:
+    """Parse a v3 envelope's header claims; raises on truncation/bad magic.
+
+    Returns ``crypto_version``, ``key_id``, ``exp``, ``nbf``, ``iat``,
+    ``ctx`` (raw bytes) and ``header_len``. The claims are cleartext carried
+    inside the authenticated header component - integrity comes from the SIV
+    tag, not from this parser.
+    """
+    if bytes(view[:4]) != RECORD_MAGIC_V3:
+        raise DecryptionVerificationError("Invalid ciphertext magic header")
+    if len(view) < _V3_FIXED_LEN:
+        raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
+    ctx_len = int.from_bytes(view[30:32], "big")
+    if len(view) < _V3_FIXED_LEN + ctx_len + 1:
+        raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
+    return {
+        "crypto_version": view[4],
+        "key_id": view[5],
+        "exp": int.from_bytes(view[6:14], "big"),
+        "nbf": int.from_bytes(view[14:22], "big"),
+        "iat": int.from_bytes(view[22:30], "big"),
+        "ctx": bytes(view[_V3_FIXED_LEN : _V3_FIXED_LEN + ctx_len]),
+        "header_len": _V3_FIXED_LEN + ctx_len + 1,
+    }
 
 
 class FloorVault:
@@ -474,16 +559,28 @@ class FloorVault:
 
         view = memoryview(ciphertext)
         magic = view[:4]
-        if magic == RECORD_MAGIC_V2:
+        if magic in (RECORD_MAGIC_V2, RECORD_MAGIC_V3):
             crypto_version = view[4]
             if crypto_version != CRYPTO_VERSION:
                 raise DecryptionVerificationError(
                     f"Unsupported envelope crypto version {crypto_version} "
                     f"(this build writes {CRYPTO_VERSION})"
                 )
-            header = view[:_HEADER_LEN_V2]
             key_id = view[5]
-            offset = _HEADER_LEN_V2
+            if magic == RECORD_MAGIC_V3:
+                # The v3 header runs through the nonce_len byte; ctx_len sits
+                # inside it, so bounds are checked before slicing.
+                if len(view) < _V3_FIXED_LEN:
+                    raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
+                ctx_len = int.from_bytes(view[30:32], "big")
+                header_end = _V3_FIXED_LEN + ctx_len + 1
+                if len(view) < header_end:
+                    raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
+                header = view[:header_end]
+                offset = header_end
+            else:
+                header = view[:_HEADER_LEN_V2]
+                offset = _HEADER_LEN_V2
         elif magic == RECORD_MAGIC:
             header = crypto_version = key_id = None
             offset = 5
@@ -536,6 +633,11 @@ class FloorVault:
         header, _crypto_version, envelope_key_id, nonce, raw_cipher = self._split_envelope(
             ciphertext
         )
+        if header is not None and header[:4] == RECORD_MAGIC_V3:
+            raise DecryptionVerificationError(
+                "v3 token envelopes carry embedded time/purpose claims; "
+                "use decrypt_token() so the policy checks run"
+            )
         self._require_key_id(envelope_key_id, key_id)
 
         aad = self._aad(
@@ -586,6 +688,11 @@ class FloorVault:
         header, _crypto_version, envelope_key_id, nonce, raw_cipher = self._split_envelope(
             ciphertext
         )
+        if header is not None and header[:4] == RECORD_MAGIC_V3:
+            raise DecryptionVerificationError(
+                "v3 token envelopes carry embedded time/purpose claims; "
+                "use decrypt_token() so the policy checks run"
+            )
         self._require_key_id(envelope_key_id, key_id)
 
         aad = self._aad(
@@ -692,6 +799,177 @@ class FloorVault:
                     f"(record: {record_id}). Data was tampered with, spliced, or corrupted."
                 ) from exc
         return out
+
+    def encrypt_token(
+        self,
+        plaintext: Union[str, bytes],
+        *,
+        purpose: str,
+        expires_in: float | None = None,
+        expires_at: int | float | None = None,
+        not_before: int | float | None = None,
+        key_id: int = 0,
+    ) -> bytes:
+        """Encrypt a self-contained token (v3 envelope, ``FLV3``).
+
+        The token variant of :meth:`encrypt` for values that must be
+        self-describing - password-reset links, signed blobs, cache payloads.
+        Instead of the caller re-supplying coordinates at read time, the
+        envelope embeds an authenticated ``ctx`` claim
+        (``{"app_instance_id", "purpose"}``) and time claims ``exp``/``nbf``/
+        ``iat``; the whole header is a SIV associated-data component, so none
+        of it can be rewritten without failing authentication.
+
+        The token still binds ``app_instance_id`` like every other FloorVault
+        record - a token decrypts only under the same instance id and master
+        key. ``purpose`` takes the ``record_id`` slot of a fixed token
+        coordinate tuple; pass ``expected_purpose`` to
+        :meth:`decrypt_token` to assert it.
+
+        ``expires_in`` (seconds from now) and ``expires_at`` (absolute unix
+        time) are mutually exclusive; omit both for a non-expiring token.
+        ``not_before`` (absolute unix) delays validity. Writer-fixed ``exp``/
+        ``nbf`` are stronger than reader-side ``max_age``: a reader can only
+        tighten, never widen, the writer's window.
+
+        Returns the raw binary envelope - wrap in ``base64.urlsafe_b64encode``
+        for URLs/cookies.
+        """
+        if isinstance(key_id, bool) or not isinstance(key_id, int):
+            raise TypeError("key_id must be an integer in [0, 255]")
+        if not 0 <= key_id <= 255:
+            raise ValueError("key_id must be an integer in [0, 255]")
+        if not isinstance(purpose, str) or not purpose.strip():
+            raise ValueError("token 'purpose' must be a non-empty string")
+        if expires_in is not None and expires_at is not None:
+            raise ValueError("expires_in and expires_at are mutually exclusive")
+
+        iat = int(time.time())
+        exp = 0
+        if expires_in is not None:
+            if not isinstance(expires_in, (int, float)) or expires_in <= 0:
+                raise ValueError("expires_in must be a positive number of seconds")
+            exp = iat + int(expires_in)
+        elif expires_at is not None:
+            exp = int(expires_at)
+        nbf = int(not_before) if not_before is not None else 0
+        if exp and nbf and nbf >= exp:
+            raise ValueError("not_before must precede the expiry")
+
+        ctx = canonical_json_bytes({"app_instance_id": self.app_instance_id, "purpose": purpose})
+        if len(ctx) > _V3_CTX_LEN_MAX:
+            raise ValueError("token context claim exceeds the v3 ctx length limit")
+
+        data_bytes = plaintext.encode("utf-8") if isinstance(plaintext, str) else bytes(plaintext)
+        aad = self._aad(
+            table=_TOKEN_TABLE,
+            record_id=purpose,
+            column=_TOKEN_COLUMN,
+            schema_id=_TOKEN_SCHEMA_ID,
+            schema_version=1,
+            revision=None,
+        )
+        nonce = os.urandom(_NONCE_LEN)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("FloorVault has been wiped")
+            aead = self._aead_siv
+            self._track_nonce(nonce)
+
+        header = (
+            RECORD_MAGIC_V3
+            + bytes([CRYPTO_VERSION, key_id])
+            + exp.to_bytes(8, "big")
+            + nbf.to_bytes(8, "big")
+            + iat.to_bytes(8, "big")
+            + len(ctx).to_bytes(2, "big")
+            + ctx
+            + bytes([_NONCE_LEN])
+        )
+        return header + nonce + aead.encrypt(data_bytes, [aad, header, nonce])
+
+    def decrypt_token(
+        self,
+        token: bytes,
+        *,
+        expected_purpose: str | None = None,
+        expected_app_instance_id: str | None = None,
+        max_age: float | None = None,
+        leeway: float = 0.0,
+        now: float | None = None,
+        key_id: int | None = None,
+    ) -> bytes:
+        """Decrypt a v3 token, enforcing its embedded claims.
+
+        Authenticates the envelope first - a forged or spliced token fails
+        with :class:`DecryptionVerificationError` before any policy check
+        runs, so expiry/purpose errors never leak about unverified claims.
+
+        Then, in order: ``key_id`` dispatch (as :meth:`decrypt`), the
+        embedded ``ctx`` claims are compared to ``expected_purpose`` /
+        ``expected_app_instance_id`` when given (mismatch rejects the token -
+        use this to pin a token to the context it was minted for), and the
+        time window is enforced: ``nbf + leeway``, ``exp - leeway``, and the
+        reader-side ``max_age`` over ``iat``. ``now`` defaults to the wall
+        clock; supply it for deterministic testing.
+
+        Returns the raw payload bytes.
+        """
+        if leeway < 0:
+            raise ValueError("leeway must be non-negative")
+        if max_age is not None and max_age <= 0:
+            raise ValueError("max_age must be a positive number of seconds")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("FloorVault has been wiped")
+            aead = self._aead_siv
+
+        header, _ver, envelope_key_id, nonce, raw_cipher = self._split_envelope(token)
+        if header is None or bytes(header[:4]) != RECORD_MAGIC_V3:
+            raise DecryptionVerificationError(
+                "Expected a v3 token envelope (FLV3); use decrypt()/decrypt_bytes() "
+                "for field ciphertexts"
+            )
+        self._require_key_id(envelope_key_id, key_id)
+        claims = _parse_v3_header_fields(header)
+        ctx = _parse_v3_ctx(claims["ctx"])
+
+        aad = self._aad(
+            table=_TOKEN_TABLE,
+            record_id=ctx["purpose"],
+            column=_TOKEN_COLUMN,
+            schema_id=_TOKEN_SCHEMA_ID,
+            schema_version=1,
+            revision=None,
+        )
+        try:
+            plaintext = aead.decrypt(raw_cipher, [aad, header, nonce])
+        except InvalidTag as exc:
+            raise DecryptionVerificationError(
+                f"Token decryption verification failed for purpose {ctx['purpose']!r}. "
+                "Data was tampered with, spliced, or corrupted."
+            ) from exc
+
+        # Everything below runs only on an authenticated token.
+        if expected_purpose is not None and ctx["purpose"] != expected_purpose:
+            raise DecryptionVerificationError(
+                f"Token purpose {ctx['purpose']!r} does not match the expected {expected_purpose!r}"
+            )
+        if (
+            expected_app_instance_id is not None
+            and ctx["app_instance_id"] != expected_app_instance_id
+        ):
+            raise DecryptionVerificationError(
+                "Token was sealed under a different app_instance_id claim"
+            )
+        t = time.time() if now is None else float(now)
+        if claims["nbf"] and t + leeway < claims["nbf"]:
+            raise TokenNotYetValidError("Token is not yet valid (nbf)")
+        if claims["exp"] and t - leeway > claims["exp"]:
+            raise TokenExpiredError("Token has expired (exp)")
+        if max_age is not None and t - leeway > claims["iat"] + max_age:
+            raise TokenExpiredError("Token exceeds the caller's max_age policy")
+        return plaintext
 
     def wipe(self) -> None:
         """Zero the managed key buffers and close the engine.
