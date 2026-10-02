@@ -1,0 +1,19 @@
+title = "floorvault gitleaks config"
+
+# Extends the default ruleset rather than replacing it: without `useDefault`
+# a present config file would substitute for the bundled rules entirely and
+# the scan would stop checking for real secrets.
+[extend]
+useDefault = true
+
+# tests/vectors/ held public Wycheproof known-answer vectors (added in PR #12,
+# later removed — the files no longer exist at HEAD but their objects remain
+# in history). Every finding under this path is a published test key tripping
+# generic-api-key on `"key": "..."` fields, not a secret. This path allowlist
+# subsumes those findings; specific non-vector fixtures stay in
+# .gitleaksignore unchanged.
+[allowlist]
+description = "Public crypto test vectors are known-answer data, not secrets"
+paths = [
+    '''tests/vectors/''',
+]
