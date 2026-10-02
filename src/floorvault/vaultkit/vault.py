@@ -194,12 +194,19 @@ class VaultItemMeta:
 class VaultStore:
     """floorvault-backed vault store backed by FloorVault."""
 
-    def __init__(self, base_dir: Path | str, *, crypto: Optional[FloorVault] = None):
+    def __init__(
+        self,
+        base_dir: Path | str,
+        *,
+        crypto: Optional[FloorVault] = None,
+        migrate_legacy_metadata: bool = False,
+    ):
         self._base = Path(base_dir)
         _mkdir_owner_only(self._base)
         self._db_path = self._base / "vault.db"
         self._legacy_vault_path = self._base / "vault.json.enc"
         self._legacy_key_path = self._base / "vault.key"
+        self._allow_plaintext_migration = migrate_legacy_metadata
 
         if crypto is not None:
             self._crypto = crypto
@@ -294,19 +301,30 @@ class VaultStore:
             conn.close()
 
     def _migrate_plaintext_metadata(self, conn: sqlite3.Connection) -> None:
-        """Encrypt legacy metadata rows while preserving their public API."""
+        """Encrypt legacy metadata rows while preserving their public API.
+
+        Plaintext in these columns is only legitimate in a pre-migration store
+        during a controlled upgrade. The on-disk ``user_version`` marker cannot
+        authorize accepting it: a database writer could reset the marker, plant
+        plaintext, and have the next ordinary open reseal it under the real
+        key. Normal opens therefore reject any string-typed metadata outright;
+        resealing requires ``migrate_legacy_metadata=True`` at construction.
+        """
         rows = conn.execute(
             "SELECT id, label, origin, identifier_type, identifier, created_at FROM vault_items"
         ).fetchall()
-        already_migrated = conn.execute("PRAGMA user_version").fetchone()[0] >= 1
         for item_id, label, origin, identifier_type, identifier, created_at in rows:
-            if already_migrated and any(
-                isinstance(value, str)
-                for value in (label, origin, identifier_type, identifier, created_at)
-            ):
-                raise VaultError("plaintext metadata detected after migration")
-            if not isinstance(label, str) or not isinstance(created_at, str):
+            values = (label, origin, identifier_type, identifier, created_at)
+            if not any(isinstance(value, str) for value in values):
                 continue
+            if not self._allow_plaintext_migration:
+                raise VaultError(
+                    "plaintext metadata detected; refusing to open. If this is a "
+                    "verified legacy store, construct VaultStore with "
+                    "migrate_legacy_metadata=True once, then remove the flag"
+                )
+            if not all(value is None or isinstance(value, str) for value in values):
+                raise VaultError("mixed plaintext/encrypted metadata; refusing legacy migration")
             conn.execute(
                 """
                 UPDATE vault_items
