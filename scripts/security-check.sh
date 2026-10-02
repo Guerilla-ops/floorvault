@@ -86,11 +86,11 @@ if require_tool bandit; then
 fi
 
 echo ""
-echo "=== 3b. Semgrep Community Edition (p/python) ==="
+echo "=== 3b. Semgrep Community Edition (vendored ruleset) ==="
 if [ "${FLOORVAULT_SKIP_SEMGREP:-0}" = "1" ]; then
     echo "[SKIP] Semgrep disabled (FLOORVAULT_SKIP_SEMGREP=1)."
 elif require_tool semgrep; then
-    semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/
+    semgrep scan --config .semgrep/floorvault.yml --metrics=off --error src/ scripts/ fuzz/
     echo "[PASS] Semgrep: Zero unreviewed findings in src/, scripts/ and fuzz/."
 fi
 

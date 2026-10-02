@@ -174,4 +174,4 @@ jobs:
         # Same command as step 3b of scripts/security-check.sh.
         run: |
           SEMGREP_VERSION=1.178.0
-          uvx --from "semgrep==${SEMGREP_VERSION}" semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/
+          uvx --from "semgrep==${SEMGREP_VERSION}" semgrep scan --config .semgrep/floorvault.yml --metrics=off --error src/ scripts/ fuzz/

@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as error:
                 print(f"Error: {error}", file=sys.stderr)
                 return 1
-            query = f"SELECT {_quoted_identifier(column)} FROM {_quoted_identifier(table)} WHERE id = ?"  # identifiers allow-listed + quoted  # nosec B608
+            query = f"SELECT {_quoted_identifier(column)} FROM {_quoted_identifier(table)} WHERE id = ?"  # identifiers allow-listed + quoted  # nosec B608  # nosemgrep: floorvault-sql-interpolation
             try:
                 row = conn.execute(query, (args.record_id,)).fetchone()
             except sqlite3.OperationalError as error:

@@ -126,7 +126,9 @@ def test_gate_runs_bandit_over_the_shipped_and_tooling_trees():
 def test_gate_runs_semgrep_with_an_explicit_skip_knob():
     """Semgrep runs once in CI, so the matrix legs need a documented opt-out."""
     assert _has_line("elif require_tool semgrep; then")
-    assert _has_line("semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/")
+    assert _has_line(
+        "semgrep scan --config .semgrep/floorvault.yml --metrics=off --error src/ scripts/ fuzz/"
+    )
     assert _has_line('if [ "${FLOORVAULT_SKIP_SEMGREP:-0}" = "1" ]; then')
 
 

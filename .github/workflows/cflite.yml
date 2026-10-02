@@ -6,8 +6,11 @@ name: ClusterFuzzLite
 #
 # Pull requests fuzz for 5 minutes in code-change mode, so a crash introduced by
 # the PR fails it. Pushes to main and a weekly schedule run longer batch fuzzing.
-# There is no storage repository yet, so the corpus does not persist between
-# runs; each run starts from the seeds declared by the targets.
+# With no storage repo configured, ClusterFuzzLite persists the corpus as GitHub
+# Actions artifacts: each batch run downloads the previous run's corpus-*
+# artifacts (that is what the actions: read permission is for) and uploads the
+# grown corpus. The weekly schedule also runs corpus pruning so the persisted
+# corpus stays minimized instead of growing unboundedly.
 #
 # The private repository needs the token passed to both steps.
 
@@ -54,3 +57,28 @@ jobs:
           # the first run of this workflow found a real crash, failed to
           # reproduce it for exactly that reason, discarded it, and went green.
           report-unreproducible-crashes: true
+
+  # Corpus pruning is required alongside batch fuzzing: without it the artifact-
+  # persisted corpus grows unboundedly. Runs only on the weekly schedule.
+  prune:
+    name: corpus prune (weekly)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Build fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: python
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: address
+
+      - name: Prune corpus
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: address
+          mode: prune
+          fuzz-seconds: 600

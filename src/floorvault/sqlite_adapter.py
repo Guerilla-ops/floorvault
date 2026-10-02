@@ -88,8 +88,8 @@ class EncryptedSQLiteTable:
             schema_version=schema_version,
             revision=revision,
         )
-        cursor = self.connection.execute(
-            f"UPDATE {self._table_sql} SET {column_sql} = ? WHERE {self._id_sql} = ?",  # identifiers allow-listed + quoted  # nosec B608
+        cursor = self.connection.execute(  # identifiers allow-listed + quoted  # nosemgrep: floorvault-sql-interpolation
+            f"UPDATE {self._table_sql} SET {column_sql} = ? WHERE {self._id_sql} = ?",  # identifiers allow-listed + quoted  # nosec B608  # nosemgrep: floorvault-sql-interpolation
             (ciphertext, record_id),
         )
         if cursor.rowcount != 1:
@@ -153,8 +153,8 @@ class EncryptedSQLiteTable:
         """
         column = _safe_identifier(encrypted_column)
         column_sql = _quoted_identifier(encrypted_column)
-        row = self.connection.execute(
-            f"SELECT {column_sql} FROM {self._table_sql} WHERE {self._id_sql} = ?",  # identifiers allow-listed + quoted  # nosec B608
+        row = self.connection.execute(  # identifiers allow-listed + quoted  # nosemgrep: floorvault-sql-interpolation
+            f"SELECT {column_sql} FROM {self._table_sql} WHERE {self._id_sql} = ?",  # identifiers allow-listed + quoted  # nosec B608  # nosemgrep: floorvault-sql-interpolation
             (record_id,),
         ).fetchone()
         if row is None:
