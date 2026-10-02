@@ -3,30 +3,22 @@
 from __future__ import annotations
 
 import argparse
-import re
 import sqlite3
 import sys
 from pathlib import Path
 
 from .core import FloorVault
 from .providers.adaptive import AdaptiveKeyProvider
-
-# Strict SQL identifier allowlist (deny-first). Identifiers may only contain
-# alphanumerics, underscore, and dots (for schema-qualified names), be
-# 1..128 chars, and must be valid unquoted SQL identifiers. Anything else is
-# refused BEFORE reaching SQL text, closing the H1 raw-interpolation sink.
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?$")
+from .sqlite_adapter import _quoted_identifier, _safe_identifier
 
 
 def safe_identifier(name: str) -> str:
-    """Return ``name`` iff it is a safe unquoted SQL identifier, else ValueError."""
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("Identifier must be a non-empty string")
-    if len(name) > 128:
-        raise ValueError("Identifier is too long")
-    if _IDENTIFIER_RE.fullmatch(name) is None:
-        raise ValueError(f"{name!r} is not a valid SQL identifier")
-    return name
+    """Return ``name`` iff it is a safe SQL identifier, else ValueError.
+
+    Delegates to the adapters' validator so the CLI and the library can never
+    drift into accepting different identifier sets.
+    """
+    return _safe_identifier(name)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -62,8 +54,12 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as error:
                 print(f"Error: {error}", file=sys.stderr)
                 return 1
-            query = f"SELECT {column} FROM {table} WHERE id = ?"  # identifiers allow-listed  # nosec B608
-            row = conn.execute(query, (args.record_id,)).fetchone()
+            query = f"SELECT {_quoted_identifier(column)} FROM {_quoted_identifier(table)} WHERE id = ?"  # identifiers allow-listed + quoted  # nosec B608
+            try:
+                row = conn.execute(query, (args.record_id,)).fetchone()
+            except sqlite3.OperationalError as error:
+                print(f"Error: {error}", file=sys.stderr)
+                return 1
             if not row:
                 print(
                     f"Error: Record {args.record_id!r} not found in {args.table}", file=sys.stderr

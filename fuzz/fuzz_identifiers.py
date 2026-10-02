@@ -3,17 +3,15 @@
 Identifiers cannot be bound as SQL parameters, so the library and the inspector
 CLI interpolate them into query text after an allow-list check. Properties:
 
-* the two validators (``floorvault.inspector.safe_identifier`` and the adapters'
-  ``_safe_identifier``) accept exactly the same strings - a drift between them
-  would leave one entry point weaker than the other;
+* the CLI's ``floorvault.inspector.safe_identifier`` and the adapters'
+  ``_safe_identifier`` are the same implementation - this check keeps it that
+  way if anyone re-forks the CLI validator;
 * an accepted identifier is plain ASCII ``[A-Za-z0-9_$]`` with at most one dot,
   at most 128 characters, and never starts with a digit, so nothing that could
-  terminate or extend a statement survives.
-
-Not asserted: that SQLite reads every accepted identifier as a *name*. The
-allow-list admits bare keywords and literals (``NULL``, ``TRUE``,
-``CURRENT_TIMESTAMP``), which SQLite evaluates as expressions; that is a known,
-separately tracked gap, not something this target should rediscover on every run.
+  terminate or extend a statement survives;
+* ``_quoted_identifier`` wraps every accepted part in ``[...]`` so keywords and
+  literals (``NULL``, ``TRUE``, ``CURRENT_TIMESTAMP``) resolve as column names
+  or fail closed, never as expressions or double-quoted string literals.
 """
 
 from __future__ import annotations
@@ -22,9 +20,10 @@ import re
 import sys
 
 from floorvault.inspector import safe_identifier
-from floorvault.sqlite_adapter import _safe_identifier
+from floorvault.sqlite_adapter import _quoted_identifier, _safe_identifier
 
 _SAFE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?", re.ASCII)
+_QUOTED = re.compile(r"\[[A-Za-z_][A-Za-z0-9_$]*\](?:\.\[[A-Za-z_][A-Za-z0-9_$]*\])?", re.ASCII)
 
 
 def _require(condition: bool, message: str) -> None:
@@ -64,6 +63,11 @@ def TestOneInput(data: bytes) -> None:  # noqa: N802 - Atheris entry-point name
     _require(cli == name, "an accepted identifier was rewritten")
     _require(len(name) <= 128, "an identifier longer than 128 characters was accepted")
     _require(_SAFE.fullmatch(name) is not None, f"unsafe identifier accepted: {name!r}")
+    quoted = _quoted_identifier(name)
+    _require(
+        _QUOTED.fullmatch(quoted) is not None,
+        f"quoted form of accepted identifier is malformed: {quoted!r}",
+    )
 
 
 def main() -> None:

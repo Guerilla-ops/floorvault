@@ -6,7 +6,7 @@ import sqlite3
 from typing import Any
 
 from .core import FloorVault
-from .sqlite_adapter import _safe_identifier
+from .sqlite_adapter import _quoted_identifier, _safe_identifier
 
 
 def _validate_inputs(
@@ -51,16 +51,19 @@ def migrate_plaintext_column(
     table, id_column, source_column, destination_column = _validate_inputs(
         connection, crypto, table, id_column, source_column, destination_column
     )
+    sql_table, sql_id, sql_source, sql_dest = (
+        _quoted_identifier(n) for n in (table, id_column, source_column, destination_column)
+    )
     with connection:
         conflict = connection.execute(
-            f"SELECT 1 FROM {table} WHERE {source_column} IS NOT NULL "  # identifiers allow-listed  # nosec B608
-            f"AND {destination_column} IS NOT NULL LIMIT 1"
+            f"SELECT 1 FROM {sql_table} WHERE {sql_source} IS NOT NULL "  # identifiers allow-listed + quoted  # nosec B608
+            f"AND {sql_dest} IS NOT NULL LIMIT 1"
         ).fetchone()
         if conflict is not None:
             raise ValueError("destination column already contains data")
 
         rows = connection.execute(
-            f"SELECT {id_column}, {source_column} FROM {table} WHERE {source_column} IS NOT NULL"  # identifiers allow-listed  # nosec B608
+            f"SELECT {sql_id}, {sql_source} FROM {sql_table} WHERE {sql_source} IS NOT NULL"  # identifiers allow-listed + quoted  # nosec B608
         ).fetchall()
         migrated = 0
         for record_id, plaintext in rows:
@@ -75,7 +78,7 @@ def migrate_plaintext_column(
                 column=destination_column,
             )
             cursor = connection.execute(
-                f"UPDATE {table} SET {destination_column} = ? WHERE {id_column} = ?",  # identifiers allow-listed  # nosec B608
+                f"UPDATE {sql_table} SET {sql_dest} = ? WHERE {sql_id} = ?",  # identifiers allow-listed + quoted  # nosec B608
                 (ciphertext, record_id),
             )
             if cursor.rowcount != 1:
@@ -83,7 +86,7 @@ def migrate_plaintext_column(
             migrated += 1
 
         skipped_null = connection.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE {source_column} IS NULL"  # identifiers allow-listed  # nosec B608
+            f"SELECT COUNT(*) FROM {sql_table} WHERE {sql_source} IS NULL"  # identifiers allow-listed + quoted  # nosec B608
         ).fetchone()[0]
     return {"migrated": migrated, "skipped_null": int(skipped_null)}
 
@@ -101,9 +104,12 @@ def verify_encrypted_column(
     table, id_column, source_column, destination_column = _validate_inputs(
         connection, crypto, table, id_column, source_column, destination_column
     )
+    sql_table, sql_id, sql_source, sql_dest = (
+        _quoted_identifier(n) for n in (table, id_column, source_column, destination_column)
+    )
     rows = connection.execute(
-        f"SELECT {id_column}, {source_column}, {destination_column} FROM {table} "  # identifiers allow-listed  # nosec B608
-        f"WHERE {source_column} IS NOT NULL"
+        f"SELECT {sql_id}, {sql_source}, {sql_dest} FROM {sql_table} "  # identifiers allow-listed + quoted  # nosec B608
+        f"WHERE {sql_source} IS NOT NULL"
     ).fetchall()
     verified = 0
     for record_id, plaintext, ciphertext in rows:

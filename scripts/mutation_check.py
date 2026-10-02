@@ -567,6 +567,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         "Pre-split stores stop being adopted, so the split strands existing data "
         "behind a freshly minted key",
     ),
+    Mutation(
+        "IQ-1",
+        "src/floorvault/sqlite_adapter.py",
+        '    return ".".join(f"[{part}]" for part in _safe_identifier(name).split("."))',
+        "    return _safe_identifier(name)  # MUTANT",
+        "SQL boundary loses bracket quoting: allow-listed names like TRUE or "
+        "CURRENT_TIMESTAMP resolve as expressions instead of columns again",
+    ),
 )
 
 # --------------------------------------------------------------------------
