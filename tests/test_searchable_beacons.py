@@ -492,3 +492,57 @@ def test_indexer_rejects_bad_expected_rows():
         BeaconIndexer(KEY, expected_rows=True)
     with pytest.raises(ValueError):
         BeaconIndexer(KEY, expected_rows=0)
+
+
+# ---------------------------------------------------------------------------
+# Key custody: a HardenedMemoryKey must not be flattened to heap bytes
+# ---------------------------------------------------------------------------
+#
+# compute_beacon must not call HardenedMemoryKey.get_bytes(). That returns an
+# immutable ``bytes`` object, which is an un-wipeable ghost of the beacon key on
+# the Python heap - one per call, since a beacon is computed once per indexed
+# row. floorvault's own core.py refuses this exact pattern for the AEAD subkey
+# ("a get_bytes() copy would leave an un-wipeable immutable ghost on the Python
+# heap", core.py:250-256); the beacon path must hold the same contract.
+#
+# This is a guard only if it is RED on the pre-fix code, which the accompanying
+# review verified by direct measurement (100 calls -> 100 bytes copies).
+
+
+def test_coerce_does_not_materialize_hardened_key_as_bytes(monkeypatch):
+    from floorvault import beacons as beacons_module
+    from floorvault.memory import HardenedMemoryKey
+
+    hardened = HardenedMemoryKey(bytes(range(32)))
+    calls = {"n": 0}
+    original = HardenedMemoryKey.get_bytes
+
+    def counting_get_bytes(self):
+        calls["n"] += 1
+        return original(self)
+
+    monkeypatch.setattr(HardenedMemoryKey, "get_bytes", counting_get_bytes)
+    for index in range(50):
+        beacons_module.compute_beacon(
+            f"user{index}@example.com", scope="users.email", key=hardened
+        )
+
+    assert calls["n"] == 0, (
+        f"compute_beacon materialized the hardened key as heap bytes "
+        f"{calls['n']} times for 50 calls; each copy is an immutable, "
+        f"un-wipeable ghost of key material"
+    )
+
+
+def test_coerce_accepts_hardened_key_and_still_computes():
+    """The custody fix must not change the beacon value."""
+    from floorvault import beacons as beacons_module
+    from floorvault.memory import HardenedMemoryKey
+
+    raw = bytes(range(32))
+    expected = beacons_module.compute_beacon("alice@example.com", scope="users.email", key=raw)
+    hardened = HardenedMemoryKey(raw)
+    actual = beacons_module.compute_beacon(
+        "alice@example.com", scope="users.email", key=hardened
+    )
+    assert actual == expected
