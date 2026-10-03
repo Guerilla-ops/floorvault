@@ -63,7 +63,16 @@ def disable_core_dumps() -> bool:
 
 class HardenedMemoryKey:
     """Holds sensitive cryptographic key material in physical RAM with
-    anti-swapping, anti-dumping, and deterministic zeroization guarantees.
+    anti-swapping, anti-dumping, and deterministic zeroization *of the buffer
+    this object manages*.
+
+    Scope, stated plainly: ``wipe()`` zeroes and releases the mapped buffer.
+    It cannot reach copies made by third-party crypto libraries from the
+    material (e.g. the key inside an AEAD engine object), heap-resident
+    ``bytes`` intermediates produced by ``get_bytes()`` or the constructor's
+    coercion, or the caller's own buffers. Callers needing the strongest
+    hygiene should pass mutable input, consume via :meth:`get_buffer` where
+    the consumer accepts buffer objects, and wipe their own intermediates.
     """
 
     def __init__(

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import warnings
 
 import pytest
 
@@ -460,3 +461,34 @@ def test_documented_workflow_finds_nothing_for_an_absent_value(tmp_path):
             crypto.decrypt(ciphertext, table="users", record_id=candidate_id, column="email_cipher")
             != absent
         ), "a false positive must not survive the confirmation step"
+
+
+# ---------------------------------------------------------------------------
+# BeaconIndexer(expected_rows=...): warn when the width under-fills buckets
+# ---------------------------------------------------------------------------
+#
+# A width wider than suggest_beacon_bits(expected_rows) puts fewer rows per
+# bucket than the target occupancy, pushing the index toward exact-equality
+# visibility. Narrower is the safe direction (larger anonymity set, slower
+# narrowing) so only the wider side warns.
+
+
+def test_indexer_warns_when_width_exceeds_suggested():
+    with pytest.warns(UserWarning, match="closer to exact equality"):
+        BeaconIndexer(KEY, bits=64, expected_rows=500)
+
+
+def test_indexer_silent_at_or_below_suggested_width():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        BeaconIndexer(KEY, bits=8, expected_rows=500)  # suggested is 8
+        BeaconIndexer(KEY, bits=8, expected_rows=1_000_000)
+
+
+def test_indexer_rejects_bad_expected_rows():
+    with pytest.raises(TypeError):
+        BeaconIndexer(KEY, expected_rows="many")
+    with pytest.raises(TypeError):
+        BeaconIndexer(KEY, expected_rows=True)
+    with pytest.raises(ValueError):
+        BeaconIndexer(KEY, expected_rows=0)
