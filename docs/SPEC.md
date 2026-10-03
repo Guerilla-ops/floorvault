@@ -138,7 +138,10 @@ them and MUST NOT rewrite them in place.
 A reader processing an envelope MUST apply the following checks **in order**
 (the ordering is observable and frozen):
 
-1. The input MUST be a bytes-like object; anything else is a type error.
+1. The input MUST be `bytes` or `bytearray`; every other object type —
+   including `memoryview` and `str` — is a type error. (`bytearray` input
+   is snapshotted once to `bytes` before parsing; caller-side mutation
+   cannot reach the verified bytes.)
 2. `len < 21` → *Malformed ciphertext envelope: too short*. (This check
    precedes the magic check: a short buffer with a bad magic reports "too
    short".)

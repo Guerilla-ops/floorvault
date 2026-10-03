@@ -148,9 +148,13 @@ def test_the_secret_scan_allowlist_covers_exactly_the_pinned_vector_files():
     root = VECTOR_DIR.parent.parent.parent
     config = (root / ".gitleaks.toml").read_text(encoding="utf-8")
     patterns = re.findall(r"'''(.+?)'''", config)
-    assert len(patterns) == 1, f"unexpected gitleaks allowlist entries: {patterns}"
-    allow = re.compile(patterns[0])
+    assert len(patterns) == 2, f"unexpected gitleaks allowlist entries: {patterns}"
+    allow = re.compile("|".join(f"(?:{pattern})" for pattern in patterns))
     pinned = {f"tests/vectors/wycheproof/{name}" for name in PINNED_SHA256}
+    # floorvault_wire_vectors.json is pinned by the drift check in
+    # test_wire_vectors.py (committed bytes MUST equal generate() output), so
+    # its allowlist entry is safe for the same reason as the SHA-pinned ones.
+    pinned.add("tests/vectors/floorvault_wire_vectors.json")
     matched = {
         path.relative_to(root).as_posix()
         for path in root.rglob("*")

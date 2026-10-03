@@ -421,8 +421,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         "src/floorvault/core.py",
         "            if crypto_version != CRYPTO_VERSION:",
         "            if False:  # MUTANT",
-        "Version check removed - refused anyway by the header AD binding",
-        expect="survived",
+        "Version check removed - refusal moves to the header AD binding, but "
+        "the wire vectors pin the documented rejection stage (§4.3 rule 4), "
+        "so the stage regression is now detectable",
+        expect="killed",
     ),
     Mutation(
         "CR-6",
