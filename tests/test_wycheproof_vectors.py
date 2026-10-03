@@ -154,7 +154,9 @@ def test_the_secret_scan_allowlist_covers_exactly_the_pinned_vector_files():
     # floorvault_wire_vectors.json is pinned by the drift check in
     # test_wire_vectors.py (committed bytes MUST equal generate() output), so
     # its allowlist entry is safe for the same reason as the SHA-pinned ones.
-    pinned.add("tests/vectors/floorvault_wire_vectors.json")
+    # It only counts toward the expected set on branches where it exists.
+    if (root / "tests" / "vectors" / "floorvault_wire_vectors.json").is_file():
+        pinned.add("tests/vectors/floorvault_wire_vectors.json")
     matched = {
         path.relative_to(root).as_posix()
         for path in root.rglob("*")
