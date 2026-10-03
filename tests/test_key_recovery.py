@@ -42,3 +42,30 @@ def test_recovery_bundle_rejects_tampering_and_bad_key_lengths():
         wrap_master_key(b"short", RECOVERY)
     with pytest.raises(ValueError, match="exactly 32 bytes"):
         wrap_master_key(MASTER, b"short")
+
+
+def test_wrap_refuses_to_wrap_a_key_with_itself():
+    """A self-wrapped bundle is security theatre and must be refused.
+
+    ``wrap_master_key`` documents that the recovery key "must be stored through an
+    independently protected recovery process", but nothing enforced it: passing
+    ``recovery_key == master_key`` produced a bundle that round-trips, so an
+    attacker who recovered it holds the data key too. Recovery then appears to
+    have been configured while providing no actual second factor.
+
+    Compared with a constant-time comparison so the check cannot become a timing
+    oracle on the key bytes.
+    """
+    from floorvault.key_recovery import wrap_master_key
+
+    with pytest.raises(ValueError, match="recovery key must differ"):
+        wrap_master_key(MASTER, MASTER)
+
+
+def test_wrap_accepts_distinct_keys_that_happen_to_share_a_prefix():
+    """The self-wrap guard must compare the whole key, not a prefix."""
+    from floorvault.key_recovery import wrap_master_key
+
+    recovery = b"\x12" * 31 + b"\x13"  # differs only in the final byte
+    bundle = wrap_master_key(MASTER, recovery)
+    assert bundle.startswith(b"FVRB1")

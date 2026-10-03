@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 
 from .core import FloorVault
@@ -33,6 +34,16 @@ def wrap_master_key(
     """
     master = _validate_key(master_key, "master_key")
     recovery = _validate_key(recovery_key, "recovery_key")
+    # Refuse a self-wrapped bundle. The recovery key's whole purpose is to be
+    # protected INDEPENDENTLY of the data key; if the two are the same value
+    # then anyone who recovers the bundle holds the data key too, so recovery
+    # buys nothing while appearing to be configured. compare_digest keeps the
+    # comparison constant-time so this cannot become a timing oracle on the key.
+    if hmac.compare_digest(master, recovery):
+        raise ValueError(
+            "recovery key must differ from the master key: a bundle wrapped with "
+            "itself provides no independent recovery and is security theatre"
+        )
     bundle_id = os.urandom(_BUNDLE_ID_LENGTH)
     crypto = FloorVault(recovery, app_instance_id=_APP_INSTANCE_ID)
     try:
