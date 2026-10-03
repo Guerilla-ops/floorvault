@@ -109,12 +109,64 @@ def test_vault_migrates_legacy_plaintext_metadata(tmp_path):
         )
     conn.close()
 
-    store = VaultStore(db_dir, crypto=FloorVault(b"\x25" * 32, memory_mode="disabled"))
+    with pytest.raises(VaultError, match="plaintext metadata"):
+        VaultStore(db_dir, crypto=FloorVault(b"\x25" * 32, memory_mode="disabled"))
+
+    store = VaultStore(
+        db_dir,
+        crypto=FloorVault(b"\x25" * 32, memory_mode="disabled"),
+        migrate_legacy_metadata=True,
+    )
     assert store.list_items()[0].label == "Legacy"
     with db_path.open("rb") as db_file:
         raw_db = db_file.read()
     assert b"Legacy" not in raw_db
     assert b"https://example.com" not in raw_db
+
+    # Migration is one-shot: ordinary reopen works once metadata is sealed.
+    reopened = VaultStore(db_dir, crypto=FloorVault(b"\x25" * 32, memory_mode="disabled"))
+    assert reopened.list_items()[0].label == "Legacy"
+
+
+def test_vault_rejects_plaintext_metadata_after_version_reset(tmp_path):
+    """A database writer must not re-enable plaintext acceptance by resetting
+    the attacker-editable user_version marker (Codex audit finding 1)."""
+    crypto = FloorVault(b"\x27" * 32, memory_mode="disabled")
+    store = VaultStore(tmp_path / "vault", crypto=crypto)
+    item = store.add_item(
+        kind="login",
+        label="Trusted",
+        origin="https://example.com",
+        secret={"identifier_type": "username", "identifier": "u", "password": "p"},
+    )
+
+    db_path = tmp_path / "vault" / "vault.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA user_version = 0")
+        conn.execute(
+            "UPDATE vault_items SET label=?, origin=?, identifier_type=?, identifier=?, created_at=? WHERE id=?",
+            (
+                "forged",
+                "https://evil.example",
+                "username",
+                "mallory",
+                "2000-01-01T00:00:00+00:00",
+                item.id,
+            ),
+        )
+
+    with pytest.raises(VaultError, match="plaintext metadata"):
+        VaultStore(tmp_path / "vault", crypto=FloorVault(b"\x27" * 32, memory_mode="disabled"))
+
+    # Rejected without resealing: stored metadata is still the planted
+    # plaintext, and the sealed payload still decrypts under the real key.
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT label, payload_cipher FROM vault_items WHERE id = ?", (item.id,)
+        ).fetchone()
+    assert row[0] == "forged"
+    plaintext = crypto.decrypt(row[1], table="vault_items", record_id=item.id, column="payload")
+    assert "p" in plaintext
 
 
 def test_vault_removes_legacy_origin_index_column(tmp_path):
