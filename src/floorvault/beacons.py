@@ -103,7 +103,7 @@ def _coerce_key_material(
 
 
 def _validate_key(
-    key: Union[bytes, bytearray, HardenedMemoryKey]
+    key: Union[bytes, bytearray, HardenedMemoryKey],
 ) -> Union[bytes, bytearray, memoryview]:
     """Return 32+ bytes of key material, accepting a hardened handle.
 

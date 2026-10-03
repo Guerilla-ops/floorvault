@@ -523,9 +523,7 @@ def test_coerce_does_not_materialize_hardened_key_as_bytes(monkeypatch):
 
     monkeypatch.setattr(HardenedMemoryKey, "get_bytes", counting_get_bytes)
     for index in range(50):
-        beacons_module.compute_beacon(
-            f"user{index}@example.com", scope="users.email", key=hardened
-        )
+        beacons_module.compute_beacon(f"user{index}@example.com", scope="users.email", key=hardened)
 
     assert calls["n"] == 0, (
         f"compute_beacon materialized the hardened key as heap bytes "
@@ -542,9 +540,7 @@ def test_coerce_accepts_hardened_key_and_still_computes():
     raw = bytes(range(32))
     expected = beacons_module.compute_beacon("alice@example.com", scope="users.email", key=raw)
     hardened = HardenedMemoryKey(raw)
-    actual = beacons_module.compute_beacon(
-        "alice@example.com", scope="users.email", key=hardened
-    )
+    actual = beacons_module.compute_beacon("alice@example.com", scope="users.email", key=hardened)
     assert actual == expected
 
 
@@ -597,9 +593,7 @@ def test_beacon_refuses_a_key_wiped_between_view_and_copy():
 
     # And the public path refuses that same key rather than producing it.
     with pytest.raises(RuntimeError, match="wiped"):
-        beacons_module.compute_beacon(
-            "alice@example.com", scope="users.email", key=bytes(32)
-        )
+        beacons_module.compute_beacon("alice@example.com", scope="users.email", key=bytes(32))
 
 
 def test_derive_beacon_key_refuses_a_key_wiped_mid_derivation():
