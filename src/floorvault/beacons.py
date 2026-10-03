@@ -49,6 +49,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import struct
+import warnings
 from typing import Union
 
 from cryptography.hazmat.primitives import hashes
@@ -255,6 +256,7 @@ class BeaconIndexer:
         key: Union[bytes, bytearray, HardenedMemoryKey],
         *,
         bits: int = 8,
+        expected_rows: int | None = None,
     ) -> None:
         beacon_bucket_bytes(bits)  # range check first, for the clearer message
         if bits % 8 != 0:
@@ -266,6 +268,27 @@ class BeaconIndexer:
         _validate_key(key)  # fail on absent/short key material at construction
         self._key = key
         self.bits = bits
+        if expected_rows is not None:
+            if isinstance(expected_rows, bool) or not isinstance(expected_rows, int):
+                raise TypeError("expected_rows must be an integer")
+            if expected_rows < 1:
+                raise ValueError("expected_rows must be a positive integer")
+            # A width wider than suggested puts fewer rows in each bucket than
+            # the target occupancy, i.e. moves the index nearer exact-equality
+            # visibility for an observer of the beacon column. Narrower is the
+            # safe direction (larger anonymity set, slower narrowing) and earns
+            # no warning.
+            suggested = suggest_beacon_bits(expected_rows)
+            if bits > suggested:
+                occupancy = expected_rows / self.bucket_count
+                warnings.warn(
+                    f"bits={bits} on ~{expected_rows} rows leaves ~{occupancy:.1f} "
+                    f"rows per beacon bucket, below the suggested occupancy - "
+                    f"the index is closer to exact equality than "
+                    f"suggest_beacon_bits({expected_rows}) -> {suggested} bits",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
     @property
     def bucket_bytes(self) -> int:

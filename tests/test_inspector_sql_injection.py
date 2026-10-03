@@ -98,3 +98,26 @@ def test_sql_injection_table_name_refused(tmp_path):
     rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     conn.close()
     assert ("vault_items",) in rows
+
+
+def test_plaintext_value_is_not_echoed(tmp_path):
+    """A non-ciphertext cell must be reported by shape, never by content.
+
+    The inspector previously printed ``Plaintext: {value}`` for cells that
+    were not binary ciphertext — a diagnostic that exfiltrates stored secrets
+    to the terminal. The safe behavior is to report the type only.
+    """
+    db = tmp_path / "v.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE vault_items (id TEXT, payload_cipher BLOB, label TEXT)")
+    conn.execute(
+        "INSERT INTO vault_items (id, payload_cipher, label) VALUES (?, ?, ?)",
+        ("r1", b"x" * 40, "SECRET-VALUE-9f3b"),
+    )
+    conn.commit()
+    conn.close()
+
+    result = _run(["inspect", str(db), "vault_items", "r1", "label"])
+    assert result.returncode == 0
+    assert "SECRET-VALUE-9f3b" not in result.stdout
+    assert "not binary ciphertext" in result.stdout

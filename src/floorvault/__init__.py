@@ -22,7 +22,11 @@ from .migration import LegacyRetiredError, LegacyVaultError, MigratingVaultStore
 from .providers.adaptive import AdaptiveKeyProvider
 from .providers.base import KeyProvider, KeyProviderError, MissingKeyError
 from .sqlite_adapter import ContextualSQLite, ContextualTable, EncryptedSQLiteTable
-from .sqlite_migration import migrate_plaintext_column, verify_encrypted_column
+from .sqlite_migration import (
+    drop_plaintext_column,
+    migrate_plaintext_column,
+    verify_encrypted_column,
+)
 from .vault_rotation import rotate_vault_store
 
 __version__ = "0.1.0"
@@ -46,6 +50,7 @@ __all__ = [
     "EncryptedSQLiteTable",
     "migrate_plaintext_column",
     "verify_encrypted_column",
+    "drop_plaintext_column",
     "rotate_vault_store",
     # Key Providers
     "KeyProvider",
