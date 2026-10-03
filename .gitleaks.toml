@@ -18,3 +18,13 @@ useDefault = true
 [[allowlists]]
 description = "Project Wycheproof public test vectors, pinned by SHA-256"
 paths = ['''^tests/vectors/wycheproof/(aes_siv_cmac|aead_aes_siv_cmac)_test\.json$''']
+
+# FloorVault's own wire vectors are synthetic test data: every "key" derives
+# from a fixed public label in scripts/gen_vectors.py. The generic-api-key
+# rule flags the 64-hex master/recovery/beacon key fields. Safe by pin: the
+# file is regenerated deterministically and tests/test_wire_vectors.py fails
+# if the committed bytes differ from generate(), so a hand-smuggled secret
+# cannot survive the drift check.
+[[allowlists]]
+description = "FloorVault wire vectors, pinned by deterministic regeneration"
+paths = ['''^tests/vectors/floorvault_wire_vectors\.json$''']
