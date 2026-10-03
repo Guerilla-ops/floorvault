@@ -277,10 +277,32 @@ rotate_vault_store(
     new_vault=new_crypto,
     new_key_id=1,
 )
+
+# REQUIRED: the `store` above was built on old_crypto and CANNOT read the
+# re-sealed records -- rotation changed every envelope's authenticated key_id.
+# Rebuild the store on the new key and repoint every holder of the old one.
+store = VaultStore("~/.floor/vault", crypto=new_crypto)
 ```
 
-After rotation returns, switch future reads to a `KeyRing` holding the new key; the
-helper does not reconfigure your key provider for you.
+**The original `store` object is unusable after `rotate_vault_store` returns.** It holds a
+single `crypto`, so it authenticates against the old key while every record now declares the new
+one, and `resolve_secret` / `get_meta` / `list_items` raise `DecryptionVerificationError` — a
+tamper-evidence error that here means only "wrong key". (`has_items()` still returns `True`,
+because it does not decrypt, so it will not surface the problem.)
+
+Rotation is durable and verified before it returns, so this is not a transient state: if your
+process exits before rebuilding the store — and your key provider still resolves the old key — the
+store stays unreadable across restarts until the provider is updated.
+
+Two rules that follow:
+
+- **Rebuild the store, don't mutate it.** There is no `KeyRing` parameter on `VaultStore`, so
+  switching generations means constructing a new store on the new key and updating every reference.
+- **Update the key provider first**, or make the new key resolvable before you rotate. A rotation
+  whose new key nothing can resolve is a durable outage.
+
+To read a store that spans generations, use `KeyRing` directly with the ring-taking methods
+(`read_sealed_item`) rather than the single-key convenience accessors above.
 
 Create an authenticated recovery bundle using a separately protected recovery key:
 
