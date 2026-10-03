@@ -546,3 +546,70 @@ def test_coerce_accepts_hardened_key_and_still_computes():
         "alice@example.com", scope="users.email", key=hardened
     )
     assert actual == expected
+
+
+# ---------------------------------------------------------------------------
+# Wipe-vs-read must fail closed, never silently key with zeroes
+# ---------------------------------------------------------------------------
+#
+# The zero-copy view handed out by HardenedMemoryKey.get_buffer() is live: a
+# wipe() that lands between obtaining the view and copying it replaces the key
+# with zero bytes. An HMAC computed over those zeros has the correct output
+# SIZE, so a beacon indexed under it is indistinguishable from a real one and
+# every later equality lookup silently misses the row.
+#
+# compute_beacon copies in two steps (_coerce_key_material -> get_buffer, then
+# _wipeable -> bytearray), which is exactly that window. The key copy must
+# therefore be refused, not taken, when the handle has been closed.
+
+
+def test_beacon_refuses_a_key_wiped_between_view_and_copy():
+    """A wipe landing in the copy window must raise, not yield a zero-keyed HMAC."""
+    from floorvault import beacons as beacons_module
+    from floorvault.memory import HardenedMemoryKey
+
+    correct = beacons_module.compute_beacon(
+        "alice@example.com", scope="users.email", key=bytes(range(32))
+    )
+
+    hardened = HardenedMemoryKey(bytes(range(32)))
+    view = beacons_module._coerce_key_material(hardened, what="beacon key")
+    hardened.wipe()  # another thread wipes here, between the two steps
+
+    with pytest.raises(RuntimeError, match="wiped"):
+        beacons_module._snapshot_key(view)
+
+    # The failure mode being prevented, stated explicitly. compute_beacon now
+    # refuses a zero key outright, so the well-formed-but-wrong beacon is
+    # demonstrated directly through HMAC: it is a DIFFERENT value of the SAME
+    # length, which is exactly why silent corruption was dangerous -- it would
+    # have indexed cleanly and every lookup would simply miss.
+    import hashlib
+    import hmac as _hmac
+
+    zero_keyed = _hmac.new(
+        bytes(32),
+        beacons_module._canonical_payload("alice@example.com", scope="users.email"),
+        hashlib.sha256,
+    ).digest()[: len(correct)]
+    assert len(zero_keyed) == len(correct)
+    assert zero_keyed != correct
+
+    # And the public path refuses that same key rather than producing it.
+    with pytest.raises(RuntimeError, match="wiped"):
+        beacons_module.compute_beacon(
+            "alice@example.com", scope="users.email", key=bytes(32)
+        )
+
+
+def test_derive_beacon_key_refuses_a_key_wiped_mid_derivation():
+    """Same window on the derivation path: refuse rather than derive from zeroes."""
+    from floorvault import beacons as beacons_module
+    from floorvault.memory import HardenedMemoryKey
+
+    hardened = HardenedMemoryKey(bytes(range(32)))
+    view = beacons_module._coerce_key_material(hardened, what="master key")
+    hardened.wipe()
+
+    with pytest.raises(RuntimeError, match="wiped"):
+        beacons_module._snapshot_key(view)

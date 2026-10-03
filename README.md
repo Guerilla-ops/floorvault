@@ -261,12 +261,17 @@ from floorvault import AdaptiveKeyProvider, FloorVault, KeyRing, rotate_vault_st
 # VaultStore is the structured item store this rotation operates on; it is not
 # re-exported at the top level.
 from floorvault.vaultkit import VaultStore
+from pathlib import Path
+
+# VaultStore does NOT expand "~" -- a literal tilde would become a directory
+# named "~" relative to the working directory. Expand it explicitly.
+VAULT_DIR = Path("~/.floor/vault").expanduser()
 
 old_crypto = FloorVault(
     AdaptiveKeyProvider(service_name="my-app").resolve_key(),
     app_instance_id="my-app",
 )
-store = VaultStore("~/.floor/vault", crypto=old_crypto)
+store = VaultStore(VAULT_DIR, crypto=old_crypto)
 
 # A new_master_key from your key provider, wrapped in its own engine.
 new_crypto = FloorVault(new_master_key, app_instance_id="my-app")
@@ -281,7 +286,7 @@ rotate_vault_store(
 # REQUIRED: the `store` above was built on old_crypto and CANNOT read the
 # re-sealed records -- rotation changed every envelope's authenticated key_id.
 # Rebuild the store on the new key and repoint every holder of the old one.
-store = VaultStore("~/.floor/vault", crypto=new_crypto)
+store = VaultStore(VAULT_DIR, crypto=new_crypto)
 ```
 
 **The original `store` object is unusable after `rotate_vault_store` returns.** It holds a
