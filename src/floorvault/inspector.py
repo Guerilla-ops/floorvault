@@ -67,10 +67,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             ciphertext = row[0]
             if not isinstance(ciphertext, (bytes, bytearray)):
+                # Decline to echo the value: a diagnostic that prints stored
+                # plaintext to the terminal defeats the encryption it exists
+                # to verify.
                 print(
-                    f"Value in {args.column} is not binary ciphertext (type: {type(ciphertext).__name__})"
+                    f"Value in {args.column} is not binary ciphertext "
+                    f"(type: {type(ciphertext).__name__}); contents not displayed"
                 )
-                print(f"Plaintext: {ciphertext}")
                 return 0
             try:
                 decrypted = crypto.decrypt(
