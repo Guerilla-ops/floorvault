@@ -321,8 +321,11 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "DS-2",
         "src/floorvault/core.py",
-        "    if isinstance(schema_version, bool) or not isinstance(schema_version, int):",
-        "    if False:  # MUTANT: schema version validation disabled",
+        # The \n pins the anchor to line start: the same schema_version check
+        # also exists inside _validate_aad_mid at method indent, and a
+        # substring anchor would match inside that deeper-indented line.
+        "\n    if isinstance(schema_version, bool) or not isinstance(schema_version, int):",
+        "\n    if False:  # MUTANT: schema version validation disabled",
         "Non-integer schema versions collapse into integer AAD contexts",
     ),
     Mutation(
@@ -420,6 +423,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         "            if False:  # MUTANT",
         "Version check removed - refused anyway by the header AD binding",
         expect="survived",
+    ),
+    Mutation(
+        "CR-6",
+        "src/floorvault/core.py",
+        "out[column] = header + nonce + aead.encrypt(data, [aad, header, nonce])",
+        "out[column] = header + nonce + aead.encrypt(data, [aad, header])  # MUTANT",
+        "Batch path: static AD vector makes SIV deterministic and leaks plaintext equality",
+    ),
+    Mutation(
+        "CR-7",
+        "src/floorvault/core.py",
+        "out[column] = header + nonce + aead.encrypt(data, [aad, header, nonce])",
+        "out[column] = header + nonce + aead.encrypt(data, [aad, nonce])  # MUTANT",
+        "Batch path: cleartext header stops being authenticated",
     ),
     Mutation(
         "PC-13",
