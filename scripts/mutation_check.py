@@ -593,6 +593,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         "CURRENT_TIMESTAMP resolve as expressions instead of columns again",
     ),
     Mutation(
+        "ROT-5",
+        "src/floorvault/vaultkit/vault.py",
+        "                self._verify_rotation_target(row[2], target_vault, target_key_id)",
+        "                pass  # MUTANT: resume binds to the 1-byte key id again",
+        "Resume stops authenticating the committed target master: the same key id "
+        "under a different master re-seals the remaining records onto the wrong key",
+    ),
+    Mutation(
         "REC-1",
         "src/floorvault/key_recovery.py",
         "    if hmac.compare_digest(master, recovery):",

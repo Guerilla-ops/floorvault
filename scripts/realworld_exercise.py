@@ -444,7 +444,7 @@ def main() -> int:
     cids = [
         cstore.add_item(kind="generic", label=f"c{i}", secret={"v": str(i)}).id for i in range(6)
     ]
-    cstore.begin_rotation(1)
+    cstore.begin_rotation(1, target_vault=v1)
     expect_raises(
         "add_item refused during rotation barrier",
         (Exception,),

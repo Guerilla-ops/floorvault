@@ -57,10 +57,13 @@ def rotate_vault_store(
 
     Rotation is resumable: each completed item is recorded by the existing
     transaction-coupled journal. If a process stops after some items, call this
-    function again with a ring holding both old and new generations. The function
-    skips journaled target units, re-seals all retirement tombstones, verifies
-    every item and tombstone through the new generation, and clears the journal
-    only after verification succeeds.
+    function again with a ring holding both old and new generations. A resume
+    must present the same key generation the interrupted rotation committed to -
+    the persisted commitment is authenticated before any write, so the same
+    ``new_key_id`` under a different master key is refused rather than splitting
+    the store. The function skips journaled target units, re-seals all
+    retirement tombstones, verifies every item and tombstone through the new
+    generation, and clears the journal only after verification succeeds.
 
     The caller must atomically switch future application reads to a
     ``KeyRing``/``VaultStore`` containing the new key after this returns.
@@ -76,7 +79,7 @@ def rotate_vault_store(
     if not 0 <= new_key_id <= 255:
         raise ValueError("new_key_id must be an integer in [0, 255]")
 
-    store.begin_rotation(new_key_id)
+    store.begin_rotation(new_key_id, target_vault=new_vault)
     journal = store.rotation_journal()
     migrated = 0
     unit_columns = ("payload", *tuple(f"meta:{column}" for column in store._SEALED_META_COLUMNS))
