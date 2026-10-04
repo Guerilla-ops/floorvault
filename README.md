@@ -4,7 +4,6 @@
   Protect sensitive values in ordinary Python <code>sqlite3</code> databases—without SQLCipher, a custom SQLite build, or a C extension.</p>
   <p><a href="#quickstart">Quickstart</a> · <a href="#existing-sqlite-tables">SQLite adapter</a> · <a href="SECURITY.md">Security model</a></p>
   <p>
-    <a href="https://pypi.org/project/floorvault/"><img src="https://img.shields.io/pypi/v/floorvault.svg" alt="PyPI version"></a>
     <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10 and newer"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg" alt="MIT or Apache 2.0 license"></a>
   </p>
@@ -44,29 +43,32 @@ flowchart LR
 
 ## Install
 
+FloorVault is **not yet published to PyPI** — `pip install floorvault` does not
+work yet. Install from the repository directly:
+
 ```bash
-pip install floorvault
+pip install "floorvault @ git+https://github.com/vaultfloor/floorvault.git"
 ```
 
 With `uv`:
 
 ```bash
-uv add floorvault
+uv add "floorvault @ git+https://github.com/vaultfloor/floorvault.git"
 ```
 
 macOS Keychain support is optional:
 
 ```bash
-uv add "floorvault[macos]"
+uv add "floorvault[macos] @ git+https://github.com/vaultfloor/floorvault.git"
 ```
 
 Linux Secret Service support is optional too:
 
 ```bash
-uv add "floorvault[linux]"
+uv add "floorvault[linux] @ git+https://github.com/vaultfloor/floorvault.git"
 ```
 
-A stock `pip install floorvault` does **not** give the key provider an OS store
+A stock install does **not** give the key provider an OS store
 on every host: macOS Keychain and Linux Secret Service need their platform extras,
 Windows uses DPAPI built in, and the local-file tier is off unless you enable it.
 If no usable provider applies (for example, macOS without its extra or a headless
