@@ -130,7 +130,7 @@ def test_vault_migrates_legacy_plaintext_metadata(tmp_path):
 
 def test_vault_rejects_plaintext_metadata_after_version_reset(tmp_path):
     """A database writer must not re-enable plaintext acceptance by resetting
-    the attacker-editable user_version marker (Codex audit finding 1)."""
+    the attacker-editable user_version marker (a prior audit finding)."""
     crypto = FloorVault(b"\x27" * 32, memory_mode="disabled")
     store = VaultStore(tmp_path / "vault", crypto=crypto)
     item = store.add_item(
