@@ -592,6 +592,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "SQL boundary loses bracket quoting: allow-listed names like TRUE or "
         "CURRENT_TIMESTAMP resolve as expressions instead of columns again",
     ),
+    Mutation(
+        "REC-1",
+        "src/floorvault/key_recovery.py",
+        "    if hmac.compare_digest(master, recovery):",
+        "    if False:  # MUTANT: self-wrapped bundle accepted",
+        "Self-wrap guard disabled: the recovery key can be the master key itself",
+    ),
 )
 
 # --------------------------------------------------------------------------
