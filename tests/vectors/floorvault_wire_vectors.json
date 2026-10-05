@@ -1,0 +1,934 @@
+{
+  "_doc": {
+    "determinism": "Regenerate with `PYTHONPATH=src .venv/bin/python scripts/gen_vectors.py`. Nonces and the bundle_id come from a patched os.urandom (HMAC-SHA256 counter stream), so output is byte-stable.",
+    "encodings": "All *_hex fields are lowercase hex of raw bytes; 'coords' objects are literal JSON strings mapping to associated_data(...) kwargs. 'app_instance_id' is bound at FloorVault construction, not per call; an absent 'revision' member means unbound.",
+    "negative": "'expect.floorvault'/'expect.independent' name the error class each side must raise; 'floorvault_msg' is a required substring of the reference error message. 'kind' selects the checker's harness path; 'ref' points at a positive vector's envelope.",
+    "positive": "floorvault.decrypt_bytes(envelope, **coords) == plaintext_hex; when 'plaintext_utf8' is present floorvault.decrypt() returns that str. 'producer' names the writing API; 'independent_v1' records were built by independent_wire because this build has no v1 writer.",
+    "purpose": "Pinned wire vectors for docs/SPEC.md, checked by tests/test_wire_vectors.py against both floorvault and tests/vectors/independent_wire.py."
+  },
+  "aad_vectors": [
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a22656d61696c222c227265636f72645f6964223a22752d31222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a227573657273227d",
+      "comment": "Golden AAD for coordinates of 'pos-ascii'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "id": "aad-pos-ascii"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a226e6f7465222c227265636f72645f6964223a22732d3432222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a2273656372657473227d",
+      "comment": "Golden AAD for coordinates of 'pos-unicode-pt'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "note",
+        "record_id": "s-42",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "secrets"
+      },
+      "id": "aad-pos-unicode-pt"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2264617461222c227265636f72645f6964223a22622d37222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a22626c6f6273227d",
+      "comment": "Golden AAD for coordinates of 'pos-nonutf8-bytes'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "data",
+        "record_id": "b-7",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "blobs"
+      },
+      "id": "aad-pos-nonutf8-bytes"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a22626f6479222c227265636f72645f6964223a226e2d30222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a226e6f746573227d",
+      "comment": "Golden AAD for coordinates of 'pos-empty'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "body",
+        "record_id": "n-0",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "notes"
+      },
+      "id": "aad-pos-empty"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2263697479222c227265636f72645f6964223a22636166c3a9222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a22706c61636573227d",
+      "comment": "Golden AAD for coordinates of 'pos-coords-nfc'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "city",
+        "record_id": "café",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "places"
+      },
+      "id": "aad-pos-coords-nfc"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2263697479222c227265636f72645f6964223a2263616665cc81222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a22706c61636573227d",
+      "comment": "Golden AAD for coordinates of 'pos-coords-nfd'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "city",
+        "record_id": "café",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "places"
+      },
+      "id": "aad-pos-coords-nfd"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a22636f6c5c6e222c227265636f72645f6964223a22725c75303030315c75303030627fe280a8efbbbf79222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a2274615c22626c655c5c78227d",
+      "comment": "Golden AAD for coordinates of 'pos-coords-escapes'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "col\n",
+        "record_id": "r\u0001\u000b ﻿y",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "ta\"ble\\x"
+      },
+      "id": "aad-pos-coords-escapes"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2276222c227265636f72645f6964223a226b2d39222c227265766973696f6e223a372c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a226b76227d",
+      "comment": "Golden AAD for coordinates of 'pos-revision'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "v",
+        "record_id": "k-9",
+        "revision": 7,
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "kv"
+      },
+      "id": "aad-pos-revision"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2276222c227265636f72645f6964223a226b2d3130222c227265766973696f6e223a313138303539313632303731373431313330333433332c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a226b76227d",
+      "comment": "Golden AAD for coordinates of 'pos-revision-huge'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "v",
+        "record_id": "k-10",
+        "revision": 1180591620717411303433,
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "kv"
+      },
+      "id": "aad-pos-revision-huge"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2261636d652d6575222c22636f6c756d6e223a22736563726574222c227265636f72645f6964223a22696e762d303031222c22736368656d615f6964223a2261636d652e62696c6c696e672e7639222c22736368656d615f76657273696f6e223a34322c227461626c65223a2262696c6c696e67227d",
+      "comment": "Golden AAD for coordinates of 'pos-nondefault-schema'.",
+      "coords": {
+        "app_instance_id": "acme-eu",
+        "column": "secret",
+        "record_id": "inv-001",
+        "schema_id": "acme.billing.v9",
+        "schema_version": 42,
+        "table": "billing"
+      },
+      "id": "aad-pos-nondefault-schema"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2263222c227265636f72645f6964223a22722d6e6567222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a2d332c227461626c65223a2274227d",
+      "comment": "Golden AAD for coordinates of 'pos-schema-version-negative'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "c",
+        "record_id": "r-neg",
+        "schema_id": "floor.vault.v1",
+        "schema_version": -3,
+        "table": "t"
+      },
+      "id": "aad-pos-schema-version-negative"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2263222c227265636f72645f6964223a22722d68756765222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a313138303539313632303731373431313330333432392c227461626c65223a2274227d",
+      "comment": "Golden AAD for coordinates of 'pos-schema-version-huge'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "c",
+        "record_id": "r-huge",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1180591620717411303429,
+        "table": "t"
+      },
+      "id": "aad-pos-schema-version-huge"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a22746f6b656e222c227265636f72645f6964223a22752d3737222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a227573657273227d",
+      "comment": "Golden AAD for coordinates of 'pos-keyid-7'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "token",
+        "record_id": "u-77",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "id": "aad-pos-keyid-7"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a226d6574613a6c6162656c222c227265636f72645f6964223a227661756c745f616263313233222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a227661756c745f6974656d73227d",
+      "comment": "Golden AAD for coordinates of 'pos-batch-meta:label'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "meta:label",
+        "record_id": "vault_abc123",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "vault_items"
+      },
+      "id": "aad-pos-batch-meta:label"
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a227061796c6f6164222c227265636f72645f6964223a227661756c745f616263313233222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a227661756c745f6974656d73227d",
+      "comment": "Golden AAD for coordinates of 'pos-batch-payload'.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "payload",
+        "record_id": "vault_abc123",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "vault_items"
+      },
+      "id": "aad-pos-batch-payload"
+    },
+    {
+      "comment": "Whitespace-after-strip() string coordinate → ValueError (§5.2).",
+      "coords": {
+        "column": "c",
+        "record_id": "r",
+        "table": "   "
+      },
+      "expect_error": {
+        "floorvault": "ValueError",
+        "independent": "ValueError"
+      },
+      "id": "aad-reject-whitespace"
+    },
+    {
+      "comment": "Non-str coordinate raises the same 'non-empty string' ValueError, not a type error (§5.2 quirk).",
+      "coords": {
+        "column": "c",
+        "record_id": 42,
+        "table": "t"
+      },
+      "expect_error": {
+        "floorvault": "ValueError",
+        "independent": "ValueError"
+      },
+      "id": "aad-reject-non-string"
+    },
+    {
+      "comment": "bool is rejected where int is required → TypeError (§5.2).",
+      "coords": {
+        "column": "c",
+        "record_id": "r",
+        "schema_version": true,
+        "table": "t"
+      },
+      "expect_error": {
+        "floorvault": "TypeError",
+        "independent": "TypeError"
+      },
+      "id": "aad-reject-bool-schema-version"
+    },
+    {
+      "comment": "revision must be non-negative when present → ValueError (§5.2).",
+      "coords": {
+        "column": "c",
+        "record_id": "r",
+        "revision": -1,
+        "table": "t"
+      },
+      "expect_error": {
+        "floorvault": "ValueError",
+        "independent": "ValueError"
+      },
+      "id": "aad-reject-negative-revision"
+    }
+  ],
+  "beacon_key": "275c9e58cbf3b61ffc4170354863a911a9e4e8afefb1779013705e8efa5bd970",
+  "beacon_vectors": [
+    {
+      "beacon_hex": "7c",
+      "bits": 4,
+      "group": "w1",
+      "id": "beacon-bits-4",
+      "scope": "users.email",
+      "value": "alice@example.com"
+    },
+    {
+      "beacon_hex": "7c",
+      "bits": 8,
+      "group": "w1",
+      "id": "beacon-bits-8",
+      "scope": "users.email",
+      "value": "alice@example.com"
+    },
+    {
+      "beacon_hex": "7c60",
+      "bits": 16,
+      "id": "beacon-bits-16",
+      "scope": "users.email",
+      "value": "alice@example.com"
+    },
+    {
+      "beacon_hex": "7134a5f4",
+      "bits": 32,
+      "id": "beacon-bits-32",
+      "scope": "users.name",
+      "value": "张三"
+    },
+    {
+      "beacon_hex": "c51712de566477e7",
+      "bits": 64,
+      "id": "beacon-bits-64",
+      "scope": "vault.origin",
+      "value": "https://例え.jp/path"
+    }
+  ],
+  "format_version": 1,
+  "master_key": "bb4fc71e501fa23e67b3710ced5d29cbb37f415e65d283174d33e15043390b2d",
+  "negative": [
+    {
+      "comment": "§4.3 ordering: the length check precedes the magic check, so a <21-byte buffer reports 'too short' even with a wrong magic.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "too short",
+        "independent": "TooShortError"
+      },
+      "id": "neg-too-short-bad-magic",
+      "input_hex": "5858585802001030c271323a3be284813cc27edf",
+      "kind": "corrupt"
+    },
+    {
+      "comment": "Wrong magic on a full-length buffer.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "magic",
+        "independent": "BadMagicError"
+      },
+      "id": "neg-bad-magic",
+      "input_hex": "4241442102001030c271323a3be284813cc27edf913ce6adc3e48d09eb6f3df4e6c47ffc3a228d712bba365a113201b81df7b4d49e97a149",
+      "kind": "corrupt"
+    },
+    {
+      "comment": "FLV2 with crypto_version=3; this build accepts only 2 (§4.3 rule 4).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "crypto version",
+        "independent": "UnsupportedCryptoVersionError"
+      },
+      "id": "neg-bad-crypto-version",
+      "input_hex": "464c563203001030c271323a3be284813cc27edf913ce6adc3e48d09eb6f3df4e6c47ffc3a228d712bba365a113201b81df7b4d49e97a149",
+      "kind": "corrupt"
+    },
+    {
+      "comment": "nonce_len byte is 8, not 16 (§4.3 rule 5).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "nonce length",
+        "independent": "BadNonceLengthError"
+      },
+      "id": "neg-bad-nonce-len",
+      "input_hex": "464c563202000830c271323a3be284813cc27edf913ce6adc3e48d09eb6f3df4e6c47ffc3a228d712bba365a113201b81df7b4d49e97a149",
+      "kind": "corrupt"
+    },
+    {
+      "comment": "nonce_len=16 declared but the buffer ends at 22 bytes (< 7+16): same 'invalid nonce length' rejection via the truncation branch.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "nonce length",
+        "independent": "BadNonceLengthError"
+      },
+      "id": "neg-truncated-nonce",
+      "input_hex": "464c563202001030c271323a3be284813cc27edf913c",
+      "kind": "corrupt"
+    },
+    {
+      "comment": "Header + nonce and nothing else: zero ciphertext remainder (§4.3 rule 6).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "no ciphertext",
+        "independent": "EmptyCiphertextError"
+      },
+      "id": "neg-no-ciphertext",
+      "input_hex": "464c563202001030c271323a3be284813cc27edf913ce6",
+      "kind": "corrupt"
+    },
+    {
+      "comment": "One bit flipped inside the 16-byte SIV tag → AEAD verification failure.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "verification failed",
+        "independent": "AuthenticationError"
+      },
+      "id": "neg-flipped-tag-bit",
+      "input_hex": "464c563202001030c271323a3be284813cc27edf913ce6adc2e48d09eb6f3df4e6c47ffc3a228d712bba365a113201b81df7b4d49e97a149",
+      "kind": "corrupt"
+    },
+    {
+      "comment": "One bit flipped in the final CTR ciphertext byte → verification failure.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "verification failed",
+        "independent": "AuthenticationError"
+      },
+      "id": "neg-flipped-body-bit",
+      "input_hex": "464c563202001030c271323a3be284813cc27edf913ce6adc3e48d09eb6f3df4e6c47ffc3a228d712bba365a113201b81df7b4d49e97a148",
+      "kind": "corrupt"
+    },
+    {
+      "comment": "key_id byte rewritten 0→9: the header is an authenticated AD element, so this is a verification failure, not an ignored field (§6).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "verification failed",
+        "independent": "AuthenticationError"
+      },
+      "id": "neg-rewritten-key-id",
+      "input_hex": "464c563202091030c271323a3be284813cc27edf913ce6adc3e48d09eb6f3df4e6c47ffc3a228d712bba365a113201b81df7b4d49e97a149",
+      "kind": "corrupt"
+    },
+    {
+      "comment": "A valid envelope presented at the wrong record_id — the AAD the reader reconstructs no longer matches (§5).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-2",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "verification failed",
+        "independent": "AuthenticationError"
+      },
+      "id": "neg-spliced-record",
+      "input_hex": "464c563202001030c271323a3be284813cc27edf913ce6adc3e48d09eb6f3df4e6c47ffc3a228d712bba365a113201b81df7b4d49e97a149",
+      "kind": "splice"
+    },
+    {
+      "comment": "Batch field 'meta:label' presented under sibling column 'payload' — a column splice inside one record must also fail (§8).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "payload",
+        "record_id": "vault_abc123",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "vault_items"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "verification failed",
+        "independent": "AuthenticationError"
+      },
+      "id": "neg-spliced-column",
+      "input_hex": "464c56320200107d218e25c8ca1149ed3ddb2f385bda85f7b33c6e14a7471b30f13774057a3ba8947d1cffdd35a7600bed",
+      "kind": "splice"
+    },
+    {
+      "comment": "A v1 record MUST fail against the v2 AD vector [aad, header, nonce] (§6). FloorVault cannot express that directly — its equivalent refusal is a v1 record presented with a requested key_id ('no key id'). The checker asserts both.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "no key id",
+        "independent": "KeyIdMismatchError"
+      },
+      "id": "neg-v1-under-v2-ad",
+      "input_hex": "464c525610b1cf56519648c9cc4bcb6c9521f5ee316bed950860a67554194d4e73a16cdcd5a8306b1e5c786f72db8c8810ac",
+      "kind": "v1_as_v2",
+      "require_key_id": 0
+    },
+    {
+      "comment": "Caller requires key_id=3 but the authenticated header declares 7 (§4.4 step 2, §16 'written under key id').",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "token",
+        "record_id": "u-77",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "written under key id 7",
+        "independent": "KeyIdMismatchError"
+      },
+      "id": "neg-key-id-mismatch",
+      "input_hex": "464c5632020710e3d20a480006ca70400e3abc39268659cfd907b1c6adab10bc40173f46031fe616817b71680cf92b18527941522e05582027",
+      "kind": "key_id_mismatch",
+      "require_key_id": 3
+    },
+    {
+      "comment": "Envelope input must be bytes/bytearray; anything else is a type error (§16, first row).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "TypeError",
+        "floorvault_msg": "bytes",
+        "independent": "TypeError"
+      },
+      "id": "neg-non-bytes-input",
+      "input_str": "FLV2 this is not bytes",
+      "kind": "non_bytes"
+    },
+    {
+      "comment": "memoryview is bytes-like but is NOT bytes/bytearray, so it is refused (§16 row 1 is exact; §4.3's looser 'bytes-like' wording is what the code actually narrows to bytes/bytearray).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "expect": {
+        "floorvault": "TypeError",
+        "floorvault_msg": "bytes",
+        "independent": "TypeError"
+      },
+      "id": "neg-memoryview-input",
+      "input_memoryview_hex": "464c563202001030c271323a3be284813cc27edf913ce6adc3e48d09eb6f3df4e6c47ffc3a228d712bba365a113201b81df7b4d49e97a149",
+      "kind": "non_bytes"
+    },
+    {
+      "comment": "The pos-nonutf8-bytes envelope through the text reader: a UTF-8 decode failure is a verification failure, not a partial success (§4.4 step 5).",
+      "expect": {
+        "floorvault": "DecryptionVerificationError",
+        "floorvault_msg": "not valid UTF-8",
+        "independent": "UnicodeDecodeError"
+      },
+      "id": "neg-not-utf8",
+      "kind": "text_decode",
+      "ref": "pos-nonutf8-bytes"
+    }
+  ],
+  "positive": [
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a22656d61696c222c227265636f72645f6964223a22752d31222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a227573657273227d",
+      "comment": "Baseline v2 envelope: ASCII coords and plaintext, default schema triple.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "envelope_hex": "464c563202001030c271323a3be284813cc27edf913ce6adc3e48d09eb6f3df4e6c47ffc3a228d712bba365a113201b81df7b4d49e97a149",
+      "id": "pos-ascii",
+      "key_id": 0,
+      "nonce_hex": "30c271323a3be284813cc27edf913ce6",
+      "plaintext_hex": "616c696365406578616d706c652e636f6d",
+      "plaintext_utf8": "alice@example.com",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a226e6f7465222c227265636f72645f6964223a22732d3432222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a2273656372657473227d",
+      "comment": "Non-ASCII UTF-8 plaintext.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "note",
+        "record_id": "s-42",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "secrets"
+      },
+      "envelope_hex": "464c563202001075e2c8edee49dbc5c93a10a8e0166aef6f64da29900345fcd44c3f007f1bccbe60c22a6c94a7dae515aee822877c9fea9ef02deb1abd",
+      "id": "pos-unicode-pt",
+      "key_id": 0,
+      "nonce_hex": "75e2c8edee49dbc5c93a10a8e0166aef",
+      "plaintext_hex": "70c3a4737377c3b6726420f09f949020e4b8ade69687",
+      "plaintext_utf8": "pässwörd 🔐 中文",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2264617461222c227265636f72645f6964223a22622d37222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a22626c6f6273227d",
+      "comment": "Bytes plaintext that is not valid UTF-8; only decrypt_bytes may read it (its text-path refusal is negative vector neg-not-utf8).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "data",
+        "record_id": "b-7",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "blobs"
+      },
+      "envelope_hex": "464c5632020010df684b83b19b72e20908c0fd2651d0aafcd3807abc0ca7a8fe723868dc3af51825c0d5e5fe56ffdb7227",
+      "id": "pos-nonutf8-bytes",
+      "key_id": 0,
+      "nonce_hex": "df684b83b19b72e20908c0fd2651d0aa",
+      "plaintext_hex": "fffe0062696e61727980",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a22626f6479222c227265636f72645f6964223a226e2d30222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a226e6f746573227d",
+      "comment": "Empty plaintext → 39-byte record (16-byte tag only, §4.1).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "body",
+        "record_id": "n-0",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "notes"
+      },
+      "envelope_hex": "464c5632020010452351e21b31f25407ab46f080857e8f525ed06fae66326e20d64a2f04958c46",
+      "id": "pos-empty",
+      "key_id": 0,
+      "nonce_hex": "452351e21b31f25407ab46f080857e8f",
+      "plaintext_hex": "",
+      "plaintext_utf8": "",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2263697479222c227265636f72645f6964223a22636166c3a9222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a22706c61636573227d",
+      "comment": "NFC spelling of 'café' in record_id.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "city",
+        "record_id": "café",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "places"
+      },
+      "envelope_hex": "464c5632020010403410237165b057ff601c93f7341a45f89b4f992681f5a49721b2f04a2bca4c3b255b",
+      "id": "pos-coords-nfc",
+      "key_id": 0,
+      "nonce_hex": "403410237165b057ff601c93f7341a45",
+      "plaintext_hex": "6e6663",
+      "plaintext_utf8": "nfc",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2263697479222c227265636f72645f6964223a2263616665cc81222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a22706c61636573227d",
+      "comment": "NFD spelling of the same logical string — NO normalization (§5.2): different AAD bytes, different ciphertext.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "city",
+        "record_id": "café",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "places"
+      },
+      "envelope_hex": "464c5632020010c423cc2e2a08703b870e6c658a10bb61563b4833d8a43215cf76c10b63b3dc8610c95e",
+      "id": "pos-coords-nfd",
+      "key_id": 0,
+      "nonce_hex": "c423cc2e2a08703b870e6c658a10bb61",
+      "plaintext_hex": "6e6664",
+      "plaintext_utf8": "nfd",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a22636f6c5c6e222c227265636f72645f6964223a22725c75303030315c75303030627fe280a8efbbbf79222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a2274615c22626c655c5c78227d",
+      "comment": "Quote, backslash, C0 controls, DEL, U+2028 and BOM inside coordinates — only \", \\ and C0 are escaped; everything else is verbatim UTF-8.",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "col\n",
+        "record_id": "r\u0001\u000b ﻿y",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "ta\"ble\\x"
+      },
+      "envelope_hex": "464c5632020010ca0f75934768c2c7e3b902f3cfbd60453ec41794e60b217e598b4cd0c9acdafa75f3d7f9aba8a3",
+      "id": "pos-coords-escapes",
+      "key_id": 0,
+      "nonce_hex": "ca0f75934768c2c7e3b902f3cfbd6045",
+      "plaintext_hex": "65736361706573",
+      "plaintext_utf8": "escapes",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2276222c227265636f72645f6964223a226b2d39222c227265766973696f6e223a372c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a226b76227d",
+      "comment": "revision bound into the AAD (same-coordinate replay protection, §5/§7).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "v",
+        "record_id": "k-9",
+        "revision": 7,
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "kv"
+      },
+      "envelope_hex": "464c563202001038306ea3414adb6e76133d04d2fe9d703d63c5e28aed6f19123e3d5c4f101176563a74d923",
+      "id": "pos-revision",
+      "key_id": 0,
+      "nonce_hex": "38306ea3414adb6e76133d04d2fe9d70",
+      "plaintext_hex": "7265762d37",
+      "plaintext_utf8": "rev-7",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2276222c227265636f72645f6964223a226b2d3130222c227265766973696f6e223a313138303539313632303731373431313330333433332c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a226b76227d",
+      "comment": "revision beyond 64 bits — int.__repr__ arbitrary precision (§5.2).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "v",
+        "record_id": "k-10",
+        "revision": 1180591620717411303433,
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "kv"
+      },
+      "envelope_hex": "464c563202001071089eba0ea0dfa2493c77a911dad445d84ce161251526394d062f353ff8f8d1e7540f89c0e0c785",
+      "id": "pos-revision-huge",
+      "key_id": 0,
+      "nonce_hex": "71089eba0ea0dfa2493c77a911dad445",
+      "plaintext_hex": "7265762d68756765",
+      "plaintext_utf8": "rev-huge",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2261636d652d6575222c22636f6c756d6e223a22736563726574222c227265636f72645f6964223a22696e762d303031222c22736368656d615f6964223a2261636d652e62696c6c696e672e7639222c22736368656d615f76657273696f6e223a34322c227461626c65223a2262696c6c696e67227d",
+      "comment": "Non-default schema_id / schema_version / app_instance_id.",
+      "coords": {
+        "app_instance_id": "acme-eu",
+        "column": "secret",
+        "record_id": "inv-001",
+        "schema_id": "acme.billing.v9",
+        "schema_version": 42,
+        "table": "billing"
+      },
+      "envelope_hex": "464c56320200103b3af699b7caab1c359da5751c2e3083059c40a98f73af6de3dced78592934df6b6830a527dea7cbcde5e00595",
+      "id": "pos-nondefault-schema",
+      "key_id": 0,
+      "nonce_hex": "3b3af699b7caab1c359da5751c2e3083",
+      "plaintext_hex": "637573746f6d20736368656d61",
+      "plaintext_utf8": "custom schema",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2263222c227265636f72645f6964223a22722d6e6567222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a2d332c227461626c65223a2274227d",
+      "comment": "Negative schema_version is accepted and produces valid AAD (§5.2 quirk).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "c",
+        "record_id": "r-neg",
+        "schema_id": "floor.vault.v1",
+        "schema_version": -3,
+        "table": "t"
+      },
+      "envelope_hex": "464c56320200109b6841aa3bceb7cd3e55695a6f58118b7be56049f76f6b63f6d0b767c7f3ead38bb4eace62b7508e6b8e",
+      "id": "pos-schema-version-negative",
+      "key_id": 0,
+      "nonce_hex": "9b6841aa3bceb7cd3e55695a6f58118b",
+      "plaintext_hex": "6e65672d736368656d61",
+      "plaintext_utf8": "neg-schema",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a2263222c227265636f72645f6964223a22722d68756765222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a313138303539313632303731373431313330333432392c227461626c65223a2274227d",
+      "comment": "schema_version beyond 64 bits is accepted (§5.2 quirk).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "c",
+        "record_id": "r-huge",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1180591620717411303429,
+        "table": "t"
+      },
+      "envelope_hex": "464c56320200106b69256e6407e5cc9823698fa1ec7146bf57e7b0d0e800f20506a046db82a5b319eaaca848f12b6849541a",
+      "id": "pos-schema-version-huge",
+      "key_id": 0,
+      "nonce_hex": "6b69256e6407e5cc9823698fa1ec7146",
+      "plaintext_hex": "687567652d736368656d61",
+      "plaintext_utf8": "huge-schema",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a22746f6b656e222c227265636f72645f6964223a22752d3737222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a227573657273227d",
+      "comment": "Non-zero key_id written into the authenticated header (§4.5).",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "token",
+        "record_id": "u-77",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "envelope_hex": "464c5632020710e3d20a480006ca70400e3abc39268659cfd907b1c6adab10bc40173f46031fe616817b71680cf92b18527941522e05582027",
+      "id": "pos-keyid-7",
+      "key_id": 7,
+      "nonce_hex": "e3d20a480006ca70400e3abc39268659",
+      "plaintext_hex": "726f74617465642d6b65792d7265636f7264",
+      "plaintext_utf8": "rotated-key-record",
+      "producer": "encrypt",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a22656d61696c222c227265636f72645f6964223a22752d31222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a227573657273227d",
+      "comment": "v1 FLRV envelope built by the independent implementation — this build has no v1 writer, so the spec-conformant record is the vector (§4.2). floorvault must still read it with the v1 AD vector [aad, nonce].",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "email",
+        "record_id": "u-1",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "users"
+      },
+      "envelope_hex": "464c525610b1cf56519648c9cc4bcb6c9521f5ee316bed950860a67554194d4e73a16cdcd5a8306b1e5c786f72db8c8810ac",
+      "id": "pos-v1-legacy",
+      "key_id": null,
+      "nonce_hex": "b1cf56519648c9cc4bcb6c9521f5ee31",
+      "plaintext_hex": "6c65676163792d736563726574",
+      "plaintext_utf8": "legacy-secret",
+      "producer": "independent_v1",
+      "version": 1
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a226d6574613a6c6162656c222c227265636f72645f6964223a227661756c745f616263313233222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a227661756c745f6974656d73227d",
+      "comment": "encrypt_fields() output; each field's envelope is a plain v2 record for its own column-bound AAD (§8) — no batch framing exists. (field 'meta:label' of 'pos-batch')",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "meta:label",
+        "record_id": "vault_abc123",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "vault_items"
+      },
+      "envelope_hex": "464c56320200107d218e25c8ca1149ed3ddb2f385bda85f7b33c6e14a7471b30f13774057a3ba8947d1cffdd35a7600bed",
+      "id": "pos-batch-meta:label",
+      "key_id": 0,
+      "nonce_hex": "7d218e25c8ca1149ed3ddb2f385bda85",
+      "plaintext_hex": "6c6162656c2074657874",
+      "plaintext_utf8": "label text",
+      "producer": "encrypt_fields",
+      "version": 2
+    },
+    {
+      "aad_hex": "7b226170705f696e7374616e63655f6964223a2264656661756c74222c22636f6c756d6e223a227061796c6f6164222c227265636f72645f6964223a227661756c745f616263313233222c22736368656d615f6964223a22666c6f6f722e7661756c742e7631222c22736368656d615f76657273696f6e223a312c227461626c65223a227661756c745f6974656d73227d",
+      "comment": "encrypt_fields() output; each field's envelope is a plain v2 record for its own column-bound AAD (§8) — no batch framing exists. (field 'payload' of 'pos-batch')",
+      "coords": {
+        "app_instance_id": "default",
+        "column": "payload",
+        "record_id": "vault_abc123",
+        "schema_id": "floor.vault.v1",
+        "schema_version": 1,
+        "table": "vault_items"
+      },
+      "envelope_hex": "464c5632020010f6585318e2f3eabee5b9550832e5d3873a31beafda9e6679ed34d7f477999030163f2439d9dd2747e675480d1f5a3fa75f36967649310f790c19ee3e2d8d89",
+      "id": "pos-batch-payload",
+      "key_id": 0,
+      "nonce_hex": "f6585318e2f3eabee5b9550832e5d387",
+      "plaintext_hex": "7b22736563726574223a20747275652c20226f7470223a203132333435367d",
+      "plaintext_utf8": "{\"secret\": true, \"otp\": 123456}",
+      "producer": "encrypt_fields",
+      "version": 2
+    }
+  ],
+  "recovery": {
+    "bundle_hex": "4656524231d5be04f3d183256cb76f69d02af5bdaa464c56320200103f0907aeed306e1df8a04e6ede59bb192ccbf0ef44f9bae0ae01f6dfe4e3ba7864708e16155049941ff87702a6ecaffb9230882d65ba6e1ff1695ba225ab3f7d",
+    "bundle_id": "d5be04f3d183256cb76f69d02af5bdaa",
+    "comment": "FVRB1 bundle per §11: master_key wrapped under recovery_key at coordinates app_instance_id='floorvault-recovery', table='recovery', record_id=hex(bundle_id), column='master_key'.",
+    "master_key": "bb4fc71e501fa23e67b3710ced5d29cbb37f415e65d283174d33e15043390b2d",
+    "recovery_key": "c70dcedbb432edf932cf0e65490189fa7034f1cec7112a6312a51c666da92489"
+  }
+}
