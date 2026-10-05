@@ -222,11 +222,46 @@ def test_clusterfuzzlite_builds_and_runs_with_the_token_a_private_repo_needs():
     cflite = _workflow("cflite.yml")
     assert "clusterfuzzlite/actions/build_fuzzers@" in cflite
     assert "clusterfuzzlite/actions/run_fuzzers@" in cflite
-    assert cflite.count("github-token: ${{ secrets.GITHUB_TOKEN }}") == 2
+    prune = _workflow("cflite-prune.yml")
+    assert (cflite + prune).count("github-token: ${{ secrets.GITHUB_TOKEN }}") == 4, (
+        "every cflite step (fuzz build/run + weekly prune build/run) needs the token"
+    )
     assert "language: python" in cflite
     assert "pull_request" in cflite, "a crash introduced by a PR would not fail the PR"
+
+
+def test_clusterfuzzlite_batch_mode_keeps_and_bounds_the_corpus():
+    """Without a storage repo, corpora persist as per-run artifacts; the weekly
+    schedule must also prune or the persisted corpus grows unboundedly."""
+    cflite = _workflow("cflite.yml")
+    assert "actions: read" in cflite, "corpus artifacts from previous runs are unreadable"
+    prune = _workflow("cflite-prune.yml")
+    assert "mode: prune" in prune, "batch fuzzing without pruning grows the corpus forever"
+    assert "github.event.workflow_run.event == 'schedule'" in prune
 
 
 def test_clusterfuzzlite_does_not_discard_a_crash_it_cannot_reproduce():
     """The first run found a real crash, timed out reproducing it, and went green."""
     assert "report-unreproducible-crashes: true" in _workflow("cflite.yml")
+
+
+def test_corpus_pruning_follows_the_completed_trusted_weekly_batch():
+    path = ROOT / ".github" / "workflows" / "cflite-prune.yml"
+    assert path.is_file(), "pruning needs a separate post-batch workflow and artifact namespace"
+    prune = path.read_text(encoding="utf-8")
+    assert "workflow_run:" in prune
+    assert "workflows: [ClusterFuzzLite]" in prune
+    assert "types: [completed]" in prune
+    assert "workflow_dispatch:" in prune
+    condition = (
+        "      github.event_name == 'workflow_dispatch' ||\n"
+        "      (github.event.workflow_run.event == 'schedule' &&\n"
+        "       github.event.workflow_run.conclusion == 'success' &&\n"
+        "       github.event.workflow_run.head_branch == 'main' &&\n"
+        "       github.event.workflow_run.head_repository.full_name == github.repository)"
+    )
+    assert condition in prune, "automatic pruning must follow a successful trusted main batch"
+    assert "\n  prune:" not in _workflow("cflite.yml"), "same-run corpus uploads would collide"
+    assert "mode: prune" in prune
+    assert "contents: read" in prune and "actions: read" in prune
+    assert "write" not in prune

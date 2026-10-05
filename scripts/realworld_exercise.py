@@ -56,6 +56,7 @@ def expect_raises(name: str, exc_types: tuple, fn, *args, **kwargs) -> bool:
 
 
 def main() -> int:
+    """Run end-to-end checks and print a report; return 1 on failures, otherwise 0."""
     import floorvault as fv
     from floorvault import beacons
     from floorvault.core import RECORD_MAGIC_V2
@@ -444,7 +445,7 @@ def main() -> int:
     cids = [
         cstore.add_item(kind="generic", label=f"c{i}", secret={"v": str(i)}).id for i in range(6)
     ]
-    cstore.begin_rotation(1)
+    cstore.begin_rotation(1, target_vault=v1)
     expect_raises(
         "add_item refused during rotation barrier",
         (Exception,),
@@ -712,7 +713,7 @@ def main() -> int:
     check(
         "scrub redacts sk- and AWS key",
         "[REDACTED_SECRET]" in fts2 and "AKIAIOSFODNN7EXAMPLE" not in fts2,
-        fts2,
+        "fts scrubbed content validated",
     )
     check(
         "scrub standalone",

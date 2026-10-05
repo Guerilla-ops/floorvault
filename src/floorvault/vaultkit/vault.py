@@ -205,6 +205,8 @@ class VaultStore:
     of losing indexed listings), not widen this schema.
     """
 
+    _SCHEMA_VERSION = 3
+
     def __init__(
         self,
         base_dir: Path | str,
@@ -233,6 +235,12 @@ class VaultStore:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if user_version > self._SCHEMA_VERSION:
+                raise VaultError(
+                    f"unsupported vault schema version {user_version}; "
+                    f"maximum supported is {self._SCHEMA_VERSION}"
+                )
             conn.execute("PRAGMA secure_delete = ON")
             conn.execute("PRAGMA journal_mode = DELETE")
             conn.execute("PRAGMA synchronous = FULL")
@@ -280,7 +288,8 @@ class VaultStore:
                 CREATE TABLE IF NOT EXISTS vault_rotation_state (
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     active INTEGER NOT NULL CHECK (active IN (0, 1)),
-                    target_key_id INTEGER NOT NULL
+                    target_key_id INTEGER NOT NULL,
+                    target_commitment BLOB
                 )
             """)
             conn.execute("""
@@ -290,7 +299,8 @@ class VaultStore:
             """)
             self._migrate_plaintext_metadata(conn)
             self._remove_origin_index(conn)
-            conn.execute("PRAGMA user_version = 2")
+            self._ensure_rotation_commitment_column(conn)
+            conn.execute(f"PRAGMA user_version = {self._SCHEMA_VERSION}")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -382,6 +392,12 @@ class VaultStore:
         conn.execute("DROP TABLE vault_items")
         conn.execute("ALTER TABLE vault_items_without_origin_idx RENAME TO vault_items")
 
+    def _ensure_rotation_commitment_column(self, conn: sqlite3.Connection) -> None:
+        """Add the target-commitment column to stores created before it existed."""
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(vault_rotation_state)")}
+        if "target_commitment" not in columns:
+            conn.execute("ALTER TABLE vault_rotation_state ADD COLUMN target_commitment BLOB")
+
     def _encrypt_metadata(self, item_id: str, column: str, value: Optional[str]) -> Optional[bytes]:
         if value is None:
             return None
@@ -409,19 +425,74 @@ class VaultStore:
         if row is not None and bool(row[0]):
             raise VaultError("vault rotation is in progress; write refused")
 
-    def begin_rotation(self, target_key_id: int) -> None:
-        """Persist the rotation write barrier before taking a source snapshot."""
+    def begin_rotation(self, target_key_id: int, *, target_vault: FloorVault) -> None:
+        """Persist the rotation write barrier before taking a source snapshot.
+
+        Resuming is bound to the target key GENERATION, not just its id: the
+        barrier records a commitment sealed under ``target_vault``, and a resume
+        must authenticate it before any record is re-sealed. A caller presenting
+        the same ``target_key_id`` under a different master key - or a different
+        application instance - is refused here instead of being discovered only
+        at final verification, after the remaining records were moved onto the
+        wrong key.
+        """
+        if not isinstance(target_vault, FloorVault):
+            raise TypeError("target_vault must be a FloorVault")
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT active, target_key_id FROM vault_rotation_state WHERE singleton = 1"
+                "SELECT active, target_key_id, target_commitment FROM vault_rotation_state "
+                "WHERE singleton = 1"
             ).fetchone()
-            if row is not None and bool(row[0]) and int(row[1]) != target_key_id:
-                raise VaultError("another vault rotation is already in progress")
-            conn.execute(
-                "UPDATE vault_rotation_state SET active = 1, target_key_id = ? WHERE singleton = 1",
-                (target_key_id,),
+            if row is not None and bool(row[0]):
+                if int(row[1]) != target_key_id:
+                    raise VaultError("another vault rotation is already in progress")
+                self._verify_rotation_target(row[2], target_vault, target_key_id)
+                return
+            commitment = target_vault.encrypt(
+                self._ROTATION_COMMITMENT_CANARY,
+                key_id=target_key_id,
+                table=self._ROTATION_COMMITMENT_TABLE,
+                record_id=self._ROTATION_COMMITMENT_RECORD_ID,
+                column=self._ROTATION_COMMITMENT_COLUMN,
             )
+            conn.execute(
+                "UPDATE vault_rotation_state "
+                "SET active = 1, target_key_id = ?, target_commitment = ? WHERE singleton = 1",
+                (target_key_id, commitment),
+            )
+
+    def _verify_rotation_target(
+        self, stored: Any, target_vault: FloorVault, target_key_id: int
+    ) -> None:
+        """Fail closed unless ``target_vault`` reads the recorded commitment.
+
+        The commitment is an ordinary envelope sealed under the vault that began
+        the rotation: reading it back proves the resuming caller holds that same
+        key generation (same master key, same application instance, same key
+        id), which a bare ``target_key_id`` cannot.
+        """
+        if stored is None:
+            raise VaultError(
+                "in-flight rotation predates target-key commitment binding and "
+                "cannot be verified against this master key; inspect the "
+                "journal and clear it explicitly once the store is verified"
+            )
+        try:
+            canary = target_vault.decrypt_bytes(
+                bytes(stored),
+                key_id=target_key_id,
+                table=self._ROTATION_COMMITMENT_TABLE,
+                record_id=self._ROTATION_COMMITMENT_RECORD_ID,
+                column=self._ROTATION_COMMITMENT_COLUMN,
+            )
+        except FloorVaultError as exc:
+            raise VaultError(
+                "rotation resume presented a different target master key than the "
+                "one the in-flight rotation committed to; refusing before any write"
+            ) from exc
+        if canary != self._ROTATION_COMMITMENT_CANARY:
+            raise VaultError("rotation commitment did not authenticate to the expected value")
 
     def add_item(
         self,
@@ -664,7 +735,10 @@ class VaultStore:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("DELETE FROM vault_rotation_journal")
-            conn.execute("UPDATE vault_rotation_state SET active = 0 WHERE singleton = 1")
+            conn.execute(
+                "UPDATE vault_rotation_state SET active = 0, target_commitment = NULL "
+                "WHERE singleton = 1"
+            )
 
     def read_sealed_item(self, item_id: str, ring: KeyRing) -> dict[str, Any]:
         """Return one item's plaintext as sealed today, read through ``ring``.
@@ -813,6 +887,17 @@ class VaultStore:
     #: every one of them; keeping the list here means adding a column later
     #: cannot leave rotation silently behind.
     _SEALED_META_COLUMNS = ("label", "origin", "identifier_type", "identifier", "created_at")
+
+    #: Rotation-resume commitment: a fixed canary sealed under the target vault
+    #: and stored in ``vault_rotation_state.target_commitment`` when a rotation
+    #: begins. Resuming authenticates the stored envelope with the presented
+    #: vault, which binds the resume to the target key generation itself
+    #: (master key + application instance + key id) rather than the 1-byte id
+    #: alone. The coordinates name a slot no real record can occupy.
+    _ROTATION_COMMITMENT_TABLE = "vault_rotation_state"
+    _ROTATION_COMMITMENT_RECORD_ID = "target"
+    _ROTATION_COMMITMENT_COLUMN = "commitment"
+    _ROTATION_COMMITMENT_CANARY = b"floorvault-rotation-target-v1"
 
     def _write_tombstone(
         self,

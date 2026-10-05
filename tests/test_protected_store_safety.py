@@ -293,6 +293,107 @@ def test_write_protected_rejects_a_wrong_length_key(tmp_path):
     assert not store.exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="no directory fsync on Windows")
+def test_write_protected_fsyncs_the_store_directory(tmp_path, monkeypatch):
+    """Durable publication needs the containing directory fsynced too.
+
+    File fsync flushes the payload; the *name* lives in directory metadata that
+    a power cut can still lose between ``os.link`` and the kernel's next flush.
+    The store's parent must be fsynced after publication, and a freshly created
+    vault directory must fsync its own parent after mkdir.
+    """
+    opened: dict[int, str] = {}
+    synced: list[str] = []
+    events: list[str] = []
+    store = tmp_path / "vault" / "store"
+    parent = os.path.realpath(store.parent)
+    real_open, real_fsync, real_unlink = (
+        custody.os.open,
+        custody.os.fsync,
+        custody.os.unlink,
+    )
+
+    def tracking_open(path, *args, **kwargs):
+        fd = real_open(path, *args, **kwargs)
+        opened[fd] = os.fspath(path)
+        return fd
+
+    def tracking_fsync(fd):
+        # fds are reused after close, so resolve the path while the binding
+        # the fsync refers to is still the current one.
+        path = os.path.realpath(opened.get(fd, "?"))
+        synced.append(path)
+        if path == parent:
+            events.append("sync")
+        return real_fsync(fd)
+
+    def tracking_unlink(path):
+        events.append("unlink")
+        return real_unlink(path)
+
+    monkeypatch.setattr(custody.os, "open", tracking_open)
+    monkeypatch.setattr(custody.os, "fsync", tracking_fsync)
+    monkeypatch.setattr(custody.os, "unlink", tracking_unlink)
+
+    write_protected(_KEY, store, header=_HEADER)
+
+    synced_paths = set(synced)
+    assert os.path.realpath(store.parent) in synced_paths, "published name not made durable"
+    assert os.path.realpath(tmp_path) in synced_paths, "newly created vault dir not made durable"
+    assert any(p.endswith(".tmp") for p in synced_paths), "payload fsync regressed"
+    assert events == ["sync", "unlink", "sync"], (
+        "the removed temporary name needs its own directory flush, not only the published one"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no directory fsync on Windows")
+def test_write_protected_keeps_the_store_when_cleanup_unlink_fails(tmp_path, monkeypatch):
+    """Publication is already durable when the temporary unlink errors."""
+    store = tmp_path / "store"
+    real_fsync_dir, real_unlink = custody._fsync_directory, custody.os.unlink
+    synced: list[Path] = []
+
+    def tracking_fsync_dir(directory):
+        synced.append(directory)
+        return real_fsync_dir(directory)
+
+    def failing_unlink(path):
+        if Path(path).parent == store.parent and os.fspath(path).endswith(".tmp"):
+            raise OSError("simulated unlink failure")
+        return real_unlink(path)
+
+    monkeypatch.setattr(custody, "_fsync_directory", tracking_fsync_dir)
+    monkeypatch.setattr(custody.os, "unlink", failing_unlink)
+    with pytest.raises(OSError, match="simulated unlink failure"):
+        write_protected(_KEY, store, header=_HEADER)
+
+    assert store.parent in synced, "publication flush did not precede the cleanup error"
+    assert store.exists()
+    assert read_protected(store, header=_HEADER) == _KEY
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no directory fsync on Windows")
+def test_write_protected_raises_when_the_cleanup_flush_fails(tmp_path, monkeypatch):
+    """A failed post-unlink flush must surface, not report false success."""
+    store = tmp_path / "store"
+    real_fsync_dir = custody._fsync_directory
+    parent_syncs = {"n": 0}
+
+    def flaky_fsync_dir(directory):
+        if directory == store.parent:
+            parent_syncs["n"] += 1
+            if parent_syncs["n"] == 2:
+                raise OSError("simulated directory fsync failure")
+        return real_fsync_dir(directory)
+
+    monkeypatch.setattr(custody, "_fsync_directory", flaky_fsync_dir)
+    with pytest.raises(OSError, match="simulated directory fsync failure"):
+        write_protected(_KEY, store, header=_HEADER)
+
+    assert list(store.parent.glob(".*tmp")) == []
+    assert read_protected(store, header=_HEADER) == _KEY
+
+
 def test_write_protected_leaves_nothing_behind_when_the_write_fails(tmp_path, monkeypatch):
     """A failure mid-write must not leave a half-written key or a temp file."""
     store = tmp_path / "store"
@@ -485,13 +586,13 @@ def test_temporary_file_is_created_in_the_store_directory(tmp_path, monkeypatch)
     link source - must be created next to the store itself.
     """
     store = tmp_path / "store"
-    opened: list[str] = []
+    opened: list[tuple[str, int]] = []
     links: list[tuple[str, str]] = []
     real_open = os.open
     real_link = os.link
 
     def recording_open(path, flags, *args, **kwargs):
-        opened.append(os.fspath(path))
+        opened.append((os.fspath(path), flags))
         return real_open(path, flags, *args, **kwargs)
 
     def recording_link(source, destination, *args, **kwargs):
@@ -502,8 +603,12 @@ def test_temporary_file_is_created_in_the_store_directory(tmp_path, monkeypatch)
     monkeypatch.setattr(custody.os, "link", recording_link)
     write_protected(_KEY, store, header=_HEADER)
 
-    assert opened, "no file was opened during the write"
-    for path in opened:
+    # Directory handles opened for fsync durability barriers carry O_DIRECTORY
+    # and are not payload I/O - the property is about the store temp file.
+    dir_flag = getattr(os, "O_DIRECTORY", 0)
+    payload_opens = [path for path, flags in opened if not flags & dir_flag]
+    assert payload_opens, "no file was opened during the write"
+    for path in payload_opens:
         assert Path(path).parent == store.parent, f"temp {path} is not beside the store"
 
     # The link source is what makes the publish atomic; it must share the
@@ -709,11 +814,11 @@ def test_store_io_requests_binary_mode_on_windows(tmp_path, monkeypatch):
     sentinel = 0x40000000  # a bit no platform treats as a harmless no-op
     monkeypatch.setattr(custody, "binary_mode_flag", lambda: sentinel)
 
-    seen: list[int] = []
+    seen: list[tuple[str, int]] = []
     real_open = os.open
 
     def recording_open(path, flags, *args, **kwargs):
-        seen.append(flags)
+        seen.append((os.fspath(path), flags))
         # Record what the code asked for, then substitute the platform's REAL
         # binary flag for the simulated one before the syscall. Stripping the
         # sentinel without restoring O_BINARY would leave the descriptor in text
@@ -727,8 +832,12 @@ def test_store_io_requests_binary_mode_on_windows(tmp_path, monkeypatch):
     write_protected(_KEY, store, header=_HEADER)
     assert read_protected(store, header=_HEADER) == _KEY
 
-    assert seen, "no os.open was recorded"
-    for flags in seen:
+    # Directory handles opened for fsync durability barriers carry O_DIRECTORY
+    # and are not payload I/O - the binary-mode contract is about key bytes.
+    dir_flag = getattr(os, "O_DIRECTORY", 0)
+    payload_seen = [flags for _path, flags in seen if not flags & dir_flag]
+    assert payload_seen, "no os.open was recorded"
+    for flags in payload_seen:
         assert flags & sentinel, f"store opened without the binary-mode flag: {flags:#x}"
 
 

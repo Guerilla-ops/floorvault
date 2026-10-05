@@ -1,7 +1,7 @@
 # FloorVault Independent Deep-Dive Review
 
 **Date:** 2026-10-01
-**Reviewer:** Hermes (independent; evidence-led against executable source)
+**Reviewer:** Independent (evidence-led against executable source)
 **Revision reviewed:** `2aa95697783b92b493ade5bc37f6f85f7fe5d169` (branch `main`, == `origin/main`)
 **Working tree at review time:** clean except two uncommitted edits made during this review's
 companion simplify pass (`src/floorvault/beacons.py`, `src/floorvault/migration.py`).

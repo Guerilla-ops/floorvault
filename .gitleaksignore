@@ -17,7 +17,9 @@
 #     reachable, and this entry is the only thing suppressing that finding. The
 #     name could only be removed from history, and since every fingerprint embeds a
 #     commit id, all of them would change - a deliberate, coordinated decision, not
-#     a tidy-up.
+#     a tidy-up. The historical filename inside the fingerprint is retained
+#     verbatim for positional accuracy; it is not a live reference. The embedded path retains a superseded internal codename for the
+#     same reason: history cannot be scrubbed without invalidating every entry.
 # One entry for a third path in the same commit was measured redundant (deleting it
 # left the scan at 0 findings) and has been dropped.
 001716712e2a069c4f5dbd5f2865582b4cf20ee5:README.md:generic-api-key:112

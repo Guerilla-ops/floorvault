@@ -4,7 +4,6 @@
   Protect sensitive values in ordinary Python <code>sqlite3</code> databases—without SQLCipher, a custom SQLite build, or a C extension.</p>
   <p><a href="#quickstart">Quickstart</a> · <a href="#existing-sqlite-tables">SQLite adapter</a> · <a href="SECURITY.md">Security model</a></p>
   <p>
-    <a href="https://pypi.org/project/floorvault/"><img src="https://img.shields.io/pypi/v/floorvault.svg" alt="PyPI version"></a>
     <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10 and newer"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg" alt="MIT or Apache 2.0 license"></a>
   </p>
@@ -44,29 +43,32 @@ flowchart LR
 
 ## Install
 
+FloorVault is **not yet published to PyPI** — `pip install floorvault` does not
+work yet. Install from the repository directly:
+
 ```bash
-pip install floorvault
+pip install "floorvault @ git+https://github.com/Guerilla-ops/floorvault.git"
 ```
 
 With `uv`:
 
 ```bash
-uv add floorvault
+uv add "floorvault @ git+https://github.com/Guerilla-ops/floorvault.git"
 ```
 
 macOS Keychain support is optional:
 
 ```bash
-uv add "floorvault[macos]"
+uv add "floorvault[macos] @ git+https://github.com/Guerilla-ops/floorvault.git"
 ```
 
 Linux Secret Service support is optional too:
 
 ```bash
-uv add "floorvault[linux]"
+uv add "floorvault[linux] @ git+https://github.com/Guerilla-ops/floorvault.git"
 ```
 
-A stock `pip install floorvault` does **not** give the key provider an OS store
+A stock install does **not** give the key provider an OS store
 on every host: macOS Keychain and Linux Secret Service need their platform extras,
 Windows uses DPAPI built in, and the local-file tier is off unless you enable it.
 If no usable provider applies (for example, macOS without its extra or a headless
@@ -261,12 +263,17 @@ from floorvault import AdaptiveKeyProvider, FloorVault, KeyRing, rotate_vault_st
 # VaultStore is the structured item store this rotation operates on; it is not
 # re-exported at the top level.
 from floorvault.vaultkit import VaultStore
+from pathlib import Path
+
+# VaultStore does NOT expand "~" -- a literal tilde would become a directory
+# named "~" relative to the working directory. Expand it explicitly.
+VAULT_DIR = Path("~/.floor/vault").expanduser()
 
 old_crypto = FloorVault(
     AdaptiveKeyProvider(service_name="my-app").resolve_key(),
     app_instance_id="my-app",
 )
-store = VaultStore("~/.floor/vault", crypto=old_crypto)
+store = VaultStore(VAULT_DIR, crypto=old_crypto)
 
 # A new_master_key from your key provider, wrapped in its own engine.
 new_crypto = FloorVault(new_master_key, app_instance_id="my-app")
@@ -277,10 +284,35 @@ rotate_vault_store(
     new_vault=new_crypto,
     new_key_id=1,
 )
+
+# REQUIRED: the `store` above was built on old_crypto and CANNOT read the
+# re-sealed records -- rotation sealed every envelope under the NEW master key.
+# Rebuild the store on the new key and repoint every holder of the old one.
+store = VaultStore(VAULT_DIR, crypto=new_crypto)
 ```
 
-After rotation returns, switch future reads to a `KeyRing` holding the new key; the
-helper does not reconfigure your key provider for you.
+**When rotating to different key material, rebuild the original `store`.** It
+holds the old master key, so its convenience reads cannot authenticate records
+sealed under the new master. `resolve_secret`, `get_meta`, and `list_items` then
+raise `DecryptionVerificationError`; `has_items()` does not decrypt and cannot
+surface this mismatch. The master change, not the authenticated key-id change
+alone, causes unreadability. An id-only rotation under the same master and
+application scope remains readable through the original convenience methods.
+
+Rotation is durable and verified before it returns, so this is not a transient state: after a
+rotation to new key material, if your process exits before rebuilding the store — and your key
+provider still resolves the old key — the store stays unreadable across restarts until the
+provider is updated.
+
+Two rules that follow:
+
+- **Rebuild the store, don't mutate it.** There is no `KeyRing` parameter on `VaultStore`, so
+  switching generations means constructing a new store on the new key and updating every reference.
+- **Update the key provider first**, or make the new key resolvable before you rotate. A rotation
+  whose new key nothing can resolve is a durable outage.
+
+To read a store that spans generations, use `KeyRing` directly with the ring-taking methods
+(`read_sealed_item`) rather than the single-key convenience accessors above.
 
 Create an authenticated recovery bundle using a separately protected recovery key:
 

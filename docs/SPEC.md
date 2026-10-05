@@ -1,7 +1,8 @@
 # FloorVault on-disk format specification
 
 **Status:** Phase-0 format freeze · normative
-**Applies to:** `main` @ `49c00a0` (floorvault 0.1.x)
+**Applies to:** FloorVault 0.1.x (original freeze: `main` @ `49c00a0`;
+updated for explicit legacy-metadata migration and target-bound rotation)
 **Audience:** independent implementors, auditors, migration tooling
 **Supersedes:** `docs/RECORD-FORMAT-2026-09-15.md` (which remains as the
 informal design note; where the two disagree, the code — and therefore this
@@ -25,7 +26,7 @@ compatible records and read records written by this build.
 
 This specification describes the format **as implemented**, including behavior
 that would not be designed this way again. Where this document, older
-documentation, and the source disagree, **the source at the pinned commit is
+documentation, and the source disagree, **the source for the associated revision is
 correct** and this document records the disagreement (§17). Ambiguities are
 resolved in favor of observed behavior, not intended behavior. Callers MUST NOT
 rely on any behavior not documented here.
@@ -446,11 +447,15 @@ offset  size  field
 ```
 
 - Writer inputs: `master_key` and `recovery_key`, each exactly 32 bytes.
+  The two keys MUST differ; the writer refuses self-wrapped recovery bundles.
 - Reader: `len < 22` or wrong magic → `ValueError`; the embedded envelope is
   decrypted with `record_id = hex(bundle_id)` taken from the bundle itself
   (binding the id to the payload); the recovered key MUST be 32 bytes.
 - The recovery key is an ordinary FloorVault master key (same derivation);
   bundle security is exactly the envelope's security under that key.
+- The Python recovery API returns a hardened handle, but its decryption API
+  first produces immutable plaintext bytes. Wiping the handle zeroes its owned
+  buffer only, not every Python/OpenSSL copy; it does not promise heap erasure.
 
 ---
 
@@ -459,7 +464,7 @@ offset  size  field
 The application-level vault is a SQLite database (file `<base>/vault.db`,
 directory hardened per §10.4) holding encrypted records as BLOBs. Pragmas
 set on every connection: `secure_delete=ON`, `journal_mode=DELETE`,
-`synchronous=FULL`. `PRAGMA user_version = 2` marks the current schema.
+`synchronous=FULL`. `PRAGMA user_version = 3` marks the current schema.
 
 ### 12.1 Schema (verbatim)
 
@@ -490,7 +495,8 @@ CREATE TABLE IF NOT EXISTS vault_rotation_journal (
 CREATE TABLE IF NOT EXISTS vault_rotation_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     active INTEGER NOT NULL CHECK (active IN (0, 1)),
-    target_key_id INTEGER NOT NULL
+    target_key_id INTEGER NOT NULL,
+    target_commitment BLOB
 );
 -- seeded with: INSERT ... VALUES (1, 0, 0) ON CONFLICT DO NOTHING
 ```
@@ -536,6 +542,22 @@ mismatching is an error, never "not retired".
 - `vault_rotation_state` is a single-flight barrier: `singleton=1`, `active`
   in {0,1}, `target_key_id` = the generation being rotated to. Writes through
   `VaultStore` are refused while `active=1`.
+- `target_commitment` is a v2 envelope sealed under the target vault with
+  plaintext `b"floorvault-rotation-target-v1"`, `key_id=target_key_id`,
+  `table="vault_rotation_state"`, `record_id="target"`, and
+  `column="commitment"`. Resume MUST authenticate this envelope and require
+  the expected plaintext before any resumed record write; a matching key id
+  alone is insufficient. The application instance is the target vault's.
+  Completion clears the commitment. Existing stores gain the nullable column
+  on open; active legacy state with no commitment is refused, never adopted.
+  Schema version 3 identifies this extension. New readers refuse unsupported
+  future versions before schema updates; the version marker is not an
+  authorization mechanism for plaintext data. Already-released older writers
+  cannot be made to enforce this guard retroactively: do not downgrade a
+  schema-3 store to them. Complete an in-flight legacy rotation with its
+  original target generation before upgrading. If already interrupted,
+  preserve both original key generations and obtain verified recovery before
+  clearing any journal or barrier; never guess a missing target commitment.
 - `rotate_vault_store` reads through a `KeyRing` holding all generations,
   re-seals under the new key with `key_id = new_key_id`, re-seals tombstones,
   verifies every item and tombstone through `KeyRing({new_key_id:
@@ -543,9 +565,11 @@ mismatching is an error, never "not retired".
 
 ### 12.5 Schema migration behavior
 
-- If `user_version >= 1` and any sealed column still holds a `str` value,
-  opening the store raises `VaultError` (plaintext after migration is a
-  defect, not data).
+- Ordinary opens reject string-typed metadata regardless of `user_version`.
+  A verified legacy upgrade requires explicit `migrate_legacy_metadata=True`
+  at construction; rows mixing plaintext and encrypted metadata are refused
+  even with that flag. The attacker-editable version marker never authorizes
+  plaintext resealing.
 - A legacy `origin_idx` column triggers a table rebuild without it (drop
   `idx_vault_origin`, copy rows, rename).
 

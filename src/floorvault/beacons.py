@@ -75,27 +75,92 @@ _KEY_BYTES = 32
 
 def _coerce_key_material(
     key: Union[bytes, bytearray, HardenedMemoryKey], *, what: str
-) -> bytes | bytearray:
-    """Coerce a key argument to raw key bytes, accepting a hardened handle.
+) -> Union[bytes, bytearray, memoryview]:
+    """Coerce a key argument to a bytes-like buffer, accepting a hardened handle.
 
     Shared by :func:`compute_beacon` (key, at least ``_KEY_BYTES``) and
     :func:`derive_beacon_key` (master key, exactly ``_KEY_BYTES``) so the
     isinstance dispatch and type error live in one place. Callers apply their
     own length contract on top.
+
+    A hardened handle is consumed through :meth:`HardenedMemoryKey.get_buffer`,
+    NOT ``get_bytes()``. ``get_bytes()`` returns an immutable ``bytes`` object,
+    which is an un-wipeable ghost of key material on the Python heap - and a
+    beacon is computed once per indexed row, so that ghost is per-call, not
+    once. ``get_buffer()`` is a zero-copy view over the locked mapping, the same
+    choice ``core.py:250-256`` makes for the AEAD subkey and for the same
+    reason.
+
+    Callers that need a mutable buffer (HMAC) copy into a ``bytearray`` and wipe
+    it, which is cheap and still bounded; nothing here hands back an immutable
+    copy of secret key material.
     """
     if isinstance(key, HardenedMemoryKey):
-        return key.get_bytes()
-    if isinstance(key, (bytes, bytearray)):
+        return key.get_buffer()
+    if isinstance(key, (bytes, bytearray, memoryview)):
         return key
     raise TypeError(f"{what} must be bytes, bytearray, or HardenedMemoryKey")
 
 
-def _validate_key(key: Union[bytes, bytearray, HardenedMemoryKey]) -> bytes:
-    """Return 32+ bytes of key material, accepting a hardened handle."""
+def _validate_key(
+    key: Union[bytes, bytearray, HardenedMemoryKey],
+) -> Union[bytes, bytearray, memoryview]:
+    """Return 32+ bytes of key material, accepting a hardened handle.
+
+    Returns the buffer as-is rather than re-wrapping it in ``bytes``: for a
+    hardened handle that re-wrap would reintroduce exactly the un-wipeable heap
+    copy this function exists to avoid.
+    """
     key_bytes = _coerce_key_material(key, what="beacon key")
     if len(key_bytes) < _KEY_BYTES:
         raise ValueError(f"beacon key must be at least {_KEY_BYTES} bytes")
-    return bytes(key_bytes)
+    return key_bytes
+
+
+def _snapshot_key(
+    key_material: Union[bytes, bytearray, memoryview],
+    *,
+    owner: HardenedMemoryKey | None = None,
+) -> bytearray:
+    """Copy key material into a MUTABLE buffer for immediate use.
+
+    Returns a ``bytearray`` rather than ``bytes`` so the caller can zero it: an
+    immutable copy would reintroduce exactly the un-wipeable heap ghost this
+    module avoids. Every caller treats the returned buffer as its own to wipe.
+
+    :meth:`HardenedMemoryKey.get_buffer` hands out a *live* view of the locked
+    mapping, and ``wipe()`` zeroes that mapping in place. ``wipe()`` sets
+    ``is_wiped`` BEFORE the memset, so a caller that obtains a view and copies
+    it a moment later has a window in which a concurrent ``wipe()`` has already
+    begun - or finished - while the view still reads pre-zeroed key bytes.
+
+    The dangerous part is that the failure is SILENT: an HMAC over 32 zero bytes
+    is a perfectly well-formed beacon of the correct length, so it indexes
+    cleanly and every later equality lookup simply misses the row. Nothing
+    raises, nothing looks corrupt.
+
+    So the copy checks afterwards instead. When ``owner`` is given and reports
+    ``is_wiped`` once the copy has completed, the snapshot is wiped and refused
+    with ``RuntimeError``, matching what ``get_bytes()`` already does when
+    called on a wiped key. This closes the corruption without holding a lock
+    across the HMAC operation, which would serialise the hot path, and a
+    snapshot that completed before a later wipe remains valid to use.
+
+    The owner flag - never the bytes - identifies a wipe: an all-zero buffer is
+    a legitimate key value the public API must compute under, so the bytes
+    cannot tell "the key is zero" from "the handle was wiped".
+    """
+    snapshot = bytearray(key_material)
+    if owner is not None and owner.is_wiped:
+        for index in range(len(snapshot)):
+            snapshot[index] = 0
+        raise RuntimeError(
+            "beacon key owner was wiped between obtaining the buffer and "
+            "copying it; refusing to compute a beacon under a wiped key (such "
+            "a beacon is well-formed but wrong, and would silently miss every "
+            "lookup)"
+        )
+    return snapshot
 
 
 def beacon_bucket_bytes(bits: int) -> int:
@@ -157,8 +222,17 @@ def compute_beacon(
         ``ceil(bits / 8)`` bytes.
     """
     bucket_size = beacon_bucket_bytes(bits)
-    digest = hmac.new(_validate_key(key), _canonical_payload(value, scope=scope), hashlib.sha256)
-    return digest.digest()[:bucket_size]
+    # _snapshot_key returns a MUTABLE buffer (refusing a wiped live view) that
+    # this call owns; zero it as soon as the HMAC has consumed it.
+    key_buffer = _snapshot_key(
+        _validate_key(key), owner=key if isinstance(key, HardenedMemoryKey) else None
+    )
+    try:
+        digest = hmac.new(key_buffer, _canonical_payload(value, scope=scope), hashlib.sha256)
+        return digest.digest()[:bucket_size]
+    finally:
+        for index in range(len(key_buffer)):
+            key_buffer[index] = 0
 
 
 def beacon_matches(
@@ -193,15 +267,24 @@ def derive_beacon_key(master_key: Union[bytes, bytearray, HardenedMemoryKey]) ->
     handle, the derived key is returned to the caller and is that caller's to
     wipe; :class:`BeaconIndexer` never retains more than the object it is given.
     """
-    source = _coerce_key_material(master_key, what="master key")
-    if len(source) != _KEY_BYTES:
-        raise ValueError(f"master key must be exactly {_KEY_BYTES} bytes")
-    return HKDF(
-        algorithm=hashes.SHA256(),
-        length=_KEY_BYTES,
-        salt=None,
-        info=_BEACON_KEY_INFO,
-    ).derive(bytes(source))
+    source = _snapshot_key(
+        _coerce_key_material(master_key, what="master key"),
+        owner=master_key if isinstance(master_key, HardenedMemoryKey) else None,
+    )
+    try:
+        if len(source) != _KEY_BYTES:
+            raise ValueError(f"master key must be exactly {_KEY_BYTES} bytes")
+        return HKDF(
+            algorithm=hashes.SHA256(),
+            length=_KEY_BYTES,
+            salt=None,
+            info=_BEACON_KEY_INFO,
+        ).derive(source)
+    finally:
+        # The snapshot is ours; zero it rather than leaving key-derived material
+        # on the heap. The returned subkey is the caller's to wipe.
+        for index in range(len(source)):
+            source[index] = 0
 
 
 def suggest_beacon_bits(expected_rows: int, target_bucket_size: int = 8) -> int:
