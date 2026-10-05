@@ -205,6 +205,8 @@ class VaultStore:
     of losing indexed listings), not widen this schema.
     """
 
+    _SCHEMA_VERSION = 3
+
     def __init__(
         self,
         base_dir: Path | str,
@@ -233,6 +235,12 @@ class VaultStore:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if user_version > self._SCHEMA_VERSION:
+                raise VaultError(
+                    f"unsupported vault schema version {user_version}; "
+                    f"maximum supported is {self._SCHEMA_VERSION}"
+                )
             conn.execute("PRAGMA secure_delete = ON")
             conn.execute("PRAGMA journal_mode = DELETE")
             conn.execute("PRAGMA synchronous = FULL")
@@ -292,7 +300,7 @@ class VaultStore:
             self._migrate_plaintext_metadata(conn)
             self._remove_origin_index(conn)
             self._ensure_rotation_commitment_column(conn)
-            conn.execute("PRAGMA user_version = 2")
+            conn.execute(f"PRAGMA user_version = {self._SCHEMA_VERSION}")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

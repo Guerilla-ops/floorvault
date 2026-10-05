@@ -453,6 +453,9 @@ offset  size  field
   (binding the id to the payload); the recovered key MUST be 32 bytes.
 - The recovery key is an ordinary FloorVault master key (same derivation);
   bundle security is exactly the envelope's security under that key.
+- The Python recovery API returns a hardened handle, but its decryption API
+  first produces immutable plaintext bytes. Wiping the handle zeroes its owned
+  buffer only, not every Python/OpenSSL copy; it does not promise heap erasure.
 
 ---
 
@@ -461,7 +464,7 @@ offset  size  field
 The application-level vault is a SQLite database (file `<base>/vault.db`,
 directory hardened per §10.4) holding encrypted records as BLOBs. Pragmas
 set on every connection: `secure_delete=ON`, `journal_mode=DELETE`,
-`synchronous=FULL`. `PRAGMA user_version = 2` marks the current schema.
+`synchronous=FULL`. `PRAGMA user_version = 3` marks the current schema.
 
 ### 12.1 Schema (verbatim)
 
@@ -547,6 +550,14 @@ mismatching is an error, never "not retired".
   alone is insufficient. The application instance is the target vault's.
   Completion clears the commitment. Existing stores gain the nullable column
   on open; active legacy state with no commitment is refused, never adopted.
+  Schema version 3 identifies this extension. New readers refuse unsupported
+  future versions before schema updates; the version marker is not an
+  authorization mechanism for plaintext data. Already-released older writers
+  cannot be made to enforce this guard retroactively: do not downgrade a
+  schema-3 store to them. Complete an in-flight legacy rotation with its
+  original target generation before upgrading. If already interrupted,
+  preserve both original key generations and obtain verified recovery before
+  clearing any journal or barrier; never guess a missing target commitment.
 - `rotate_vault_store` reads through a `KeyRing` holding all generations,
   re-seals under the new key with `key_id = new_key_id`, re-seals tombstones,
   verifies every item and tombstone through `KeyRing({new_key_id:

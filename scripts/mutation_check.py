@@ -661,6 +661,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        if False:",
         "Legacy active rotation without a commitment loses its explicit fail-closed refusal",
     ),
+    Mutation(
+        "VS-1",
+        "src/floorvault/vaultkit/vault.py",
+        "            if user_version > self._SCHEMA_VERSION:",
+        "            if False:",
+        "An unsupported future vault schema is opened and downgraded instead of refused",
+    ),
+    Mutation(
+        "VS-2",
+        "src/floorvault/vaultkit/vault.py",
+        '            conn.execute(f"PRAGMA user_version = {self._SCHEMA_VERSION}")',
+        '            conn.execute("PRAGMA user_version = 2")',
+        "The target-commitment schema loses its distinct version marker",
+    ),
 )
 
 # --------------------------------------------------------------------------

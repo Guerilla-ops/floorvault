@@ -47,25 +47,25 @@ FloorVault is **not yet published to PyPI** — `pip install floorvault` does no
 work yet. Install from the repository directly:
 
 ```bash
-pip install "floorvault @ git+https://github.com/vaultfloor/floorvault.git"
+pip install "floorvault @ git+https://github.com/Guerilla-ops/floorvault.git"
 ```
 
 With `uv`:
 
 ```bash
-uv add "floorvault @ git+https://github.com/vaultfloor/floorvault.git"
+uv add "floorvault @ git+https://github.com/Guerilla-ops/floorvault.git"
 ```
 
 macOS Keychain support is optional:
 
 ```bash
-uv add "floorvault[macos] @ git+https://github.com/vaultfloor/floorvault.git"
+uv add "floorvault[macos] @ git+https://github.com/Guerilla-ops/floorvault.git"
 ```
 
 Linux Secret Service support is optional too:
 
 ```bash
-uv add "floorvault[linux] @ git+https://github.com/vaultfloor/floorvault.git"
+uv add "floorvault[linux] @ git+https://github.com/Guerilla-ops/floorvault.git"
 ```
 
 A stock install does **not** give the key provider an OS store

@@ -183,3 +183,96 @@ def test_rotation_resume_refuses_a_pre_commitment_in_flight_rotation(tmp_path):
             new_vault=_crypto(NEW),
             new_key_id=1,
         )
+
+
+def test_fresh_store_is_marked_schema_version_3_with_commitment_column(tmp_path):
+    _store(tmp_path)
+    with sqlite3.connect(tmp_path / "vault" / "vault.db") as conn:
+        user_version = conn.execute("PRAGMA user_version").fetchone()[0]
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(vault_rotation_state)")}
+    assert user_version == 3
+    assert "target_commitment" in columns
+
+
+def test_a_store_from_a_newer_schema_version_is_refused_untouched(tmp_path):
+    """A user_version this build does not understand must fail closed.
+
+    The marker is writable by anyone holding the file, so it can never be an
+    authorization to proceed: a future-version store is refused before DDL or
+    migration, preserving the schema, data, and version marker.
+    """
+    store = _store(tmp_path)
+    store.add_item("generic", "First", {"note": "one"})
+
+    db = tmp_path / "vault" / "vault.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA user_version = 4")
+        columns_before = conn.execute("PRAGMA table_info(vault_items)").fetchall()
+        items_before = conn.execute("SELECT * FROM vault_items").fetchall()
+        state_before = conn.execute("SELECT * FROM vault_rotation_state").fetchall()
+
+    with pytest.raises(VaultError, match="unsupported vault schema version"):
+        VaultStore(tmp_path / "vault", crypto=_crypto(OLD))
+
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert conn.execute("PRAGMA table_info(vault_items)").fetchall() == columns_before
+        assert conn.execute("SELECT * FROM vault_items").fetchall() == items_before
+        assert conn.execute("SELECT * FROM vault_rotation_state").fetchall() == state_before
+
+
+@pytest.mark.parametrize("active", [0, 1])
+def test_a_version2_store_upgrades_to_schema_3_on_open(tmp_path, active):
+    """A pre-commitment store keeps working: the column arrives as a nullable
+    add-on, rows and payloads are untouched, and only an ACTIVE legacy rotation
+    is refused - never adopted - when resumed."""
+    store = _store(tmp_path)
+    item = store.add_item("generic", "First", {"note": "one"})
+    plaintext = store.resolve_secret(item.id)
+
+    db = tmp_path / "vault" / "vault.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("ALTER TABLE vault_rotation_state DROP COLUMN target_commitment")
+        conn.execute(
+            "UPDATE vault_rotation_state SET active = ?, target_key_id = 1 WHERE singleton = 1",
+            (active,),
+        )
+        conn.execute("PRAGMA user_version = 2")
+        items_before = conn.execute("SELECT * FROM vault_items").fetchall()
+
+    reopened = VaultStore(tmp_path / "vault", crypto=_crypto(OLD))
+    assert reopened.resolve_secret(item.id) == plaintext
+
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        info = conn.execute("PRAGMA table_info(vault_rotation_state)").fetchall()
+        commitment = {row[1]: row for row in info}["target_commitment"]
+        assert commitment[3] == 0
+        assert conn.execute("SELECT * FROM vault_items").fetchall() == items_before
+
+    if active:
+        with pytest.raises(VaultError, match="predates"):
+            rotate_vault_store(
+                reopened,
+                source_ring=KeyRing({0: _crypto(OLD), 1: _crypto(NEW)}),
+                new_vault=_crypto(NEW),
+                new_key_id=1,
+            )
+        with sqlite3.connect(db) as conn:
+            assert (
+                conn.execute(
+                    "SELECT active FROM vault_rotation_state WHERE singleton = 1"
+                ).fetchone()[0]
+                == 1
+            )
+            assert conn.execute("SELECT * FROM vault_items").fetchall() == items_before
+    else:
+        result = rotate_vault_store(
+            reopened,
+            source_ring=KeyRing({0: _crypto(OLD)}),
+            new_vault=_crypto(NEW),
+            new_key_id=1,
+        )
+        assert result == {"migrated": 1, "verified": 1, "retirements": 0}
+        rotated = VaultStore(tmp_path / "vault", crypto=_crypto(NEW))
+        assert rotated.resolve_secret(item.id) == plaintext

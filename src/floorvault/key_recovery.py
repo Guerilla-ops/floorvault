@@ -64,7 +64,12 @@ def recover_master_key(
     *,
     memory_mode: str = "opportunistic",
 ) -> HardenedMemoryKey:
-    """Authenticate and unwrap a recovery bundle into a hardened key handle."""
+    """Authenticate and unwrap a recovery bundle into a hardened key handle.
+
+    Wiping the returned handle zeroes only its owned buffer. The crypto API
+    returns immutable decrypted bytes, which Python cannot reliably erase;
+    the hardened return value is not a guarantee of complete heap erasure.
+    """
     recovery = _validate_key(recovery_key, "recovery_key")
     if not isinstance(bundle, (bytes, bytearray)):
         raise TypeError("bundle must be bytes")
