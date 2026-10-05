@@ -263,6 +263,8 @@ def write_protected(
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+        else:
+            _fsync_directory(path.parent)
 
 
 def _fsync_directory(directory: Path) -> None:

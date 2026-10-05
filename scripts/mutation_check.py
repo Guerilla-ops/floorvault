@@ -612,8 +612,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "DUR-1",
         "src/floorvault/providers/platform_custody.py",
-        "        _fsync_directory(path.parent)",
-        "        pass",
+        "        _link_no_clobber(temporary, path)\n        _fsync_directory(path.parent)",
+        "        _link_no_clobber(temporary, path)\n        pass",
         "Published key-store name loses its directory durability barrier",
         expect_on_windows="survived",
     ),
@@ -631,6 +631,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         "    try:\n        os.fsync(descriptor)\n    finally:\n        os.close(descriptor)",
         "    try:\n        pass\n    finally:\n        os.close(descriptor)",
         "Directory durability helper opens and closes without flushing metadata",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "DUR-4",
+        "src/floorvault/providers/platform_custody.py",
+        "        else:\n            _fsync_directory(path.parent)",
+        "        else:\n            pass",
+        "Temporary key-store alias cleanup loses its directory durability barrier",
         expect_on_windows="survived",
     ),
     Mutation(

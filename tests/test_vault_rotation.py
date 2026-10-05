@@ -276,3 +276,32 @@ def test_a_version2_store_upgrades_to_schema_3_on_open(tmp_path, active):
         assert result == {"migrated": 1, "verified": 1, "retirements": 0}
         rotated = VaultStore(tmp_path / "vault", crypto=_crypto(NEW))
         assert rotated.resolve_secret(item.id) == plaintext
+
+
+def test_an_id_only_rotation_under_the_same_master_stays_readable(tmp_path):
+    """Rotating the key id without changing key material keeps records readable.
+
+    The envelope's authenticated key id moves to the new generation, but the
+    sealing master is unchanged, so the ORIGINAL store's convenience reads
+    still authenticate - the unreadable-after-rotation case is master change,
+    not id change.
+    """
+    store = _store(tmp_path)
+    item = store.add_item("generic", "First", {"note": "one"})
+
+    result = rotate_vault_store(
+        store,
+        source_ring=KeyRing({0: _crypto(OLD)}),
+        new_vault=_crypto(OLD),
+        new_key_id=1,
+    )
+    assert result == {"migrated": 1, "verified": 1, "retirements": 0}
+    assert store.resolve_secret(item.id) == {"note": "one"}
+
+    from floorvault.core import envelope_header
+
+    with sqlite3.connect(tmp_path / "vault" / "vault.db") as conn:
+        (payload,) = conn.execute(
+            "SELECT payload_cipher FROM vault_items WHERE id = ?", (item.id,)
+        ).fetchone()
+    assert envelope_header(bytes(payload))["key_id"] == 1

@@ -304,7 +304,14 @@ def test_write_protected_fsyncs_the_store_directory(tmp_path, monkeypatch):
     """
     opened: dict[int, str] = {}
     synced: list[str] = []
-    real_open, real_fsync = custody.os.open, custody.os.fsync
+    events: list[str] = []
+    store = tmp_path / "vault" / "store"
+    parent = os.path.realpath(store.parent)
+    real_open, real_fsync, real_unlink = (
+        custody.os.open,
+        custody.os.fsync,
+        custody.os.unlink,
+    )
 
     def tracking_open(path, *args, **kwargs):
         fd = real_open(path, *args, **kwargs)
@@ -314,19 +321,77 @@ def test_write_protected_fsyncs_the_store_directory(tmp_path, monkeypatch):
     def tracking_fsync(fd):
         # fds are reused after close, so resolve the path while the binding
         # the fsync refers to is still the current one.
-        synced.append(os.path.realpath(opened.get(fd, "?")))
+        path = os.path.realpath(opened.get(fd, "?"))
+        synced.append(path)
+        if path == parent:
+            events.append("sync")
         return real_fsync(fd)
+
+    def tracking_unlink(path):
+        events.append("unlink")
+        return real_unlink(path)
 
     monkeypatch.setattr(custody.os, "open", tracking_open)
     monkeypatch.setattr(custody.os, "fsync", tracking_fsync)
+    monkeypatch.setattr(custody.os, "unlink", tracking_unlink)
 
-    store = tmp_path / "vault" / "store"
     write_protected(_KEY, store, header=_HEADER)
 
     synced_paths = set(synced)
     assert os.path.realpath(store.parent) in synced_paths, "published name not made durable"
     assert os.path.realpath(tmp_path) in synced_paths, "newly created vault dir not made durable"
     assert any(p.endswith(".tmp") for p in synced_paths), "payload fsync regressed"
+    assert events == ["sync", "unlink", "sync"], (
+        "the removed temporary name needs its own directory flush, not only the published one"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no directory fsync on Windows")
+def test_write_protected_keeps_the_store_when_cleanup_unlink_fails(tmp_path, monkeypatch):
+    """Publication is already durable when the temporary unlink errors."""
+    store = tmp_path / "store"
+    real_fsync_dir, real_unlink = custody._fsync_directory, custody.os.unlink
+    synced: list[Path] = []
+
+    def tracking_fsync_dir(directory):
+        synced.append(directory)
+        return real_fsync_dir(directory)
+
+    def failing_unlink(path):
+        if Path(path).parent == store.parent and os.fspath(path).endswith(".tmp"):
+            raise OSError("simulated unlink failure")
+        return real_unlink(path)
+
+    monkeypatch.setattr(custody, "_fsync_directory", tracking_fsync_dir)
+    monkeypatch.setattr(custody.os, "unlink", failing_unlink)
+    with pytest.raises(OSError, match="simulated unlink failure"):
+        write_protected(_KEY, store, header=_HEADER)
+
+    assert store.parent in synced, "publication flush did not precede the cleanup error"
+    assert store.exists()
+    assert read_protected(store, header=_HEADER) == _KEY
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no directory fsync on Windows")
+def test_write_protected_raises_when_the_cleanup_flush_fails(tmp_path, monkeypatch):
+    """A failed post-unlink flush must surface, not report false success."""
+    store = tmp_path / "store"
+    real_fsync_dir = custody._fsync_directory
+    parent_syncs = {"n": 0}
+
+    def flaky_fsync_dir(directory):
+        if directory == store.parent:
+            parent_syncs["n"] += 1
+            if parent_syncs["n"] == 2:
+                raise OSError("simulated directory fsync failure")
+        return real_fsync_dir(directory)
+
+    monkeypatch.setattr(custody, "_fsync_directory", flaky_fsync_dir)
+    with pytest.raises(OSError, match="simulated directory fsync failure"):
+        write_protected(_KEY, store, header=_HEADER)
+
+    assert list(store.parent.glob(".*tmp")) == []
+    assert read_protected(store, header=_HEADER) == _KEY
 
 
 def test_write_protected_leaves_nothing_behind_when_the_write_fails(tmp_path, monkeypatch):

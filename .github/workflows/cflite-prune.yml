@@ -1,0 +1,43 @@
+name: ClusterFuzzLite Corpus Prune
+
+on:
+  workflow_run:
+    workflows: [ClusterFuzzLite]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: cflite-prune-main
+  cancel-in-progress: false
+
+jobs:
+  # Corpus pruning is required alongside batch fuzzing: without it the artifact-
+  # persisted corpus grows unboundedly. Runs after the weekly batch or by manual dispatch.
+  prune:
+    name: corpus prune (weekly)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'schedule' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: python
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: address
+
+      - name: Prune corpus
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: address
+          mode: prune
+          fuzz-seconds: 600

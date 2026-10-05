@@ -286,20 +286,23 @@ rotate_vault_store(
 )
 
 # REQUIRED: the `store` above was built on old_crypto and CANNOT read the
-# re-sealed records -- rotation changed every envelope's authenticated key_id.
+# re-sealed records -- rotation sealed every envelope under the NEW master key.
 # Rebuild the store on the new key and repoint every holder of the old one.
 store = VaultStore(VAULT_DIR, crypto=new_crypto)
 ```
 
-**The original `store` object is unusable after `rotate_vault_store` returns.** It holds a
-single `crypto`, so it authenticates against the old key while every record now declares the new
-one, and `resolve_secret` / `get_meta` / `list_items` raise `DecryptionVerificationError` — a
-tamper-evidence error that here means only "wrong key". (`has_items()` still returns `True`,
-because it does not decrypt, so it will not surface the problem.)
+**When rotating to different key material, rebuild the original `store`.** It
+holds the old master key, so its convenience reads cannot authenticate records
+sealed under the new master. `resolve_secret`, `get_meta`, and `list_items` then
+raise `DecryptionVerificationError`; `has_items()` does not decrypt and cannot
+surface this mismatch. The master change, not the authenticated key-id change
+alone, causes unreadability. An id-only rotation under the same master and
+application scope remains readable through the original convenience methods.
 
-Rotation is durable and verified before it returns, so this is not a transient state: if your
-process exits before rebuilding the store — and your key provider still resolves the old key — the
-store stays unreadable across restarts until the provider is updated.
+Rotation is durable and verified before it returns, so this is not a transient state: after a
+rotation to new key material, if your process exits before rebuilding the store — and your key
+provider still resolves the old key — the store stays unreadable across restarts until the
+provider is updated.
 
 Two rules that follow:
 
