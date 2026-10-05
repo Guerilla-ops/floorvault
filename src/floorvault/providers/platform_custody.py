@@ -203,6 +203,7 @@ def _mkdir_owner_only(directory: Path) -> None:
 
     for item in reversed(missing):
         item.mkdir(mode=0o700, exist_ok=False)
+        _fsync_directory(item.parent)
 
     final_stat = directory.lstat()
     if stat.S_ISLNK(final_stat.st_mode) or not stat.S_ISDIR(final_stat.st_mode):
@@ -254,6 +255,7 @@ def write_protected(
         os.close(descriptor)
         descriptor = None
         _link_no_clobber(temporary, path)
+        _fsync_directory(path.parent)
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -261,6 +263,30 @@ def write_protected(
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Flush ``directory`` metadata so a name inside it survives power loss.
+
+    ``os.fsync`` on the file alone does not durable-publish its directory
+    entry: a power cut between the link and the kernel's next metadata flush
+    can still lose the store. NTFS journals directory metadata itself and
+    Python cannot open a directory for fsync on Windows, so this is a no-op
+    there. The check is ``os.name`` rather than ``is_windows()`` on purpose:
+    tests simulate POSIX custody checks on Windows by monkeypatching the
+    latter, but the real kernel decides whether a directory fsync is even
+    possible.
+    """
+    if os.name != "posix":
+        return
+    descriptor = os.open(
+        directory,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _write_all(descriptor: int, data: bytes) -> None:

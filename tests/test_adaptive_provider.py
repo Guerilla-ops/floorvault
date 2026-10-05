@@ -331,7 +331,11 @@ def test_adaptive_machine_key_file_is_written_in_binary_mode(tmp_path, monkeypat
     real_open = os.open
 
     def recording_open(path, flags, *args, **kwargs):
-        seen.append(flags)
+        # Directory handles opened for fsync durability barriers carry
+        # O_DIRECTORY and are not payload I/O - the binary contract is about
+        # key bytes.
+        if not flags & getattr(os, "O_DIRECTORY", 0):
+            seen.append(flags)
         # Restore the platform's real binary flag; see the custody test.
         return real_open(path, (flags & ~sentinel) | getattr(os, "O_BINARY", 0), *args, **kwargs)
 

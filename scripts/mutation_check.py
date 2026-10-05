@@ -421,8 +421,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         "src/floorvault/core.py",
         "            if crypto_version != CRYPTO_VERSION:",
         "            if False:  # MUTANT",
-        "Version check removed - refused anyway by the header AD binding",
-        expect="survived",
+        "Version check removed - refusal moves to the header AD binding, but "
+        "the wire vectors pin the documented rejection stage (§4.3 rule 4), "
+        "so the stage regression is now detectable",
+        expect="killed",
     ),
     Mutation(
         "CR-6",
@@ -606,6 +608,58 @@ MUTATIONS: tuple[Mutation, ...] = (
         "    if hmac.compare_digest(master, recovery):",
         "    if False:  # MUTANT: self-wrapped bundle accepted",
         "Self-wrap guard disabled: the recovery key can be the master key itself",
+    ),
+    Mutation(
+        "DUR-1",
+        "src/floorvault/providers/platform_custody.py",
+        "        _fsync_directory(path.parent)",
+        "        pass",
+        "Published key-store name loses its directory durability barrier",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "DUR-2",
+        "src/floorvault/providers/platform_custody.py",
+        "        _fsync_directory(item.parent)",
+        "        pass",
+        "Newly created custody directory loses its parent durability barrier",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "DUR-3",
+        "src/floorvault/providers/platform_custody.py",
+        "    try:\n        os.fsync(descriptor)\n    finally:\n        os.close(descriptor)",
+        "    try:\n        pass\n    finally:\n        os.close(descriptor)",
+        "Directory durability helper opens and closes without flushing metadata",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "BC-1",
+        "src/floorvault/beacons.py",
+        "    if isinstance(key, HardenedMemoryKey):\n        return key.get_buffer()",
+        "    if isinstance(key, HardenedMemoryKey):\n        return key.get_bytes()",
+        "Hardened beacon key is flattened into an immutable heap copy",
+    ),
+    Mutation(
+        "BC-2",
+        "src/floorvault/beacons.py",
+        "    if owner is not None and owner.is_wiped:",
+        "    if False:",
+        "Beacon snapshot accepts a key whose owner began wiping during the copy",
+    ),
+    Mutation(
+        "BC-3",
+        "src/floorvault/beacons.py",
+        "        for index in range(len(source)):\n            source[index] = 0",
+        "        pass",
+        "Beacon derivation leaves its mutable master snapshot unwiped on failure",
+    ),
+    Mutation(
+        "ROT-6",
+        "src/floorvault/vaultkit/vault.py",
+        "        if stored is None:",
+        "        if False:",
+        "Legacy active rotation without a commitment loses its explicit fail-closed refusal",
     ),
 )
 

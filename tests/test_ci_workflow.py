@@ -222,9 +222,20 @@ def test_clusterfuzzlite_builds_and_runs_with_the_token_a_private_repo_needs():
     cflite = _workflow("cflite.yml")
     assert "clusterfuzzlite/actions/build_fuzzers@" in cflite
     assert "clusterfuzzlite/actions/run_fuzzers@" in cflite
-    assert cflite.count("github-token: ${{ secrets.GITHUB_TOKEN }}") == 2
+    assert cflite.count("github-token: ${{ secrets.GITHUB_TOKEN }}") == 4, (
+        "every cflite step (fuzz build/run + weekly prune build/run) needs the token"
+    )
     assert "language: python" in cflite
     assert "pull_request" in cflite, "a crash introduced by a PR would not fail the PR"
+
+
+def test_clusterfuzzlite_batch_mode_keeps_and_bounds_the_corpus():
+    """Without a storage repo, corpora persist as per-run artifacts; the weekly
+    schedule must also prune or the persisted corpus grows unboundedly."""
+    cflite = _workflow("cflite.yml")
+    assert "actions: read" in cflite, "corpus artifacts from previous runs are unreadable"
+    assert "mode: prune" in cflite, "batch fuzzing without pruning grows the corpus forever"
+    assert "github.event_name == 'schedule'" in cflite, "pruning must be schedule-only"
 
 
 def test_clusterfuzzlite_does_not_discard_a_crash_it_cannot_reproduce():
