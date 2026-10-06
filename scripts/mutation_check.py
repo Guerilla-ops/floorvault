@@ -419,8 +419,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "CR-5",
         "src/floorvault/core.py",
-        "            if crypto_version != CRYPTO_VERSION:",
-        "            if False:  # MUTANT",
+        "        if crypto_version != CRYPTO_VERSION:",
+        "        if False:  # MUTANT",
         "Version check removed - refusal moves to the header AD binding, but "
         "the wire vectors pin the documented rejection stage (§4.3 rule 4), "
         "so the stage regression is now detectable",
@@ -504,6 +504,17 @@ MUTATIONS: tuple[Mutation, ...] = (
         "(POSIX-only: os.getuid does not exist on Windows, so the guard is "
         "already dead there - equivalent mutant)",
         expect_on_windows="survived",
+    ),
+    Mutation(
+        "PC-19",
+        "src/floorvault/providers/platform_custody.py",
+        "            raise ProtectedStoreRaceError(\n"
+        '                "protected store changed identity between the path check and the open"',
+        "            raise ProtectedStoreError(  # MUTANT\n"
+        '                "protected store changed identity between the path check and the open"',
+        "A legitimate atomic-replace race is reported as corruption instead of "
+        "the retryable race subclass - the generation store can no longer "
+        "distinguish pointer replacement from damage",
     ),
     Mutation(
         "WD-2",
@@ -744,6 +755,76 @@ MUTATIONS: tuple[Mutation, ...] = (
         '                    f"an unpublished generation {target} exists with different "',
         "Update adopts an orphan generation whose content differs from the request",
     ),
+    Mutation(
+        "GS-7",
+        "src/floorvault/providers/generation_store.py",
+        "            except ProtectedStoreRaceError:",
+        "            except ProtectedStoreInvalidLength:  # MUTANT",
+        "Pointer reads stop retrying the legitimate atomic-replace race: a "
+        "concurrent writer's repoint is reported as corruption",
+    ),
+    Mutation(
+        "GS-8",
+        "src/floorvault/providers/generation_store.py",
+        "        if len(payload) > MAX_PAYLOAD_BYTES:\n"
+        "            raise ProtectedStoreInvalidLength(\n"
+        '                f"generation payload is {len(payload)} bytes; the reader caps "\n'
+        '                f"stores at {MAX_PAYLOAD_BYTES} bytes of payload, so this would "\n'
+        '                "publish state nothing can read back"\n'
+        "            )\n"
+        "        with self.writer_lock():",
+        "        if False:  # MUTANT\n"
+        "            raise ProtectedStoreInvalidLength(\n"
+        '                f"generation payload is {len(payload)} bytes; the reader caps "\n'
+        '                f"stores at {MAX_PAYLOAD_BYTES} bytes of payload, so this would "\n'
+        '                "publish state nothing can read back"\n'
+        "            )\n"
+        "        with self.writer_lock():",
+        "Provision accepts a payload larger than the reader's cap - published "
+        "state that can never be read back",
+    ),
+    Mutation(
+        "GS-9",
+        "src/floorvault/providers/generation_store.py",
+        "        if len(payload) > MAX_PAYLOAD_BYTES:\n"
+        "            raise ProtectedStoreInvalidLength(\n"
+        '                f"generation payload is {len(payload)} bytes; the reader caps "\n'
+        '                f"stores at {MAX_PAYLOAD_BYTES} bytes of payload, so this would "\n'
+        '                "publish state nothing can read back"\n'
+        "            )\n"
+        "        if expected_generation < 1:",
+        "        if False:  # MUTANT\n"
+        "            raise ProtectedStoreInvalidLength(\n"
+        '                f"generation payload is {len(payload)} bytes; the reader caps "\n'
+        '                f"stores at {MAX_PAYLOAD_BYTES} bytes of payload, so this would "\n'
+        '                "publish state nothing can read back"\n'
+        "            )\n"
+        "        if expected_generation < 1:",
+        "Update accepts a payload larger than the reader's cap - published "
+        "state that can never be read back",
+    ),
+    Mutation(
+        "GS-10",
+        "src/floorvault/providers/generation_store.py",
+        "            os.close(descriptor)\n"
+        "            try:\n"
+        "                os.unlink(self._lock_path)\n"
+        "            except FileNotFoundError:\n"
+        "                pass\n"
+        "            else:\n"
+        "                _fsync_directory(self.directory)\n"
+        "            raise",
+        "            os.close(descriptor)\n"
+        "            try:\n"
+        "                pass  # MUTANT - the lockfile strands\n"
+        "            except FileNotFoundError:\n"
+        "                pass\n"
+        "            else:\n"
+        "                _fsync_directory(self.directory)\n"
+        "            raise",
+        "Failed lock-metadata writes strand the lockfile: every later writer "
+        "is denied until an operator intervenes",
+    ),
     # --- Vault Transit provider (R2/R4, roadmap issue #11) -------------------
     Mutation(
         "VT-1",
@@ -780,9 +861,10 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "VT-5",
         "src/floorvault/providers/vault_transit.py",
-        '        if not isinstance(blob, str) or not blob.startswith("vault:v"):',
-        "        if False:  # MUTANT",
-        "Rewrap accepts a blob Vault did not version",
+        "    if not _BLOB_PATTERN.fullmatch(raw):",
+        "    if False:  # MUTANT",
+        "Wrapped-blob validation accepts blobs Vault did not version: rewrap "
+        "and provision publish state nothing can decrypt",
     ),
     Mutation(
         "VT-6",
@@ -808,6 +890,50 @@ MUTATIONS: tuple[Mutation, ...] = (
         '                        and target.scheme == "https"',
         '                        and target.scheme in ("https", "http")  # MUTANT',
         "Redirect vetting accepts a plaintext downgrade target",
+    ),
+    Mutation(
+        "VT-9",
+        "src/floorvault/providers/vault_transit.py",
+        "                ensure_ascii=False,",
+        "                ensure_ascii=True,  # MUTANT",
+        "Context serialization escapes non-ASCII app ids, diverging from the "
+        "canonical UTF-8 format other implementers produce",
+    ),
+    Mutation(
+        "VT-10",
+        "src/floorvault/providers/vault_transit.py",
+        '        blob = _require_wrapped_blob(data.get("ciphertext"))',
+        '        blob = str(data.get("ciphertext")).encode("utf-8")  # MUTANT',
+        "Provisioning publishes a datakey ciphertext without validating its "
+        "vault:vN:<base64> shape",
+    ),
+    Mutation(
+        "VT-11",
+        "src/floorvault/providers/vault_transit.py",
+        '        raise ValueError("field is not ASCII") from None',
+        '        raise ValueError("field is not ASCII")  # MUTANT',
+        "Non-ASCII field sanitization keeps a printable context that embeds "
+        "the server-supplied string (token echo)",
+    ),
+    Mutation(
+        "VT-12",
+        "src/floorvault/providers/vault_transit.py",
+        '        raise CustodyDowngradeError("Vault wrapped blob is not ASCII") from None',
+        '        raise CustodyDowngradeError("Vault wrapped blob is not ASCII")  # MUTANT',
+        "Wrapped-blob ASCII failure keeps a printable context that embeds "
+        "the server-supplied string (token echo)",
+    ),
+    Mutation(
+        "VT-13",
+        "src/floorvault/providers/vault_transit.py",
+        "                raise CustodyDowngradeError(\n"
+        '                    f"Vault response is not valid JSON ({type(exc).__name__})"\n'
+        "                ) from None",
+        "                raise CustodyDowngradeError(\n"
+        '                    f"Vault response is not valid JSON ({type(exc).__name__})"\n'
+        "                ) from exc  # MUTANT",
+        "Invalid-JSON failure chains a decode error whose repr carries "
+        "server-controlled response bytes (token echo)",
     ),
     # --- SQLAlchemy adapter guards (Phase 2, roadmap issue #11) --------------
     Mutation(
@@ -863,6 +989,70 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        raise EncryptedWriteError(\n"
         '            f"{type(obj).__name__} has no FloorVault binding; call "',
         "An unprotected model's encrypted field fails open instead of closed",
+    ),
+    Mutation(
+        "SA-7",
+        "src/floorvault/sqlalchemy_adapter.py",
+        "        if isinstance(model, type) and model in self._fv_bindings:",
+        "        if False:  # MUTANT",
+        "Legacy bulk APIs no longer refuse protected classes: "
+        "bulk_insert_mappings/bulk_update_mappings/bulk_save_objects bypass "
+        "every event guard",
+    ),
+    Mutation(
+        "SA-8",
+        "src/floorvault/sqlalchemy_adapter.py",
+        '    for group in getattr(statement, "_multi_values", None) or ():',
+        "    for group in ():  # MUTANT",
+        "Executemany insert rows in _multi_values are no longer scanned",
+    ),
+    Mutation(
+        "SA-9",
+        "src/floorvault/sqlalchemy_adapter.py",
+        '    collect(getattr(statement, "_select_names", None))',
+        "    collect(())  # MUTANT",
+        "insert().from_select target names are no longer scanned",
+    ),
+    Mutation(
+        "SA-10",
+        "src/floorvault/sqlalchemy_adapter.py",
+        '    for pair in getattr(statement, "_ordered_values", None) or ():',
+        "    for pair in ():  # MUTANT",
+        "update().ordered_values pairs are no longer scanned",
+    ),
+    Mutation(
+        "SA-11",
+        "src/floorvault/sqlalchemy_adapter.py",
+        '                for opt in ("default", "server_default", "onupdate", "server_onupdate", "computed"):',
+        "                for opt in ():  # MUTANT",
+        "Column-level default/server producers on encrypted columns are "
+        "accepted - a plaintext write path the validator never sees",
+    ),
+    Mutation(
+        "SA-12",
+        "src/floorvault/sqlalchemy_adapter.py",
+        "                for alias in (column.key, column.name):\n"
+        "                    if isinstance(alias, str):\n"
+        "                        ct_names.add(alias)",
+        "                pass  # MUTANT",
+        "Statement keys using the physical column name bypass the guard when "
+        "the SQL column is renamed",
+    ),
+    Mutation(
+        "SA-13",
+        "src/floorvault/sqlalchemy_adapter.py",
+        "            mapper.local_table.fullname,",
+        "            mapper.local_table.name,  # MUTANT",
+        "Table coordinate loses schema qualification: ciphertext replays "
+        "across same-named tables in different schemas",
+    ),
+    Mutation(
+        "SA-14",
+        "src/floorvault/sqlalchemy_adapter.py",
+        "                    for key in row:\n"
+        "                        named.update(_key_names(key) & binding.ct_names)",
+        "                    pass  # MUTANT",
+        "Executemany ORM parameter rows are no longer scanned for protected columns",
     ),
 )
 

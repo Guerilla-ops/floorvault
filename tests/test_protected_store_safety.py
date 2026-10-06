@@ -38,6 +38,7 @@ from floorvault.providers.platform_custody import (
     ProtectedStoreHeaderError,
     ProtectedStoreInvalidLength,
     ProtectedStoreMissing,
+    ProtectedStoreRaceError,
     read_protected,
     write_protected,
 )
@@ -187,7 +188,11 @@ def test_store_that_changed_identity_under_the_open_is_refused(tmp_path, monkeyp
 
     monkeypatch.setattr(custody.os, "lstat", different_object)
 
-    with pytest.raises(ProtectedStoreError, match="identity|changed"):
+    # The race must surface as ProtectedStoreRaceError specifically: the
+    # generation store retries that subclass for legitimate pointer
+    # replacement, and a plain ProtectedStoreError would be reported as
+    # corruption instead.
+    with pytest.raises(ProtectedStoreRaceError, match="identity|changed"):
         read_protected(store, header=_HEADER)
 
 

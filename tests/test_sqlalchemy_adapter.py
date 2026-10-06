@@ -25,6 +25,7 @@ from sqlalchemy import (  # noqa: E402
     String,
     create_engine,
     insert,
+    select,
     text,
     update,
 )
@@ -327,3 +328,167 @@ def test_unprotected_model_writes_pass_through():
     with Session() as session:
         session.execute(insert(Other).values(id="o1", raw="plain text"))
         session.commit()
+
+
+def test_executemany_insert_rows_naming_ct_columns_are_rejected():
+    """insert().values([dicts]) carries its rows in _multi_values, not _values."""
+    _, engine, Session, _TUser = make_env()
+    with Session() as session:
+        with pytest.raises(UnsupportedWriteError):
+            session.execute(
+                insert(_TUser).values(
+                    [
+                        {"id": "a", "tenant": "acme", "ssn_ct": b"not-an-envelope"},
+                        {"id": "b", "tenant": "acme", "ssn_ct": b"not-an-envelope"},
+                    ]
+                )
+            )
+
+
+def test_insert_from_select_naming_ct_column_is_rejected():
+    """from_select carries target names in _select_names - the third value slot."""
+    _, engine, Session, TUser = make_env()
+    with Session() as session:
+        session.add(TUser(id="src", tenant="acme", ssn="123-45-6789"))
+        session.commit()
+        with pytest.raises(UnsupportedWriteError):
+            session.execute(
+                insert(TUser).from_select(
+                    ["id", "tenant", "ssn_ct"],
+                    select(TUser.id, TUser.tenant, TUser.ssn_ct),
+                )
+            )
+
+
+def test_ordered_values_update_naming_ct_column_is_rejected():
+    """update().ordered_values carries pairs in _ordered_values."""
+    _, engine, Session, TUser = make_env()
+    with Session() as session:
+        with pytest.raises(UnsupportedWriteError):
+            session.execute(
+                update(TUser)
+                .where(TUser.id == "u1")
+                .ordered_values((TUser.ssn_ct, b"not-an-envelope"))
+            )
+
+
+def test_executemany_orm_parameters_naming_ct_columns_are_rejected():
+    """session.execute(insert(T), [dicts]) carries rows in ORMExecuteState.parameters."""
+    _, engine, Session, TUser = make_env()
+    with Session() as session:
+        with pytest.raises(UnsupportedWriteError):
+            session.execute(
+                insert(TUser),
+                [
+                    {"id": "a", "tenant": "acme", "ssn_ct": b"raw"},
+                    {"id": "b", "tenant": "acme", "ssn_ct": b"raw"},
+                ],
+            )
+
+
+def test_physical_column_name_keys_are_rejected():
+    """A renamed SQL column reaches the statement under its physical name.
+
+    ``ssn_ct = Column("secret_cipher")`` keys ``_values`` by the string
+    "secret_cipher" when the caller uses that name - matching only the
+    attribute name would let the physical name write plaintext through.
+    """
+    TBase, _ = _model()
+
+    class Renamed(TBase):
+        __tablename__ = "renamed"
+        id = Column(String, primary_key=True)
+        tenant = Column(String, nullable=False)
+        ssn_ct = Column("secret_cipher", LargeBinary, nullable=True)
+
+    crypto = _crypto()
+    vault = SqlAlchemyEncryption(crypto)
+    vault.protect(
+        Renamed,
+        id_attr="id",
+        tenant_attr="tenant",
+        fields={"ssn": "ssn_ct"},
+    )
+    engine = create_engine("sqlite://")
+    TBase.metadata.create_all(engine)
+    Session = vault.session_factory(bind=engine)
+    with Session() as session:
+        with pytest.raises(UnsupportedWriteError):
+            session.execute(
+                insert(Renamed).values({"id": "a", "tenant": "acme", "secret_cipher": b"plaintext"})
+            )
+        with pytest.raises(UnsupportedWriteError):
+            session.execute(update(Renamed).values({Renamed.ssn_ct: b"plaintext"}))
+
+
+def test_legacy_bulk_apis_are_refused_for_protected_models():
+    """bulk_insert/update_mappings and bulk_save_objects never fire do_orm_execute."""
+    _, engine, Session, TUser = make_env()
+    with Session() as session:
+        with pytest.raises(UnsupportedWriteError):
+            session.bulk_insert_mappings(TUser, [{"id": "a", "tenant": "acme", "ssn_ct": b"raw"}])
+        with pytest.raises(UnsupportedWriteError):
+            session.bulk_update_mappings(TUser, [{"id": "a", "tenant": "acme", "ssn_ct": b"raw"}])
+        with pytest.raises(UnsupportedWriteError):
+            session.bulk_save_objects([TUser(id="a", tenant="acme")])
+
+
+def test_column_level_producers_on_ct_columns_are_rejected():
+    """default/server_default/server_onupdate values bypass the envelope validator."""
+
+    class DefaultsBase(DeclarativeBase):
+        pass
+
+    class Defaulted(DefaultsBase):
+        __tablename__ = "defaulted"
+        id = Column(String, primary_key=True)
+        tenant = Column(String, nullable=False)
+        ssn_ct = Column(LargeBinary, nullable=True, default=b"seed")
+
+    vault = SqlAlchemyEncryption(_crypto())
+    with pytest.raises(EncryptedWriteError):
+        vault.protect(
+            Defaulted,
+            id_attr="id",
+            tenant_attr="tenant",
+            fields={"ssn": "ssn_ct"},
+        )
+
+
+def test_table_coordinate_is_schema_qualified():
+    """Two schemas may share a table name; the AAD coordinate must distinguish."""
+
+    class SchemaBase(DeclarativeBase):
+        pass
+
+    class SchemaBound(SchemaBase):
+        __tablename__ = "users"
+        __table_args__ = {"schema": "tenant_a"}
+        id = Column(String, primary_key=True)
+        tenant = Column(String, nullable=False)
+        ssn_ct = Column(LargeBinary, nullable=True)
+
+    vault = SqlAlchemyEncryption(_crypto())
+    vault.protect(
+        SchemaBound,
+        id_attr="id",
+        tenant_attr="tenant",
+        fields={"ssn": "ssn_ct"},
+    )
+    assert SchemaBound.__fv_binding__.records.table == "tenant_a.users"
+
+
+def test_require_envelope_rejects_header_only_fragments():
+    """The set validator must run the full §4.3 parse, not just the header check.
+
+    ``envelope_header`` accepts a bare v2 header; a truncated blob that
+    parses as a header but has no nonce/ciphertext is not an envelope.
+    """
+    from floorvault.records import require_envelope
+
+    with pytest.raises(TypeError):
+        require_envelope(b"FLRV\x01\x00\x10", where="test")  # header, no body
+    with pytest.raises(TypeError):
+        require_envelope(b"FLRV", where="test")  # bare magic
+    with pytest.raises(TypeError):
+        require_envelope(b"FLRV\x01\x00\x10" + b"\x00" * 16, where="test")  # no ct

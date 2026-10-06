@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+import traceback
 import urllib.error
 
 import pytest
@@ -454,3 +455,119 @@ def test_transport_bounds():
         UrllibTransport(ADDR, timeout=0)
     with pytest.raises(ValueError):
         UrllibTransport(ADDR, timeout=120)
+
+
+def test_provision_validates_the_wrapped_blob(tmp_path):
+    """A malformed datakey ciphertext must not become generation 1 - the
+    plaintext we hold would be unrecoverable on the next resolve."""
+    provider, fake = make_provider(tmp_path)
+
+    class GarbageBlobVault(FakeVault):
+        def post(self, path, body, token):
+            if "datakey" in path:
+                return {
+                    "data": {
+                        "ciphertext": "not-a-vault-blob",
+                        "plaintext": base64.b64encode(bytes(32)).decode(),
+                    }
+                }
+            return super().post(path, body, token)
+
+    provider._transport = GarbageBlobVault()
+    provider._transport.calls = fake.calls
+    with pytest.raises(CustodyDowngradeError):
+        provider.resolve_key()
+    assert GenerationStore(tmp_path / "vt").active_generation() is None
+
+
+def test_wrapped_blob_must_match_the_full_vault_shape(tmp_path):
+    """vault:v is a prefix, not a shape: version digits and valid base64 are
+    mandatory, and anything else fails closed on every op that returns one."""
+    provider, _ = make_provider(tmp_path)
+    provider.resolve_key()
+
+    malformed = [
+        "vault:vgarbage",  # no version digits
+        "vault:v1:!!!not-base64!!!",  # invalid alphabet
+        "vault:v1:",  # empty payload
+        "vaultv1:eA",  # missing colon
+        "vault:v-1:eA",  # signed version
+        "vault:v1:café",  # non-ASCII
+        "vault:v1:eA tail",  # trailing junk
+    ]
+    for bad in malformed:
+
+        class MalformedVault(FakeVault):
+            def post(self, path, body, token, _bad=bad):
+                if "rewrap" in path:
+                    return {"data": {"ciphertext": _bad}}
+                return super().post(path, body, token)
+
+        provider._transport = MalformedVault()
+        provider.wipe()
+        with pytest.raises(CustodyDowngradeError, match="wrapped blob|no wrapped"):
+            provider.rewrap()
+        # The store stays at generation 1: nothing malformed was published.
+        assert GenerationStore(tmp_path / "vt").active_generation() == 1
+
+
+def test_invalid_json_does_not_chain_server_bytes(tmp_path):
+    """A non-JSON response body is server-controlled: it can echo the token
+    back, so it must not survive as a printable exception cause."""
+    transport = UrllibTransport(ADDR)
+    token_echo = TOKEN.encode() + b"-echoed"
+
+    class GarbageOpener:
+        def open(self, request, timeout=None):
+            return _StubResponse(b"\xff\xfe not json " + token_echo)
+
+    transport._opener = GarbageOpener()
+    with pytest.raises(CustodyDowngradeError) as excinfo:
+        transport.post("/v1/x", {}, TOKEN)
+    assert TOKEN not in str(excinfo.value)
+    assert TOKEN not in repr(excinfo.value.__cause__)
+    assert TOKEN not in repr(excinfo.value.__context__)
+    chain_text = "".join(
+        traceback.format_exception(type(excinfo.value), excinfo.value, excinfo.value.__traceback__)
+    )
+    assert TOKEN not in chain_text
+
+
+def test_non_ascii_response_fields_are_detached_from_the_cause(tmp_path):
+    """``encode('ascii')`` retains the server-supplied string; a field that
+    echoes the token must not reach the printed exception chain."""
+    provider, _ = make_provider(tmp_path)
+
+    class NonAsciiVault(FakeVault):
+        def post(self, path, body, token):
+            if "datakey" in path:
+                return {
+                    "data": {
+                        "ciphertext": "vault:v1:eA",
+                        "plaintext": TOKEN + "-café",
+                    }
+                }
+            if "rewrap" in path:
+                return {"data": {"ciphertext": TOKEN + "-café"}}
+            return super().post(path, body, token)
+
+    provider._transport = NonAsciiVault()
+    with pytest.raises(CustodyDowngradeError) as excinfo:
+        provider.resolve_key()
+    chain_text = "".join(
+        traceback.format_exception(type(excinfo.value), excinfo.value, excinfo.value.__traceback__)
+    )
+    assert TOKEN not in chain_text
+
+
+def test_context_is_canonical_utf8_for_non_ascii_app_ids(tmp_path):
+    """ensure_ascii escaping would diverge from spec-following implementers."""
+    provider, fake = make_provider(tmp_path, app_instance_id="héllo-世界")
+    provider.resolve_key()
+    context_b64 = fake.calls[0][1]["context"]
+    raw = base64.b64decode(context_b64)
+    assert b"\\u" not in raw  # no ASCII-escape smuggling
+    decoded = json.loads(raw)
+    assert decoded["app"] == "héllo-世界"
+    assert decoded["v"] == 1
+    assert decoded["purpose"] == "floorvault-master-wrap"

@@ -29,14 +29,17 @@ import hashlib
 import hmac
 import os
 import struct
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
 from ..platform_support import binary_mode_flag
 from .platform_custody import (
+    _MAX_STORE_BYTES,
     ProtectedStoreError,
     ProtectedStoreInvalidLength,
     ProtectedStoreMissing,
+    ProtectedStoreRaceError,
     _fsync_directory,
     _mkdir_owner_only,
     _write_all,
@@ -55,6 +58,19 @@ POINTER_HEADER = b"FVGW0"
 _POINTER_SIZE = len(POINTER_HEADER) + 8 + 32
 
 _LOCK_NAME = ".active.lock"
+
+#: Largest payload a generation file can carry. ``read_protected`` caps a
+#: whole file at ``_MAX_STORE_BYTES`` and the payload travels behind the
+#: ``FVGW1`` header, so the ceiling belongs to the reader, not the writer.
+#: Exceeding it would publish state nothing can ever read back.
+MAX_PAYLOAD_BYTES = _MAX_STORE_BYTES - len(GENERATION_HEADER)
+
+#: Pointer-read retries for the lstat/open identity race: a concurrent
+#: ``_publish_pointer`` replaces ``active`` atomically, so a reader straddling
+#: the replace sees a one-generation "identity change" that is *not*
+#: corruption. A few fast retries observe either the old or the new pointer;
+#: a pointer churning forever still fails closed.
+_POINTER_READ_RETRIES = 4
 
 
 class GenerationMismatchError(ProtectedStoreError):
@@ -99,11 +115,22 @@ class GenerationStore:
         (bad pointer, missing or hash-mismatched generation file) raises
         ``ProtectedStoreError`` and must not be treated as absent.
         """
-        raw = read_protected(
-            self._pointer_path,
-            header=POINTER_HEADER,
-            expected_length=_POINTER_SIZE - len(POINTER_HEADER),
-        )
+        # The pointer is replaced atomically, so a reader can legitimately
+        # straddle an update: lstat saw the old inode, open got the new one.
+        # Retry the identity race; every other ProtectedStoreError surfaces
+        # immediately, and a pointer that never settles still fails closed.
+        for attempt in range(_POINTER_READ_RETRIES + 1):
+            try:
+                raw = read_protected(
+                    self._pointer_path,
+                    header=POINTER_HEADER,
+                    expected_length=_POINTER_SIZE - len(POINTER_HEADER),
+                )
+                break
+            except ProtectedStoreRaceError:
+                if attempt == _POINTER_READ_RETRIES:
+                    raise
+                time.sleep(0.001 * (attempt + 1))
         generation = struct.unpack(">Q", raw[:8])[0]
         digest = raw[8:]
 
@@ -162,7 +189,21 @@ class GenerationStore:
                 f"generation-store writer lock is held: {self._lock_path} - "
                 "if no writer is running, remove the lockfile to recover"
             ) from exc
-        _write_all(descriptor, f"pid={os.getpid()}\n".encode())
+        try:
+            _write_all(descriptor, f"pid={os.getpid()}\n".encode())
+        except BaseException:
+            # A failed metadata write (e.g. ENOSPC) must not strand the
+            # lockfile we just created - stale locks block every writer until
+            # an operator intervenes, which is only acceptable after a real
+            # process crash.
+            os.close(descriptor)
+            try:
+                os.unlink(self._lock_path)
+            except FileNotFoundError:
+                pass
+            else:
+                _fsync_directory(self.directory)
+            raise
         os.close(descriptor)
         try:
             yield
@@ -184,6 +225,12 @@ class GenerationStore:
         """
         if not payload:
             raise ProtectedStoreInvalidLength("refusing to write an empty generation")
+        if len(payload) > MAX_PAYLOAD_BYTES:
+            raise ProtectedStoreInvalidLength(
+                f"generation payload is {len(payload)} bytes; the reader caps "
+                f"stores at {MAX_PAYLOAD_BYTES} bytes of payload, so this would "
+                "publish state nothing can read back"
+            )
         with self.writer_lock():
             try:
                 current, _ = self.read_active()
@@ -216,6 +263,12 @@ class GenerationStore:
         """
         if not payload:
             raise ProtectedStoreInvalidLength("refusing to write an empty generation")
+        if len(payload) > MAX_PAYLOAD_BYTES:
+            raise ProtectedStoreInvalidLength(
+                f"generation payload is {len(payload)} bytes; the reader caps "
+                f"stores at {MAX_PAYLOAD_BYTES} bytes of payload, so this would "
+                "publish state nothing can read back"
+            )
         if expected_generation < 1:
             raise ValueError("expected_generation must be a positive integer")
         with self.writer_lock():
@@ -353,6 +406,7 @@ class GenerationStore:
 __all__ = [
     "GENERATION_HEADER",
     "POINTER_HEADER",
+    "MAX_PAYLOAD_BYTES",
     "GenerationMismatchError",
     "GenerationStore",
     "StoreLockError",

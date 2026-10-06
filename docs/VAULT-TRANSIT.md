@@ -32,15 +32,25 @@ path "transit/rewrap/floorvault-master"   { capabilities = ["update"] }
 ```
 
 ```bash
-vault write -f transit/keys/floorvault-master type=aes256-gcm96
+# derived=true makes the context binding enforceable; exportable=false and
+# allow_plaintext_backup=false keep key material inside Vault.
+vault write transit/keys/floorvault-master \
+    type=aes256-gcm96 \
+    derived=true \
+    exportable=false \
+    allow_plaintext_backup=false
 vault policy write floorvault-runtime runtime-policy.hcl
 vault token create -policy=floorvault-runtime -period=24h
 ```
 
 Notes:
 
-- The Transit key is **operator-provisioned**; the provider never creates or
-  configures keys, and needs no `read`/`list` on `keys/*`.
+- The Transit key is **operator-provisioned** with exactly these settings;
+  the provider never creates or configures keys, and needs no `read`/`list`
+  on `keys/*`. `derived=true` is what turns the `context` parameter into an
+  enforced cryptographic binding — without it Vault ignores the context and
+  any store's blob would decrypt under any context. `exportable=false` and
+  `allow_plaintext_backup=false` keep the KEK non-extractable.
 - The context mechanism (`datakey`/`decrypt`/`rewrap` all carry it) means a
   ciphertext provisioned under a different app/store will fail to decrypt even
   with a perfectly valid token — that is the intended binding.

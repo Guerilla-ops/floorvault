@@ -32,6 +32,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import secrets
 import ssl
 import time
@@ -43,7 +44,7 @@ from typing import Any
 
 from ..memory import HardenedMemoryKey
 from .base import CustodyDowngradeError, KeyProvider, MissingKeyError
-from .generation_store import GenerationStore
+from .generation_store import MAX_PAYLOAD_BYTES, GenerationStore
 from .platform_custody import (
     ProtectedStoreError,
     ProtectedStoreMissing,
@@ -68,7 +69,14 @@ _DEFAULT_TIMEOUT = 10.0
 _DEFAULT_RETRIES = 2
 _DEFAULT_CACHE_TTL = 300.0
 _MAX_RESPONSE_BYTES = 65536
-_MAX_BLOB_BYTES = 4096
+#: A wrapped blob lands in a generation file, so its size ceiling is the
+#: store's payload capacity - a blob that fits the response cap but not the
+#: store would publish state that can never be read back.
+_MAX_BLOB_BYTES = MAX_PAYLOAD_BYTES
+#: ``vault:v<digits>:<standard base64>`` - the complete shape, not a prefix.
+#: `startswith("vault:v")` admits `vault:vgarbage`; Vault would never emit it,
+#: so a blob that fails this is malformed, not merely old.
+_BLOB_PATTERN = re.compile(rb"vault:v\d+:[A-Za-z0-9+/=]+")
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -193,7 +201,12 @@ class UrllibTransport:
             try:
                 decoded = json.loads(raw)
             except (ValueError, UnicodeDecodeError) as exc:
-                raise CustodyDowngradeError("Vault response is not valid JSON") from exc
+                # Both failure types retain server-controlled bytes: a
+                # UnicodeDecodeError repr embeds the raw response, which can
+                # echo the token we sent. Detach the cause entirely.
+                raise CustodyDowngradeError(
+                    f"Vault response is not valid JSON ({type(exc).__name__})"
+                ) from None
             if not isinstance(decoded, dict):
                 raise CustodyDowngradeError("Vault response is not a JSON object")
             return decoded
@@ -204,7 +217,33 @@ def _b64e(raw: bytes) -> str:
 
 
 def _b64d(text: str) -> bytes:
-    return base64.b64decode(text.encode("ascii"), validate=True)
+    try:
+        return base64.b64decode(text.encode("ascii"), validate=True)
+    except UnicodeEncodeError:
+        # encode() retains the server-supplied string in the exception, and
+        # a response field can echo the token back - detach it from every
+        # chain surface (cause and printable context alike).
+        raise ValueError("field is not ASCII") from None
+
+
+def _require_wrapped_blob(value: object) -> bytes:
+    """Return a ``vault:vN:<base64>`` blob as bytes, or refuse, sanitized.
+
+    Shared by provisioning and rewrap: a malformed or oversized blob must
+    never become the authoritative generation - the plaintext master key
+    it claims to wrap would be unrecoverable on the next resolve.
+    """
+    if not isinstance(value, str):
+        raise CustodyDowngradeError("Vault response carries no wrapped blob")
+    try:
+        raw = value.encode("ascii")
+    except UnicodeEncodeError:
+        raise CustodyDowngradeError("Vault wrapped blob is not ASCII") from None
+    if len(raw) > _MAX_BLOB_BYTES:
+        raise CustodyDowngradeError("wrapped blob exceeds the bounded size")
+    if not _BLOB_PATTERN.fullmatch(raw):
+        raise CustodyDowngradeError("Vault wrapped blob is not vault:vN:<base64>")
+    return raw
 
 
 class VaultTransitProvider(KeyProvider):
@@ -317,8 +356,7 @@ class VaultTransitProvider(KeyProvider):
         response = self._call("datakey/plaintext", {"context": context})
         data = self._data_field(response)
         plaintext_b64 = data.get("plaintext")
-        blob = data.get("ciphertext")
-        if not isinstance(plaintext_b64, str) or not isinstance(blob, str):
+        if not isinstance(plaintext_b64, str):
             raise CustodyDowngradeError("Vault datakey response lacks plaintext/ciphertext")
         try:
             plaintext = _b64d(plaintext_b64)
@@ -328,8 +366,12 @@ class VaultTransitProvider(KeyProvider):
             raise CustodyDowngradeError(
                 f"Vault datakey returned {len(plaintext)} bytes, not a 32-byte master key"
             )
+        # Validate the wrapped blob BEFORE it becomes authoritative: a blob
+        # that is not vault:vN:<base64> would publish state whose plaintext we
+        # hold now but no future resolve can ever decrypt.
+        blob = _require_wrapped_blob(data.get("ciphertext"))
         try:
-            self._store.provision(blob.encode("ascii"))
+            self._store.provision(blob)
         except ProtectedStoreError:
             # Another writer won the provision race. The datakey we hold is not
             # the store's blob - resolve the winner's instead of returning a
@@ -396,13 +438,7 @@ class VaultTransitProvider(KeyProvider):
 
     def _unwrap_response(self, response: dict) -> bytes:
         data = self._data_field(response)
-        blob = data.get("ciphertext")
-        if not isinstance(blob, str) or not blob.startswith("vault:v"):
-            raise CustodyDowngradeError("Vault response carries no vault:-versioned blob")
-        raw = blob.encode("ascii")
-        if len(raw) > _MAX_BLOB_BYTES:
-            raise CustodyDowngradeError("wrapped blob exceeds the bounded size")
-        return raw
+        return _require_wrapped_blob(data.get("ciphertext"))
 
     # ------------------------------------------------------------------
     # Context and store identity
@@ -424,6 +460,10 @@ class VaultTransitProvider(KeyProvider):
                 },
                 separators=(",", ":"),
                 sort_keys=True,
+                # Canonical JSON is UTF-8-as-written: ensure_ascii escaping
+                # would make a non-ASCII app id produce different context
+                # bytes than an implementation following the spec produces.
+                ensure_ascii=False,
             ).encode("utf-8")
         )
 
