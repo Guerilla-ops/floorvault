@@ -237,6 +237,22 @@ only readable by parties knowing the exact values used.
 - The encoding is injective over the accepted domain: no two distinct
   coordinate sets produce the same bytes.
 
+### 5.3 Tenant-bound record coordinate
+
+Adapters that serve several tenants compose the `record_id` coordinate via
+`records.bound_record_id(record_id, tenant)`:
+
+```
+bound = record_id                                # tenant is None
+bound = "<len(tenant)>:<tenant><record_id>"      # tenant set (length-prefixed)
+```
+
+Plain concatenation would be ambiguous (`("ab","c")` vs `("a","bc")` produce
+the same string), so the tenant's length is committed first; the composite
+is then bound into the AAD like any other coordinate. The composition is
+deterministic and unambiguous for all string inputs; a ciphertext written
+under one tenant cannot be verified under another.
+
 ---
 
 ## 6. S2V associated-data vector
@@ -427,6 +443,82 @@ else.
    macOS Keychain. A present-but-unusable native tier raises rather than
    silently downgrading.
 3. Tier-3 raw file (gated as in §10.4).
+
+### 10.6 Governed generation store (`FVGW*`)
+
+`GenerationStore` holds a *wrapped* master key that must be updatable (KEK
+rotation re-wraps the master without re-encrypting records), while the
+§10.4 contract forbids replacement in place. It resolves that tension with
+immutable payload files behind an atomic pointer, in a directory hardened
+to §10.4's owner-only contract:
+
+```
+g-%08x.gen     = "FVGW1" (5 B) || opaque wrapped-key payload   - immutable
+active         = "FVGW0" (5 B) || u64be generation || SHA-256(payload)  - 45 B
+.active.lock   = "pid=<pid>\n"  - present only while a writer holds the lock
+```
+
+Normative rules:
+
+- **Generation files** are published create-never-replace (0600 temp,
+  fsync, `os.link` no-clobber, directory fsync). Once published their bytes
+  never change; the filename encodes the generation as 8 lowercase hex digits.
+- **The pointer** is the only replaced object: 0600 temp, fsync, atomic
+  `os.replace`, directory fsync. Readers take a whole old or whole new
+  pointer on every platform with atomic rename; reads never take the lock.
+- **Pointer integrity:** the reader resolves the pointer's generation file
+  and verifies its payload SHA-256 equals the pointer's digest. A missing
+  file or a mismatch is `ProtectedStoreError`, *not* `ProtectedStoreMissing`
+  — "absent" may only mean the pointer itself does not exist.
+- **Writer lock:** `.active.lock` is created `O_CREAT | O_EXCL`; a held
+  lock raises `StoreLockError`. A stale lockfile is never broken
+  automatically — the operator confirms no writer is alive and deletes it.
+- **CAS:** `update(payload, expected_generation=N)` refuses with
+  `GenerationMismatchError` unless the current pointer's generation equals
+  `N`; the write target is always `N+1`.
+- **Crash adoption:** an unpublished `g-<n>.gen` (pointer never repointed)
+  is adopted by a retrying writer *iff* its bytes equal the caller's
+  payload; any other content raises `ProtectedStoreError` for manual
+  resolution — a crashed provision or update is resumed, never guessed.
+- **Empty payloads** are refused (`ProtectedStoreInvalidLength`).
+
+### 10.7 Vault Transit custody (`FVSTORID1` + Transit blob)
+
+`VaultTransitProvider` keeps the master key wrapped by HashiCorp Vault's
+Transit engine; the generation store (§10.6) holds the wrapped blob.
+
+```
+store.id       = "FVSTORID1" (9 B) || 16 random bytes   - minted once, immutable
+g-<n>.gen      = "FVGW1" || ASCII "vault:v<kek_version>:<base64>" blob
+```
+
+- **Store identity** is a random 16-byte value minted at first provision.
+  A missing identity can be minted; a corrupt one raises
+  `CustodyDowngradeError` — reminting would change the Transit context and
+  strand every blob wrapped under the old ID.
+- **Transit context** (normative): standard Base64 of the canonical JSON
+  `{"app","custody","purpose","store","v"}` — sorted keys, separators
+  `,`/`:` — where `v` is the context version, `store` is the lowercase hex
+  of `store.id`, `purpose` is `"floorvault-master-wrap"`, and `custody` is
+  the custody-scheme label. The context is sent to Transit on datakey and
+  decrypt calls; Transit refuses a blob whose stored context differs.
+- **Operations:** `transit/datakey` (provision: returns a `vault:v1:` blob
+  plus the plaintext key), `transit/decrypt` (resolve), `transit/rewrap`
+  (KEK rotation: same plaintext, new `vault:v<k+1>:` blob — the store then
+  CAS-publishes a new generation).
+- **Transport contract:** HTTPS only, verified TLS, timeout ≤ 60 s, bounded
+  retries (default 2) on connect failures and 5xx — never on 4xx — response
+  ≤ 64 KiB, blob ≤ 4 KiB. Redirects are refused by default; a 307/308 is
+  followed at most once and only to an explicitly allowlisted `https` host.
+- **Failure contract:** every Vault failure — unreachable, HTTP error,
+  malformed/short response, missing fields, corrupt store identity —
+  raises `CustodyDowngradeError`. The configured provider never falls
+  through to a weaker custody tier, and the Vault token cannot appear in
+  exception causes or messages.
+- **Cache:** the resolved plaintext master may be cached in-process for a
+  bounded TTL (default 300 s) in a wipeable buffer, dropped on expiry or
+  `wipe()`. The cache bounds Transit latency; it is NOT a revocation
+  mechanism — Vault-side revocation takes effect no later than the TTL.
 
 ---
 
@@ -620,6 +712,35 @@ journals can retain plaintext — so its return value permanently reports
 the file. A bare `DROP COLUMN` without these steps leaves the plaintext
 readable in freelist and WAL pages.
 
+### 14.1 SQLAlchemy ORM adapter (behavioral contract)
+
+`SqlAlchemyEncryption.protect()` binds a mapped class to FloorVault without
+adding a wire format: ciphertext stored on disk is the same §4 envelope.
+The contract is about which write paths are *legal*:
+
+- Plaintext-facing attributes are non-mapped `EncryptedField` descriptors.
+  Assignment encrypts immediately against the record's coordinates and
+  stores the envelope on the mapped ciphertext column; identity attributes
+  (`id_attr`, and `tenant_attr` when declared) must already be set —
+  otherwise the assignment fails closed (`EncryptedWriteError`).
+- A `set`-time attribute validator on every registered ciphertext column
+  accepts only `None` or a structurally valid §4 envelope; anything else
+  raises `EncryptedWriteError`. A `before_insert`/`before_update` barrier
+  re-checks the staged values for writes that bypassed attribute events.
+- ORM-level `insert()`/`update()` statements — including executemany
+  parameter sets and `Query.update` — that name a registered ciphertext
+  column are refused (`UnsupportedWriteError`) inside `do_orm_execute`:
+  bulk rows cannot carry per-record coordinates.
+- `tenant_attr` composes the record coordinate via §5.3; `revision_attr`
+  supplies the §5 `revision` coordinate per record. Revision detects
+  same-coordinate replay of an older ciphertext — it is not, and is not
+  documented as, whole-database rollback protection.
+
+Not in the guard's scope: `Connection.execute`/driver-SQL writes on a
+connection the ORM session does not govern. Those bypass ORM events by
+construction; applications mixing raw SQL with these tables must produce
+ciphertext through the same binding.
+
 ---
 
 ## 15. Explicit non-goals
@@ -628,7 +749,8 @@ The following are **not part of this format** and are deliberately excluded:
 
 - **`FLV3` token envelope** — exists only on the unmerged branch
   `feat/v3-token-ttl`; nothing on this branch reads or writes it.
-- **Cloud KMS tiers** — no KMS-backed custody exists in this build.
+- **Cloud KMS tiers** — no AWS/GCP/Azure KMS custody exists in this build;
+  HashiCorp Vault Transit (§10.7) is the only remote-custody backend.
 - **SQLCipher / page-level encryption** — FloorVault encrypts values, not
   pages.
 - **The legacy Fernet store** (`vault.json.enc` + `vault.key`) — a foreign
@@ -681,6 +803,12 @@ accept/refuse decisions; error names are its own.
 | Retired legacy id whose modern record is missing | `LegacyRetiredError` |
 | `session_id`/`message_id` non-empty-on-write violation or containing NUL | `VaultError` |
 | SQL identifier rejected | `ValueError` |
+| Generation file/pointer bad header, bad length, dangling pointer, payload-hash mismatch, or differing orphan content | `ProtectedStoreError` |
+| `expected_generation` != current generation | `GenerationMismatchError` (subclass of `ProtectedStoreError`) |
+| Writer lock held | `StoreLockError` (subclass of `ProtectedStoreError`) |
+| Vault unreachable / HTTP error / redirect without trust / malformed, oversized, or short response / corrupt store identity | `CustodyDowngradeError` |
+| Non-envelope staged onto an ORM ciphertext column; identity/tenant attribute missing | `EncryptedWriteError` |
+| Bulk or `Query`-level write naming an ORM ciphertext column | `UnsupportedWriteError` (subclass of `EncryptedWriteError`) |
 
 Check *order* inside envelope parsing is normative (§4.3): length → magic →
 crypto_version → nonce_len → non-empty ciphertext. The wiped-engine check
