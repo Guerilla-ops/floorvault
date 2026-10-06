@@ -72,8 +72,8 @@ def test_lint_covers_the_whole_shipped_tree():
     """Linting must cover scripts/, not only src/ and tests/.
 
     Step 3 ran ``ruff check src/ tests/``. ``scripts/`` holds the gate helper,
-    the mutation harness whose verdict *is* step 11, the wheel verifier whose
-    verdict is step 10, and the benchmark harness the README quotes - none of
+    the mutation harness whose verdict *is* step 12, the wheel verifier whose
+    verdict is step 11, and the benchmark harness the README quotes - none of
     which CI linted, even though the README tells developers to run
     ``ruff check .``. A harness that decides a gate step can therefore regress
     unlinted.
@@ -136,3 +136,14 @@ def test_gate_runs_the_third_party_wycheproof_vectors():
 
 def test_gate_replays_the_coverage_guided_fuzz_targets():
     assert _has_line("pytest -q tests/test_fuzz_targets.py")
+
+
+def test_gate_runs_the_realworld_exercise():
+    """Issue #11's gate contract: the no-mocks exercise runs on every PR.
+
+    It covers seams the unit suite cannot - the inspector CLI as a real
+    subprocess, the adaptive-provider tiers, and the migration helpers on real
+    on-disk SQLite files - so it belongs in the gate, not as a manual step that
+    a refactor can silently stop running.
+    """
+    assert _has_line("python scripts/realworld_exercise.py")
