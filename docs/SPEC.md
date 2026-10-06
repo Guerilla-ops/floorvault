@@ -480,7 +480,15 @@ Normative rules:
   is adopted by a retrying writer *iff* its bytes equal the caller's
   payload; any other content raises `ProtectedStoreError` for manual
   resolution — a crashed provision or update is resumed, never guessed.
-- **Empty payloads** are refused (`ProtectedStoreInvalidLength`).
+- **Empty payloads** are refused (`ProtectedStoreInvalidLength`), and a
+  payload MUST NOT exceed the §10.4 reader ceiling minus the `FVGW1`
+  header (`_MAX_STORE_BYTES - 5` bytes) — a larger write would publish
+  state no reader can ever return.
+- **Pointer-read race:** a reader that observes a descriptor/path identity
+  change on `active` (a concurrent `os.replace` straddling the read) MAY
+  retry a small bounded number of times; a pointer that never settles
+  still fails closed. This is the only retried failure — corruption,
+  missing files and hash mismatches surface immediately.
 
 ### 10.7 Vault Transit custody (`FVSTORID1` + Transit blob)
 
@@ -498,17 +506,24 @@ g-<n>.gen      = "FVGW1" || ASCII "vault:v<kek_version>:<base64>" blob
   strand every blob wrapped under the old ID.
 - **Transit context** (normative): standard Base64 of the canonical JSON
   `{"app","custody","purpose","store","v"}` — sorted keys, separators
-  `,`/`:` — where `v` is the context version, `store` is the lowercase hex
-  of `store.id`, `purpose` is `"floorvault-master-wrap"`, and `custody` is
-  the custody-scheme label. The context is sent to Transit on datakey and
-  decrypt calls; Transit refuses a blob whose stored context differs.
+  `,`/`:`, `ensure_ascii=False` (UTF-8 as written, no `\uXXXX` escaping,
+  matching the canonical-JSON rule) — where `v` is the context version,
+  `store` is the lowercase hex of `store.id`, `purpose` is
+  `"floorvault-master-wrap"`, and `custody` is the custody-scheme label.
+  The context is sent to Transit on datakey, decrypt and rewrap calls;
+  Transit refuses a blob whose stored context differs.
+- **Wrapped blob** (normative): ASCII text matching
+  `vault:v[0-9]+:[A-Za-z0-9+/=]+` in full, ≤ the §10.6 payload ceiling.
+  Blobs are validated before publication on BOTH the provision path
+  (datakey `ciphertext`) and the rewrap path — a malformed blob must
+  never become the authoritative generation.
 - **Operations:** `transit/datakey/plaintext` (provision: returns a `vault:v1:` blob
   plus the plaintext key), `transit/decrypt` (resolve), `transit/rewrap`
   (KEK rotation: same plaintext, new `vault:v<k+1>:` blob — the store then
   CAS-publishes a new generation).
 - **Transport contract:** HTTPS only, verified TLS, timeout ≤ 60 s, bounded
   retries (default 2) on connect failures and 5xx — never on 4xx — response
-  ≤ 64 KiB, blob ≤ 4 KiB. Redirects are refused by default; a 307/308 is
+  ≤ 64 KiB. Redirects are refused by default; a 307/308 is
   followed at most once and only to an explicitly allowlisted `https` host.
 - **Failure contract:** every Vault failure — unreachable, HTTP error,
   malformed/short response, missing fields, corrupt store identity —
@@ -724,13 +739,28 @@ The contract is about which write paths are *legal*:
   (`id_attr`, and `tenant_attr` when declared) must already be set —
   otherwise the assignment fails closed (`EncryptedWriteError`).
 - A `set`-time attribute validator on every registered ciphertext column
-  accepts only `None` or a structurally valid §4 envelope; anything else
+  accepts only `None` or a fully-parsed §4.3 envelope; anything else
   raises `EncryptedWriteError`. A `before_insert`/`before_update` barrier
   re-checks the staged values for writes that bypassed attribute events.
-- ORM-level `insert()`/`update()` statements — including executemany
-  parameter sets and `Query.update` — that name a registered ciphertext
-  column are refused (`UnsupportedWriteError`) inside `do_orm_execute`:
-  bulk rows cannot carry per-record coordinates.
+- ORM-level `insert()`/`update()` statements that name a registered
+  ciphertext column — in any value slot (`values()`, executemany dicts,
+  `from_select` target names, `ordered_values`, executemany ORM
+  parameter sets, `Query.update`) — are refused (`UnsupportedWriteError`)
+  inside `do_orm_execute`: bulk rows cannot carry per-record coordinates.
+  Statement keys are matched against every name a column carries —
+  attribute key, `Column.key`, and the physical `Column.name` — so a
+  column renamed at the DDL layer cannot slip the guard.
+- Sessions created by `session_factory()` refuse the legacy bulk APIs —
+  `bulk_insert_mappings`, `bulk_update_mappings`, `bulk_save_objects` —
+  for protected classes (`UnsupportedWriteError`); those paths never
+  fire `do_orm_execute` and would bypass the guards entirely.
+- A registered ciphertext column MUST NOT declare `default`,
+  `server_default`, `onupdate`, `server_onupdate` or `computed` — those
+  are producer paths that would emit non-envelope values outside the
+  validator's reach, so `protect()` refuses the mapping outright.
+- The table coordinate is the schema-qualified `Table.fullname`, so
+  same-named tables in different schemas cannot replay each other's
+  ciphertext.
 - `tenant_attr` composes the record coordinate via §5.3; `revision_attr`
   supplies the §5 `revision` coordinate per record. Revision detects
   same-coordinate replay of an older ciphertext — it is not, and is not

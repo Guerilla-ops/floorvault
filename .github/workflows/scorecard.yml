@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       security-events: write
+      id-token: write # publish_results exchanges an OIDC token with the API
       contents: read
       actions: read
       issues: read

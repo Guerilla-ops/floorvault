@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Union
 
-from .core import DecryptionVerificationError, FloorVault, FloorVaultError, envelope_header
+from .core import DecryptionVerificationError, FloorVault, FloorVaultError, _parse_envelope
 
 
 class EncryptedWriteError(FloorVaultError):
@@ -193,11 +193,15 @@ def require_envelope(value: object, *, where: str) -> bytes:
     The check exists so adapters can refuse plaintext staged through paths
     that bypass their encrypting layer - only envelope-shaped bytes may ever
     occupy an encrypted column.
+
+    It runs the complete SPEC §4.3 structural parse, not just the header:
+    ``envelope_header`` alone accepts a bare ``FLRV`` prefix with no nonce
+    or ciphertext, and "accepts" is exactly what a bypass needs.
     """
     if isinstance(value, (bytes, bytearray, memoryview)):
         candidate = bytes(value)
         try:
-            envelope_header(candidate)
+            _parse_envelope(candidate)
         except (DecryptionVerificationError, TypeError):
             candidate = b""
         if candidate:

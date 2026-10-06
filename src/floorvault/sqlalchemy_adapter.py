@@ -20,9 +20,13 @@ be violated, not only at flush:
    ``obj.field_ct = b"plaintext"`` fails at assignment, not at flush.
 3. Bulk write paths that cannot bind per-record coordinates are rejected.
    A ``do_orm_execute`` guard refuses ORM ``insert``/``update`` statements -
-   including executemany parameter sets and ``Query.update`` - that supply a
-   value for a registered ciphertext column. Records must be written through
-   ``session.add`` with ``EncryptedField`` assignment.
+   including executemany parameter sets, ``insert().from_select``,
+   ``update().ordered_values`` and ``Query.update`` - that supply a value
+   for a registered ciphertext column. ``Session`` objects come from
+   ``session_factory()`` as ``_GuardedSession`` subclasses that refuse the
+   legacy bulk APIs (``bulk_insert_mappings``/``bulk_update_mappings``/
+   ``bulk_save_objects``), which never fire ``do_orm_execute``. Records must
+   be written through ``session.add`` with ``EncryptedField`` assignment.
 
 Owner/tenant binding uses :func:`floorvault.records.bound_record_id`: the
 AAD record coordinate is a length-prefixed ``tenant:record_id`` composite,
@@ -46,7 +50,7 @@ from typing import Any, Union
 try:
     from sqlalchemy import event
     from sqlalchemy import inspect as sa_inspect
-    from sqlalchemy.orm import ORMExecuteState, sessionmaker
+    from sqlalchemy.orm import ORMExecuteState, Session, sessionmaker
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError(
         "floorvault.sqlalchemy_adapter requires SQLAlchemy 2.x; "
@@ -127,12 +131,20 @@ class _ModelBinding:
         tenant_attr: str | None,
         revision_attr: str | None,
         ct_columns: frozenset[str],
+        ct_names: frozenset[str],
     ) -> None:
         self.records = records
         self.id_attr = id_attr
         self.tenant_attr = tenant_attr
         self.revision_attr = revision_attr
         self.ct_columns = ct_columns
+        #: Every name under which a registered column can appear in a
+        #: statement: the mapped attribute key, ``Column.key`` and
+        #: ``Column.name``. A column renamed at the DDL layer
+        #: (``ssn_ct = Column("secret_cipher")``) reaches a statement under
+        #: either spelling, so matching on the attribute name alone would
+        #: let the physical name write through.
+        self.ct_names = ct_names
 
     def record_id(self, obj: Any) -> str:
         pk = getattr(obj, self.id_attr, None)
@@ -228,26 +240,92 @@ def _flush_guard(model: type, ct_columns: frozenset[str]):
     return guard
 
 
-def _statement_ct_columns(statement, mapper_ct: frozenset[str]) -> set[str]:
-    """Names of registered ciphertext columns a DML statement would write."""
-    keys: set[str] = set()
+def _key_names(key) -> frozenset[str]:
+    """Every name a statement value-key may carry.
 
-    def collect(params) -> None:
-        for key in params:
-            if isinstance(key, str):
-                name = key
-            else:
-                name = getattr(key, "key", None) or getattr(key, "name", None)
-            if name in mapper_ct:
-                keys.add(name)
+    SQLAlchemy keys ``_values``/``_multi_values`` by whichever token the
+    caller used: a ``Column`` object (whose ``.key`` is the attribute name
+    and ``.name`` the physical SQL name), an ``InstrumentedAttribute``, or
+    the raw string when the token does not resolve to a mapped column.
+    """
+    if isinstance(key, str):
+        return frozenset((key,))
+    names: set[str] = set()
+    for attr in ("key", "name"):
+        candidate = getattr(key, attr, None)
+        if isinstance(candidate, str):
+            names.add(candidate)
+    return frozenset(names)
 
-    params = getattr(statement, "parameters", None)
-    if isinstance(params, dict):
-        collect(params)
+
+def _statement_ct_columns(statement, binding: _ModelBinding) -> set[str]:
+    """Registered ciphertext column names a DML statement would write.
+
+    Values reach a statement through several distinct slots and every one
+    must be scanned: ``_values`` (single-row ``values()``/parameters),
+    ``_multi_values`` (executemany ``insert().values([dicts])``),
+    ``_ordered_values`` (``update().ordered_values``) and ``_select_names``
+    (``insert().from_select`` column names). A miss on any one of them is a
+    plaintext write that bypasses the encryption boundary.
+    """
+    hit: set[str] = set()
+
+    def collect(key_source) -> None:
+        for key in key_source or ():
+            matched = _key_names(key) & binding.ct_names
+            if matched:
+                hit.update(matched)
+
     values = getattr(statement, "_values", None)
     if isinstance(values, dict):
         collect(values)
-    return keys
+    for group in getattr(statement, "_multi_values", None) or ():
+        for row in group:
+            collect(row)
+    for pair in getattr(statement, "_ordered_values", None) or ():
+        collect((pair[0],))
+    collect(getattr(statement, "_select_names", None))
+    params = getattr(statement, "parameters", None)
+    if isinstance(params, dict):
+        collect(params)
+    return hit
+
+
+class _GuardedSession(Session):
+    """Session that refuses the legacy bulk APIs for protected classes.
+
+    ``bulk_insert_mappings``, ``bulk_update_mappings`` and
+    ``bulk_save_objects`` never fire ``do_orm_execute`` - they take an
+    internal persistence path - so the statement guard cannot see them and
+    mapper flush events do not run for them either. Refusing protected
+    classes here is the only barrier on that path. Unprotected classes carry
+    no FloorVault obligation and pass through.
+    """
+
+    _fv_bindings: dict[type, _ModelBinding] = {}
+
+    def _bulk_guard(self, model_or_mapper, op: str) -> None:
+        model = getattr(model_or_mapper, "class_", model_or_mapper)
+        if isinstance(model, type) and model in self._fv_bindings:
+            raise UnsupportedWriteError(
+                f"Session.{op} bypasses the ORM event surface and cannot run "
+                f"the envelope guards; refused for protected class "
+                f"{model.__name__}. Add instances via session.add() and set "
+                "encrypted fields through their plaintext attributes"
+            )
+
+    def bulk_insert_mappings(self, mapper, mappings, **kwargs):
+        self._bulk_guard(mapper, "bulk_insert_mappings")
+        return super().bulk_insert_mappings(mapper, mappings, **kwargs)
+
+    def bulk_update_mappings(self, mapper, mappings, **kwargs):
+        self._bulk_guard(mapper, "bulk_update_mappings")
+        return super().bulk_update_mappings(mapper, mappings, **kwargs)
+
+    def bulk_save_objects(self, objects, **kwargs):
+        for obj in objects:
+            self._bulk_guard(type(obj), "bulk_save_objects")
+        return super().bulk_save_objects(objects, **kwargs)
 
 
 class SqlAlchemyEncryption:
@@ -304,11 +382,15 @@ class SqlAlchemyEncryption:
                 raise EncryptedWriteError(f"{model.__name__}.{required} is not a mapped attribute")
         records = RecordBinding(
             self._crypto,
-            mapper.local_table.name,
+            # ``fullname`` is schema-qualified: two schemas may carry the
+            # same table name, and the AAD coordinate must name the real
+            # relation or a ciphertext would replay across them.
+            mapper.local_table.fullname,
             schema_id=self._schema_id,
             schema_version=self._schema_version,
         )
         ct_columns: set[str] = set()
+        ct_names: set[str] = set()
         for attr_name, spec in fields.items():
             field = spec if isinstance(spec, EncryptedField) else EncryptedField(spec)
             if field.column_attr in fields or field.column_attr == attr_name:
@@ -321,7 +403,24 @@ class SqlAlchemyEncryption:
                     f"{model.__name__}.{field.column_attr} is not a mapped column; "
                     "declare the ciphertext Column on the model first"
                 )
+            for column in ct_prop.columns:
+                # A Python/SQL-side producer would place plaintext or
+                # server-shaped values into the column outside the envelope
+                # validator - defaults and server-generated values are
+                # write paths the descriptor never sees.
+                for opt in ("default", "server_default", "onupdate", "server_onupdate", "computed"):
+                    if getattr(column, opt) is not None:
+                        raise EncryptedWriteError(
+                            f"{model.__name__}.{field.column_attr} declares a "
+                            f"column-level {opt}; encrypted columns must take "
+                            "values only through their EncryptedField so the "
+                            "envelope invariant holds end to end"
+                        )
+                for alias in (column.key, column.name):
+                    if isinstance(alias, str):
+                        ct_names.add(alias)
             ct_columns.add(field.column_attr)
+            ct_names.add(field.column_attr)
             setattr(model, attr_name, field)
             if field.name is None:
                 field.__set_name__(model, attr_name)
@@ -333,6 +432,7 @@ class SqlAlchemyEncryption:
             tenant_attr=tenant_attr,
             revision_attr=revision_attr,
             ct_columns=frozenset(ct_columns),
+            ct_names=frozenset(ct_names),
         )
         model.__fv_binding__ = binding
         self._bindings[model] = binding
@@ -342,15 +442,21 @@ class SqlAlchemyEncryption:
         return model
 
     def session_factory(self, **kwargs) -> sessionmaker:
-        """A ``sessionmaker`` whose sessions enforce the bulk-write guard.
+        """A ``sessionmaker`` whose sessions enforce every write guard.
 
-        The guard is attached to the sessionmaker class-level event so every
-        session it produces refuses ORM-level writes that name a registered
-        ciphertext column. Flushes of ordinary ``session.add`` objects do not
-        pass through ``do_orm_execute``, so protected-field writes via the
-        descriptor are unaffected.
+        Two mechanisms compose: a ``do_orm_execute`` listener refuses
+        ORM-level ``insert``/``update`` statements naming a registered
+        ciphertext column, and the sessions are ``_GuardedSession``
+        subclasses that refuse the legacy bulk APIs (which never fire that
+        event). Flushes of ordinary ``session.add`` objects pass through
+        neither path, so protected-field writes via the descriptor are
+        unaffected.
         """
-        factory = sessionmaker(**kwargs)
+
+        class _BoundSession(_GuardedSession):
+            _fv_bindings = self._bindings
+
+        factory = sessionmaker(class_=_BoundSession, **kwargs)
         event.listen(factory, "do_orm_execute", self._guard_orm_execute)
         return factory
 
@@ -362,15 +468,15 @@ class SqlAlchemyEncryption:
         binding = self._bindings.get(model) if model is not None else None
         if binding is None:
             return
-        named = _statement_ct_columns(state.statement, binding.ct_columns)
+        named = _statement_ct_columns(state.statement, binding)
         params = state.parameters
         if params:
+            # Executemany ORM statements carry their rows here, not on the
+            # statement: session.execute(insert(T), [{...}, ...]).
             for row in params if isinstance(params, list) else (params,):
                 if isinstance(row, dict):
                     for key in row:
-                        name = getattr(key, "key", None) or getattr(key, "name", None) or key
-                        if name in binding.ct_columns:
-                            named.add(name)
+                        named.update(_key_names(key) & binding.ct_names)
         if named:
             raise UnsupportedWriteError(
                 f"bulk/ORM-statement writes cannot bind per-record encryption "

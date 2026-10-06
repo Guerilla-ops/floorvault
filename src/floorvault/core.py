@@ -75,6 +75,65 @@ def envelope_header(ciphertext: bytes) -> dict[str, Any]:
     return header
 
 
+def _parse_envelope(
+    ciphertext: bytes,
+) -> tuple[memoryview | None, int | None, int | None, memoryview, memoryview]:
+    """Parse an envelope of either version (SPEC §4.3, in document order).
+
+    Returns ``(header, crypto_version, key_id, nonce, raw_ciphertext)``,
+    where ``header``, ``crypto_version`` and ``key_id`` are ``None`` for a
+    v1 envelope, which carries neither.
+
+    Header, nonce and raw ciphertext are returned as ``memoryview`` slices
+    of the caller's buffer — the AEAD accepts buffer objects directly, so
+    parsing no longer copies the payload on every decrypt (an O(n) copy
+    per record before). A ``bytearray`` input is mutable, so it is
+    snapshotted once to ``bytes`` first and the views alias the snapshot.
+
+    Package-private: adapters use this for full structural validation —
+    ``envelope_header`` only proves the header parses, so a bare magic
+    prefix would survive it while still being undecryptable garbage.
+    """
+    if not isinstance(ciphertext, (bytes, bytearray)):
+        raise TypeError("Ciphertext must be bytes")
+    if len(ciphertext) < 5 + _NONCE_LEN:
+        raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
+
+    if isinstance(ciphertext, bytearray):
+        # Mutable input: a memoryview would alias the caller's buffer, so a
+        # concurrent mutation could change the key_id or nonce between the
+        # header checks and the AEAD call. One snapshot keeps every view
+        # below over immutable bytes; bytes input stays zero-copy.
+        ciphertext = bytes(ciphertext)
+    view = memoryview(ciphertext)
+    magic = view[:4]
+    if magic == RECORD_MAGIC_V2:
+        crypto_version = view[4]
+        if crypto_version != CRYPTO_VERSION:
+            raise DecryptionVerificationError(
+                f"Unsupported envelope crypto version {crypto_version} "
+                f"(this build writes {CRYPTO_VERSION})"
+            )
+        header = view[:_HEADER_LEN_V2]
+        key_id = view[5]
+        offset = _HEADER_LEN_V2
+    elif magic == RECORD_MAGIC:
+        header = crypto_version = key_id = None
+        offset = 5
+    else:
+        raise DecryptionVerificationError("Invalid ciphertext magic header")
+
+    nonce_len = view[offset - 1]
+    if nonce_len != _NONCE_LEN or len(view) < offset + nonce_len:
+        raise DecryptionVerificationError("Invalid nonce length in ciphertext envelope")
+
+    nonce = view[offset : offset + nonce_len]
+    raw_cipher = view[offset + nonce_len :]
+    if not raw_cipher:
+        raise DecryptionVerificationError("Malformed ciphertext envelope: no ciphertext")
+    return header, crypto_version, key_id, nonce, raw_cipher
+
+
 def canonical_json_bytes(data: Mapping[str, Any]) -> bytes:
     """Serialize dictionary to deterministic, canonical UTF-8 JSON bytes."""
     return json.dumps(
@@ -464,56 +523,8 @@ class FloorVault:
     def _split_envelope(
         self, ciphertext: bytes
     ) -> tuple[memoryview | None, int | None, int | None, memoryview, memoryview]:
-        """Parse an envelope of either version.
-
-        Returns ``(header, crypto_version, key_id, nonce, raw_ciphertext)``,
-        where ``header``, ``crypto_version`` and ``key_id`` are ``None`` for a
-        v1 envelope, which carries neither.
-
-        Header, nonce and raw ciphertext are returned as ``memoryview`` slices
-        of the caller's buffer — the AEAD accepts buffer objects directly, so
-        parsing no longer copies the payload on every decrypt (an O(n) copy
-        per record before). A ``bytearray`` input is mutable, so it is
-        snapshotted once to ``bytes`` first and the views alias the snapshot.
-        """
-        if not isinstance(ciphertext, (bytes, bytearray)):
-            raise TypeError("Ciphertext must be bytes")
-        if len(ciphertext) < 5 + _NONCE_LEN:
-            raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
-
-        if isinstance(ciphertext, bytearray):
-            # Mutable input: a memoryview would alias the caller's buffer, so a
-            # concurrent mutation could change the key_id or nonce between the
-            # header checks and the AEAD call. One snapshot keeps every view
-            # below over immutable bytes; bytes input stays zero-copy.
-            ciphertext = bytes(ciphertext)
-        view = memoryview(ciphertext)
-        magic = view[:4]
-        if magic == RECORD_MAGIC_V2:
-            crypto_version = view[4]
-            if crypto_version != CRYPTO_VERSION:
-                raise DecryptionVerificationError(
-                    f"Unsupported envelope crypto version {crypto_version} "
-                    f"(this build writes {CRYPTO_VERSION})"
-                )
-            header = view[:_HEADER_LEN_V2]
-            key_id = view[5]
-            offset = _HEADER_LEN_V2
-        elif magic == RECORD_MAGIC:
-            header = crypto_version = key_id = None
-            offset = 5
-        else:
-            raise DecryptionVerificationError("Invalid ciphertext magic header")
-
-        nonce_len = view[offset - 1]
-        if nonce_len != _NONCE_LEN or len(view) < offset + nonce_len:
-            raise DecryptionVerificationError("Invalid nonce length in ciphertext envelope")
-
-        nonce = view[offset : offset + nonce_len]
-        raw_cipher = view[offset + nonce_len :]
-        if not raw_cipher:
-            raise DecryptionVerificationError("Malformed ciphertext envelope: no ciphertext")
-        return header, crypto_version, key_id, nonce, raw_cipher
+        """Parse an envelope of either version. See :func:`_parse_envelope`."""
+        return _parse_envelope(ciphertext)
 
     def decrypt(
         self,

@@ -13,6 +13,7 @@ import pytest
 
 from floorvault.providers.generation_store import (
     GENERATION_HEADER,
+    MAX_PAYLOAD_BYTES,
     GenerationMismatchError,
     GenerationStore,
     StoreLockError,
@@ -21,6 +22,7 @@ from floorvault.providers.platform_custody import (
     ProtectedStoreError,
     ProtectedStoreInvalidLength,
     ProtectedStoreMissing,
+    ProtectedStoreRaceError,
     write_protected,
 )
 
@@ -211,3 +213,94 @@ def test_stale_lock_file_fails_closed(tmp_path):
     lock.touch()
     with pytest.raises(StoreLockError):
         store.update(PAYLOAD_B, expected_generation=1)
+
+
+def test_payload_at_the_reader_boundary_round_trips(tmp_path):
+    """MAX_PAYLOAD_BYTES is derived from read_protected's cap - the exact
+    ceiling must publish and read back."""
+    store = GenerationStore(tmp_path / "gens")
+    payload = b"x" * MAX_PAYLOAD_BYTES
+    assert store.provision(payload) == 1
+    assert store.read_active() == (1, payload)
+    assert store.update(b"y" * MAX_PAYLOAD_BYTES, expected_generation=1) == 2
+    assert store.read_active()[0] == 2
+
+
+def test_payload_one_byte_over_the_reader_boundary_is_rejected(tmp_path):
+    """One byte over publishes state read_protected can never return."""
+    store = GenerationStore(tmp_path / "gens")
+    store.provision(PAYLOAD_A)
+    oversized = b"x" * (MAX_PAYLOAD_BYTES + 1)
+    with pytest.raises(ProtectedStoreInvalidLength):
+        store.update(oversized, expected_generation=1)
+    fresh = GenerationStore(tmp_path / "gens2")
+    with pytest.raises(ProtectedStoreInvalidLength):
+        fresh.provision(oversized)
+    # Nothing was published: the store is still at generation 1.
+    assert store.read_active() == (1, PAYLOAD_A)
+    assert fresh.active_generation() is None
+
+
+def test_pointer_identity_race_is_retried(tmp_path, monkeypatch):
+    """An atomic pointer replace straddling the read is a race, not corruption."""
+    import floorvault.providers.generation_store as gs_mod
+
+    store = GenerationStore(tmp_path / "gens")
+    store.provision(PAYLOAD_A)
+    real_read = gs_mod.read_protected
+    calls = 0
+
+    def flaky(path, **kwargs):
+        nonlocal calls
+        if str(path).endswith("/active"):
+            calls += 1
+            if calls <= 2:
+                raise ProtectedStoreRaceError("simulated atomic pointer swap")
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(gs_mod, "read_protected", flaky)
+    assert store.read_active() == (1, PAYLOAD_A)
+    assert calls == 3
+
+
+def test_a_pointer_that_never_settles_still_fails_closed(tmp_path, monkeypatch):
+    """Unbounded churn must not mean unbounded retries."""
+    import floorvault.providers.generation_store as gs_mod
+
+    store = GenerationStore(tmp_path / "gens")
+    store.provision(PAYLOAD_A)
+    real_read = gs_mod.read_protected
+    calls = 0
+
+    def always_racing(path, **kwargs):
+        nonlocal calls
+        if str(path).endswith("/active"):
+            calls += 1
+            raise ProtectedStoreRaceError("churning pointer")
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(gs_mod, "read_protected", always_racing)
+    with pytest.raises(ProtectedStoreRaceError):
+        store.read_active()
+    assert calls == gs_mod._POINTER_READ_RETRIES + 1
+
+
+def test_lock_metadata_write_failure_leaves_no_stranded_lock(tmp_path, monkeypatch):
+    """A failed lockfile write must close the fd and unlink the lockfile -
+    a stranded lock blocks every writer until an operator intervenes."""
+    import floorvault.providers.generation_store as gs_mod
+
+    store = GenerationStore(tmp_path / "gens")
+
+    def out_of_space(descriptor, data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(gs_mod, "_write_all", out_of_space)
+    with pytest.raises(OSError):
+        with store.writer_lock():
+            pass
+    assert not store._lock_path.exists()
+    monkeypatch.undo()
+    # A healthy writer takes the lock immediately - nothing stranded.
+    with store.writer_lock():
+        pass

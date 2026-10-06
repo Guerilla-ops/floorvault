@@ -76,6 +76,18 @@ class ProtectedStoreInvalidLength(ProtectedStoreError):
     """
 
 
+class ProtectedStoreRaceError(ProtectedStoreError):
+    """The store changed identity while it was being opened.
+
+    Distinct from corruption: a legitimately updated store (e.g. the
+    generation-store ``active`` pointer repointed by a concurrent writer)
+    can trip the lstat/open identity check. Callers may retry a bounded
+    number of times and still surface a ``ProtectedStoreError`` if the
+    racing never settles. Subclassing keeps ``except ProtectedStoreError``
+    correct for callers that do not retry.
+    """
+
+
 class ProtectedStoreHeaderError(ProtectedStoreError):
     """The store exists but does not start with the expected magic header.
 
@@ -382,7 +394,7 @@ def read_protected(path: Path, *, header: bytes, expected_length: int | None = 3
         if not stat.S_ISREG(path_stat.st_mode):
             raise ProtectedStoreError("protected store is not a regular file")
         if (path_stat.st_dev, path_stat.st_ino) != (file_stat.st_dev, file_stat.st_ino):
-            raise ProtectedStoreError(
+            raise ProtectedStoreRaceError(
                 "protected store changed identity between the path check and the open"
             )
         # No separate regular-file check on the descriptor: the path is a regular
