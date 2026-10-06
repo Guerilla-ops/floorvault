@@ -1,118 +1,120 @@
 <div align="center">
-  <h1>FloorVault</h1>
-  <p><strong>Context-bound, misuse-resistant field encryption for SQLite.</strong><br>
-  Protect sensitive values in ordinary Python <code>sqlite3</code> databases—without SQLCipher, a custom SQLite build, or a C extension.</p>
-  <p><a href="#quickstart">Quickstart</a> · <a href="#existing-sqlite-tables">SQLite adapter</a> · <a href="SECURITY.md">Security model</a></p>
-  <p>
-    <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10 and newer"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg" alt="MIT or Apache 2.0 license"></a>
-  </p>
+
+# FloorVault
+
+**Field-level encryption for SQLite that knows where each value belongs.**
+
+Encrypt sensitive columns in ordinary Python `sqlite3` databases. No SQLCipher, no custom SQLite
+build, no C extension. Each ciphertext is cryptographically bound to its table, record and column,
+so a value moved anywhere else fails to decrypt.
+
+<a href="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml"><img src="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+<a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%E2%80%933.14-3776AB.svg" alt="Python 3.10 to 3.14"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg" alt="MIT or Apache 2.0 license"></a>
+<img src="https://img.shields.io/badge/status-beta-orange.svg" alt="Beta">
+
+[Quickstart](#quickstart) · [Guides](#guides) · [Security model](SECURITY.md) · [Format spec](docs/SPEC.md)
+
 </div>
 
-> **Beta software:** Review the [security model](SECURITY.md) before using FloorVault for production secrets.
+> [!WARNING]
+> **Beta, and not yet on PyPI.** `pip install floorvault` does not work yet; install from this
+> repository. Read the [security model](SECURITY.md) before protecting production secrets.
+
+---
+
+## Why FloorVault
+
+Most SQLite encryption is all-or-nothing: encrypt the whole file with a patched build, or hand-roll
+per-field crypto and hope nobody swaps two ciphertexts. FloorVault sits in between. It encrypts the
+columns you choose, in the database you already have, and makes the location of every value part of
+what gets authenticated.
+
+| | |
+| --- | --- |
+| 🔐 **Misuse-resistant AEAD** | AES-256-SIV ([RFC 5297](https://www.rfc-editor.org/rfc/rfc5297)) with HKDF-SHA256 key derivation. Nonce reuse does not break confidentiality the way it does for GCM. |
+| 📍 **Context binding** | Table, record ID, column, schema version and application instance are authenticated as associated data. Copy a ciphertext to another row and it is rejected. |
+| 🗄️ **Your SQLite, unchanged** | Works on stock `sqlite3`. FloorVault never owns your schema or your transactions. |
+| 🔑 **Fail-closed key custody** | macOS Keychain, Windows DPAPI and Linux Secret Service. If no safe store is available it raises an error instead of quietly writing a key to disk. |
+| 🔄 **Lifecycle built in** | Plaintext column migration, residue-scrubbing column drop, resumable key rotation and authenticated recovery bundles. |
+| 🔎 **Opt-in search** | Truncated, keyed beacons for exact-match lookup, with the leakage stated up front. |
+| 📄 **Frozen wire format** | A normative [on-disk spec](docs/SPEC.md) with test vectors and an independent decoder, so a second implementation can read your data. |
 
 ## How it works
 
-FloorVault authenticates each encrypted value against the place it belongs. A different table, record, column, schema, or application instance causes authentication to fail.
-
 ```mermaid
 flowchart LR
-  value["Plaintext value"] --> seal["AES-256-SIV"]
+  value["Plaintext"] --> seal["AES-256-SIV"]
   master["32-byte master key"] --> derive["HKDF-SHA256"] --> seal
-  context["Authenticated context<br/>table · record · column<br/>schema/version · app instance"] -->|associated data| seal
-  seal --> ciphertext["Authenticated ciphertext"]
-  ciphertext --> database[("Your existing SQLite column")]
-  database --> verify["Authenticate and decrypt"]
-  context --> verify
-  changed["Changed context"] -->|different associated data| verify
-  verify -->|valid| plaintext["Plaintext"]
-  verify -->|authentication fails| reject["Reject ciphertext"]
+  context["Context<br/>table · record · column<br/>schema · app instance"] -->|associated data| seal
+  seal --> ct["Ciphertext"] --> db[("Your SQLite column")]
+  db --> open["Authenticate + decrypt"]
+  context --> open
+  open -->|context matches| ok["Plaintext"]
+  open -->|anything differs| fail["Rejected"]
 ```
 
-## Why FloorVault?
-
-| Capability | What it gives you |
-| --- | --- |
-| **Authenticated encryption** | AES-256-SIV (RFC 5297) with HKDF-SHA256 key derivation. |
-| **Context binding** | Ciphertext is tied to its table, record, column, schema, and application instance. |
-| **Ordinary SQLite** | Field-level encryption for existing Python `sqlite3` databases; no SQLCipher, custom build, or C extension. |
-| **Key custody** | Native providers for macOS, Windows, and Linux; fail-closed behavior instead of a silent downgrade. |
-| **Lifecycle tools** | Safe field migration, resumable key rotation, and authenticated master-key recovery bundles. |
-| **Memory hardening** | Best-effort page locking and process core-dump limits, where supported. |
-| **Optional search** | Searchable beacons are opt-in and make their leakage trade explicit; see [Searchable beacons](#searchable-beacons-opt-in). |
+The context is never stored in the ciphertext. It is supplied again on every read, which means a
+database thief who rearranges rows, swaps columns or replays values between tables gets
+authentication failures rather than wrong-but-plausible data.
 
 ## Install
-
-FloorVault is **not yet published to PyPI** — `pip install floorvault` does not
-work yet. Install from the repository directly:
 
 ```bash
 pip install "floorvault @ git+https://github.com/Guerilla-ops/floorvault.git"
 ```
 
-With `uv`:
+or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv add "floorvault @ git+https://github.com/Guerilla-ops/floorvault.git"
 ```
 
-macOS Keychain support is optional:
+Add the extra for your platform's OS key store:
 
-```bash
-uv add "floorvault[macos] @ git+https://github.com/Guerilla-ops/floorvault.git"
-```
+| Platform | Key store | Install |
+| --- | --- | --- |
+| macOS | Keychain | `uv add "floorvault[macos] @ git+https://github.com/Guerilla-ops/floorvault.git"` |
+| Linux | Secret Service | `uv add "floorvault[linux] @ git+https://github.com/Guerilla-ops/floorvault.git"` |
+| Windows | DPAPI | built in, no extra needed |
 
-Linux Secret Service support is optional too:
-
-```bash
-uv add "floorvault[linux] @ git+https://github.com/Guerilla-ops/floorvault.git"
-```
-
-A stock install does **not** give the key provider an OS store
-on every host: macOS Keychain and Linux Secret Service need their platform extras,
-Windows uses DPAPI built in, and the local-file tier is off unless you enable it.
-If no usable provider applies (for example, macOS without its extra or a headless
-Linux container), `resolve_key()` fails closed with a `KeyProviderError` that
-names the remedies rather than writing an unprotected key. See
-[Key custody](#key-custody).
+Without the extra, or on a headless Linux container, key resolution **fails closed** with a
+`KeyProviderError` that lists your options. See [Key custody](#key-custody).
 
 ## Quickstart
-
-This example uses an available OS-backed key store. macOS Keychain support needs
-the `macos` extra; Linux Secret Service support needs the `linux` extra; Windows
-uses DPAPI. If no usable provider is available, key resolution fails closed. See
-[Key custody](#key-custody) for the options.
 
 ```python
 from floorvault import AdaptiveKeyProvider, FloorVault
 
 master_key = AdaptiveKeyProvider(service_name="my-app").resolve_key()
-crypto = FloorVault(master_key, app_instance_id="my-app-instance")
+crypto = FloorVault(master_key, app_instance_id="my-app")
 
-ciphertext = crypto.encrypt(
-    "secret value",
-    table="credentials",
-    record_id="user-123",
-    column="api_key",
-)
+ciphertext = crypto.encrypt("secret value", table="credentials", record_id="user-123", column="api_key")
 
-plaintext = crypto.decrypt(
-    ciphertext,
-    table="credentials",
-    record_id="user-123",
-    column="api_key",
-)
+crypto.decrypt(ciphertext, table="credentials", record_id="user-123", column="api_key")
+# -> "secret value"
 
-assert plaintext == "secret value"
+crypto.decrypt(ciphertext, table="credentials", record_id="user-456", column="api_key")
+# -> raises DecryptionVerificationError: wrong record
 ```
 
-The same ciphertext will not decrypt successfully when supplied with a different table, record ID, column, schema, or application instance.
+Never hard-code a production master key. Resolve it from an OS key store or your own secret manager.
 
-Never hard-code a production master key in source code. Use an OS-backed provider or an external secret source.
+---
 
-## Existing SQLite tables
+## Guides
 
-FloorVault does not own your schema or transactions. Add an encrypted column to an existing table, then use the adapter:
+- [Encrypt columns in an existing table](#encrypt-columns-in-an-existing-table)
+- [Migrate a plaintext column](#migrate-a-plaintext-column)
+- [Search encrypted values (opt-in)](#search-encrypted-values-opt-in)
+- [Key custody](#key-custody)
+- [Rotate keys](#rotate-keys)
+- [Recovery bundles](#recovery-bundles)
+- [Inspect a value from the CLI](#inspect-a-value-from-the-cli)
+
+### Encrypt columns in an existing table
+
+Add a column for the ciphertext, then read and write through the adapter:
 
 ```python
 import sqlite3
@@ -120,201 +122,173 @@ import sqlite3
 from floorvault import AdaptiveKeyProvider, EncryptedSQLiteTable, FloorVault
 
 connection = sqlite3.connect("app.db")
-master_key = AdaptiveKeyProvider(service_name="my-app").resolve_key()
-crypto = FloorVault(master_key, app_instance_id="my-app")
+crypto = FloorVault(AdaptiveKeyProvider(service_name="my-app").resolve_key(), app_instance_id="my-app")
 
-fields = EncryptedSQLiteTable(
-    connection,
-    crypto,
-    "users",
-    id_column="id",
-)
+users = EncryptedSQLiteTable(connection, crypto, "users", id_column="id")
 
-fields.store("user-123", "api_token_cipher", "secret-token")
+users.store("user-123", "api_token_cipher", "secret-token")
 connection.commit()
 
-token = fields.load("user-123", "api_token_cipher")
+token = users.load("user-123", "api_token_cipher")
 ```
 
-Table and column identifiers are validated before SQL is constructed. Record IDs and values remain bound parameters or cryptographic inputs. A missing record is an error; the adapter never inserts one accidentally.
+Identifiers are allow-listed and quoted before any SQL is built. Record IDs and values are always
+bound parameters or cryptographic inputs. Storing to a missing record raises; the adapter never
+inserts a row on your behalf. `store_fields` / `load_fields` handle several columns at once, and
+`load_bytes` returns raw bytes.
 
-## Searchable beacons (opt-in)
+### Migrate a plaintext column
 
-Exact-match lookups over an encrypted column need an indexed value beside the ciphertext. Storing one leaks something, so this is opt-in and it is a trade you make deliberately.
-
-The snippet continues the example above (`connection` and `master_key`); this workflow is executed by `tests/test_searchable_beacons.py` rather than only described.
+Encrypt an existing column into a new one, verify it, then drop the original:
 
 ```python
-from floorvault import FloorVault
+from floorvault import drop_plaintext_column, migrate_plaintext_column, verify_encrypted_column
+
+migrate_plaintext_column(
+    connection, crypto,
+    table="users", id_column="id",
+    source_column="private_value", destination_column="private_value_cipher",
+)
+connection.commit()
+
+# Decrypts every row and compares it with the source. Raises on any mismatch.
+verified = verify_encrypted_column(
+    connection, crypto,
+    table="users", id_column="id",
+    source_column="private_value", destination_column="private_value_cipher",
+)
+
+# Only after verification and a backup you trust:
+drop_plaintext_column(connection, table="users", column="private_value", vacuum=True)
+```
+
+Migration refuses a destination that already holds data, binds each value to its real record ID and
+rolls back on failure.
+
+`drop_plaintext_column` does more than `ALTER TABLE ... DROP COLUMN`, which leaves the old plaintext
+readable in freed pages and the WAL. It turns on `secure_delete`, checkpoints and truncates the WAL
+and, with `vacuum=True`, rewrites the file. It still cannot erase filesystem-level residue such as
+old disk blocks or a deleted journal; only destroying the file guarantees that. The returned flags
+tell you exactly what was scrubbed.
+
+### Search encrypted values (opt-in)
+
+Exact-match lookup needs something indexable beside the ciphertext. FloorVault's beacons are keyed,
+truncated hashes: a bucket narrows the candidates, and decryption confirms the match.
+
+```python
 from floorvault.beacons import BeaconIndexer, derive_beacon_key, suggest_beacon_bits
 
-crypto = FloorVault(master_key, app_instance_id="my-app")
-
-# Size the width to the table, don't pick a constant: the anonymity a beacon
-# gives is roughly one bucket's occupancy.
+# Size the bucket width to the table. Anonymity is roughly one bucket's occupancy.
 indexer = BeaconIndexer(derive_beacon_key(master_key), bits=suggest_beacon_bits(200_000))
 
-# On write: store the ciphertext and the beacon in an indexed column.
+# Write: store the ciphertext and its beacon (put an index on email_beacon).
 connection.execute(
     "INSERT INTO users (id, email_cipher, email_beacon) VALUES (?, ?, ?)",
-    (record_id, crypto.encrypt(email, table="users", record_id=record_id, column="email_cipher"),
+    (record_id,
+     crypto.encrypt(email, table="users", record_id=record_id, column="email_cipher"),
      indexer.beacon(email, scope="users.email")),
 )
 
-# On read: the bucket narrows candidates; decryption confirms the match.
+# Read: fetch the bucket, then confirm each candidate by decrypting.
 bucket = indexer.beacon(email, scope="users.email")
 for candidate_id, ciphertext in connection.execute(
     "SELECT id, email_cipher FROM users WHERE email_beacon = ?", (bucket,)
 ):
-    plaintext = crypto.decrypt(
-        ciphertext, table="users", record_id=candidate_id, column="email_cipher"
-    )
-    if plaintext == email:
-        break  # confirmed
+    if crypto.decrypt(ciphertext, table="users", record_id=candidate_id, column="email_cipher") == email:
+        break
 ```
 
-What this costs: equal values produce equal beacons, so unequal beacons prove unequal values; and bucket occupancy still tracks the distribution of the plaintext, so a heavily skewed column shows a correspondingly skewed beacon histogram. Truncation makes the index non-injective — it does not make the data uniform. A small table with a narrow beacon is close to exact equality, so size the width to the row count. Do not beacon a low-cardinality column, and do not beacon a column you never look up by equality. Full statement: [SECURITY.md §5](SECURITY.md).
+This workflow is executed by `tests/test_searchable_beacons.py`, not just documented.
 
-Widths are byte-aligned, so 4 and 8 bits are the same index; `BeaconIndexer` rejects a width it cannot store rather than rounding it and describing it as something else. A beacon hit is not proof of equality — always confirm by decrypting.
+> [!IMPORTANT]
+> **Beacons leak by design.** Equal values share a beacon, so different beacons prove different
+> values. Bucket sizes follow the plaintext distribution, so a skewed column gives a skewed
+> histogram. On a small table a narrow beacon is close to exact equality. Don't beacon
+> low-cardinality columns or columns you never look up by equality, and always confirm a hit by
+> decrypting. Widths must be byte-aligned; `BeaconIndexer` rejects any width it can't actually
+> store. Full statement in [SECURITY.md §5](SECURITY.md).
 
-## Migrate existing plaintext columns
+### Key custody
 
-Migrate into a new encrypted column without deleting the original source:
+`AdaptiveKeyProvider` picks the strongest custody tier available and never silently drops below one
+you asked for:
 
-```python
-from floorvault import migrate_plaintext_column, verify_encrypted_column
+| Tier | Source | Notes |
+| --- | --- | --- |
+| 1 | Environment variable | `FLOOR_VAULT_KEY` or `VAULT_MASTER_KEY`, 64 hex chars. `APPSTATE_KEY` still works but is legacy and warns. |
+| 2 | OS key store | macOS Keychain (`macos` extra), Windows DPAPI (stores outside the user profile are refused), Linux Secret Service (`linux` extra). |
+| 3 | Local key file | `0600` file, **off by default**. Anyone who can copy the file has the key. |
 
-migrate_plaintext_column(
-    connection,
-    crypto,
-    table_name="users",
-    id_column="id",
-    source_column="private_value",
-    destination_column="private_value_cipher",
-)
-connection.commit()
-
-assert verify_encrypted_column(
-    connection,
-    crypto,
-    table_name="users",
-    id_column="id",
-    source_column="private_value",
-    destination_column="private_value_cipher",
-)
-```
-
-The migration validates identifiers, refuses a populated destination, binds each value to its real record ID, and rolls back on failure. Remove the plaintext column only after independent verification and an appropriate backup policy.
-
-## Key custody
-
-`AdaptiveKeyProvider` selects an available custody tier rather than silently weakening an explicitly requested one:
-
-- macOS Keychain (needs the `macos` extra)
-- Windows DPAPI (built in; a store outside the user profile is refused)
-- Linux Secret Service
-- protected local fallback where permitted
-
-Resolving a key without an OS store — the case the quickstart hits on macOS without
-the extra, or in a headless container — fails closed with a `KeyProviderError`. The
-three ways to resolve it:
+If nothing usable applies, `resolve_key()` raises `KeyProviderError`. If a native backend exists
+but is broken, it raises `CustodyDowngradeError` rather than falling back. Three ways forward:
 
 ```python
 import os
 
 from floorvault import AdaptiveKeyProvider, FloorVault
 
-# 1. Explicit key, 64 hex characters, from your own secret source.
-crypto = FloorVault(
-    bytes.fromhex(os.environ["APPSTATE_KEY"]),
-    app_instance_id="my-app",
-)
+# 1. Your own secret source.
+crypto = FloorVault(bytes.fromhex(os.environ["FLOOR_VAULT_KEY"]), app_instance_id="my-app")
 
-# 2. A 0600 local key file, created on first use and reused afterwards. This is
-#    Tier 3: anyone who can copy the file can recover the key.
+# 2. Opt in to the local key file (Tier 3), created on first use.
 crypto = FloorVault(
     AdaptiveKeyProvider(service_name="my-app", allow_disk_fallback=True).resolve_key(),
     app_instance_id="my-app",
 )
 
-# 3. Install the OS-native tier for the platform (floorvault[macos] on macOS).
-crypto = FloorVault(
-    AdaptiveKeyProvider(service_name="my-app").resolve_key(),
-    app_instance_id="my-app",
-)
+# 3. Install your platform's extra and use the OS store.
+crypto = FloorVault(AdaptiveKeyProvider(service_name="my-app").resolve_key(), app_instance_id="my-app")
 ```
 
-`APPSTATE_KEY`, `FLOOR_VAULT_KEY` and `VAULT_MASTER_KEY` are the recognised
-environment variables. Pass `strict=True` to forbid the local-file tier outright.
+Pass `strict=True` to forbid the local-file tier outright.
 
-The local fallback is protected by the filesystem and OS-account boundary; it is not equivalent to hardware-backed or OS-managed secret custody. If a native backend is present but unusable, FloorVault can fail closed with `CustodyDowngradeError`.
+> [!NOTE]
+> **Two process-wide side effects.** Creating a key handle sets `RLIMIT_CORE` to 0 and does not
+> restore it, because a core dump of a process holding the master key would write that key to disk.
+> Key memory is also page-locked on a best-effort basis where the platform allows.
+>
+> **Live CI coverage exists for Windows DPAPI only.** The Keychain and Secret Service tiers are
+> implemented and unit-tested but not yet verified live. See [SECURITY.md](SECURITY.md).
 
-Constructing a key handle also disables core dumps for the whole process (`RLIMIT_CORE` is set to 0 and not restored), since a core dump of a process holding a master key would write that key to disk. An application that needs its own crash dumps should know this happens on first key construction.
+### Rotate keys
 
-Live CI coverage exists for Windows DPAPI only. The macOS Keychain and Linux Secret Service tiers are implemented and unit-tested but not live-verified — see the per-tier verification status in [`SECURITY.md`](SECURITY.md).
-
-## Rotation and recovery
-
-Rotate a store under a new key with resumable progress and post-rotation verification:
+`rotate_vault_store` re-seals a `VaultStore` under a new key. It journals progress so an interrupted
+run resumes, and it verifies every item before returning.
 
 ```python
-from floorvault import AdaptiveKeyProvider, FloorVault, KeyRing, rotate_vault_store
-
-# VaultStore is the structured item store this rotation operates on; it is not
-# re-exported at the top level.
-from floorvault.vaultkit import VaultStore
 from pathlib import Path
 
-# VaultStore does NOT expand "~" -- a literal tilde would become a directory
-# named "~" relative to the working directory. Expand it explicitly.
-VAULT_DIR = Path("~/.floor/vault").expanduser()
+from floorvault import AdaptiveKeyProvider, FloorVault, KeyRing, rotate_vault_store
+from floorvault.vaultkit import VaultStore
 
-old_crypto = FloorVault(
-    AdaptiveKeyProvider(service_name="my-app").resolve_key(),
-    app_instance_id="my-app",
-)
-store = VaultStore(VAULT_DIR, crypto=old_crypto)
+VAULT_DIR = Path("~/.floor/vault").expanduser()  # VaultStore does not expand "~"
 
-# A new_master_key from your key provider, wrapped in its own engine.
+old_crypto = FloorVault(AdaptiveKeyProvider(service_name="my-app").resolve_key(), app_instance_id="my-app")
 new_crypto = FloorVault(new_master_key, app_instance_id="my-app")
 
-rotate_vault_store(
-    store,
-    source_ring=KeyRing({0: old_crypto}),
-    new_vault=new_crypto,
-    new_key_id=1,
-)
+store = VaultStore(VAULT_DIR, crypto=old_crypto)
+rotate_vault_store(store, source_ring=KeyRing({0: old_crypto}), new_vault=new_crypto, new_key_id=1)
 
-# REQUIRED: the `store` above was built on old_crypto and CANNOT read the
-# re-sealed records -- rotation sealed every envelope under the NEW master key.
-# Rebuild the store on the new key and repoint every holder of the old one.
+# REQUIRED: the old store can no longer read anything. Rebuild it on the new key.
 store = VaultStore(VAULT_DIR, crypto=new_crypto)
 ```
 
-**When rotating to different key material, rebuild the original `store`.** It
-holds the old master key, so its convenience reads cannot authenticate records
-sealed under the new master. `resolve_secret`, `get_meta`, and `list_items` then
-raise `DecryptionVerificationError`; `has_items()` does not decrypt and cannot
-surface this mismatch. The master change, not the authenticated key-id change
-alone, causes unreadability. An id-only rotation under the same master and
-application scope remains readable through the original convenience methods.
+> [!CAUTION]
+> **Rotation is durable, so get the order right.**
+> 1. **Make the new key resolvable first.** If nothing can resolve the new key after a rotation,
+>    you have a permanent outage.
+> 2. **Rebuild the store, don't reuse it.** A store built on the old master raises
+>    `DecryptionVerificationError` from `resolve_secret`, `get_meta` and `list_items`.
+>    `has_items()` doesn't decrypt, so it won't warn you. A restart doesn't help either: if your
+>    provider still returns the old key, the store stays unreadable.
+>
+> Changing only the key ID under the same master stays readable. To read across generations, pass a
+> `KeyRing` to the ring-taking methods such as `read_sealed_item`.
 
-Rotation is durable and verified before it returns, so this is not a transient state: after a
-rotation to new key material, if your process exits before rebuilding the store — and your key
-provider still resolves the old key — the store stays unreadable across restarts until the
-provider is updated.
+### Recovery bundles
 
-Two rules that follow:
-
-- **Rebuild the store, don't mutate it.** There is no `KeyRing` parameter on `VaultStore`, so
-  switching generations means constructing a new store on the new key and updating every reference.
-- **Update the key provider first**, or make the new key resolvable before you rotate. A rotation
-  whose new key nothing can resolve is a durable outage.
-
-To read a store that spans generations, use `KeyRing` directly with the ring-taking methods
-(`read_sealed_item`) rather than the single-key convenience accessors above.
-
-Create an authenticated recovery bundle using a separately protected recovery key:
+Wrap the master key under a separately held recovery key:
 
 ```python
 from floorvault import recover_master_key, wrap_master_key
@@ -323,54 +297,73 @@ bundle = wrap_master_key(master_key, recovery_key)
 recovered = recover_master_key(bundle, recovery_key)
 ```
 
-The recovery bundle is not a substitute for protecting the recovery key. Keep that key separate from the vault and its backups.
+The bundle is authenticated. `wrap_master_key` refuses a recovery key equal to the master key,
+because that wouldn't be independent custody. Keep the recovery key away from the vault and its
+backups.
 
-## Security boundaries
+### Inspect a value from the CLI
 
-FloorVault protects against:
+```bash
+floorvault inspect app.db users user-123 private_value_cipher
+```
 
-- database or ciphertext theft;
-- accidental cryptographic misuse;
-- moving ciphertext to another authenticated context;
-- some forms of key-memory exposure, where platform hardening succeeds.
+> [!WARNING]
+> `floorvault inspect` **decrypts** the field and prints plaintext to your terminal. Treat its output,
+> and your shell history and scrollback, as secret.
 
-FloorVault does not provide:
+---
 
-- process isolation against same-user malware;
-- endpoint compromise protection;
-- hardware-backed trust by itself;
-- whole-database freshness or rollback protection;
-- protection from plaintext copies created by Python, OpenSSL, or other dependencies.
+## Threat model at a glance
 
-For replay protection, bind encryption to a caller-controlled revision that an attacker cannot roll back with the database.
+| ✅ FloorVault protects against | ❌ FloorVault does not provide |
+| --- | --- |
+| Theft of the database file or individual ciphertexts | Isolation from malware running as the same user |
+| Moving or swapping ciphertext between tables, rows or columns | Protection once the endpoint is compromised |
+| Common cryptographic misuse, including nonce reuse | Hardware-backed trust on its own |
+| Some key-memory exposure, where platform hardening succeeds | Whole-database freshness or rollback protection |
+| | Erasing plaintext copies made by Python, OpenSSL or other dependencies |
+
+To defend against replaying an old database, bind encryption to a caller-controlled revision that an
+attacker can't roll back along with the data. The full model, including attacker capabilities and
+authorised-use (agent) scenarios, is in [SECURITY.md §5](SECURITY.md).
+
+## Assurance
+
+We prefer measured claims to marketing ones. Across CI and the local security gate
+(`scripts/security-check.sh`):
+
+- **Cross-platform CI**: Linux on Python 3.10–3.14, plus macOS and Windows on 3.10 and 3.13.
+- **Test vectors**: RFC 5297, all 1,342 [Project Wycheproof](https://github.com/C2SP/wycheproof)
+  AES-SIV-CMAC vectors, and a from-spec independent AES-SIV implementation cross-checked against
+  PyCryptodome.
+- **Wire-format conformance**: frozen [format vectors](tests/vectors/) read back by an independent
+  decoder.
+- **Fuzzing**: a seeded property harness, plus coverage-guided ClusterFuzzLite runs on the envelope
+  parser, AAD encoding, key-store reader, identifier validation and beacons.
+- **Static and supply-chain checks**: gitleaks, ruff, Bandit, Semgrep CE, pip-audit, mutation checks
+  and OpenSSF Scorecard.
+
+No third-party security audit or cryptographic review has been done yet. That gap, and others, are
+listed in
+[SECURITY.md §8](SECURITY.md).
 
 ## Performance
 
-A measured macOS benchmark using five independent 10,000-iteration runs and a 1,019-byte payload reported:
+Five independent 10,000-iteration runs on macOS with a 1,019-byte payload, including context binding
+and envelope handling but no database I/O:
 
 | Operation | FloorVault | Fernet |
-|---|---:|---:|
+| --- | ---: | ---: |
 | Encrypt | 0.00583 ms | 0.00700 ms |
 | Decrypt | 0.00517 ms | 0.00629 ms |
 
-These are workload-specific measurements, not universal performance claims. The benchmark includes contextual AAD and envelope handling but no database I/O.
-
-Reproduce it with:
+These numbers describe one workload, not a general claim. Reproduce them with:
 
 ```bash
 uv run python scripts/benchmark_compare.py --iterations 10000 --json /tmp/floorvault-fernet.json
 ```
 
-See [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](docs/COMPARATIVE-BENCHMARK-2026-09-15.md) for methodology and limits.
-
-## CLI
-
-`floorvault inspect` **decrypts** a field and prints the plaintext. Treat its
-output as secret:
-
-```bash
-floorvault inspect local_vault.db users user-123 private_value_cipher
-```
+Methodology and limits: [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](docs/COMPARATIVE-BENCHMARK-2026-09-15.md).
 
 ## Development
 
@@ -383,20 +376,23 @@ uv run bandit -q -r src/ scripts/ fuzz/
 bash scripts/security-check.sh   # full gate; also needs gitleaks and semgrep on PATH
 ```
 
-The project tests on Linux, macOS, and Windows across supported Python versions. Security-gate details and cross-platform findings are documented in [`SECURITY.md`](SECURITY.md) and [`docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md`](docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md).
-
 ## Documentation
 
-- [`SECURITY.md`](SECURITY.md) — security model, limitations, and reporting guidance
-- [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](docs/COMPARATIVE-BENCHMARK-2026-09-15.md) — benchmark methodology
-- [`docs/PERFORMANCE-HARDENING-COST-REVIEW-2026-09-15.md`](docs/PERFORMANCE-HARDENING-COST-REVIEW-2026-09-15.md) — hardening trade-offs
-- [`docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md`](docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md) — platform-specific findings
+| Document | What's in it |
+| --- | --- |
+| [`SECURITY.md`](SECURITY.md) | Threat model, crypto design, assurance and vulnerability reporting |
+| [`docs/SPEC.md`](docs/SPEC.md) | Normative on-disk format: envelope, AAD encoding, beacons, key stores, recovery bundles |
+| [`docs/PENTEST-2026-10-04.md`](docs/PENTEST-2026-10-04.md) | Latest adversarial test and its remediations |
+| [`docs/ARCHITECTURE-REVIEW-2026-10-02.md`](docs/ARCHITECTURE-REVIEW-2026-10-02.md) | Architecture review |
+| [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](docs/COMPARATIVE-BENCHMARK-2026-09-15.md) | Benchmark methodology |
+| [`docs/PERFORMANCE-HARDENING-COST-REVIEW-2026-09-15.md`](docs/PERFORMANCE-HARDENING-COST-REVIEW-2026-09-15.md) | Cost of each hardening measure |
+| [`docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md`](docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md) | Platform-specific findings |
+
+## Reporting a vulnerability
+
+Please don't open a public issue. Follow the private reporting process in
+[SECURITY.md §2](SECURITY.md#2-reporting-a-vulnerability).
 
 ## License
 
-FloorVault is dual-licensed under:
-
-- [MIT](LICENSE-MIT)
-- [Apache License 2.0](LICENSE-APACHE)
-
-
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.
