@@ -100,6 +100,7 @@ class UrllibTransport:
         timeout: float = _DEFAULT_TIMEOUT,
         retries: int = _DEFAULT_RETRIES,
         allowed_redirect_hosts: frozenset[str] = frozenset(),
+        cafile: str | os.PathLike | None = None,
     ) -> None:
         parts = urllib.parse.urlparse(vault_addr)
         if parts.scheme != "https" or not parts.hostname:
@@ -117,8 +118,12 @@ class UrllibTransport:
         # OpenerDirector.open() takes no per-call context argument. The
         # redirect handler refuses everything; redirects are reissued
         # manually below so the trusted-standby list is enforced per hop.
+        # ``cafile`` pins an internal-CA bundle for Vaults that are not on a
+        # public CA (private PKI is the norm, not an exception); verification
+        # stays on in every case.
+        context = ssl.create_default_context(cafile=None if cafile is None else str(cafile))
         self._opener = urllib.request.build_opener(
-            urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+            urllib.request.HTTPSHandler(context=context),
             _NoRedirect(),
         )
 
@@ -224,6 +229,7 @@ class VaultTransitProvider(KeyProvider):
         retries: int = _DEFAULT_RETRIES,
         cache_ttl: float = _DEFAULT_CACHE_TTL,
         allowed_redirect_hosts: frozenset[str] | tuple[str, ...] = (),
+        cafile: str | os.PathLike | None = None,
         transport: Any | None = None,
     ) -> None:
         if not key_name or not key_name.strip():
@@ -250,6 +256,7 @@ class VaultTransitProvider(KeyProvider):
             timeout=timeout,
             retries=retries,
             allowed_redirect_hosts=frozenset(allowed_redirect_hosts),
+            cafile=cafile,
         )
         self._cached: bytearray | None = None
         self._cached_at = 0.0
@@ -305,7 +312,9 @@ class VaultTransitProvider(KeyProvider):
         # ensure-or-read rather than create-or-fail.
         store_id = self._ensure_store_id()
         context = self._context_for(store_id)
-        response = self._call("datakey", {"context": context, "type": "plaintext"})
+        # The plaintext/ciphertext selector is a path segment in the Vault
+        # API, not a request field.
+        response = self._call("datakey/plaintext", {"context": context})
         data = self._data_field(response)
         plaintext_b64 = data.get("plaintext")
         blob = data.get("ciphertext")

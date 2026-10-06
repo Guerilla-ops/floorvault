@@ -175,3 +175,62 @@ jobs:
         run: |
           SEMGREP_VERSION=1.178.0
           uvx --from "semgrep==${SEMGREP_VERSION}" semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/
+
+  # Live-Vault integration leg (roadmap 1f): the hermetic fake-Vault suite can
+  # encode a wrong wire assumption in lockstep with the implementation — a real
+  # TLS-terminated Vault cannot. This runs the provider end-to-end against a
+  # dev server with verified TLS (the provider refuses plain HTTP by design).
+  #
+  # The Vault binary is version-pinned and checksum-verified for the same
+  # reason gitleaks is: a tool certifying the contract must itself be verified.
+  # The root token is a throwaway CI literal for an in-memory dev server that
+  # dies with the job — it is not a credential.
+  vault-live:
+    name: vault transit (live dev server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+        with:
+          python-version: "3.13"
+          version: "0.12.5"
+      - name: Sync environment
+        run: uv sync --extra dev
+      - name: Install Vault (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          VERSION=2.1.1
+          ASSET="vault_${VERSION}_linux_amd64.zip"
+          SHA256=8aa90f9cea46f541fc7baa3d0ec692fc06afde9a248cc1f2dcac46a567c6f56b
+          curl -sSfL -o "$ASSET" \
+            "https://releases.hashicorp.com/vault/${VERSION}/${ASSET}"
+          echo "${SHA256}  ${ASSET}" | sha256sum -c -
+          unzip -q "$ASSET" vault
+          sudo install -m 0755 vault /usr/local/bin/vault
+          vault version
+      - name: Start Vault dev server (TLS) and provision the transit key
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/vault-tls"
+          nohup vault server -dev -dev-tls \
+            -dev-tls-cert-dir="$RUNNER_TEMP/vault-tls" \
+            -dev-root-token-id=fv-ci-token \
+            -dev-listen-address=127.0.0.1:8200 \
+            >"$RUNNER_TEMP/vault-dev.log" 2>&1 &
+          export VAULT_ADDR="https://127.0.0.1:8200"
+          export VAULT_CACERT="$RUNNER_TEMP/vault-tls/vault-ca.pem"
+          export VAULT_TOKEN="fv-ci-token"
+          for i in $(seq 1 30); do
+            vault status -format=json >/dev/null 2>&1 && break
+            [ "$i" = 30 ] && { cat "$RUNNER_TEMP/vault-dev.log"; exit 1; }
+            sleep 1
+          done
+          vault secrets enable transit
+          vault write transit/keys/floorvault-ci type=aes256-gcm96 derived=true
+      - name: Run the live-Vault contract test
+        env:
+          FLOORVAULT_LIVE_VAULT: "1"
+          VAULT_ADDR: "https://127.0.0.1:8200"
+          VAULT_CACERT: ${{ runner.temp }}/vault-tls/vault-ca.pem
+          VAULT_TOKEN: fv-ci-token
+        run: uv run pytest -q tests/test_vault_transit_live.py

@@ -149,17 +149,19 @@ from floorvault import SqlAlchemyEncryption, EncryptedField
 
 vault = SqlAlchemyEncryption(crypto, schema_id="my-app.v1")
 
+
 class User(Base):
     __tablename__ = "users"
     id = Column(String, primary_key=True)
     tenant = Column(String, nullable=False)
     ssn_ct = Column(LargeBinary, nullable=True)
 
+
 vault.protect(User, id_attr="id", tenant_attr="tenant", fields={"ssn": "ssn_ct"})
 Session = vault.session_factory(bind=engine)
 
-user = User(id="u1", tenant="acme")   # identity attrs first — binding needs them
-user.ssn = "123-45-6789"              # encrypts here; only ciphertext is mapped
+user = User(id="u1", tenant="acme")  # identity attrs first — binding needs them
+user.ssn = "123-45-6789"  # encrypts here; only ciphertext is mapped
 ```
 
 Fail-closed invariants (full contract: [SPEC.md §14.1](docs/SPEC.md)):
@@ -187,8 +189,11 @@ indexer = BeaconIndexer(derive_beacon_key(master_key), bits=suggest_beacon_bits(
 # On write: store the ciphertext and the beacon in an indexed column.
 connection.execute(
     "INSERT INTO users (id, email_cipher, email_beacon) VALUES (?, ?, ?)",
-    (record_id, crypto.encrypt(email, table="users", record_id=record_id, column="email_cipher"),
-     indexer.beacon(email, scope="users.email")),
+    (
+        record_id,
+        crypto.encrypt(email, table="users", record_id=record_id, column="email_cipher"),
+        indexer.beacon(email, scope="users.email"),
+    ),
 )
 
 # On read: the bucket narrows candidates; decryption confirms the match.
@@ -292,9 +297,9 @@ from floorvault.providers.vault_transit import VaultTransitProvider
 
 provider = VaultTransitProvider(
     vault_addr="https://vault.internal:8200",
-    token=os.environ["VAULT_TOKEN"],       # Transit datakey/decrypt/rewrap perms
+    token=os.environ["VAULT_TOKEN"],  # Transit datakey/decrypt/rewrap perms
     key_name="floorvault-master",
-    store_dir="/var/lib/myapp/floorvault", # 0700; holds store.id + generations
+    store_dir="/var/lib/myapp/floorvault",  # 0700; holds store.id + generations
     app_instance_id="my-app",
 )
 crypto = FloorVault(provider.resolve_key(), app_instance_id="my-app")
