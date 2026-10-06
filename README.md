@@ -167,7 +167,7 @@ user.ssn = "123-45-6789"  # encrypts here; only ciphertext is mapped
 Fail-closed invariants (full contract: [SPEC.md §14.1](docs/SPEC.md)):
 
 - `obj.ssn_ct = b"plaintext"` is refused at assignment — only envelope-shaped values may occupy a ciphertext column.
-- `session.execute(insert(User).values(ssn_ct=...))`, executemany sets, and `Query.update` on ciphertext columns raise `UnsupportedWriteError`.
+- `session.execute(insert(User).values(ssn_ct=...))`, executemany sets, `Query.update`, and the legacy bulk APIs (`bulk_insert_mappings`/`bulk_update_mappings`/`bulk_save_objects`) on ciphertext columns or protected classes raise `UnsupportedWriteError`.
 - `tenant_attr` binds the tenant into the record coordinate, so a ciphertext cannot be replayed across tenants; `revision_attr` binds a per-record revision (same-coordinate replay detection, not whole-database rollback protection).
 
 ## Searchable beacons (opt-in)
