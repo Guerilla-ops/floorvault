@@ -210,10 +210,16 @@ def test_semgrep_is_version_pinned_and_skipped_on_the_matrix_legs():
     assert 'FLOORVAULT_SKIP_SEMGREP: "1"' in TEXT, "every matrix leg would rerun Semgrep"
 
 
-def test_scorecard_runs_read_only_and_does_not_publish_a_private_repo():
+def test_scorecard_runs_read_only_and_publishes_the_public_repo():
+    """The repo is public: results go to the public Scorecard API and SARIF.
+
+    ``publish_results: false`` was the private-repo setting; on a public repo
+    it would hide the scorecard from securityscorecards.dev for no benefit.
+    Top-level permissions stay read-only regardless.
+    """
     scorecard = _workflow("scorecard.yml")
     assert re.search(r"^permissions:\s*read-all\s*$", scorecard, re.MULTILINE)
-    assert "publish_results: false" in scorecard
+    assert "publish_results: true" in scorecard
     assert "persist-credentials: false" in scorecard
     assert "upload-sarif" in scorecard, "Scorecard findings never reach code scanning"
 
