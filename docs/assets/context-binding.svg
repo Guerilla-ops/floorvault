@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="fv-bind-title fv-bind-desc">
+  <title id="fv-bind-title">Context binding: one ciphertext, one place</title>
+  <desc id="fv-bind-desc">A ciphertext sealed for the coordinates users/u1/api_key verifies and returns plaintext when those coordinates are presented, and is rejected when presented as users/u2/api_key.</desc>
+  <defs>
+    <marker id="fv-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#3a5a80"/>
+    </marker>
+    <marker id="fv-arrow-mint" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#65e0bd"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="360" fill="#0b1220"/>
+  <g font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" letter-spacing="1.5" fill="#5d7290">
+    <text x="181" y="60" text-anchor="middle">CIPHERTEXT</text>
+    <text x="575" y="60" text-anchor="middle">ASSOCIATED DATA</text>
+    <text x="815" y="60" text-anchor="middle">AES-256-SIV VERIFY</text>
+    <text x="1010" y="60" text-anchor="middle">OUTCOME</text>
+  </g>
+  <rect x="56" y="96" width="250" height="170" rx="14" fill="#0e1930" stroke="#274668" stroke-width="1.5"/>
+  <text x="181" y="126" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" fill="#8ca0b8">sealed envelope</text>
+  <rect x="76" y="140" width="64" height="30" rx="6" fill="none" stroke="#65e0bd" stroke-width="1.5"/>
+  <text x="108" y="161" text-anchor="middle" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="16" fill="#65e0bd">FLV2</text>
+  <rect x="76" y="184" width="190" height="8" rx="4" fill="#26405e"/>
+  <rect x="76" y="200" width="150" height="8" rx="4" fill="#26405e"/>
+  <rect x="76" y="216" width="210" height="8" rx="4" fill="#26405e"/>
+  <text x="181" y="250" text-anchor="middle" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="12.5" fill="#8ca0b8">sealed for users/u1/api_key</text>
+  <path d="M306 181 C 355 181 380 135 424 135" fill="none" stroke="#3a5a80" stroke-width="2" marker-end="url(#fv-arrow)"/>
+  <path d="M306 181 C 355 181 380 265 424 265" fill="none" stroke="#3a5a80" stroke-width="2" marker-end="url(#fv-arrow)"/>
+  <g>
+    <rect x="430" y="104" width="290" height="62" rx="12" fill="#0e1930" stroke="#65e0bd" stroke-width="2"/>
+    <text x="575" y="142" text-anchor="middle" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="20" fill="#eef3f8">users / u1 / api_key</text>
+    <line x1="726" y1="135" x2="779" y2="135" stroke="#65e0bd" stroke-width="2" marker-end="url(#fv-arrow-mint)"/>
+    <circle cx="815" cy="135" r="30" fill="#0e1930" stroke="#65e0bd" stroke-width="2.5"/>
+    <path d="M801 135 l10 10 l18 -20" fill="none" stroke="#65e0bd" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="864" y="129" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#65e0bd">accepted</text>
+    <text x="864" y="152" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" fill="#8ca0b8">plaintext returned</text>
+  </g>
+  <g>
+    <rect x="430" y="234" width="290" height="62" rx="12" fill="#0e1930" stroke="#ff7a90" stroke-width="2"/>
+    <text x="575" y="272" text-anchor="middle" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="20" fill="#eef3f8">users / <tspan fill="#ff7a90">u2</tspan> / api_key</text>
+    <line x1="726" y1="265" x2="779" y2="265" stroke="#3a5a80" stroke-width="2" marker-end="url(#fv-arrow)"/>
+    <circle cx="815" cy="265" r="30" fill="#0e1930" stroke="#ff7a90" stroke-width="2.5"/>
+    <path d="M804 254 l22 22 M826 254 l-22 22" fill="none" stroke="#ff7a90" stroke-width="3.5" stroke-linecap="round"/>
+    <text x="864" y="259" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#ff7a90">rejected</text>
+    <text x="864" y="282" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" fill="#8ca0b8">authentication fails</text>
+  </g>
+  <text x="600" y="338" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" fill="#8ca0b8">Same bytes, different declared coordinates — the associated data no longer authenticates.</text>
+</svg>
