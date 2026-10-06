@@ -105,15 +105,23 @@ def test_plaintext_round_trip_and_ciphertext_at_rest():
 
 
 def test_field_assignment_requires_identity_first():
-    _, _, _, TUser = make_env()
+    # No tenant binding: isolates the primary-key guard itself. With a tenant
+    # attribute declared, a mutant that skips the pk check still raises on the
+    # tenant guard and goes unnoticed (curated mutant SA-4).
+    _, _, _, TUser = make_env(tenant_attr=None, revision_attr=None)
     user = TUser()
     with pytest.raises(EncryptedWriteError):
         user.ssn = "x"
     user.id = "u2"
-    with pytest.raises(EncryptedWriteError):  # tenant_attr declared -> required
-        user.ssn = "x"
-    user.tenant = "acme"
-    user.ssn = "x"  # now bound
+    user.ssn = "x"  # bound once the identity exists
+
+    # Tenant-declared binding: both coordinates must be set first.
+    _, _, _, TTenant = make_env()
+    tenant_user = TTenant(id="u3")
+    with pytest.raises(EncryptedWriteError):
+        tenant_user.ssn = "x"
+    tenant_user.tenant = "acme"
+    tenant_user.ssn = "x"
 
 
 def test_direct_write_to_ciphertext_column_is_rejected_at_set_time():
