@@ -138,6 +138,36 @@ token = fields.load("user-123", "api_token_cipher")
 
 Table and column identifiers are validated before SQL is constructed. Record IDs and values remain bound parameters or cryptographic inputs. A missing record is an error; the adapter never inserts one accidentally.
 
+## SQLAlchemy ORM adapter
+
+With the `sqlalchemy` extra installed, `SqlAlchemyEncryption` binds encrypted fields onto mapped classes. Plaintext-facing attributes are descriptors that encrypt at assignment — plaintext never occupies a mapped column — and writes that cannot bind per-record coordinates are refused.
+
+```python
+from sqlalchemy import Column, LargeBinary, String
+from sqlalchemy.orm import DeclarativeBase
+from floorvault import SqlAlchemyEncryption, EncryptedField
+
+vault = SqlAlchemyEncryption(crypto, schema_id="my-app.v1")
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(String, primary_key=True)
+    tenant = Column(String, nullable=False)
+    ssn_ct = Column(LargeBinary, nullable=True)
+
+vault.protect(User, id_attr="id", tenant_attr="tenant", fields={"ssn": "ssn_ct"})
+Session = vault.session_factory(bind=engine)
+
+user = User(id="u1", tenant="acme")   # identity attrs first — binding needs them
+user.ssn = "123-45-6789"              # encrypts here; only ciphertext is mapped
+```
+
+Fail-closed invariants (full contract: [SPEC.md §14.1](docs/SPEC.md)):
+
+- `obj.ssn_ct = b"plaintext"` is refused at assignment — only envelope-shaped values may occupy a ciphertext column.
+- `session.execute(insert(User).values(ssn_ct=...))`, executemany sets, and `Query.update` on ciphertext columns raise `UnsupportedWriteError`.
+- `tenant_attr` binds the tenant into the record coordinate, so a ciphertext cannot be replayed across tenants; `revision_attr` binds a per-record revision (same-coordinate replay detection, not whole-database rollback protection).
+
 ## Searchable beacons (opt-in)
 
 Exact-match lookups over an encrypted column need an indexed value beside the ciphertext. Storing one leaks something, so this is opt-in and it is a trade you make deliberately.
@@ -252,6 +282,28 @@ The local fallback is protected by the filesystem and OS-account boundary; it is
 Constructing a key handle also disables core dumps for the whole process (`RLIMIT_CORE` is set to 0 and not restored), since a core dump of a process holding a master key would write that key to disk. An application that needs its own crash dumps should know this happens on first key construction.
 
 Live CI coverage exists for Windows DPAPI only. The macOS Keychain and Linux Secret Service tiers are implemented and unit-tested but not live-verified — see the per-tier verification status in [`SECURITY.md`](SECURITY.md).
+
+### Vault Transit custody
+
+`VaultTransitProvider` keeps the master key wrapped by a HashiCorp Vault Transit key instead of a local file; the wrapped blob lives in a governed on-disk generation store ([SPEC.md §10.6–10.7](docs/SPEC.md)):
+
+```python
+from floorvault.providers.vault_transit import VaultTransitProvider
+
+provider = VaultTransitProvider(
+    vault_addr="https://vault.internal:8200",
+    token=os.environ["VAULT_TOKEN"],       # Transit datakey/decrypt/rewrap perms
+    key_name="floorvault-master",
+    store_dir="/var/lib/myapp/floorvault", # 0700; holds store.id + generations
+    app_instance_id="my-app",
+)
+crypto = FloorVault(provider.resolve_key(), app_instance_id="my-app")
+
+# Rewrap under a new Transit KEK version (CAS-publishes a new generation):
+provider.rewrap()
+```
+
+Every Vault failure raises `CustodyDowngradeError`; a configured provider never silently falls back to file custody. HTTPS only, verified TLS, bounded timeouts/retries, redirects refused unless a standby host is explicitly trusted. The resolved key is cached briefly (300 s default) — that bounds Transit latency; it is not revocation protection.
 
 ## Rotation and recovery
 
