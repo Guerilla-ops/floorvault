@@ -683,6 +683,187 @@ MUTATIONS: tuple[Mutation, ...] = (
         '            conn.execute("PRAGMA user_version = 2")',
         "The target-commitment schema loses its distinct version marker",
     ),
+    # --- Wrapped-master generation store (R1, roadmap issue #11) -------------
+    Mutation(
+        "GS-1",
+        "src/floorvault/providers/generation_store.py",
+        "            if current != expected_generation:",
+        "            if False:  # MUTANT",
+        "Expected-generation CAS removed: a writer acting on a stale read "
+        "repoints 'active' over someone else's update",
+    ),
+    Mutation(
+        "GS-2",
+        "src/floorvault/providers/generation_store.py",
+        "        if not hmac.compare_digest(hashlib.sha256(payload).digest(), digest):",
+        "        if False:  # MUTANT",
+        "Pointer stops binding to generation content: a swapped payload is trusted",
+    ),
+    Mutation(
+        "GS-3",
+        "src/floorvault/providers/generation_store.py",
+        "            descriptor = os.open(\n"
+        "                self._lock_path,\n"
+        "                os.O_WRONLY\n"
+        "                | os.O_CREAT\n"
+        "                | os.O_EXCL",
+        "            descriptor = os.open(\n"
+        "                self._lock_path,\n"
+        "                os.O_WRONLY\n"
+        "                | os.O_CREAT  # MUTANT",
+        "Writer lock loses O_EXCL: concurrent writers both believe they hold it",
+    ),
+    Mutation(
+        "GS-4",
+        "src/floorvault/providers/generation_store.py",
+        "            raise ProtectedStoreError(\n"
+        '                f"pointer references generation {generation} but its file is missing"',
+        "            raise ProtectedStoreMissing(  # MUTANT\n"
+        '                f"pointer references generation {generation} but its file is missing"',
+        "A dangling pointer reports 'no store', so a caller may provision over corruption",
+    ),
+    Mutation(
+        "GS-5",
+        "src/floorvault/providers/generation_store.py",
+        "            elif orphan != payload:\n"
+        "                raise ProtectedStoreError(\n"
+        '                    "an unpublished generation 1 exists with different content; "',
+        "            elif False:  # MUTANT\n"
+        "                raise ProtectedStoreError(\n"
+        '                    "an unpublished generation 1 exists with different content; "',
+        "Provision adopts an orphan generation whose content differs from the request",
+    ),
+    Mutation(
+        "GS-6",
+        "src/floorvault/providers/generation_store.py",
+        "            elif orphan != payload:\n"
+        "                raise ProtectedStoreError(\n"
+        '                    f"an unpublished generation {target} exists with different "',
+        "            elif False:  # MUTANT\n"
+        "                raise ProtectedStoreError(\n"
+        '                    f"an unpublished generation {target} exists with different "',
+        "Update adopts an orphan generation whose content differs from the request",
+    ),
+    # --- Vault Transit provider (R2/R4, roadmap issue #11) -------------------
+    Mutation(
+        "VT-1",
+        "src/floorvault/providers/vault_transit.py",
+        "                if 400 <= exc.code < 500:",
+        "                if False:  # MUTANT",
+        "4xx policy answers retried like transient faults instead of refusing",
+    ),
+    Mutation(
+        "VT-2",
+        "src/floorvault/providers/vault_transit.py",
+        '                    "purpose": PURPOSE,',
+        '                    "purpose": "generic-blob-wrap",  # MUTANT',
+        "Transit context loses its fixed purpose binding",
+    ),
+    Mutation(
+        "VT-3",
+        "src/floorvault/providers/vault_transit.py",
+        "        if time.monotonic() - self._cached_at > self._cache_ttl:",
+        "        if False:  # MUTANT",
+        "Master-key cache never expires: the TTL bound is removed",
+    ),
+    Mutation(
+        "VT-4",
+        "src/floorvault/providers/vault_transit.py",
+        "        if len(plaintext) != 32:\n"
+        "            raise CustodyDowngradeError(\n"
+        '                f"Vault decrypt returned',
+        "        if False:  # MUTANT\n"
+        "            raise CustodyDowngradeError(\n"
+        '                f"Vault decrypt returned',
+        "Decrypt path accepts a non-32-byte master key",
+    ),
+    Mutation(
+        "VT-5",
+        "src/floorvault/providers/vault_transit.py",
+        '        if not isinstance(blob, str) or not blob.startswith("vault:v"):',
+        "        if False:  # MUTANT",
+        "Rewrap accepts a blob Vault did not version",
+    ),
+    Mutation(
+        "VT-6",
+        "src/floorvault/providers/vault_transit.py",
+        "        if len(plaintext) != 32:\n"
+        "            raise CustodyDowngradeError(\n"
+        '                f"Vault datakey returned',
+        "        if False:  # MUTANT\n"
+        "            raise CustodyDowngradeError(\n"
+        '                f"Vault datakey returned',
+        "Datakey path accepts a non-32-byte master key",
+    ),
+    Mutation(
+        "VT-7",
+        "src/floorvault/providers/vault_transit.py",
+        "                        and target.hostname in self._allowed_redirect_hosts",
+        "                        and True  # MUTANT",
+        "Redirect vetting stops checking the standby-host allowlist",
+    ),
+    Mutation(
+        "VT-8",
+        "src/floorvault/providers/vault_transit.py",
+        '                        and target.scheme == "https"',
+        '                        and target.scheme in ("https", "http")  # MUTANT',
+        "Redirect vetting accepts a plaintext downgrade target",
+    ),
+    # --- SQLAlchemy adapter guards (Phase 2, roadmap issue #11) --------------
+    Mutation(
+        "SA-1",
+        "src/floorvault/sqlalchemy_adapter.py",
+        "        try:\n"
+        '            return require_envelope(value, where=f"{model.__name__}.{column_key}")',
+        "        try:\n            return value  # MUTANT",
+        "Set-time validator admits plaintext staged onto a ciphertext column",
+    ),
+    Mutation(
+        "SA-2",
+        "src/floorvault/sqlalchemy_adapter.py",
+        "        if not (state.is_insert or state.is_update):",
+        "        if True:  # MUTANT",
+        "Bulk-write guard ignores insert/update statements entirely",
+    ),
+    Mutation(
+        "SA-3",
+        "src/floorvault/sqlalchemy_adapter.py",
+        "        return bound_record_id(str(pk), None if tenant is None else str(tenant))",
+        "        return bound_record_id(str(pk))  # MUTANT",
+        "Tenant dropped from the record coordinate: ciphertext becomes "
+        "replayable across tenant scopes",
+    ),
+    Mutation(
+        "SA-4",
+        "src/floorvault/sqlalchemy_adapter.py",
+        "        if pk is None:\n"
+        "            raise EncryptedWriteError(\n"
+        '                f"{type(obj).__name__}.{self.id_attr} must be set before "',
+        "        if False:  # MUTANT\n"
+        "            raise EncryptedWriteError(\n"
+        '                f"{type(obj).__name__}.{self.id_attr} must be set before "',
+        "Missing primary key no longer refuses the encrypted write",
+    ),
+    Mutation(
+        "SA-5",
+        "src/floorvault/sqlalchemy_adapter.py",
+        "            try:\n"
+        '                require_envelope(value, where=f"{model.__name__}.{key}")',
+        "            try:\n                pass  # MUTANT",
+        "Flush-time barrier stops checking ciphertext-column values: a value "
+        "staged around the set event reaches the wire",
+    ),
+    Mutation(
+        "SA-6",
+        "src/floorvault/sqlalchemy_adapter.py",
+        "    if binding is None:\n"
+        "        raise EncryptedWriteError(\n"
+        '            f"{type(obj).__name__} has no FloorVault binding; call "',
+        "    if False:  # MUTANT\n"
+        "        raise EncryptedWriteError(\n"
+        '            f"{type(obj).__name__} has no FloorVault binding; call "',
+        "An unprotected model's encrypted field fails open instead of closed",
+    ),
 )
 
 # --------------------------------------------------------------------------
