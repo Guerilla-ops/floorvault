@@ -69,6 +69,7 @@ dev = [
     # on the very hosts the defect was invisible from.
     "secretstorage>=3.3",
     "bandit>=1.9.4",
+    "hypothesis==6.168.3",
 ]
 # macOS Keychain (Tier 2 of AdaptiveKeyProvider) needs the Security framework
 # bindings. Without them the provider falls through to Tier 3 and, unless
