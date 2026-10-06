@@ -49,6 +49,10 @@ dependencies = [
     "cryptography>=50.0.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/Guerilla-ops/floorvault"
+Issues = "https://github.com/Guerilla-ops/floorvault/issues"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
