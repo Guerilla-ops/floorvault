@@ -4,9 +4,9 @@ name: OpenSSF Scorecard
 # (pinned dependencies, token permissions, branch protection, SAST, signed
 # releases, ...). Findings land in code scanning as SARIF.
 #
-# The repository is private, so results are NOT published to the public
-# Scorecard API (publish_results: false) - that needs a public repository. The
-# SARIF upload works because GitHub Code Security is enabled for this repo.
+# The repository is public, so results are published to the public Scorecard
+# API (publish_results: true) - the scorecard is queryable at
+# securityscorecards.dev and the SARIF upload lands findings in code scanning.
 
 on:
   branch_protection_rule:
@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 # Read-only at the top level; the job grants only what Scorecard documents as
-# needed on a private repository.
+# needed for SARIF upload and result publication.
 permissions: read-all
 
 jobs:
@@ -41,7 +41,7 @@ jobs:
         with:
           results_file: scorecard.sarif
           results_format: sarif
-          publish_results: false
+          publish_results: true
 
       - name: Keep the raw results
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

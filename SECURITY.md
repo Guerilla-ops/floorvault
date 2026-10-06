@@ -7,8 +7,8 @@ This document explains what we consider a security issue, how to report one,
 what to expect after you do, and the guarantees — and the non-guarantees — of
 the design.
 
-- **Project:** FloorVault (`floorvault` on PyPI)
-- **Repository:** https://github.com/vaultfloor/floorvault
+- **Project:** FloorVault (not yet published to PyPI; install from the repository)
+- **Repository:** https://github.com/Guerilla-ops/floorvault
 - **Maintainer:** Scott Lee `<floorbond@pm.me>`
 
 ---
@@ -40,7 +40,7 @@ Use one of the private channels below:
 
 1. **GitHub private vulnerability reporting (preferred).**
    Open a draft advisory at:
-   https://github.com/vaultfloor/floorvault/security/advisories/new
+   https://github.com/Guerilla-ops/floorvault/security/advisories/new
    This keeps the report private, gives us a shared workspace to collaborate in,
    and lets us request a CVE through GitHub when one is warranted.
 
@@ -476,8 +476,7 @@ We prefer measured claims over marketing claims. Currently in place:
   replayed without Atheris on every OS in the ordinary suite.
 - **OpenSSF Scorecard** runs weekly and on `main`, reporting supply-chain posture
   (pinned dependencies, token permissions, branch protection, ...) to code
-  scanning. Results are not published to the public Scorecard API while the
-  repository is private.
+  scanning. Results are published to the public Scorecard API.
 - **Mutation testing of the security gate itself**: curated behavioural mutants
   of the custody, migration and envelope code must all be killed before
   the gate passes, with a canary mutant that must survive to prove the harness
@@ -567,8 +566,8 @@ If in doubt, ask first. We would much rather answer a question than litigate one
 
 Published advisories for FloorVault:
 
-- GitHub Security Advisories: https://github.com/vaultfloor/floorvault/security/advisories
-- Dependabot alerts (dependency issues): https://github.com/vaultfloor/floorvault/security/dependabot
+- GitHub Security Advisories: https://github.com/Guerilla-ops/floorvault/security/advisories
+- Dependabot alerts (dependency issues): https://github.com/Guerilla-ops/floorvault/security/dependabot
 
 Dependency vulnerabilities can be tracked through the ecosystem databases
 (for example [osv.dev](https://osv.dev)) and audited locally with `pip-audit`.
@@ -578,6 +577,7 @@ Dependency vulnerabilities can be tracked through the ecosystem databases
 ## 11. Changes to this policy
 
 This policy may be updated as the project matures — in particular when a PGP key
-is published, when GitHub private vulnerability reporting and secret scanning are
-enabled, and if a security audit is ever commissioned. Material changes will be
-noted in the changelog.
+is published, when the package is published to PyPI, and if a security audit is
+ever commissioned. GitHub private vulnerability reporting, Dependabot, secret
+scanning, and code scanning are already enabled. Material changes will be noted
+in the changelog.

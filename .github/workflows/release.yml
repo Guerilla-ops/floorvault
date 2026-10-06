@@ -1,0 +1,113 @@
+name: Release
+
+# Drafted release/provenance controls (roadmap 0e). Two modes:
+#
+#   workflow_dispatch  - rehearsal: build, reproducible-build check, SBOM,
+#                        artifact provenance attestation. Nothing is published.
+#   release: published - the same build, then PyPI publish via Trusted
+#                        Publishing with PEP 740 (Sigstore) attestations.
+#
+# Publishing stays inert until the maintainer completes the owner-side setup in
+# docs/RELEASING.md (PyPI project + Trusted Publisher entry for this workflow,
+# the `pypi` GitHub environment). Until then a real release run fails loudly at
+# the publish step rather than silently skipping it.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dist:
+    name: Build, verify, attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # artifact attestation signs via Sigstore OIDC
+      attestations: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+        with:
+          python-version: "3.13"
+          version: "0.12.5"
+
+      - name: Build release artifacts twice
+        run: |
+          set -euo pipefail
+          uv build --out-dir dist
+          uv build --out-dir dist-second
+
+      - name: Reproducible-build check
+        # Same runner, same source, same toolchain: the digests must match
+        # byte-for-byte. Cross-PLATFORM identity is explicitly not claimed
+        # (SECURITY.md), but a single-environment build that cannot reproduce
+        # itself indicates the toolchain picked up nondeterminism.
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+
+          first = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in pathlib.Path("dist").iterdir()}
+          second = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in pathlib.Path("dist-second").iterdir()}
+          if first != second:
+              for name in sorted(set(first) | set(second)):
+                  print(f"mismatch {name}: {first.get(name)} != {second.get(name)}", file=sys.stderr)
+              sys.exit(1)
+          for name, digest in sorted(first.items()):
+              print(f"[REPRODUCIBLE] sha256 {digest} {name}")
+          PY
+          rm -rf dist-second
+
+      - name: Verify universal wheel shape
+        run: python scripts/verify_wheel.py dist
+
+      - name: Generate CycloneDX SBOM
+        # The SBOM describes what a consumer installs: a runtime-only sync, not
+        # the dev extras. cyclonedx-bom is version-pinned and >7 days old.
+        run: |
+          set -euo pipefail
+          uv sync
+          uvx --from "cyclonedx-bom==7.4.0" \
+            cyclonedx-py environment .venv --outfile dist/floorvault-sbom.cdx.json --of JSON
+
+      - name: Publish the built artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: floorvault-release-dist
+          path: dist/
+          if-no-files-found: error
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: dist/
+
+  publish:
+    name: Publish to PyPI (Trusted Publishing)
+    needs: dist
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # Trusted Publishing exchanges this OIDC token for PyPI
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: floorvault-release-dist
+          path: dist
+
+      - name: Publish with PEP 740 attestations
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+        with:
+          attestations: true
+          print-hash: true
+          verbose: true
