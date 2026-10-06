@@ -90,12 +90,21 @@ jobs:
             --mc-type library --pyproject pyproject.toml --output-reproducible
 
       - name: Publish the built artifacts
+        # Two artifacts, not one: a multi-path upload keeps both directory
+        # names at the artifact root, so a single-artifact download would land
+        # sbom/ inside the publish job's dist/ - and the PyPI action uploads
+        # every file it finds there, which a JSON SBOM is not.
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: floorvault-release-dist
-          path: |
-            dist/
-            sbom/
+          path: dist/
+          if-no-files-found: error
+
+      - name: Publish the SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: floorvault-release-sbom
+          path: sbom/
           if-no-files-found: error
 
       - name: Attest build provenance
@@ -116,6 +125,11 @@ jobs:
         with:
           name: floorvault-release-dist
           path: dist
+
+      - name: Drop uv's out-dir marker
+        # `uv build --out-dir` writes a `.gitignore` into the directory; it is
+        # not a distribution and the PyPI action rejects unknown files.
+        run: rm -f dist/.gitignore
 
       - name: Publish with PEP 740 attestations
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
