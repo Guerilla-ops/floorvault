@@ -21,6 +21,7 @@ from .memory import (
 from .migration import LegacyRetiredError, LegacyVaultError, MigratingVaultStore
 from .providers.adaptive import AdaptiveKeyProvider
 from .providers.base import KeyProvider, KeyProviderError, MissingKeyError
+from .records import EncryptedWriteError, RecordBinding, UnsupportedWriteError
 from .sqlite_adapter import ContextualSQLite, ContextualTable, EncryptedSQLiteTable
 from .sqlite_migration import (
     drop_plaintext_column,
@@ -30,6 +31,23 @@ from .sqlite_migration import (
 from .vault_rotation import rotate_vault_store
 
 __version__ = "0.1.0"
+
+# SQLAlchemy is an optional extra; the adapter classes that import it resolve
+# lazily so that `import floorvault` never hard-requires SQLAlchemy. The error
+# types live in the driver-free records layer and are eager exports.
+_LAZY = {
+    "SqlAlchemyEncryption",
+    "EncryptedField",
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY:
+        from . import sqlalchemy_adapter
+
+        return getattr(sqlalchemy_adapter, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Core Cryptography
@@ -69,4 +87,11 @@ __all__ = [
     "UnknownKeyIdError",
     "wrap_master_key",
     "recover_master_key",
+    # Shared record layer + adapter error types
+    "RecordBinding",
+    "EncryptedWriteError",
+    "UnsupportedWriteError",
+    # SQLAlchemy adapter (lazy; requires the 'sqlalchemy' extra)
+    "SqlAlchemyEncryption",
+    "EncryptedField",
 ]

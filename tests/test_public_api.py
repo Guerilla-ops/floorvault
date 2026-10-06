@@ -25,7 +25,9 @@ EXPECTED_ALL = {
     "ContextualSQLite",
     "ContextualTable",
     "DecryptionVerificationError",
+    "EncryptedField",
     "EncryptedSQLiteTable",
+    "EncryptedWriteError",
     "FloorVault",
     "FloorVaultError",
     "HardenedMemoryKey",
@@ -37,8 +39,11 @@ EXPECTED_ALL = {
     "MigratingVaultStore",
     "MissingKeyError",
     "NonceReuseError",
+    "RecordBinding",
     "SecurityHardeningError",
+    "SqlAlchemyEncryption",
     "UnknownKeyIdError",
+    "UnsupportedWriteError",
     "associated_data",
     "disable_core_dumps",
     "drop_plaintext_column",
@@ -82,6 +87,10 @@ EXPECTED_SIGNATURES = {
         },
     },
     "DecryptionVerificationError": {"signature": None, "methods": {}},
+    "EncryptedField": {
+        "signature": "(column_attr: 'str', *, binary: 'bool' = False) -> 'None'",
+        "methods": {},
+    },
     "EncryptedSQLiteTable": {
         "signature": "(connection: 'sqlite3.Connection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'floor.vault.v1') -> 'None'",
         "methods": {
@@ -93,6 +102,7 @@ EXPECTED_SIGNATURES = {
             "store_fields": "(self, record_id: 'str', fields: 'Mapping[str, Union[str, bytes]]', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'None'",
         },
     },
+    "EncryptedWriteError": {"signature": None, "methods": {}},
     "FloorVault": {"signature": FV_INIT, "methods": FV_CRYPTO_METHODS},
     "FloorVaultError": {"signature": None, "methods": {}},
     "HardenedMemoryKey": {
@@ -134,8 +144,27 @@ EXPECTED_SIGNATURES = {
     },
     "MissingKeyError": {"signature": None, "methods": {}},
     "NonceReuseError": {"signature": None, "methods": {}},
+    "RecordBinding": {
+        "signature": "(crypto: 'FloorVault', table: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1) -> None",
+        "methods": {
+            "decrypt_field": "(self, record_id: 'str', column: 'str', ciphertext: 'bytes', *, schema_version: 'int | None' = None, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'str'",
+            "decrypt_field_bytes": "(self, record_id: 'str', column: 'str', ciphertext: 'bytes', *, schema_version: 'int | None' = None, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'bytes'",
+            "decrypt_fields": "(self, record_id: 'str', envelopes: 'Mapping[str, bytes]', *, schema_version: 'int | None' = None, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'dict[str, bytes]'",
+            "encrypt_field": "(self, record_id: 'str', column: 'str', value: 'Union[str, bytes]', *, schema_version: 'int | None' = None, revision: 'int | None' = None, key_id: 'int' = 0) -> 'bytes'",
+            "encrypt_fields": "(self, record_id: 'str', fields: 'Mapping[str, Union[str, bytes]]', *, schema_version: 'int | None' = None, revision: 'int | None' = None, key_id: 'int' = 0) -> 'dict[str, bytes]'",
+        },
+    },
     "SecurityHardeningError": {"signature": None, "methods": {}},
+    "SqlAlchemyEncryption": {
+        "signature": "(crypto: 'FloorVault', *, schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1) -> 'None'",
+        "methods": {
+            "is_protected": "(self, model: 'type') -> 'bool'",
+            "protect": "(self, model: 'type', *, id_attr: 'str', fields: 'dict[str, EncryptedField | str]', tenant_attr: 'str | None' = None, revision_attr: 'str | None' = None) -> 'type'",
+            "session_factory": "(self, **kwargs) -> 'sessionmaker'",
+        },
+    },
     "UnknownKeyIdError": {"signature": None, "methods": {}},
+    "UnsupportedWriteError": {"signature": None, "methods": {}},
     "associated_data": {
         "signature": "(*, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, app_instance_id: 'str' = 'default', revision: 'int | None' = None) -> 'bytes'"
     },

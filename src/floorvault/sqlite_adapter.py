@@ -7,6 +7,7 @@ import sqlite3
 from typing import Mapping, Union
 
 from .core import FloorVault
+from .records import RecordBinding
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?$")
 
@@ -62,6 +63,7 @@ class EncryptedSQLiteTable:
         self.schema_id = schema_id
         self._table_sql = _quoted_identifier(table_name)
         self._id_sql = _quoted_identifier(id_column)
+        self._binding = RecordBinding(crypto, self.table_name, schema_id=schema_id)
 
     def store(
         self,
@@ -79,12 +81,10 @@ class EncryptedSQLiteTable:
         """
         column = _safe_identifier(encrypted_column)
         column_sql = _quoted_identifier(encrypted_column)
-        ciphertext = self.crypto.encrypt(
+        ciphertext = self._binding.encrypt_field(
+            record_id,
+            column,
             value,
-            table=self.table_name,
-            record_id=record_id,
-            column=column,
-            schema_id=self.schema_id,
             schema_version=schema_version,
             revision=revision,
         )
@@ -110,12 +110,10 @@ class EncryptedSQLiteTable:
         binary path is not one-way.
         """
         column, ciphertext = self._fetch_ciphertext(record_id, encrypted_column)
-        return self.crypto.decrypt(
+        return self._binding.decrypt_field(
+            record_id,
+            column,
             ciphertext,
-            table=self.table_name,
-            record_id=record_id,
-            column=column,
-            schema_id=self.schema_id,
             schema_version=schema_version,
             revision=revision,
         )
@@ -135,12 +133,10 @@ class EncryptedSQLiteTable:
         Text values decrypt to their UTF-8 bytes here.
         """
         column, ciphertext = self._fetch_ciphertext(record_id, encrypted_column)
-        return self.crypto.decrypt_bytes(
+        return self._binding.decrypt_field_bytes(
+            record_id,
+            column,
             ciphertext,
-            table=self.table_name,
-            record_id=record_id,
-            column=column,
-            schema_id=self.schema_id,
             schema_version=schema_version,
             revision=revision,
         )
@@ -162,11 +158,9 @@ class EncryptedSQLiteTable:
         columns = [_safe_identifier(name) for name in fields]
         if not columns:
             raise ValueError("fields must not be empty")
-        envelopes = self.crypto.encrypt_fields(
+        envelopes = self._binding.encrypt_fields(
+            record_id,
             fields,
-            table=self.table_name,
-            record_id=record_id,
-            schema_id=self.schema_id,
             schema_version=schema_version,
             revision=revision,
         )
@@ -241,11 +235,9 @@ class EncryptedSQLiteTable:
         for column, value in envelopes.items():
             if value is None:
                 raise ValueError(f"encrypted field is NULL: {self.table_name}.{column}")
-        return self.crypto.decrypt_fields(
+        return self._binding.decrypt_fields(
+            record_id,
             envelopes,
-            table=self.table_name,
-            record_id=record_id,
-            schema_id=self.schema_id,
             schema_version=schema_version,
             revision=revision,
         )
