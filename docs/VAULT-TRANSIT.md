@@ -26,7 +26,7 @@ the repository's on-disk state holds only ciphertext. Normative formats are in
 
 ```hcl
 # runtime policy — the ONLY permissions the resolving token needs
-path "transit/datakey/floorvault-master"  { capabilities = ["update"] }
+path "transit/datakey/plaintext/floorvault-master"  { capabilities = ["update"] }
 path "transit/decrypt/floorvault-master"  { capabilities = ["update"] }
 path "transit/rewrap/floorvault-master"   { capabilities = ["update"] }
 ```
@@ -59,9 +59,15 @@ provider = VaultTransitProvider(
     store_dir="/var/lib/myapp/floorvault",
     app_instance_id="my-app",
     # token=... or VAULT_TOKEN env var
+    # cafile="/etc/myapp/vault-ca.pem",  # internal-CA bundle if Vault is on
+    #                                    # private PKI; TLS stays verified
 )
-master = provider.resolve_key()          # provisions on first use
+master = provider.resolve_key()  # provisions on first use
 ```
+
+`cafile` pins a CA bundle for Vaults on internal PKI (the common case). TLS
+verification is never disabled — `cafile` changes *which* CAs are trusted, not
+*whether* the chain is checked.
 
 `resolve_key()` mints a `datakey` on first use (subject to `allow_create`),
 decrypts the stored blob afterwards, and caches the plaintext in-process for
@@ -75,7 +81,7 @@ vault write -f transit/keys/floorvault-master/rotate   # Vault-side KEK -> v2
 ```
 
 ```python
-provider.rewrap()   # rewrap blob under KEK v2, publish generation 2
+provider.rewrap()  # rewrap blob under KEK v2, publish generation 2
 ```
 
 `rewrap` returns the new plaintext-independent blob and CAS-publishes it:

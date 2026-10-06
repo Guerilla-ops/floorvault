@@ -502,7 +502,7 @@ g-<n>.gen      = "FVGW1" || ASCII "vault:v<kek_version>:<base64>" blob
   of `store.id`, `purpose` is `"floorvault-master-wrap"`, and `custody` is
   the custody-scheme label. The context is sent to Transit on datakey and
   decrypt calls; Transit refuses a blob whose stored context differs.
-- **Operations:** `transit/datakey` (provision: returns a `vault:v1:` blob
+- **Operations:** `transit/datakey/plaintext` (provision: returns a `vault:v1:` blob
   plus the plaintext key), `transit/decrypt` (resolve), `transit/rewrap`
   (KEK rotation: same plaintext, new `vault:v<k+1>:` blob — the store then
   CAS-publishes a new generation).

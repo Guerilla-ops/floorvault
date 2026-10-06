@@ -44,9 +44,12 @@ class FakeVault:
         if self.fail_next is not None:
             exc, self.fail_next = self.fail_next, None
             raise exc
+        # Real Vault encodes the datakey type in the path
+        # (/v1/<mount>/datakey/plaintext/<key>); the provider must too.
         op = path.split("/")[3]
         context = body.get("context")
         if op == "datakey":
+            assert path.split("/")[4] == "plaintext", path
             self.version = 1
             plaintext = bytes(32)
             blob = "vault:v1:" + base64.b64encode(context.encode() + b"|" + plaintext).decode()
@@ -108,7 +111,7 @@ def test_provision_mints_and_wraps(tmp_path, monkeypatch):
     provider, fake = make_provider(tmp_path)
     key = provider.resolve_key()
     assert key.get_bytes() == bytes(32)
-    assert fake.calls[0][0] == "/v1/transit/datakey/floorvault"
+    assert fake.calls[0][0] == "/v1/transit/datakey/plaintext/floorvault"
     # The store holds only the wrapped blob, never the plaintext.
     generation, blob = GenerationStore(tmp_path / "vt").read_active()
     assert generation == 1
