@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -220,6 +221,14 @@ class VaultStore:
         self._legacy_vault_path = self._base / "vault.json.enc"
         self._legacy_key_path = self._base / "vault.key"
         self._allow_plaintext_migration = migrate_legacy_metadata
+        # Serializes in-process DB access. Each operation opens its own
+        # connection and begins a transaction immediately, so concurrent
+        # callers queue on SQLite's write lock inside a finite busy timeout —
+        # on slow filesystems (Windows CI) deep queues exceed it and surface
+        # as "database is locked". A store is a per-process object; holding
+        # the lock for the whole transaction makes in-process ordering
+        # deterministic while SQLite still guards cross-process writers.
+        self._io_lock = threading.Lock()
 
         if crypto is not None:
             self._crypto = crypto
@@ -316,8 +325,9 @@ class VaultStore:
             conn.execute("PRAGMA secure_delete = ON")
             conn.execute("PRAGMA journal_mode = DELETE")
             conn.execute("PRAGMA synchronous = FULL")
-            with conn:
-                yield conn
+            with self._io_lock:
+                with conn:
+                    yield conn
         finally:
             conn.close()
 
