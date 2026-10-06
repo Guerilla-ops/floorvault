@@ -154,14 +154,18 @@ class UrllibTransport:
         attempt = 0
         while True:
             attempt += 1
+            # HTTPError retains server-controlled response headers and the
+            # redirect Location - a Vault endpoint can echo request material
+            # back. The terminal raises happen AFTER the except so neither
+            # __cause__ nor __context__ can reach the exception object; only
+            # extracted scalars (code, vetted location) survive.
+            http_failure: str | None = None
             try:
                 with self._opener.open(request, timeout=self._timeout) as response:
                     raw = response.read(_MAX_RESPONSE_BYTES + 1)
             except urllib.error.HTTPError as exc:
-                # HTTPError bodies are server-controlled text and can echo
-                # request material, so the cause is detached deliberately:
-                # token confidentiality beats a debug chain.
-                if exc.code in (307, 308):
+                code = exc.code
+                if code in (307, 308):
                     location = exc.headers.get("Location", "")
                     target = urllib.parse.urlparse(location)
                     if (
@@ -172,23 +176,25 @@ class UrllibTransport:
                         redirected = True
                         request = self._build_request(location, body, token)
                         continue
-                    raise CustodyDowngradeError(
-                        f"Vault answered with redirect {exc.code}; redirects are "
+                    http_failure = (
+                        f"Vault answered with redirect {code}; redirects are "
                         "refused unless the standby host is trusted via "
                         "allowed_redirect_hosts"
-                    ) from None
-                if 400 <= exc.code < 500:
-                    raise CustodyDowngradeError(
-                        f"Vault refused the request (HTTP {exc.code}); check the "
+                    )
+                elif 400 <= code < 500:
+                    http_failure = (
+                        f"Vault refused the request (HTTP {code}); check the "
                         "runtime token's transit decrypt/datakey permissions"
-                    ) from None
-                if attempt > self._retries:
-                    raise CustodyDowngradeError(
-                        f"Vault returned HTTP {exc.code} after {attempt} attempt(s)"
-                    ) from None
-                time.sleep(0.1 * attempt)
-                continue
+                    )
+                elif attempt > self._retries:
+                    http_failure = f"Vault returned HTTP {code} after {attempt} attempt(s)"
+                else:
+                    time.sleep(0.1 * attempt)
+                    continue
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                # URLError is raised client-side (DNS/connect/TLS failure) and
+                # carries no server response body; keeping the cause preserves
+                # diagnostics without a server-controlled chain object.
                 if attempt > self._retries:
                     raise CustodyDowngradeError(
                         f"Vault is unreachable ({type(exc).__name__}); refusing "
@@ -196,17 +202,23 @@ class UrllibTransport:
                     ) from exc
                 time.sleep(0.1 * attempt)
                 continue
+            if http_failure is not None:
+                raise CustodyDowngradeError(http_failure)
             if len(raw) > _MAX_RESPONSE_BYTES:
                 raise CustodyDowngradeError("Vault response exceeds the bounded size")
+            # Decode errors retain the server-controlled body (UnicodeDecode
+            # Error.object / JSONDecodeError.doc hold the raw bytes - a Vault
+            # response can echo the token we sent). Capture only the error
+            # class name and raise OUTSIDE the except block: 'from None'
+            # suppresses the printed chain but __context__ still retains the
+            # object, which structured error reporters can serialize.
+            decode_error: str | None = None
             try:
                 decoded = json.loads(raw)
             except (ValueError, UnicodeDecodeError) as exc:
-                # Both failure types retain server-controlled bytes: a
-                # UnicodeDecodeError repr embeds the raw response, which can
-                # echo the token we sent. Detach the cause entirely.
-                raise CustodyDowngradeError(
-                    f"Vault response is not valid JSON ({type(exc).__name__})"
-                ) from None
+                decode_error = type(exc).__name__
+            if decode_error is not None:
+                raise CustodyDowngradeError(f"Vault response is not valid JSON ({decode_error})")
             if not isinstance(decoded, dict):
                 raise CustodyDowngradeError("Vault response is not a JSON object")
             return decoded
@@ -217,13 +229,16 @@ def _b64e(raw: bytes) -> str:
 
 
 def _b64d(text: str) -> bytes:
+    # encode() failure retains the server-supplied string in
+    # UnicodeEncodeError.object; raise outside the except so no exception
+    # attribute (__cause__ or __context__) can reach it.
     try:
-        return base64.b64decode(text.encode("ascii"), validate=True)
+        encoded = text.encode("ascii")
     except UnicodeEncodeError:
-        # encode() retains the server-supplied string in the exception, and
-        # a response field can echo the token back - detach it from every
-        # chain surface (cause and printable context alike).
-        raise ValueError("field is not ASCII") from None
+        encoded = None
+    if encoded is None:
+        raise ValueError("field is not ASCII")
+    return base64.b64decode(encoded, validate=True)
 
 
 def _require_wrapped_blob(value: object) -> bytes:
@@ -238,7 +253,11 @@ def _require_wrapped_blob(value: object) -> bytes:
     try:
         raw = value.encode("ascii")
     except UnicodeEncodeError:
-        raise CustodyDowngradeError("Vault wrapped blob is not ASCII") from None
+        raw = None
+    if raw is None:
+        # The encode error retains the server-supplied string; raising after
+        # the except keeps it out of __cause__ and __context__ alike.
+        raise CustodyDowngradeError("Vault wrapped blob is not ASCII")
     if len(raw) > _MAX_BLOB_BYTES:
         raise CustodyDowngradeError("wrapped blob exceeds the bounded size")
     if not _BLOB_PATTERN.fullmatch(raw):
@@ -418,17 +437,18 @@ class VaultTransitProvider(KeyProvider):
 
     def _call(self, operation: str, body: dict) -> dict:
         path = f"/v1/{self._mount}/{operation}/{self._key_name}"
+        # Transport exceptions may embed server-controlled text that echoes
+        # request headers or the token. Capture only the exception's class
+        # name and raise OUTSIDE the except: 'from None' would still leave
+        # the object reachable through __context__.
+        failure: str | None = None
         try:
             return self._transport.post(path, body, self._token)
         except CustodyDowngradeError:
             raise
         except Exception as exc:
-            # Never leak request material: transport exceptions may embed
-            # server-controlled text that echoes headers or the token, so the
-            # cause is detached and only the exception name is carried.
-            raise CustodyDowngradeError(
-                f"Vault {operation} failed ({type(exc).__name__})"
-            ) from None
+            failure = type(exc).__name__
+        raise CustodyDowngradeError(f"Vault {operation} failed ({failure})")
 
     def _data_field(self, response: dict) -> dict:
         data = response.get("data")
