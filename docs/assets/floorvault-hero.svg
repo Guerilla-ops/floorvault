@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-labelledby="fv-hero-title fv-hero-desc">
+  <title id="fv-hero-title">FloorVault — context-bound field encryption for SQLite</title>
+  <desc id="fv-hero-desc">A geometric vault mark beside the FloorVault wordmark and the tagline "Your data. Its place. Cryptographically bound." To the right, an abstract grid of database cells with one field highlighted as cryptographically bound to its coordinates.</desc>
+  <defs>
+    <radialGradient id="fv-hero-glow" cx="0.2" cy="0.42" r="0.85">
+      <stop offset="0" stop-color="#1b3a5e" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#0b1220" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="380" fill="#0b1220"/>
+  <rect width="1200" height="380" fill="url(#fv-hero-glow)"/>
+  <g transform="translate(196 186)">
+    <rect x="-92" y="-92" width="184" height="184" rx="24" fill="none" stroke="#65e0bd" stroke-width="3"/>
+    <rect x="-79" y="-79" width="158" height="158" rx="17" fill="none" stroke="#274668" stroke-width="1.5"/>
+    <circle r="64" fill="#0e1930" stroke="#e9eff6" stroke-opacity="0.9" stroke-width="2.5"/>
+    <g stroke="#65e0bd" stroke-width="3" stroke-linecap="round">
+      <line x1="0" y1="-64" x2="0" y2="-51"/>
+      <line x1="0" y1="-64" x2="0" y2="-51" transform="rotate(30)"/>
+      <line x1="0" y1="-64" x2="0" y2="-51" transform="rotate(60)"/>
+      <line x1="0" y1="-64" x2="0" y2="-51" transform="rotate(90)"/>
+      <line x1="0" y1="-64" x2="0" y2="-51" transform="rotate(120)"/>
+      <line x1="0" y1="-64" x2="0" y2="-51" transform="rotate(150)"/>
+      <line x1="0" y1="-64" x2="0" y2="-51" transform="rotate(180)"/>
+      <line x1="0" y1="-64" x2="0" y2="-51" transform="rotate(210)"/>
+      <line x1="0" y1="-64" x2="0" y2="-51" transform="rotate(240)"/>
+      <line x1="0" y1="-64" x2="0" y2="-51" transform="rotate(270)"/>
+      <line x1="0" y1="-64" x2="0" y2="-51" transform="rotate(300)"/>
+      <line x1="0" y1="-64" x2="0" y2="-51" transform="rotate(330)"/>
+    </g>
+    <circle r="32" fill="#0b1220" stroke="#65e0bd" stroke-width="2.5"/>
+    <circle cy="-8" r="9" fill="#65e0bd"/>
+    <rect x="-4.5" y="-6" width="9" height="24" rx="4.5" fill="#65e0bd"/>
+  </g>
+  <text x="328" y="196" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="86" font-weight="700" letter-spacing="-1.5" fill="#eef3f8">Floor<tspan fill="#65e0bd">Vault</tspan></text>
+  <text x="333" y="258" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="26" fill="#aabbcf">Your data. Its place. <tspan fill="#65e0bd" font-weight="600">Cryptographically bound.</tspan></text>
+  <text x="334" y="302" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="19" fill="#7d92aa">Context-bound field encryption for SQLite · AES-256-SIV · RFC 5297</text>
+  <g>
+    <rect x="928" y="104" width="80" height="30" rx="6" fill="#16233a"/>
+    <rect x="1016" y="104" width="80" height="30" rx="6" fill="#16233a"/>
+    <rect x="1104" y="104" width="80" height="30" rx="6" fill="#16233a"/>
+    <rect x="928" y="142" width="80" height="30" rx="6" fill="#0e1930" stroke="#274668" stroke-width="1.5"/>
+    <rect x="1104" y="142" width="80" height="30" rx="6" fill="#0e1930" stroke="#274668" stroke-width="1.5"/>
+    <rect x="928" y="180" width="80" height="30" rx="6" fill="#0e1930" stroke="#274668" stroke-width="1.5"/>
+    <rect x="1016" y="180" width="80" height="30" rx="6" fill="#0e1930" stroke="#274668" stroke-width="1.5"/>
+    <rect x="1104" y="180" width="80" height="30" rx="6" fill="#0e1930" stroke="#274668" stroke-width="1.5"/>
+    <rect x="1016" y="142" width="80" height="30" rx="6" fill="#123c32" stroke="#65e0bd" stroke-width="2"/>
+    <rect x="1010" y="136" width="92" height="42" rx="9" fill="none" stroke="#65e0bd" stroke-width="1.5" stroke-dasharray="5 5" stroke-opacity="0.55"/>
+    <path d="M1051 158 v-5 a5 5 0 0 1 10 0 v5" fill="none" stroke="#65e0bd" stroke-width="2.5" stroke-linecap="round"/>
+    <rect x="1049" y="158" width="14" height="11" rx="2.5" fill="#65e0bd"/>
+    <line x1="1056" y1="210" x2="1056" y2="234" stroke="#65e0bd" stroke-width="1.5" stroke-dasharray="4 4" stroke-opacity="0.6"/>
+    <text x="1056" y="256" text-anchor="middle" font-family="ui-monospace, 'SF Mono', Menlo, Consolas, monospace" font-size="18" fill="#65e0bd">users / u1 / api_key</text>
+  </g>
+</svg>
