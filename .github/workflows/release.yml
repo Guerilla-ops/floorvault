@@ -39,10 +39,16 @@ jobs:
           version: "0.12.5"
 
       - name: Build release artifacts twice
+        # The comparison copy MUST be built outside the checkout: the sdist is
+        # VCS-aware, so a second in-repo out-dir appears mid-build and packages
+        # itself into the archive it is producing (dist-second/.gitignore was
+        # the first live demonstration). A mktemp dir can never self-include.
         run: |
           set -euo pipefail
           uv build --out-dir dist
-          uv build --out-dir dist-second
+          SECOND="$(mktemp -d /tmp/floorvault-dist-second.XXXXXX)"
+          uv build --out-dir "$SECOND"
+          echo "SECOND=$SECOND" >> "$GITHUB_ENV"
 
       - name: Reproducible-build check
         # Same runner, same source, same toolchain: the digests must match
@@ -51,21 +57,21 @@ jobs:
         # itself indicates the toolchain picked up nondeterminism.
         run: |
           set -euo pipefail
-          python - <<'PY'
+          python - "$SECOND" <<'PY'
           import hashlib
           import pathlib
           import sys
 
           first = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in pathlib.Path("dist").iterdir()}
-          second = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in pathlib.Path("dist-second").iterdir()}
-          if first != second:
-              for name in sorted(set(first) | set(second)):
+          second = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in pathlib.Path(sys.argv[1]).iterdir()}
+          mismatched = sorted(n for n in set(first) | set(second) if first.get(n) != second.get(n))
+          if mismatched:
+              for name in mismatched:
                   print(f"mismatch {name}: {first.get(name)} != {second.get(name)}", file=sys.stderr)
               sys.exit(1)
           for name, digest in sorted(first.items()):
               print(f"[REPRODUCIBLE] sha256 {digest} {name}")
           PY
-          rm -rf dist-second
 
       - name: Verify universal wheel shape
         run: python scripts/verify_wheel.py dist
