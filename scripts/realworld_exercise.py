@@ -95,6 +95,7 @@ def main() -> int:
     from floorvault import beacons
     from floorvault.core import RECORD_MAGIC_V2
     from floorvault.migration import MigratingVaultStore
+    from floorvault.platform_support import store_permission_problem
     from floorvault.providers import adaptive as adaptive_module
     from floorvault.providers.adaptive import AdaptiveKeyProvider
     from floorvault.providers.base import KeyProviderError
@@ -338,8 +339,11 @@ def main() -> int:
         k1 = p.resolve_key()
         store_path = store_path_for(prov_dir, None)
         check("file custody wrote a protected store", store_path.is_file())
-        mode = store_path.stat().st_mode & 0o777
-        check("protected store is owner-only", mode == 0o600, oct(mode))
+        # Owner-only is platform-defined: POSIX mode 0o600 on POSIX, an
+        # owner/SYSTEM/Administrators ACL on Windows. Assert it through the
+        # same inspector read_protected enforces, not a POSIX-only bit check.
+        problem = store_permission_problem(store_path, store_path.stat().st_mode)
+        check("protected store is owner-only", problem is None, problem)
         k2 = AdaptiveKeyProvider(fallback_dir=prov_dir, allow_disk_fallback=True).resolve_key()
         check("second resolve reads the same key", k2.get_bytes() == k1.get_bytes())
         expect_raises(
