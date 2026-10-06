@@ -9,6 +9,8 @@ expected-generation CAS.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from floorvault.providers.generation_store import (
@@ -252,7 +254,7 @@ def test_pointer_identity_race_is_retried(tmp_path, monkeypatch):
 
     def flaky(path, **kwargs):
         nonlocal calls
-        if str(path).endswith("/active"):
+        if os.path.basename(str(path)) == "active":
             calls += 1
             if calls <= 2:
                 raise ProtectedStoreRaceError("simulated atomic pointer swap")
@@ -274,7 +276,7 @@ def test_a_pointer_that_never_settles_still_fails_closed(tmp_path, monkeypatch):
 
     def always_racing(path, **kwargs):
         nonlocal calls
-        if str(path).endswith("/active"):
+        if os.path.basename(str(path)) == "active":
             calls += 1
             raise ProtectedStoreRaceError("churning pointer")
         return real_read(path, **kwargs)
