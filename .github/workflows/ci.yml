@@ -88,7 +88,7 @@ jobs:
         run: bash scripts/security-check.sh
 
       # Publish one leg's artifacts as the release identity. The gate prints the
-      # digests of what it built on EVERY leg (step 10), so the other platforms
+      # digests of what it built on EVERY leg (step 11), so the other platforms
       # stay comparable from the logs; this step exists so that a released wheel
       # can be checked against a CI-built artifact rather than only against a
       # maintainer's machine. One leg only: ten legs publishing the same name

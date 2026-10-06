@@ -68,7 +68,7 @@ fi
 echo ""
 echo "=== 3. Running Static Analysis & Linting (Ruff) ==="
 # scripts/ is linted too: it holds the gate helper, the mutation harness that
-# decides step 11 and the wheel verifier that decides step 10, so a regression
+# decides step 12 and the wheel verifier that decides step 11, so a regression
 # there must not be the one part of the tree CI never checks. The README's dev
 # commands are scoped to these same directories so the gate and the docs agree.
 ruff check src/ tests/ scripts/ fuzz/
@@ -143,7 +143,16 @@ pytest -q tests/
 echo "[PASS] Full suite: every test file under tests/ passed."
 
 echo ""
-echo "=== 10. Verifying Universal Wheel Build (Zero-C Compilation) ==="
+echo "=== 10. Real-World Exercise (public surfaces, no mocks) ==="
+# Issue #11's gate contract: every PR runs the real-filesystem/real-subprocess
+# exercise in addition to the unit suite. It covers seams the suite does not -
+# the inspector CLI as a real subprocess, adaptive-provider tiers, and the
+# migration helpers against real on-disk SQLite files.
+python scripts/realworld_exercise.py
+echo "[PASS] Real-world exercise: every public surface verified end-to-end."
+
+echo ""
+echo "=== 11. Verifying Universal Wheel Build (Zero-C Compilation) ==="
 rm -rf dist/
 uv build
 python scripts/verify_wheel.py dist
@@ -192,7 +201,7 @@ for sdist in sdists:
 DIGESTS
 
 echo ""
-echo "=== 11. Verifying the Security Tests Actually Detect Regressions (Mutation) ==="
+echo "=== 12. Verifying the Security Tests Actually Detect Regressions (Mutation) ==="
 # The suite passing proves nothing if the tests cannot fail. This runs curated
 # behavioural mutants of the custody code and requires every one to be killed.
 # It was previously a manual script only, so a refactor that invalidated the

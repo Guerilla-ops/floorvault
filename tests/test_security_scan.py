@@ -4,7 +4,7 @@ from the 2026-09-18 deep-dive review of revision 5433191.
 Each test encodes one vulnerable behaviour as a failing assertion, so the suite
 acts as a scan: it FAILS if any of the five regression classes is reintroduced.
 They are written deterministically (no true concurrency) so they run on every
-platform in CI and the mutation gate (step 11) can verify they detect a
+platform in CI and the mutation gate (step 12) can verify they detect a
 reintroduction by killing the corresponding mutant.
 
 Findings covered
