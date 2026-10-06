@@ -829,8 +829,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "VT-1",
         "src/floorvault/providers/vault_transit.py",
-        "                if 400 <= exc.code < 500:",
-        "                if False:  # MUTANT",
+        "                elif 400 <= code < 500:",
+        "                elif False:  # MUTANT",
         "4xx policy answers retried like transient faults instead of refusing",
     ),
     Mutation(
