@@ -10,7 +10,6 @@ from __future__ import annotations
 import base64
 import json
 import time
-import traceback
 import urllib.error
 
 import pytest
@@ -215,8 +214,7 @@ def test_token_never_appears_in_errors(tmp_path):
     fake.fail_next = urllib.error.HTTPError(ADDR, 403, f"Forbidden for {TOKEN}", {}, None)
     with pytest.raises(CustodyDowngradeError) as excinfo:
         provider.resolve_key()
-    assert TOKEN not in str(excinfo.value)
-    assert TOKEN not in repr(excinfo.value.__cause__)
+    assert not _chain_contains_token(excinfo.value)
 
 
 def test_rewrap_publishes_next_generation(tmp_path):
@@ -511,9 +509,33 @@ def test_wrapped_blob_must_match_the_full_vault_shape(tmp_path):
         assert GenerationStore(tmp_path / "vt").active_generation() == 1
 
 
+def _chain_contains_token(exc: BaseException) -> bool:
+    """Walk cause and context: does ANY retained exception hold the token?
+
+    ``.object``/``.doc`` on decode errors and ``.headers`` on HTTPErrors keep
+    the server-controlled bytes that ``str()`` hides - printing is only half
+    the surface, structured error reporters serialize the attributes.
+    """
+    seen: set[int] = set()
+    stack = [exc]
+    while stack:
+        cur = stack.pop()
+        if cur is None or id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        if TOKEN in str(cur) or TOKEN in repr(cur):
+            return True
+        for attr in ("object", "doc", "headers", "msg"):
+            payload = getattr(cur, attr, None)
+            if payload is not None and TOKEN in str(payload):
+                return True
+        stack.extend((cur.__cause__, cur.__context__))
+    return False
+
+
 def test_invalid_json_does_not_chain_server_bytes(tmp_path):
     """A non-JSON response body is server-controlled: it can echo the token
-    back, so it must not survive as a printable exception cause."""
+    back, so no part of the exception chain may retain it."""
     transport = UrllibTransport(ADDR)
     token_echo = TOKEN.encode() + b"-echoed"
 
@@ -524,13 +546,10 @@ def test_invalid_json_does_not_chain_server_bytes(tmp_path):
     transport._opener = GarbageOpener()
     with pytest.raises(CustodyDowngradeError) as excinfo:
         transport.post("/v1/x", {}, TOKEN)
-    assert TOKEN not in str(excinfo.value)
-    assert TOKEN not in repr(excinfo.value.__cause__)
-    assert TOKEN not in repr(excinfo.value.__context__)
-    chain_text = "".join(
-        traceback.format_exception(type(excinfo.value), excinfo.value, excinfo.value.__traceback__)
-    )
-    assert TOKEN not in chain_text
+    assert not _chain_contains_token(excinfo.value)
+    # The decode error object itself must be detached, not merely unprinted.
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
 
 
 def test_non_ascii_response_fields_are_detached_from_the_cause(tmp_path):
@@ -554,10 +573,19 @@ def test_non_ascii_response_fields_are_detached_from_the_cause(tmp_path):
     provider._transport = NonAsciiVault()
     with pytest.raises(CustodyDowngradeError) as excinfo:
         provider.resolve_key()
-    chain_text = "".join(
-        traceback.format_exception(type(excinfo.value), excinfo.value, excinfo.value.__traceback__)
-    )
-    assert TOKEN not in chain_text
+    # The chain may legitimately retain OUR exceptions (ProtectedStoreMissing
+    # from the provision attempt); it must not retain anything holding the
+    # server-supplied string.
+    assert not _chain_contains_token(excinfo.value)
+
+    # The same sanitizer guards the wrapped-blob path (rewrap returns a
+    # non-ASCII blob containing the token).
+    provider2, _ = make_provider(tmp_path / "vt2")
+    provider2.resolve_key()
+    provider2._transport = NonAsciiVault()
+    with pytest.raises(CustodyDowngradeError) as excinfo2:
+        provider2.rewrap()
+    assert not _chain_contains_token(excinfo2.value)
 
 
 def test_context_is_canonical_utf8_for_non_ascii_app_ids(tmp_path):

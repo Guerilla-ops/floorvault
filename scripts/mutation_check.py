@@ -910,29 +910,34 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "VT-11",
         "src/floorvault/providers/vault_transit.py",
-        '        raise ValueError("field is not ASCII") from None',
-        '        raise ValueError("field is not ASCII")  # MUTANT',
-        "Non-ASCII field sanitization keeps a printable context that embeds "
-        "the server-supplied string (token echo)",
+        '    try:\n        encoded = text.encode("ascii")\n    except UnicodeEncodeError:\n        encoded = None',
+        '    try:\n        encoded = text.encode("ascii")\n    except UnicodeEncodeError as exc:  # MUTANT\n        raise ValueError("field is not ASCII") from exc',
+        "Non-ASCII field sanitization keeps a chain object whose .object "
+        "holds the server-supplied string (token echo)",
     ),
     Mutation(
         "VT-12",
         "src/floorvault/providers/vault_transit.py",
-        '        raise CustodyDowngradeError("Vault wrapped blob is not ASCII") from None',
-        '        raise CustodyDowngradeError("Vault wrapped blob is not ASCII")  # MUTANT',
-        "Wrapped-blob ASCII failure keeps a printable context that embeds "
+        '    try:\n        raw = value.encode("ascii")\n    except UnicodeEncodeError:\n        raw = None',
+        '    try:\n        raw = value.encode("ascii")\n    except UnicodeEncodeError as exc:  # MUTANT\n        raise CustodyDowngradeError("Vault wrapped blob is not ASCII") from exc',
+        "Wrapped-blob ASCII failure keeps a chain object whose .object holds "
         "the server-supplied string (token echo)",
     ),
     Mutation(
         "VT-13",
         "src/floorvault/providers/vault_transit.py",
+        "            decode_error: str | None = None\n"
+        "            try:\n"
+        "                decoded = json.loads(raw)\n"
+        "            except (ValueError, UnicodeDecodeError) as exc:\n"
+        "                decode_error = type(exc).__name__",
+        "            try:\n"
+        "                decoded = json.loads(raw)\n"
+        "            except (ValueError, UnicodeDecodeError) as exc:  # MUTANT\n"
         "                raise CustodyDowngradeError(\n"
         '                    f"Vault response is not valid JSON ({type(exc).__name__})"\n'
-        "                ) from None",
-        "                raise CustodyDowngradeError(\n"
-        '                    f"Vault response is not valid JSON ({type(exc).__name__})"\n'
-        "                ) from exc  # MUTANT",
-        "Invalid-JSON failure chains a decode error whose repr carries "
+        "                ) from exc",
+        "Invalid-JSON failure chains a decode error whose .object/.doc holds "
         "server-controlled response bytes (token echo)",
     ),
     # --- SQLAlchemy adapter guards (Phase 2, roadmap issue #11) --------------
