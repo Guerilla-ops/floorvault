@@ -63,10 +63,17 @@ GenerationStore                 HardenedMemoryKey (bounded TTL)
 2. Generate the KEK on-device: RSA-3072/4096 with OAEP-SHA-256 preferred;
    EC P-256 ECDH-derive or AES key-wrap are the documented fallbacks. Template
    must set `SENSITIVE`, `NEVER_EXTRACTABLE`, `ALWAYS_SENSITIVE`, PIN required.
-3. Generate the 32-byte master key in-process, wrap under the KEK public key,
-   publish via `GenerationStore.provision`.
-4. Mint the `store.id` identity (`FVSTORID1`) so the wrapped blob is bound to
-   this deployment.
+3. Generate the 32-byte master key in-process and wrap it under the KEK —
+   the operation depends on the probed mechanism: RSA-OAEP encrypts to the
+   KEK public key; AES key-wrap or ECDH-derive wrap under a token-resident
+   key directly (no public-key step exists for those paths).
+   Publish via `GenerationStore.provision`.
+4. Mint the `store.id` identity (`FVSTORID1`) and bind the wrapped blob to
+   this deployment: RSA-OAEP carries the store id in the mechanism's
+   source-data (label) field where the token exposes it. Mechanisms without
+   a context field produce a blob that authenticates only to the KEK — for
+   those, cross-store substitution is outside what the wrap can express and
+   store binding lives solely in the GenerationStore pointer binding.
 5. Independent recovery: `floorvault.key_recovery.wrap_master_key` produces a
    `FVRB1` bundle under a separately protected recovery key — this is what
    survives a lost or factory-reset token.
@@ -82,8 +89,11 @@ the old custody item.
   until expiry, then reads fail closed.
 - PIN lockout (PIV devices lock after a fixed retry count and may require a
   factory reset) → backoff with hard retry ceiling; never loop on the PIN.
-- Blob replay or pointer tampering → the CAS pointer's SHA-256 binding refuses
-  a superseded or inconsistent generation.
+- Pointer tampering → the CAS pointer's SHA-256 binding refuses an
+  inconsistent generation. A superseded-but-valid generation is NOT refused:
+  replaying an earlier `active` pointer is a rollback, and freshness needs a
+  trusted monotonic anchor outside the attacker's rewrite domain (the same
+  caveat class as whole-directory rollback below).
 - Whole-directory rollback is out of scope (same caveat as Vault Transit).
 - In-process key disclosure is bounded by TTL, not eliminated — the same
   honest limit every provider has.
