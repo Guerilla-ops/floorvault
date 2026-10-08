@@ -77,11 +77,21 @@ dev = [
     # Pinned for reproducible adapter tests; the sqlalchemy extra below sets the
     # floor this codebase's API surface is written against.
     "sqlalchemy==2.0.46",
+    # libsql publishes no cp314 wheels at 0.1.11, so the marker scopes the live
+    # embedded-mode test to interpreters the driver actually ships for; hosts
+    # without it still run the whole fake-seam suite.
+    "libsql>=0.1.0; python_version < '3.14'",
 ]
 # ORM adapter (src/floorvault/sqlalchemy_adapter.py). Not a hard dependency:
 # the core library stays SQLAlchemy-free.
 sqlalchemy = [
     "sqlalchemy>=2.0.40",
+]
+# libSQL adapter (src/floorvault/libsql_adapter.py). Optional: the module
+# duck-types the connection and never imports the client, so this extra only
+# supplies the driver used to create one.
+libsql = [
+    "libsql>=0.1.0",
 ]
 # macOS Keychain (Tier 2 of AdaptiveKeyProvider) needs the Security framework
 # bindings. Without them the provider falls through to Tier 3 and, unless

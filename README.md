@@ -65,6 +65,7 @@ Add extras as needed — `floorvault[macos]`, `floorvault[macos,sqlalchemy]`, �
 | `macos` | macOS Keychain custody tier |
 | `linux` | Linux Secret Service custody tier |
 | `sqlalchemy` | `SqlAlchemyEncryption` ORM adapter |
+| `libsql` | `EncryptedLibSqlTable` — same contract over libSQL (local files, embedded replicas, Turso) |
 | `dev` | Test, lint, and security-gate toolchain |
 
 A stock install does not provide an OS key store on every host: the `macos`/`linux` extras enable Keychain and

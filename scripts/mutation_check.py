@@ -1059,6 +1059,22 @@ MUTATIONS: tuple[Mutation, ...] = (
         "                    pass  # MUTANT",
         "Executemany ORM parameter rows are no longer scanned for protected columns",
     ),
+    Mutation(
+        "LQ-1",
+        "src/floorvault/libsql_adapter.py",
+        "        _check_connection(connection)",
+        "        pass  # MUTANT",
+        "libsql connection contract check removed: a non-connection is accepted "
+        "and fails at execute-time instead of at construction",
+    ),
+    Mutation(
+        "LQ-2",
+        "src/floorvault/libsql_adapter.py",
+        "    if inspect.iscoroutinefunction(execute):",
+        "    if False:  # MUTANT",
+        "Async execute accepted: a coroutine reaches the DBAPI path and fails "
+        "mid-operation instead of at the boundary",
+    ),
 )
 
 # --------------------------------------------------------------------------
