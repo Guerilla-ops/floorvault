@@ -341,6 +341,11 @@ new_crypto = FloorVault(new_master_key, app_instance_id="my-app")
 
 rotate_vault_store(store, source_ring=KeyRing({0: old_crypto}), new_vault=new_crypto, new_key_id=1)
 
+# If the call above was interrupted, resume with BOTH generations in the ring:
+# items already committed under key_id 1 can't be read by a ring holding only the old key.
+# rotate_vault_store(store, source_ring=KeyRing({0: old_crypto, 1: new_crypto}),
+#                    new_vault=new_crypto, new_key_id=1)
+
 # REQUIRED: the `store` above was built on old_crypto and CANNOT read the
 # re-sealed records -- rotation sealed every envelope under the NEW master key.
 # Rebuild the store on the new key and repoint every holder of the old one.
@@ -384,7 +389,10 @@ Workload-specific measurements, not universal claims; includes contextual AAD an
 ## CLI
 
 `floorvault inspect` **decrypts** a field and prints the plaintext — treat its output as secret:
-`floorvault inspect local_vault.db users user-123 private_value_cipher`.
+`floorvault inspect local_vault.db users user-123 private_value_cipher --service-name my-app --app-instance my-app`.
+The flags must match how the record was written: the CLI resolves the key under `--service-name` and binds
+decryption to `--app-instance`. Defaults are `floorvault` and `default`, so records written under those
+defaults need no flags.
 
 ## Reporting a vulnerability
 
