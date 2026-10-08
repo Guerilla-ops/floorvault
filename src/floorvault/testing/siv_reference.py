@@ -50,11 +50,12 @@ def _aes_ecb(key: bytes, block: bytes) -> bytes:
     # suppression must be explicit. CodeQL reaches the same code through
     # py/weak-cryptographic-algorithm; its inline suppression goes on the call
     # itself.
-    enc = Cipher(  # codeql[py/weak-cryptographic-algorithm] single-block primitive per RFC 5297
-        algorithms.AES(key),
-        modes.ECB(),  # nosec B305 codeql[py/weak-cryptographic-algorithm]
-    ).encryptor()
-    return enc.update(block) + enc.finalize()
+    enc = Cipher(algorithms.AES(key), modes.ECB()).encryptor()  # nosec B305
+    # The encryptor call above is the only AES primitive: CMAC (RFC 4493), S2V
+    # and CTR are all built over single 16-byte blocks, never bulk plaintext.
+    # CodeQL's py/weak-cryptographic-algorithm anchors the alert on the
+    # encryptor use below; suppression is deliberate and narrowly scoped.
+    return enc.update(block) + enc.finalize()  # codeql[py/weak-cryptographic-algorithm]
 
 
 def _dbl(s: bytes) -> bytes:
