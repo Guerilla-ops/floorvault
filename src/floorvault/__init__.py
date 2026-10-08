@@ -13,6 +13,7 @@ from .core import (
 )
 from .key_recovery import recover_master_key, wrap_master_key
 from .keyring import KeyRing, UnknownKeyIdError
+from .libsql_adapter import EncryptedLibSqlTable
 from .memory import (
     HardenedMemoryKey,
     SecurityHardeningError,
@@ -66,6 +67,8 @@ __all__ = [
     "ContextualSQLite",
     "ContextualTable",
     "EncryptedSQLiteTable",
+    # libSQL adapter (driver-free module; the 'libsql' extra supplies the client)
+    "EncryptedLibSqlTable",
     "migrate_plaintext_column",
     "verify_encrypted_column",
     "drop_plaintext_column",
