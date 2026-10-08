@@ -35,12 +35,24 @@ def main(argv: list[str] | None = None) -> int:
     inspect_parser.add_argument("table", type=str, help="Table name")
     inspect_parser.add_argument("record_id", type=str, help="Record primary key ID")
     inspect_parser.add_argument("column", type=str, help="Encrypted column name")
+    inspect_parser.add_argument(
+        "--service-name",
+        help="Key custody service name the record was written under (default: floorvault)",
+    )
+    inspect_parser.add_argument(
+        "--app-instance",
+        help="App instance the record's context was bound to (default: default)",
+    )
 
     args = parser.parse_args(argv)
 
-    provider = AdaptiveKeyProvider()
+    service_name = getattr(args, "service_name", None)
+    app_instance = getattr(args, "app_instance", None)
+    provider_kwargs = {"service_name": service_name} if service_name is not None else {}
+    vault_kwargs = {"app_instance_id": app_instance} if app_instance is not None else {}
+    provider = AdaptiveKeyProvider(**provider_kwargs)
     master_key = provider.resolve_key()
-    crypto = FloorVault(master_key)
+    crypto = FloorVault(master_key, **vault_kwargs)
 
     if args.command == "inspect":
         if not args.db_path.exists():
