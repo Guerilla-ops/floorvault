@@ -7,7 +7,7 @@
   <p><a href="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml"><img src="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main"></a> <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10 and newer"></a> <a href="SECURITY.md"><img src="https://img.shields.io/badge/status-beta-f0a45d.svg" alt="Project status: beta"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg" alt="MIT or Apache 2.0 license"></a></p>
 </div>
 
-> **Beta — not yet on PyPI, no external security audit.** Review the [security model](SECURITY.md) before using FloorVault for production secrets.
+> **Beta — no external security audit.** Review the [security model](SECURITY.md) before using FloorVault for production secrets.
 
 | Bound to its place | Your existing SQLite | Fail-closed key custody |
 | --- | --- | --- |
@@ -51,12 +51,13 @@ can bind a per-record version into the same context — replay detection, not wh
 
 ## Install
 
-FloorVault is **not yet published to PyPI** — `pip install floorvault` does not work. Install from the repository:
-
 ```bash
-pip install "floorvault @ git+https://github.com/Guerilla-ops/floorvault.git"
-uv add "floorvault @ git+https://github.com/Guerilla-ops/floorvault.git"
+pip install floorvault
+uv add floorvault
 ```
+
+Published artifacts are reproducible and carry Sigstore provenance — see
+[Verifying a download](docs/RELEASING.md#verifying-a-download).
 
 Add extras as needed — `floorvault[macos]`, `floorvault[macos,sqlalchemy]`, …:
 
