@@ -7,7 +7,7 @@ This document explains what we consider a security issue, how to report one,
 what to expect after you do, and the guarantees — and the non-guarantees — of
 the design.
 
-- **Project:** FloorVault (not yet published to PyPI; install from the repository)
+- **Project:** FloorVault (PyPI: `floorvault`)
 - **Repository:** https://github.com/Guerilla-ops/floorvault
 - **Maintainer:** Scott Lee `<floorbond@pm.me>`
 
