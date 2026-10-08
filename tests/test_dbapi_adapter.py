@@ -210,6 +210,21 @@ class TestInvariants:
         with pytest.raises(ValueError, match="encrypted field is NULL"):
             table.load("user-123", "api_token_cipher")
 
+    def test_load_rejects_duplicate_id_matches(self, postgres):
+        """The exactly-one invariant holds on reads, not only writes."""
+        connection, table = postgres
+        connection.next_rows = [(b"ct",), (b"ct-second",)]
+
+        with pytest.raises(ValueError, match="more than one row"):
+            table.load("dup-id", "api_token_cipher")
+
+    def test_load_fields_rejects_duplicate_id_matches(self, mysql):
+        connection, table = mysql
+        connection.next_rows = [(b"a", b"b"), (b"a2", b"b2")]
+
+        with pytest.raises(ValueError, match="more than one row"):
+            table.load_fields_bytes("dup-id", ["a_cipher", "b_cipher"])
+
     def test_constructor_rejects_a_non_dbapi_connection(self, crypto):
         with pytest.raises(TypeError, match="DB-API 2.0"):
             EncryptedPostgresTable(object(), crypto, "users")

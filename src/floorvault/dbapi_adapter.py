@@ -284,10 +284,16 @@ class _EncryptedDBAPITable:
                 (record_id,),
             )
             row = cursor.fetchone()
+            second = None if row is None else cursor.fetchone()
         finally:
             cursor.close()
         if row is None:
             raise LookupError(f"record not found: {record_id!r}")
+        if second is not None:
+            raise ValueError(
+                f"record_id {record_id!r} matched more than one row in "
+                f"{self.table_name}; the id column must be unique"
+            )
         envelopes = dict(zip(columns, row))
         for column, value in envelopes.items():
             if value is None:
@@ -314,10 +320,16 @@ class _EncryptedDBAPITable:
                 (record_id,),
             )
             row = cursor.fetchone()
+            second = None if row is None else cursor.fetchone()
         finally:
             cursor.close()
         if row is None:
             raise LookupError(f"record not found: {record_id!r}")
+        if second is not None:
+            raise ValueError(
+                f"record_id {record_id!r} matched more than one row in "
+                f"{self.table_name}; the id column must be unique"
+            )
         if row[0] is None:
             raise ValueError(f"encrypted field is NULL: {self.table_name}.{column}")
         return column, row[0]
