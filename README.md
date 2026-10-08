@@ -57,7 +57,7 @@ uv add floorvault
 ```
 
 Published artifacts are reproducible and carry Sigstore provenance — see
-[Verifying a download](docs/RELEASING.md#verifying-a-download).
+[Verifying a download](https://github.com/Guerilla-ops/floorvault/blob/main/docs/RELEASING.md#verifying-a-download).
 
 Add extras as needed — `floorvault[macos]`, `floorvault[macos,sqlalchemy]`, …:
 
