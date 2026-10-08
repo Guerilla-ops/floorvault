@@ -47,8 +47,13 @@ def _aes_ecb(key: bytes, block: bytes) -> bytes:
     # itself anchors against. This is the same code as
     # tests/test_rfc5297_independent.py, where Bandit skips it because
     # bandit skips test files by default; this module is in src/ so the
-    # suppression must be explicit.
-    enc = Cipher(algorithms.AES(key), modes.ECB()).encryptor()  # nosec B305
+    # suppression must be explicit. CodeQL reaches the same code through
+    # py/weak-cryptographic-algorithm; its inline suppression goes on the call
+    # itself.
+    enc = Cipher(  # codeql[py/weak-cryptographic-algorithm] single-block primitive per RFC 5297
+        algorithms.AES(key),
+        modes.ECB(),  # nosec B305 codeql[py/weak-cryptographic-algorithm]
+    ).encryptor()
     return enc.update(block) + enc.finalize()
 
 
