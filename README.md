@@ -270,6 +270,11 @@ new_crypto = FloorVault(new_master_key, app_instance_id="my-app")
 store = VaultStore(VAULT_DIR, crypto=old_crypto)
 rotate_vault_store(store, source_ring=KeyRing({0: old_crypto}), new_vault=new_crypto, new_key_id=1)
 
+# If the call above was interrupted, resume with BOTH generations in the ring:
+# items already committed under key_id 1 can't be read by a ring holding only the old key.
+# rotate_vault_store(store, source_ring=KeyRing({0: old_crypto, 1: new_crypto}),
+#                    new_vault=new_crypto, new_key_id=1)
+
 # REQUIRED: the old store can no longer read anything. Rebuild it on the new key.
 store = VaultStore(VAULT_DIR, crypto=new_crypto)
 ```
@@ -304,8 +309,13 @@ backups.
 ### Inspect a value from the CLI
 
 ```bash
-floorvault inspect app.db users user-123 private_value_cipher
+floorvault inspect app.db users user-123 private_value_cipher \
+    --service-name my-app --app-instance my-app
 ```
+
+The flags must match how the record was written: the CLI resolves the key under
+`--service-name` and binds decryption to `--app-instance`. Defaults are `floorvault`
+and `default`, so records written under those defaults need no flags.
 
 > [!WARNING]
 > `floorvault inspect` **decrypts** the field and prints plaintext to your terminal. Treat its output,
