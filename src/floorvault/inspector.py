@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .core import FloorVault
 from .providers.adaptive import AdaptiveKeyProvider
+from .providers.base import KeyProviderError
 from .sqlite_adapter import _quoted_identifier, _safe_identifier
 
 
@@ -35,12 +36,16 @@ def main(argv: list[str] | None = None) -> int:
     inspect_parser.add_argument("table", type=str, help="Table name")
     inspect_parser.add_argument("record_id", type=str, help="Record primary key ID")
     inspect_parser.add_argument("column", type=str, help="Encrypted column name")
+    inspect_parser.add_argument(
+        "--service-name",
+        help="Key custody service name the record was written under (default: floorvault)",
+    )
+    inspect_parser.add_argument(
+        "--app-instance",
+        help="App instance the record's context was bound to (default: default)",
+    )
 
     args = parser.parse_args(argv)
-
-    provider = AdaptiveKeyProvider()
-    master_key = provider.resolve_key()
-    crypto = FloorVault(master_key)
 
     if args.command == "inspect":
         if not args.db_path.exists():
@@ -75,6 +80,23 @@ def main(argv: list[str] | None = None) -> int:
                     f"(type: {type(ciphertext).__name__}); contents not displayed"
                 )
                 return 0
+            # Custody is touched last, and read-only: a read path that resolved
+            # keys with the default allow_create=True would mint a fresh
+            # Keychain/Secret-Service/file entry for any typo'd --service-name
+            # before decryption ever ran. allow_create=False turns an absent
+            # key into a plain error instead.
+            provider_kwargs = (
+                {"service_name": args.service_name} if args.service_name is not None else {}
+            )
+            vault_kwargs = (
+                {"app_instance_id": args.app_instance} if args.app_instance is not None else {}
+            )
+            try:
+                master_key = AdaptiveKeyProvider(**provider_kwargs).resolve_key(allow_create=False)
+            except KeyProviderError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+            crypto = FloorVault(master_key, **vault_kwargs)
             try:
                 decrypted = crypto.decrypt(
                     bytes(ciphertext),
