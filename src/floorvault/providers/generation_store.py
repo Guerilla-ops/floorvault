@@ -11,6 +11,10 @@ update path is a separate, audited protocol rather than a loosened store:
   * The authoritative pointer is a separate ``active`` file replaced
     atomically under a single-writer lock, carrying the generation number and
     the SHA-256 of the payload it points to.
+  * A ``highest`` high-water marker is ratcheted under the lock *before* the
+    pointer is repointed. A pointer restored to a superseded generation -
+    the KEK-rotation rollback attack - reads below the marker and is
+    refused; a writer completes the marked generation when its file exists.
   * Updates are compare-and-swap: the caller supplies the generation it
     believes is current, and the store refuses the publish when reality
     disagrees. A client acting on a stale read cannot resurrect a superseded
@@ -55,7 +59,16 @@ GENERATION_HEADER = b"FVGW1"
 #: truncated generation file fails verification even if an attacker can write
 #: inside the directory but not keep the two consistent.
 POINTER_HEADER = b"FVGW0"
-_POINTER_SIZE = len(POINTER_HEADER) + 8 + 32
+_POINTER_V1_SIZE = 8 + 32
+_POINTER_V2_SIZE = _POINTER_V1_SIZE + 1
+
+#: High-water marker: ``FVHW0`` + u64be of the highest generation ever
+#: published. Ratcheted under the writer lock *before* the pointer is
+#: repointed, so a pointer swapped back to a superseded generation reads
+#: below the marker and is refused instead of silently resurrecting a
+#: pre-rotation wrapped key.
+HIGHWATER_HEADER = b"FVHW0"
+_HIGHWATER_NAME = "highest"
 
 _LOCK_NAME = ".active.lock"
 
@@ -82,6 +95,17 @@ class GenerationMismatchError(ProtectedStoreError):
     """
 
 
+class PointerRollbackError(ProtectedStoreError):
+    """The pointer sits below the recorded high-water mark.
+
+    Two on-disk states produce this verdict: ``active`` was swapped back to a
+    superseded generation (a KEK-rotation rollback), or a publish died after
+    the marker was ratcheted but before the pointer was repointed. A writer
+    may complete the marked generation when its file exists; a reader must
+    never adopt the rolled-back state.
+    """
+
+
 class StoreLockError(ProtectedStoreError):
     """The single-writer lock is held. Fail closed, never steal the lock.
 
@@ -97,6 +121,7 @@ class GenerationStore:
     def __init__(self, directory: str | Path) -> None:
         self.directory = Path(directory)
         self._pointer_path = self.directory / "active"
+        self._high_water_path = self.directory / _HIGHWATER_NAME
         self._lock_path = self.directory / _LOCK_NAME
 
     def _generation_path(self, generation: int) -> Path:
@@ -117,22 +142,30 @@ class GenerationStore:
         """
         # The pointer is replaced atomically, so a reader can legitimately
         # straddle an update: lstat saw the old inode, open got the new one.
-        # Retry the identity race; every other ProtectedStoreError surfaces
-        # immediately, and a pointer that never settles still fails closed.
+        # A reader can also straddle the marker/pointer pair - seeing the new
+        # marker beside the old pointer during a publish - so a monotonicity
+        # mismatch retries alongside the identity race. A mismatch that stays
+        # stable across every retry is real (rollback, forged or interrupted
+        # state) and fails closed rather than being adopted.
+        last_error: ProtectedStoreError | None = None
         for attempt in range(_POINTER_READ_RETRIES + 1):
             try:
                 raw = read_protected(
                     self._pointer_path,
                     header=POINTER_HEADER,
-                    expected_length=_POINTER_SIZE - len(POINTER_HEADER),
+                    expected_length=None,
                 )
+                generation, digest, monotonic = self._parse_pointer(raw)
+                high_water = self._read_high_water()
+                last_error = self._check_monotonic(generation, monotonic, high_water)
+            except ProtectedStoreRaceError as exc:
+                last_error = exc
+            if last_error is None:
                 break
-            except ProtectedStoreRaceError:
-                if attempt == _POINTER_READ_RETRIES:
-                    raise
+            if attempt < _POINTER_READ_RETRIES:
                 time.sleep(0.001 * (attempt + 1))
-        generation = struct.unpack(">Q", raw[:8])[0]
-        digest = raw[8:]
+        if last_error is not None:
+            raise last_error
 
         # The pointer names a generation the reader must be able to resolve.
         # A missing or corrupt generation file is corruption, not absence.
@@ -278,6 +311,8 @@ class GenerationStore:
                 raise ProtectedStoreMissing(
                     "generation store is uninitialized; provision() it first"
                 ) from exc
+            except PointerRollbackError:
+                current, _current_payload = self._complete_marked_publish()
             if current != expected_generation:
                 raise GenerationMismatchError(
                     f"expected generation {expected_generation} but the store is "
@@ -298,6 +333,131 @@ class GenerationStore:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_pointer(raw: bytes) -> tuple[int, bytes, bool]:
+        """Decode a pointer payload: ``(generation, digest, is_monotonic)``.
+
+        Version-1 pointers carry ``u64be generation || SHA-256(payload)``;
+        version-2 appends a marker byte and requires the high-water file to
+        exist - its absence is tamper evidence rather than a legacy store.
+        """
+        if len(raw) == _POINTER_V1_SIZE:
+            return struct.unpack(">Q", raw[:8])[0], raw[8:], False
+        if len(raw) == _POINTER_V2_SIZE and raw[-1] == 1:
+            return struct.unpack(">Q", raw[:8])[0], raw[8:_POINTER_V1_SIZE], True
+        raise ProtectedStoreError("active pointer has an unexpected length")
+
+    def _read_high_water(self) -> int | None:
+        """The ratcheted high-water generation, or ``None`` when absent."""
+        try:
+            raw = read_protected(
+                self._high_water_path,
+                header=HIGHWATER_HEADER,
+                expected_length=8,
+            )
+        except ProtectedStoreMissing:
+            return None
+        return struct.unpack(">Q", raw)[0]
+
+    @staticmethod
+    def _check_monotonic(
+        generation: int, monotonic: bool, high_water: int | None
+    ) -> ProtectedStoreError | None:
+        """Verdict for pointer-vs-marker; ``None`` means consistent."""
+        if high_water is None:
+            if monotonic:
+                return ProtectedStoreError(
+                    "the high-water marker is missing for a monotonic pointer; "
+                    "a deleted marker is tamper evidence, not a legacy store"
+                )
+            return None
+        if high_water > generation:
+            return PointerRollbackError(
+                f"pointer generation {generation} is below the recorded "
+                f"high-water mark {high_water}; refusing to adopt rolled-back "
+                "state"
+            )
+        if high_water < generation:
+            return ProtectedStoreError(
+                f"pointer generation {generation} is ahead of the recorded "
+                f"high-water mark {high_water}; the store state is inconsistent"
+            )
+        return None
+
+    def _complete_marked_publish(self) -> tuple[int, bytes]:
+        """Repoint ``active`` at the recorded high-water generation.
+
+        Called under the writer lock after ``read_active`` reports a pointer
+        behind the marker. Completing the marked generation is safe while its
+        immutable file exists: marker-first publication guarantees the file
+        was written before the marker named it. A marker naming a missing
+        file is corruption and is refused.
+        """
+        high_water = self._read_high_water()
+        if high_water is None:
+            raise PointerRollbackError("the high-water marker vanished while it was being healed")
+        raw_pointer = read_protected(
+            self._pointer_path,
+            header=POINTER_HEADER,
+            expected_length=None,
+        )
+        generation, _, _ = self._parse_pointer(raw_pointer)
+        if generation >= high_water:
+            return self.read_active()
+        try:
+            payload = read_protected(
+                self._generation_path(high_water),
+                header=GENERATION_HEADER,
+                expected_length=None,
+            )
+        except ProtectedStoreError as exc:
+            raise ProtectedStoreError(
+                f"high-water mark {high_water} references a generation file "
+                f"that is missing or unreadable: {exc}"
+            ) from exc
+        self._publish_pointer(high_water, payload)
+        return self.read_active()
+
+    def _ratchet_high_water(self, generation: int) -> None:
+        """Advance the high-water marker to ``generation``; never regress."""
+        current = self._read_high_water()
+        if current is not None and current > generation:
+            raise ProtectedStoreError(
+                f"refusing to publish generation {generation} below the "
+                f"recorded high-water mark {current}"
+            )
+        if current == generation:
+            return
+        body = HIGHWATER_HEADER + struct.pack(">Q", generation)
+        temporary = self.directory / f".highest.{os.urandom(6).hex()}.tmp"
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | binary_mode_flag()
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            _write_all(descriptor, body)
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            os.replace(temporary, self._high_water_path)
+            _fsync_directory(self.directory)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            else:
+                _fsync_directory(self.directory)
 
     def _adoptable_orphan(self, generation: int) -> bytes | None:
         """Payload of an unpublished generation file, or ``None``.
@@ -368,11 +528,20 @@ class GenerationStore:
     def _publish_pointer(self, generation: int, payload: bytes) -> None:
         """Atomically repoint ``active`` at ``generation``.
 
-        Temp file + fsync + ``os.replace`` + directory fsync. The pointer is
-        the *only* object in the store that is replaced: readers take it
-        whole or not at all on every platform with atomic rename.
+        The high-water marker is ratcheted *before* the pointer is replaced,
+        so a reader can never observe the new generation ahead of the marker:
+        a crash between the two writes leaves the marker ahead, which reads
+        refuse (indistinguishable from a pointer rollback) until a writer
+        completes the marked generation. The pointer itself is a temp file +
+        fsync + ``os.replace`` + directory fsync.
         """
-        body = POINTER_HEADER + struct.pack(">Q", generation) + hashlib.sha256(payload).digest()
+        self._ratchet_high_water(generation)
+        body = (
+            POINTER_HEADER
+            + struct.pack(">Q", generation)
+            + hashlib.sha256(payload).digest()
+            + b"\x01"
+        )
         temporary = self.directory / f".active.{os.urandom(6).hex()}.tmp"
         descriptor: int | None = None
         try:
@@ -405,9 +574,11 @@ class GenerationStore:
 
 __all__ = [
     "GENERATION_HEADER",
+    "HIGHWATER_HEADER",
     "POINTER_HEADER",
     "MAX_PAYLOAD_BYTES",
     "GenerationMismatchError",
     "GenerationStore",
+    "PointerRollbackError",
     "StoreLockError",
 ]

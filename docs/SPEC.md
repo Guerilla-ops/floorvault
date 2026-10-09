@@ -376,7 +376,12 @@ store = scheme_header || payload      (max read: 4096 bytes)
 Scheme paths are disjoint by construction (`master.key.<scheme>`); a file is
 only *this* scheme's store if it parses under this scheme's header. A reader
 whose scheme path is absent MAY adopt the legacy `master.key` path, but only
-when that file parses under the scheme's header (adoption emits a warning).
+when that file parses under the scheme's header AND the caller explicitly
+opted in (`allow_legacy_adoption=True`; adoption emits a warning). Without
+the opt-in, a parseable legacy file is refused — never replaced — because
+the scheme payloads are deterministic public transforms: a planted file is
+indistinguishable from a genuine pre-split store, so the upgrade is an
+operator decision rather than a silent default.
 
 ### 10.2 `ss` mask (normative, byte-for-byte)
 
@@ -454,7 +459,9 @@ to §10.4's owner-only contract:
 
 ```
 g-%08x.gen     = "FVGW1" (5 B) || opaque wrapped-key payload   - immutable
-active         = "FVGW0" (5 B) || u64be generation || SHA-256(payload)  - 45 B
+active         = "FVGW0" (5 B) || u64be generation || SHA-256(payload)
+                 [ || 0x01 monotonic-version byte ]           - 45 or 46 B
+highest        = "FVHW0" (5 B) || u64be high-water generation  - 13 B
 .active.lock   = "pid=<pid>\n"  - present only while a writer holds the lock
 ```
 
@@ -466,6 +473,17 @@ Normative rules:
 - **The pointer** is the only replaced object: 0600 temp, fsync, atomic
   `os.replace`, directory fsync. Readers take a whole old or whole new
   pointer on every platform with atomic rename; reads never take the lock.
+- **The high-water marker** records the highest generation ever published.
+  It is ratcheted under the writer lock *before* the pointer is repointed,
+  so a crash between the two leaves the marker ahead of the pointer. A
+  reader MUST refuse a pointer below the marker (`PointerRollbackError`),
+  MUST refuse a pointer ahead of the marker (inconsistent state), and MUST
+  refuse a versioned pointer whose marker is missing. A 45-byte pointer
+  (version 1) with no marker is a pre-monotonicity store and is accepted;
+  the first post-upgrade publish writes the version byte and marker.
+  A writer observing the marker ahead of the pointer completes the marked
+  generation when its file exists — repairing either an interrupted publish
+  or a rolled-back pointer — and refuses when the file is missing.
 - **Pointer integrity:** the reader resolves the pointer's generation file
   and verifies its payload SHA-256 equals the pointer's digest. A missing
   file or a mismatch is `ProtectedStoreError`, *not* `ProtectedStoreMissing`

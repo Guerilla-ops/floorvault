@@ -42,6 +42,7 @@ class AdaptiveKeyProvider(KeyProvider):
         strict: bool = False,
         allow_disk_fallback: bool = False,
         dpapi_entropy: Optional[bytes] = None,
+        allow_legacy_adoption: bool = False,
     ) -> None:
         self.service_name = service_name
         self.account_name = account_name
@@ -54,6 +55,10 @@ class AdaptiveKeyProvider(KeyProvider):
         # the provider uses a public constant - still user-bound through DPAPI,
         # but without the extra secret an infostealer cannot guess.
         self.dpapi_entropy = dpapi_entropy
+        # Opt-in for adopting a pre-split ``master.key`` store whose payload
+        # parses under a custody scheme. Default False: a planted legacy file
+        # is refused rather than silently adopted as the master key.
+        self.allow_legacy_adoption = allow_legacy_adoption
         self.keychain_unavailable_reason: Optional[str] = None
 
     def _is_interactive_desktop(self) -> bool:
@@ -104,6 +109,7 @@ class AdaptiveKeyProvider(KeyProvider):
             return WindowsDPAPIKeyProvider(
                 store_path=WindowsDPAPIKeyProvider.default_store_path(self.fallback_dir),
                 entropy=self.dpapi_entropy,
+                allow_legacy_adoption=self.allow_legacy_adoption,
             ).resolve_key(allow_create=allow_create)
 
         if is_linux():
@@ -115,6 +121,7 @@ class AdaptiveKeyProvider(KeyProvider):
                 # gated on the same opt-in as Tier 3: strict mode, or a caller
                 # that never enabled disk fallback, must not read master.key.ss.
                 allow_file_fallback=self.allow_disk_fallback,
+                allow_legacy_adoption=self.allow_legacy_adoption,
             )
             # A headless Linux session has no Secret Service capability. Preserve
             # AdaptiveKeyProvider's explicit local-file policy in that case.

@@ -758,8 +758,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "GS-7",
         "src/floorvault/providers/generation_store.py",
-        "            except ProtectedStoreRaceError:",
-        "            except ProtectedStoreInvalidLength:  # MUTANT",
+        "            except ProtectedStoreRaceError as exc:",
+        "            except ProtectedStoreInvalidLength as exc:  # MUTANT",
         "Pointer reads stop retrying the legitimate atomic-replace race: a "
         "concurrent writer's repoint is reported as corruption",
     ),

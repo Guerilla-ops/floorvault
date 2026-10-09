@@ -80,10 +80,12 @@ class WindowsDPAPIKeyProvider(KeyProvider):
         entropy: bytes | None = None,
         random_bytes: Callable[[int], bytes] = _random,
         allow_outside_user_profile: bool = False,
+        allow_legacy_adoption: bool = False,
     ) -> None:
         if entropy is not None and not isinstance(entropy, bytes):
             raise TypeError("entropy must be bytes")
         self._path = Path(store_path)
+        self._allow_legacy_adoption = allow_legacy_adoption
         # NOTE: the default is a public constant - a label that keeps the blob
         # domain-separated, not a secret. Only caller-supplied entropy adds the
         # "infostealer cannot unprotect" property described in the docstring.
@@ -225,6 +227,7 @@ class WindowsDPAPIKeyProvider(KeyProvider):
                 header=_HEADER,
                 expected_length=None,
                 legacy_path=self._legacy_store_path(),
+                allow_legacy_adoption=self._allow_legacy_adoption,
             )
         except ProtectedStoreMissing:
             # Genuinely absent, so creating below is correct. Any other read
