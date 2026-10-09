@@ -399,6 +399,7 @@ reporting on this repository (preferred), or email **floorbond@pm.me** — [`SEC
 - [`docs/RECORD-FORMAT-2026-09-15.md`](docs/RECORD-FORMAT-2026-09-15.md) — `FLV2` envelope format
 - [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](docs/COMPARATIVE-BENCHMARK-2026-09-15.md) — benchmark methodology
 - [`docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md`](docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md) — platform findings
+- [`docs/AUDIT-PACKET.md`](docs/AUDIT-PACKET.md) — external-audit orientation: scope, crypto inventory, prior reviews
 
 ## Development
 
