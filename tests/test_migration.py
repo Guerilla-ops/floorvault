@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -242,3 +243,44 @@ def test_legacy_key_replaced_by_fifo_is_refused(tmp_path):
     facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
     with pytest.raises(LegacyVaultError, match="key"):
         facade.list_item_ids()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_migrate_all_refuses_a_permissive_preexisting_key_backup(tmp_path):
+    """An existing vault.key.pre-migration.bak with group/other access holds
+    the legacy master key - migrate_all must refuse, not report success
+    beside it."""
+    base = tmp_path / "vault"
+    crypto = _make_crypto()
+    modern = VaultStore(base / "modern", crypto=crypto)
+    _, vault_path, key_path = _write_legacy_fernet(
+        base / "modern", {"legacy-1": {"password": "pw"}}
+    )
+    # An existing vault backup skips the whole copy block, so a permissive
+    # key backup planted beside it would otherwise survive untouched.
+    shutil.copy2(vault_path, vault_path.with_name("vault.json.enc.pre-migration.bak"))
+    key_backup = key_path.with_name("vault.key.pre-migration.bak")
+    key_backup.write_bytes(key_path.read_bytes())
+    os.chmod(key_backup, 0o666)
+
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+    with pytest.raises(LegacyVaultError, match="backup"):
+        facade.migrate_all()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_migrate_all_key_backup_is_owner_only(tmp_path):
+    """A freshly created key backup must land owner-only, not merely inherit
+    whatever copy2 preserved."""
+    import stat as stat_module
+
+    base = tmp_path / "vault"
+    crypto = _make_crypto()
+    modern = VaultStore(base / "modern", crypto=crypto)
+    _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
+
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+    facade.migrate_all()
+
+    key_backup = base / "modern" / "vault.key.pre-migration.bak"
+    assert stat_module.S_IMODE(os.stat(key_backup).st_mode) == 0o600

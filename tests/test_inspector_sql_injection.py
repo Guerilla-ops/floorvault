@@ -9,6 +9,7 @@ value ever reaches the SQL text.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
@@ -238,3 +239,38 @@ def test_plaintext_value_is_not_echoed(tmp_path):
     assert result.returncode == 0
     assert "SECRET-VALUE-9f3b" not in result.stdout
     assert "not binary ciphertext" in result.stdout
+
+
+def test_inspect_handles_cyclic_symlink(tmp_path):
+    """A symlink cycle at the db path raises inside Path.resolve(); the CLI
+    must report it as a controlled error, not a traceback."""
+    loop = tmp_path / "loop.db"
+    os.symlink(loop, loop)  # self-referential cycle
+
+    result = _run(["inspect", str(loop), "vault_items", "r1", "label"])
+    # Either resolve() refuses the loop or is_file() reports the dangling
+    # path - both are controlled failures. A traceback must never escape.
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+
+
+def test_redacted_output_hides_plaintext_length(tmp_path):
+    """The default redacted line must not reveal the exact secret length."""
+    from floorvault.core import FloorVault
+    from floorvault.memory import HardenedMemoryKey
+
+    db = tmp_path / "v.db"
+    coords = _write_sample_db(db)
+    fv = FloorVault(HardenedMemoryKey(bytes.fromhex("a" * 64)))
+    plaintext = "encrypted-value-DO-NOT-PRINT"
+    blob = fv.encrypt(
+        plaintext, table=coords["table"], record_id=coords["record_id"], column="payload_cipher"
+    )
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE vault_items SET payload_cipher=? WHERE id=?", (blob, coords["record_id"]))
+    conn.commit()
+    conn.close()
+
+    result = _run(["inspect", str(db), coords["table"], coords["record_id"], "payload_cipher"])
+    assert result.returncode == 0
+    assert str(len(plaintext)) not in result.stdout

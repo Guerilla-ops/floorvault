@@ -294,13 +294,30 @@ class MigratingVaultStore:
             return {"migrated": 0, "verified": True, "removed_legacy": False}
         # 1. Immutable backup (non-destructive).
         backup = self._vault_path.with_name(f"{self._vault_path.name}{self._backup_suffix}")
+        key_backup = self._key_path.with_name(f"{self._key_path.name}{self._backup_suffix}")
         if not backup.exists():
             shutil.copy2(self._vault_path, backup)
             if self._key_path.is_file():
-                shutil.copy2(
-                    self._key_path,
-                    self._key_path.with_name(f"{self._key_path.name}{self._backup_suffix}"),
-                )
+                shutil.copy2(self._key_path, key_backup)
+                # copy2 preserves the source's owner-only mode, which
+                # read_protected just verified; pin it anyway so the backup's
+                # protection never depends on copy semantics.
+                try:
+                    os.chmod(key_backup, 0o600)
+                except OSError:
+                    # POSIX mode bits do not exist on Windows; the ACL check
+                    # below is the control there.
+                    pass
+        # The key backup holds the legacy master key, so it is held to the
+        # same protected-store bar as the key itself. A backup that already
+        # existed never passed through read_protected - refuse to report a
+        # successful migration while a readable copy of the key sits beside
+        # the vault.
+        if os.path.lexists(key_backup):
+            try:
+                read_protected(key_backup, header=b"", expected_length=None)
+            except ProtectedStoreError as exc:
+                raise LegacyVaultError(f"Refusing legacy key backup: {exc}") from exc
         # 2. Convert each legacy item lazily (idempotent for already-modern).
         migrated = 0
         for item_id, item in legacy.items():

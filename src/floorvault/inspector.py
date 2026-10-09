@@ -58,7 +58,13 @@ def main(argv: list[str] | None = None) -> int:
         # actually a SQLite database before it is opened. A FIFO, device or
         # non-database file never reaches sqlite3.connect, and the read-only
         # URI keeps the tool from writing to (or journaling beside) the file.
-        db_path = args.db_path.expanduser().resolve()
+        try:
+            db_path = args.db_path.expanduser().resolve()
+        except (OSError, RuntimeError) as exc:
+            # A cyclic symlink raises here, before any controlled check can
+            # run - report it like every other unusable path.
+            print(f"Error: cannot resolve database path: {exc}", file=sys.stderr)
+            return 1
         if not db_path.is_file():
             print(f"Error: Database file not found: {args.db_path}", file=sys.stderr)
             return 1
@@ -128,9 +134,10 @@ def main(argv: list[str] | None = None) -> int:
                 if args.reveal:
                     print(f"Decrypted value: {decrypted}")
                 else:
+                    # No length, hash or prefix: even the exact plaintext
+                    # length is a leak once this output lands in logs.
                     print(
-                        "Decrypted value: <redacted> "
-                        f"({len(decrypted)} characters; pass --reveal to print plaintext)"
+                        "Decrypted value: <redacted> (pass --reveal to print plaintext)"
                     )
                 return 0
             except Exception as exc:
