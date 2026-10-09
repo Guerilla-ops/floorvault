@@ -271,3 +271,16 @@ def test_corpus_pruning_follows_the_completed_trusted_weekly_batch():
     assert "mode: prune" in prune
     assert "contents: read" in prune and "actions: read" in prune
     assert "write" not in prune
+
+
+def test_ci_audits_the_full_optional_dependency_surface():
+    """A dependency-audit leg must cover the extras, not just the dev env.
+
+    The matrix legs sync ``--extra dev`` only, so a pip-audit run inside them
+    never sees the sqlalchemy/libsql/macos/linux resolution - an optional
+    extra can pull a vulnerable transitive dep while every cell reports the
+    audit as passed. The dedicated leg syncs ``--all-extras`` and audits that.
+    """
+    assert "dep-audit" in TEXT, "ci.yml has no dedicated dependency-audit job"
+    assert "--all-extras" in TEXT, "the audit leg must resolve every optional extra"
+    assert "pip-audit" in TEXT, "the audit leg must run pip-audit"

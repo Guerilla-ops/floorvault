@@ -176,6 +176,29 @@ jobs:
           SEMGREP_VERSION=1.178.0
           uvx --from "semgrep==${SEMGREP_VERSION}" semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/
 
+  # Dependency-audit leg covering the FULL optional surface. The matrix legs
+  # sync only `--extra dev`, so the pip-audit step inside their security gate
+  # never sees the sqlalchemy/libsql/macos/linux (or future adapter) extras'
+  # transitive resolution — a vulnerable package reachable only through an
+  # optional extra would sail through while every cell reports the audit as
+  # passed. This job resolves every declared extra and audits that env.
+  dep-audit:
+    name: Dependency CVE audit (all extras)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+        with:
+          python-version: "3.13"
+          version: "0.12.5"
+      - name: Sync environment (all extras)
+        run: uv sync --all-extras --extra dev
+      - name: pip-audit
+        # Same command as step 2 of scripts/security-check.sh.
+        run: uv run pip-audit --desc on --skip-editable
+
   # Live-Vault integration leg (roadmap 1f): the hermetic fake-Vault suite can
   # encode a wrong wire assumption in lockstep with the implementation — a real
   # TLS-terminated Vault cannot. This runs the provider end-to-end against a

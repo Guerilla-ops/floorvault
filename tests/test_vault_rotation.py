@@ -305,3 +305,105 @@ def test_an_id_only_rotation_under_the_same_master_stays_readable(tmp_path):
             "SELECT payload_cipher FROM vault_items WHERE id = ?", (item.id,)
         ).fetchone()
     assert envelope_header(bytes(payload))["key_id"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Journal key-id validation and commitment store-binding (red-team P2)
+# ---------------------------------------------------------------------------
+
+
+def test_mark_rotation_done_rejects_an_unrepresentable_key_id(tmp_path):
+    """Journal rows name a key generation the envelope header must be able to
+    express: key_id is a u8 in [0, 255]. A caller-supplied id outside that
+    range (or of the wrong type) must never reach the journal."""
+    store = _store(tmp_path)
+    rows = [("item", "i", "payload")]
+    for bad in (-1, 256, 300):
+        with pytest.raises(ValueError, match="key_id"):
+            store.mark_rotation_done(rows, target_key_id=bad)
+    for bad_type in (True, "1", 1.5):
+        with pytest.raises(TypeError, match="key_id"):
+            store.mark_rotation_done(rows, target_key_id=bad_type)
+    # Nothing was journaled by the refused calls.
+    assert store.rotation_journal() == {}
+
+
+def test_begin_rotation_rejects_an_unrepresentable_key_id(tmp_path):
+    store = _store(tmp_path)
+    for bad in (-1, 256, 300):
+        with pytest.raises(ValueError, match="key_id"):
+            store.begin_rotation(bad, target_vault=_crypto(NEW))
+    for bad_type in (True, "1", 1.5):
+        with pytest.raises(TypeError, match="key_id"):
+            store.begin_rotation(bad_type, target_vault=_crypto(NEW))
+
+
+def _in_flight_state(store_db: Path) -> None:
+    with sqlite3.connect(store_db) as conn:
+        return conn.execute(
+            "SELECT active, target_key_id, target_commitment "
+            "FROM vault_rotation_state WHERE singleton = 1"
+        ).fetchone()
+
+
+def test_a_commitment_sealed_for_another_store_is_refused(tmp_path):
+    """The resume commitment must authenticate THIS store, not merely the key.
+
+    The canary plaintext and its AAD coordinates are public constants, so a
+    commitment envelope sealed for store A under the shared target vault also
+    verifies for store B - anyone who can write B's file can transplant A's
+    in-flight state and have B's resume authenticate a rotation B never
+    began. The commitment payload therefore binds the store's content
+    fingerprint, and a transplanted envelope must fail verification.
+    """
+    store_a = VaultStore(tmp_path / "a", crypto=_crypto(OLD))
+    store_a.add_item("generic", "A item", {"note": "a"})
+    store_a.begin_rotation(1, target_vault=_crypto(NEW))
+    active, key_id, stolen = _in_flight_state(tmp_path / "a" / "vault.db")
+    assert active and key_id == 1 and stolen
+
+    store_b = VaultStore(tmp_path / "b", crypto=_crypto(OLD))
+    store_b.add_item("generic", "B item", {"note": "b"})
+    with sqlite3.connect(tmp_path / "b" / "vault.db") as conn:
+        conn.execute(
+            "UPDATE vault_rotation_state SET active = 1, target_key_id = 1, "
+            "target_commitment = ? WHERE singleton = 1",
+            (stolen,),
+        )
+
+    with pytest.raises(VaultError, match="commitment"):
+        rotate_vault_store(
+            store_b,
+            source_ring=KeyRing({0: _crypto(OLD), 1: _crypto(NEW)}),
+            new_vault=_crypto(NEW),
+            new_key_id=1,
+        )
+
+
+def test_a_bare_canary_commitment_is_refused(tmp_path):
+    """A commitment over the bare public canary - the pre-binding format, or a
+    planted forgery - must fail the resume check. Sealing a constant proves
+    key custody but binds nothing about which store the rotation belongs to."""
+    store = _store(tmp_path)
+    store.add_item("generic", "First", {"note": "one"})
+    bare = _crypto(NEW).encrypt(
+        b"floorvault-rotation-target-v1",
+        key_id=1,
+        table="vault_rotation_state",
+        record_id="target",
+        column="commitment",
+    )
+    with sqlite3.connect(tmp_path / "vault" / "vault.db") as conn:
+        conn.execute(
+            "UPDATE vault_rotation_state SET active = 1, target_key_id = 1, "
+            "target_commitment = ? WHERE singleton = 1",
+            (bare,),
+        )
+
+    with pytest.raises(VaultError, match="commitment"):
+        rotate_vault_store(
+            store,
+            source_ring=KeyRing({0: _crypto(OLD), 1: _crypto(NEW)}),
+            new_vault=_crypto(NEW),
+            new_key_id=1,
+        )
