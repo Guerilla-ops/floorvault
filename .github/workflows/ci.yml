@@ -194,7 +194,9 @@ jobs:
           python-version: "3.13"
           version: "0.12.5"
       - name: Sync environment (all extras)
-        run: uv sync --all-extras --extra dev
+        # dev is itself a declared extra, so --all-extras covers it (and
+        # pip-audit with it); --all-extras cannot be combined with --extra.
+        run: uv sync --all-extras
       - name: pip-audit
         # Same command as step 2 of scripts/security-check.sh.
         run: uv run pip-audit --desc on --skip-editable

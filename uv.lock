@@ -604,7 +604,7 @@ linux = [
     { name = "secretstorage" },
 ]
 macos = [
-    { name = "pyobjc-framework-security" },
+    { name = "pyobjc-framework-security", marker = "sys_platform == 'darwin'" },
 ]
 sqlalchemy = [
     { name = "sqlalchemy" },
@@ -619,7 +619,7 @@ requires-dist = [
     { name = "libsql", marker = "extra == 'libsql'", specifier = ">=0.1.0" },
     { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7.0" },
     { name = "pycryptodome", marker = "extra == 'dev'", specifier = ">=3.20.0" },
-    { name = "pyobjc-framework-security", marker = "extra == 'macos'", specifier = ">=10.0" },
+    { name = "pyobjc-framework-security", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5.0" },
