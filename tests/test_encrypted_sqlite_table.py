@@ -133,3 +133,115 @@ def test_load_bytes_rejects_a_null_field():
         table.load_bytes("user-123", "api_token_cipher")
 
     connection.close()
+
+
+# --------------------------------------------------------------------------
+# Write invariant (red-team #3+#4): a multi-row match must write NOTHING, and
+# the id column must never be a ciphertext target. The post-hoc rowcount guard
+# checked after UPDATE, so a duplicate or NOCASE-collided match rewrote every
+# row and the caller's documented commit() persisted the corruption.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def dup_table():
+    """Two physical rows sharing one id - no UNIQUE constraint."""
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE dup (id TEXT, ssn TEXT)")
+    connection.executemany("INSERT INTO dup VALUES (?, NULL)", [("r1",), ("r1",), ("r2",)])
+    table = EncryptedSQLiteTable(
+        connection, FloorVault(b"k" * 32, memory_mode="disabled"), "dup", id_column="id"
+    )
+    yield connection, table
+    connection.close()
+
+
+def test_store_on_duplicate_id_writes_nothing(dup_table):
+    connection, table = dup_table
+
+    with pytest.raises(ValueError, match="more than one row"):
+        table.store("r1", "ssn", "MASS-OVERWRITE")
+
+    # The failure path callers actually take: report the error, then commit.
+    connection.commit()
+    rows = connection.execute("SELECT id, ssn FROM dup ORDER BY rowid").fetchall()
+    assert rows == [("r1", None), ("r1", None), ("r2", None)], (
+        "a refused write left ciphertext behind"
+    )
+
+
+def test_store_fields_on_duplicate_id_writes_nothing(dup_table):
+    connection, table = dup_table
+
+    with pytest.raises(ValueError, match="more than one row"):
+        table.store_fields("r1", {"ssn": "x"})
+
+    connection.commit()
+    assert connection.execute("SELECT COUNT(*) FROM dup WHERE ssn IS NOT NULL").fetchone()[0] == 0
+
+
+def test_nocase_collided_ids_write_nothing():
+    """A NOCASE column makes 'r1' and 'R1' match one WHERE - same class of bug."""
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE accts (id TEXT COLLATE NOCASE, ssn TEXT)")
+    connection.executemany("INSERT INTO accts VALUES (?, NULL)", [("r1",), ("R1",)])
+    table = EncryptedSQLiteTable(
+        connection, FloorVault(b"k" * 32, memory_mode="disabled"), "accts", id_column="id"
+    )
+
+    with pytest.raises(ValueError, match="more than one row"):
+        table.store("r1", "ssn", "CROSS-RECORD-OVERWRITE")
+
+    connection.commit()
+    assert connection.execute("SELECT COUNT(*) FROM accts WHERE ssn IS NOT NULL").fetchone()[0] == 0
+    connection.close()
+
+
+def test_store_rejects_id_column_as_ciphertext_target(encrypted_users):
+    """encrypted_column == id_column rewrites the row's own key (rowcount==1,
+    so the old guard accepted it) - destroying the record without an error."""
+    connection, table = encrypted_users
+    connection.execute("INSERT INTO users (id) VALUES (?)", ("r1",))
+
+    with pytest.raises(ValueError, match="id column"):
+        table.store("r1", "id", "IMPERSONATE")
+
+    assert connection.execute("SELECT id FROM users").fetchall() == [("r1",)]
+
+
+def test_store_rejects_id_column_case_variant(encrypted_users):
+    """SQL folds case; 'ID' names the same column as id_column 'id'."""
+    connection, table = encrypted_users
+    connection.execute("INSERT INTO users (id) VALUES (?)", ("r1",))
+
+    with pytest.raises(ValueError, match="id column"):
+        table.store("r1", "ID", "IMPERSONATE")
+
+    assert connection.execute("SELECT id FROM users").fetchall() == [("r1",)]
+
+
+def test_store_fields_rejects_id_column_among_fields(encrypted_users):
+    connection, table = encrypted_users
+    connection.execute("INSERT INTO users (id) VALUES (?)", ("r2",))
+
+    with pytest.raises(ValueError, match="id column"):
+        table.store_fields("r2", {"api_token_cipher": "s", "id": "HIJACK"})
+
+    row = connection.execute("SELECT id, api_token_cipher FROM users").fetchone()
+    assert row[0] == "r2" and row[1] in (b"",)
+
+
+def test_load_on_duplicate_id_raises(dup_table):
+    """Reads claim exactly-one too; a duplicate match must refuse, not pick an
+    arbitrary row."""
+    _connection, table = dup_table
+
+    with pytest.raises(ValueError, match="more than one row"):
+        table.load("r1", "ssn")
+
+
+def test_load_fields_on_duplicate_id_raises(dup_table):
+    _connection, table = dup_table
+
+    with pytest.raises(ValueError, match="more than one row"):
+        table.load_fields("r1", ["ssn"])
