@@ -308,20 +308,20 @@ def main() -> int:
 
     # ------------------------------------------------------------------
     section("10. Key providers")
-    os.environ["APPSTATE_KEY"] = KEY_HEX
+    os.environ["FLOOR_VAULT_KEY"] = KEY_HEX
     try:
         k = AdaptiveKeyProvider(fallback_dir=root / "prov").resolve_key()
         check("tier-1 env key resolves", k.get_bytes() == KEY_A)
         k.wipe()
-        os.environ["APPSTATE_KEY"] = "nothex"
+        os.environ["FLOOR_VAULT_KEY"] = "nothex"
         expect_raises(
             "malformed env key rejected",
             (KeyProviderError,),
             AdaptiveKeyProvider(fallback_dir=root / "prov").resolve_key,
         )
-        os.environ["APPSTATE_KEY"] = KEY_HEX
+        os.environ["FLOOR_VAULT_KEY"] = KEY_HEX
     finally:
-        os.environ.pop("APPSTATE_KEY", None)
+        os.environ.pop("FLOOR_VAULT_KEY", None)
 
     # Force the machine-file tier (skip env + native store) so the atomic
     # publish path we hardened is exercised on the real filesystem.
@@ -776,7 +776,7 @@ def main() -> int:
     iconn.commit()
     iconn.close()
 
-    env = dict(os.environ, APPSTATE_KEY=KEY_HEX)
+    env = dict(os.environ, FLOOR_VAULT_KEY=KEY_HEX)
     py = sys.executable
 
     def cli(*args) -> subprocess.CompletedProcess:
@@ -802,7 +802,7 @@ def main() -> int:
     check("cli rejects injected identifier", r.returncode == 1)
     r = cli("inspect", str(root / "nope.db"), "t", "r", "c")
     check("cli missing db -> exit 1", r.returncode == 1)
-    env2 = dict(env, APPSTATE_KEY=secrets.token_bytes(32).hex())
+    env2 = dict(env, FLOOR_VAULT_KEY=secrets.token_bytes(32).hex())
     r2 = subprocess.run(  # argv is sys.executable plus fixed arguments  # nosec B603
         [py, "-m", "floorvault.inspector", "inspect", str(idb), "secrets", "rec-1", "value"],
         capture_output=True,

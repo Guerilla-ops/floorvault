@@ -40,7 +40,7 @@ def _run(argv: list[str]) -> subprocess.CompletedProcess:
 
     env = {
         **os.environ,
-        "APPSTATE_KEY": "a" * 64,
+        "FLOOR_VAULT_KEY": "a" * 64,
         "PYTHONPATH": str(REPO_ROOT / "src"),
     }
     return subprocess.run(

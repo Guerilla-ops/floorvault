@@ -401,8 +401,12 @@ else.
 - Windows: `CryptProtectData(key, entropy)` — variable-length OS blob;
   `entropy` is caller-supplied or the public constant `b"floorvault-dpapi"`
   (a label, not a secret).
-- Non-Windows (contract testing): `mask = SHA256(entropy)`, `out[i] = in[i]
-  XOR mask[i]` with the same `zip` truncation semantics as §10.2.
+- Non-Windows (contract testing only): `mask = SHA256(entropy)`, `out[i] =
+  in[i] XOR mask[i]` with the same `zip` truncation semantics as §10.2. With
+  the default public entropy this is plaintext-equivalent custody, so
+  `resolve_key` on a non-Windows host MUST refuse unless the provider was
+  constructed with `allow_nonwindows_stub=True` — the opt-in names the risk
+  rather than hiding it behind a DPAPI-looking header.
 - Payload length is validated only after unprotection (must be 32).
 
 ### 10.4 Store file safety contract (normative)
@@ -434,10 +438,14 @@ else.
 
 ### 10.5 Adaptive provider resolution order
 
-1. Environment, in this order: `APPSTATE_KEY`, `FLOOR_VAULT_KEY`,
-   `VAULT_MASTER_KEY` — first non-empty wins; value MUST be exactly 64
-   hexadecimal characters (32 bytes); `APPSTATE_KEY` emits a deprecation
-   warning.
+1. Environment, in this order: `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY` — first
+   non-empty wins; value MUST be exactly 64 hexadecimal characters (32
+   bytes). `APPSTATE_KEY` shares a process-wide namespace with other tools
+   and is read only when the provider is constructed with
+   `allow_legacy_env_vars=True`; it then sorts last and still emits a
+   deprecation warning. `strict=True` refuses environment custody outright —
+   a plaintext env var is below the OS-backed pledge — raising
+   `CustodyDowngradeError` that names the variable (never its value).
 2. OS-native custody: Windows DPAPI store; Linux Secret Service (when a
    session bus and the `secretstorage` package are reachable, else absent);
    macOS Keychain. A present-but-unusable native tier raises rather than

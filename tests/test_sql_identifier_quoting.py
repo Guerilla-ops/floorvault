@@ -166,7 +166,7 @@ class TestInspectorQuoting:
     def _run(self, argv: list[str]) -> subprocess.CompletedProcess:
         import os
 
-        env = {**os.environ, "APPSTATE_KEY": "a" * 64, "PYTHONPATH": str(REPO_ROOT / "src")}
+        env = {**os.environ, "FLOOR_VAULT_KEY": "a" * 64, "PYTHONPATH": str(REPO_ROOT / "src")}
         return subprocess.run(
             [sys.executable, "-m", "floorvault.inspector", *argv],
             capture_output=True,

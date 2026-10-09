@@ -8,10 +8,12 @@ master key. When it is omitted the provider uses a public constant
 (``b"floorvault-dpapi"``): the blob is still bound to the Windows user account
 by DPAPI, but the constant adds no secrecy - it is a label, not a key.
 
-On non-Windows hosts (CI, test bundles, macOS) it degrades to a deterministic
-entropy-derived mask over the shared protected-file custody so the round-trip
-contract is testable everywhere; the real CryptProtectData boundary is applied
-only when ``os.name == 'nt'``.
+On non-Windows hosts (CI, test bundles, macOS) there is no OS boundary to
+apply: the deterministic entropy-derived mask is plaintext-equivalent custody
+(the default entropy is a public constant), so ``resolve_key`` refuses unless
+the caller opts in with ``allow_nonwindows_stub=True``. The stub exists only
+to keep the round-trip contract testable; the real CryptProtectData boundary
+is applied only when ``os.name == 'nt'``.
 
 The on-disk blob is always ``_HEADER + protect(key)`` — never the raw key — and
 the protected file enforces 0600 + no-symlink on every read.
@@ -80,6 +82,7 @@ class WindowsDPAPIKeyProvider(KeyProvider):
         entropy: bytes | None = None,
         random_bytes: Callable[[int], bytes] = _random,
         allow_outside_user_profile: bool = False,
+        allow_nonwindows_stub: bool = False,
     ) -> None:
         if entropy is not None and not isinstance(entropy, bytes):
             raise TypeError("entropy must be bytes")
@@ -90,6 +93,7 @@ class WindowsDPAPIKeyProvider(KeyProvider):
         self._entropy = bytes(entropy or b"floorvault-dpapi")
         self._random_bytes = random_bytes
         self._allow_outside_user_profile = allow_outside_user_profile
+        self._allow_nonwindows_stub = allow_nonwindows_stub
         self._assert_store_location_is_private()
 
     def _assert_store_location_is_private(self) -> None:
@@ -215,6 +219,14 @@ class WindowsDPAPIKeyProvider(KeyProvider):
     # ---- KeyProvider contract ---------------------------------------------
 
     def resolve_key(self, *, allow_create: bool = True) -> HardenedMemoryKey:
+        if not self._is_windows() and not self._allow_nonwindows_stub:
+            raise ProtectedStoreError(
+                "WindowsDPAPIKeyProvider has no OS custody boundary on a "
+                "non-Windows host: the store is masked with a deterministic, "
+                "publicly known pad, so the file is plaintext-equivalent. "
+                "Pass allow_nonwindows_stub=True only for tests/development "
+                "that accept that, or use this platform's real custody tier."
+            )
         try:
             # expected_length=None: on Windows the stored payload is a DPAPI blob
             # whose size is chosen by CryptProtectData, not a fixed 32 bytes. The

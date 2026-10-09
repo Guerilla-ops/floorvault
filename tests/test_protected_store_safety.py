@@ -494,21 +494,25 @@ def test_windows_dpapi_does_not_rotate_on_a_non_0600_store(tmp_path):
     if sys.platform == "win32":
         pytest.skip("POSIX permission bits")
     store = tmp_path / "winstore"
-    provider = WindowsDPAPIKeyProvider(store_path=store, entropy=b"entropy")
+    provider = WindowsDPAPIKeyProvider(
+        store_path=store, entropy=b"entropy", allow_nonwindows_stub=True
+    )
     provider.resolve_key(allow_create=True)
     store.chmod(0o640)
     corrupted = store.read_bytes()
 
     with pytest.raises(ProtectedStoreError):
-        WindowsDPAPIKeyProvider(store_path=store, entropy=b"entropy").resolve_key(allow_create=True)
+        WindowsDPAPIKeyProvider(
+            store_path=store, entropy=b"entropy", allow_nonwindows_stub=True
+        ).resolve_key(allow_create=True)
     assert store.read_bytes() == corrupted
 
 
 def test_windows_dpapi_still_creates_when_genuinely_absent(tmp_path):
     store = tmp_path / "winstore"
-    key = WindowsDPAPIKeyProvider(store_path=store, entropy=b"entropy").resolve_key(
-        allow_create=True
-    )
+    key = WindowsDPAPIKeyProvider(
+        store_path=store, entropy=b"entropy", allow_nonwindows_stub=True
+    ).resolve_key(allow_create=True)
     assert len(key.get_bytes()) == 32
     assert store.exists()
 
@@ -518,14 +522,16 @@ def test_windows_dpapi_fails_closed_when_absent_and_create_disallowed(tmp_path):
 
     store = tmp_path / "winstore"
     with pytest.raises(MissingKeyError):
-        WindowsDPAPIKeyProvider(store_path=store, entropy=b"entropy").resolve_key(
-            allow_create=False
-        )
+        WindowsDPAPIKeyProvider(
+            store_path=store, entropy=b"entropy", allow_nonwindows_stub=True
+        ).resolve_key(allow_create=False)
 
 
 def _build(provider_name: str, store):
     if provider_name == "windows_dpapi":
-        return WindowsDPAPIKeyProvider(store_path=store, entropy=b"entropy")
+        return WindowsDPAPIKeyProvider(
+            store_path=store, entropy=b"entropy", allow_nonwindows_stub=True
+        )
     return linux_module.LinuxSecretServiceKeyProvider(store_path=store)
 
 

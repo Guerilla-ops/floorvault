@@ -60,6 +60,7 @@ def _dpapi_provider(base):
     return WindowsDPAPIKeyProvider(
         store_path=WindowsDPAPIKeyProvider.default_store_path(base),
         allow_outside_user_profile=True,
+        allow_nonwindows_stub=True,
     )
 
 
@@ -168,7 +169,11 @@ def test_dpapi_provider_adopts_a_pre_split_store(tmp_path):
     """Same adoption rule for the Windows store."""
     key = b"\x3c" * 32
     legacy = tmp_path / LEGACY_STORE_NAME
-    before = WindowsDPAPIKeyProvider(store_path=legacy, allow_outside_user_profile=True)
+    before = WindowsDPAPIKeyProvider(
+        store_path=legacy,
+        allow_outside_user_profile=True,
+        allow_nonwindows_stub=True,
+    )
     write_protected(before._protect(key), legacy, header=b"FLOORWV1", expected_length=None)
 
     provider = _dpapi_provider(tmp_path)

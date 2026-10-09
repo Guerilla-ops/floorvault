@@ -25,12 +25,81 @@ def _force_machine_file_tier(monkeypatch):
 
 def test_adaptive_provider_env_variable(monkeypatch, tmp_path):
     hex_key = "0123456789abcdef" * 4  # gitleaks:allow
-    monkeypatch.setenv("APPSTATE_KEY", hex_key)
+    monkeypatch.setenv("FLOOR_VAULT_KEY", hex_key)
 
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
     key = provider.resolve_key()
 
     assert key.get_bytes() == bytes.fromhex(hex_key)
+    key.wipe()
+
+
+# --------------------------------------------------------------------------
+# Tier 1 gating: strict forbids env custody; the legacy name needs an opt-in
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("var_name", ["APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"])
+def test_adaptive_provider_strict_refuses_env_var_custody(monkeypatch, tmp_path, var_name):
+    """strict=True pledges OS-backed custody; env vars must not bypass it.
+
+    A plaintext environment variable is the weakest custody there is -
+    readable from /proc/<pid>/environ, ``ps e``, and CI logs - so adopting
+    one under ``strict`` silently downgrades below the pledge. The error
+    names the variable but never its value.
+    """
+    secret = "cd" * 32  # gitleaks:allow
+    monkeypatch.setenv(var_name, secret)
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, strict=True)
+
+    with pytest.raises(KeyProviderError, match=var_name) as excinfo:
+        provider.resolve_key()
+    assert secret not in str(excinfo.value)
+
+
+def test_adaptive_provider_ignores_legacy_appstate_key_by_default(monkeypatch, tmp_path):
+    """APPSTATE_KEY is set but ignored unless the legacy name is opted in.
+
+    It shares a process-wide namespace with other tools; a value placed there
+    for something else must not be adopted as the vault master key. The
+    warning tells the operator how to adopt it deliberately.
+    """
+    foreign = "ab" * 32  # gitleaks:allow
+    monkeypatch.setenv("APPSTATE_KEY", foreign)
+    _force_machine_file_tier(monkeypatch)
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)
+    monkeypatch.setattr(provider, "_is_interactive_desktop", lambda: False)
+
+    with pytest.warns(UserWarning, match="APPSTATE_KEY"):
+        key = provider.resolve_key()
+
+    assert key.get_bytes() != bytes.fromhex(foreign), "a foreign APPSTATE_KEY was adopted"
+    key.wipe()
+
+
+def test_adaptive_provider_legacy_appstate_key_requires_opt_in(monkeypatch, tmp_path):
+    hex_key = "ab" * 32  # gitleaks:allow
+    monkeypatch.setenv("APPSTATE_KEY", hex_key)
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_legacy_env_vars=True)
+
+    with pytest.warns(UserWarning, match="legacy"):
+        key = provider.resolve_key()
+    assert key.get_bytes() == bytes.fromhex(hex_key)
+    key.wipe()
+
+
+def test_adaptive_provider_namespaced_env_beats_legacy_name(monkeypatch, tmp_path):
+    """A namespaced variable must win over the shared-namespace legacy name."""
+    monkeypatch.setenv("APPSTATE_KEY", "aa" * 32)  # gitleaks:allow
+    monkeypatch.setenv("FLOOR_VAULT_KEY", "bb" * 32)  # gitleaks:allow
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_legacy_env_vars=True)
+
+    key = provider.resolve_key()
+    assert key.get_bytes() == bytes.fromhex("bb" * 32)
     key.wipe()
 
 
@@ -96,7 +165,7 @@ def test_adaptive_provider_dispatches_linux_secret_service(monkeypatch, tmp_path
 
 
 def test_adaptive_provider_rejects_implicit_weak_environment_keys(monkeypatch, tmp_path):
-    monkeypatch.setenv("APPSTATE_KEY", "password")
+    monkeypatch.setenv("FLOOR_VAULT_KEY", "password")
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
     with pytest.raises(KeyProviderError, match="64 hexadecimal characters"):
         provider.resolve_key()
