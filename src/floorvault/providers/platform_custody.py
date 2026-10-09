@@ -117,6 +117,7 @@ def read_scheme_store(
     header: bytes,
     expected_length: int | None = 32,
     legacy_path: Path | None = None,
+    allow_legacy_adoption: bool = False,
 ) -> bytes:
     """Read this scheme's store, adopting a pre-split store when that is what it is.
 
@@ -126,6 +127,13 @@ def read_scheme_store(
     ignored, so a raw tier-3 key file no longer blocks the Secret Service tier,
     while a genuine pre-split store is still found. Minting a fresh key beside an
     existing store would leave the user's data undecryptable.
+
+    Adoption is refused unless ``allow_legacy_adoption`` is set: the scheme
+    payloads are deterministic public functions, so an attacker who can write
+    the vault directory can plant a ``master.key`` that parses and have their
+    own key silently adopted - a custody downgrade. The explicit opt-in turns
+    the upgrade into an operator decision; refusing rather than minting keeps
+    the pre-split data reachable.
 
     Raises ``ProtectedStoreMissing`` when neither location holds this scheme's
     store, which is the only condition under which the caller may create one.
@@ -141,6 +149,12 @@ def read_scheme_store(
     except (ProtectedStoreMissing, ProtectedStoreHeaderError):
         # Absent, or another scheme's file: neither is this scheme's store.
         raise ProtectedStoreMissing("protected store not present") from None
+    if not allow_legacy_adoption:
+        raise ProtectedStoreError(
+            f"a pre-split key store exists at {legacy_path}; adopting it is a "
+            "custody decision, not a default - construct the provider with "
+            "allow_legacy_adoption=True to use it, or remove the file"
+        )
     warnings.warn(
         f"adopting the pre-split key store at {legacy_path}; future writes use {path}",
         UserWarning,
