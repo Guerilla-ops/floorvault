@@ -93,6 +93,16 @@ sqlalchemy = [
 libsql = [
     "libsql>=0.1.0",
 ]
+# DB-API adapters (src/floorvault/dbapi_adapter.py). The adapters never import
+# the driver - they take any PEP 249 connection - so these extras only pin the
+# driver the caller would otherwise have to choose themselves. psycopg 3.1 is
+# the floor where %s placeholders, rowcount and cursor() semantics stabilized.
+postgres = [
+    "psycopg[binary]>=3.1",
+]
+mysql = [
+    "mysql-connector-python>=8.4",
+]
 # macOS Keychain (Tier 2 of AdaptiveKeyProvider) needs the Security framework
 # bindings. Without them the provider falls through to Tier 3 and, unless
 # allow_disk_fallback is enabled, fails closed.
