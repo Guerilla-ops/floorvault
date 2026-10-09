@@ -210,6 +210,7 @@ def test_legacy_key_reached_through_symlink_is_refused(tmp_path):
         facade.list_item_ids()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
 def test_legacy_key_group_or_other_readable_is_refused(tmp_path):
     """A world-readable ``vault.key`` must be refused, not adopted.
 
