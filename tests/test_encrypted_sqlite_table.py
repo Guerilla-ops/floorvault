@@ -231,6 +231,34 @@ def test_store_fields_rejects_id_column_among_fields(encrypted_users):
     assert row[0] == "r2" and row[1] in (b"",)
 
 
+def test_store_rejects_qualified_id_column_names():
+    """A qualified id_column ('users.id') must not slip the guard: 'id' and
+    'users.id' resolve to the same physical column, so qualified names are
+    refused outright for column positions."""
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE users (id TEXT PRIMARY KEY)")
+    with pytest.raises(ValueError, match="bare column"):
+        EncryptedSQLiteTable(
+            connection,
+            FloorVault(b"k" * 32, memory_mode="disabled"),
+            "users",
+            id_column="users.id",
+        )
+    connection.close()
+
+
+def test_store_rejects_qualified_ciphertext_target(encrypted_users):
+    """A qualified encrypted_column ('users.id') names the same physical
+    column as id_column 'id' - refusing it keeps the guard airtight."""
+    connection, table = encrypted_users
+    connection.execute("INSERT INTO users (id) VALUES (?)", ("r3",))
+
+    with pytest.raises(ValueError, match="bare column"):
+        table.store("r3", "users.id", "IMPERSONATE")
+
+    assert connection.execute("SELECT id FROM users").fetchall() == [("r3",)]
+
+
 def test_load_on_duplicate_id_raises(dup_table):
     """Reads claim exactly-one too; a duplicate match must refuse, not pick an
     arbitrary row."""

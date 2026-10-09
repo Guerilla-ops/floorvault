@@ -21,6 +21,15 @@ def _safe_identifier(name: str) -> str:
     return name
 
 
+def _safe_column(name: str) -> str:
+    """Validate a bare column name - qualified names like ``users.id`` are
+    refused so a qualified spelling cannot slip past the id-column guard to
+    name the same physical column."""
+    if "." in name:
+        raise ValueError(f"{name!r} is not a bare column name")
+    return _safe_identifier(name)
+
+
 def _quoted_identifier(name: str) -> str:
     """Validate ``name`` and return it bracket-quoted for SQL interpolation.
 
@@ -59,7 +68,7 @@ class EncryptedSQLiteTable:
         self.connection = connection
         self.crypto = crypto
         self.table_name = _safe_identifier(table_name)
-        self.id_column = _safe_identifier(id_column)
+        self.id_column = _safe_column(id_column)
         self.schema_id = schema_id
         self._table_sql = _quoted_identifier(table_name)
         self._id_sql = _quoted_identifier(id_column)
@@ -83,7 +92,7 @@ class EncryptedSQLiteTable:
         UPDATE's own WHERE clause, so a multi-row write cannot be persisted
         by a later caller commit.
         """
-        column = _safe_identifier(encrypted_column)
+        column = _safe_column(encrypted_column)
         if column.lower() == self.id_column.lower():
             raise ValueError(
                 f"encrypted column {column!r} must not be the id column "
@@ -166,7 +175,7 @@ class EncryptedSQLiteTable:
         one shared AAD build replace a statement and a full AAD construction
         per field. The caller must still call ``connection.commit()``.
         """
-        columns = [_safe_identifier(name) for name in fields]
+        columns = [_safe_column(name) for name in fields]
         if not columns:
             raise ValueError("fields must not be empty")
         for column in columns:
@@ -240,7 +249,7 @@ class EncryptedSQLiteTable:
         schema_version: int,
         revision: int | None,
     ) -> dict[str, bytes]:
-        columns = [_safe_identifier(name) for name in encrypted_columns]
+        columns = [_safe_column(name) for name in encrypted_columns]
         if not columns:
             return {}
         cursor = self.connection.execute(
@@ -274,7 +283,7 @@ class EncryptedSQLiteTable:
         Shared by both accessors so the "exactly one existing record" and NULL
         invariants cannot drift apart between the text and bytes paths.
         """
-        column = _safe_identifier(encrypted_column)
+        column = _safe_column(encrypted_column)
         column_sql = _quoted_identifier(encrypted_column)
         cursor = self.connection.execute(
             f"SELECT {column_sql} FROM {self._table_sql} WHERE {self._id_sql} = ?",  # identifiers allow-listed + quoted  # nosec B608
