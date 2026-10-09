@@ -72,7 +72,12 @@ class AdaptiveKeyProvider(KeyProvider):
         # /proc/<pid>/environ, `ps e`, and CI logs - so adopting one under
         # strict silently downgrades below the pledge.
         if self.strict:
-            for var_name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
+            # Only names this provider would actually consider for custody: a
+            # foreign APPSTATE_KEY (not opted into) is ignored, not a breach.
+            strict_env = ["FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"]
+            if self.allow_legacy_env_vars:
+                strict_env.append("APPSTATE_KEY")
+            for var_name in strict_env:
                 if os.environ.get(var_name):
                     raise CustodyDowngradeError(
                         f"strict=True refuses environment-variable key custody, "
@@ -86,15 +91,6 @@ class AdaptiveKeyProvider(KeyProvider):
             env_names = ["FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"]
             if self.allow_legacy_env_vars:
                 env_names.append("APPSTATE_KEY")
-            elif os.environ.get("APPSTATE_KEY"):
-                warnings.warn(
-                    "APPSTATE_KEY is set but ignored: it shares a namespace "
-                    "with other tools, so FloorVault honours it only when the "
-                    "provider is constructed with allow_legacy_env_vars=True. "
-                    "Prefer FLOOR_VAULT_KEY or VAULT_MASTER_KEY.",
-                    UserWarning,
-                    stacklevel=2,
-                )
             for var_name in env_names:
                 val = os.environ.get(var_name)
                 if val:
@@ -118,6 +114,18 @@ class AdaptiveKeyProvider(KeyProvider):
                     except ValueError as exc:
                         raise KeyProviderError("Environment key must be valid hexadecimal") from exc
                     return HardenedMemoryKey(raw_bytes)
+            # Warn about the ignored legacy name only once the namespaced
+            # variables had their chance: under warnings-as-errors a stray
+            # APPSTATE_KEY must not veto a valid FLOOR_VAULT_KEY.
+            if not self.allow_legacy_env_vars and os.environ.get("APPSTATE_KEY"):
+                warnings.warn(
+                    "APPSTATE_KEY is set but ignored: it shares a namespace "
+                    "with other tools, so FloorVault honours it only when the "
+                    "provider is constructed with allow_legacy_env_vars=True. "
+                    "Prefer FLOOR_VAULT_KEY or VAULT_MASTER_KEY.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # --- Tier 2: Direct system-keyring capability probe ---
         # Do not infer keyring availability from SSH_CONNECTION, DISPLAY, or
@@ -237,8 +245,9 @@ class AdaptiveKeyProvider(KeyProvider):
         )
         return (
             f"Refusing headless fallback to plaintext disk key ({cause}).{missing_tier} "
-            "Provide the key explicitly (APPSTATE_KEY, FLOOR_VAULT_KEY or "
-            "VAULT_MASTER_KEY as 64 hexadecimal characters), install the OS-native "
+            "Provide the key explicitly (FLOOR_VAULT_KEY or VAULT_MASTER_KEY as 64 "
+            "hexadecimal characters; APPSTATE_KEY requires allow_legacy_env_vars=True "
+            "and neither is honoured while strict=True), install the OS-native "
             "custody extra for this platform, or opt in to a 0600 local key file with "
             "AdaptiveKeyProvider(allow_disk_fallback=True)."
         )

@@ -2,6 +2,7 @@
 
 import os
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,7 @@ def test_adaptive_provider_env_variable(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("var_name", ["APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"])
+@pytest.mark.parametrize("var_name", ["FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"])
 def test_adaptive_provider_strict_refuses_env_var_custody(monkeypatch, tmp_path, var_name):
     """strict=True pledges OS-backed custody; env vars must not bypass it.
 
@@ -56,6 +57,52 @@ def test_adaptive_provider_strict_refuses_env_var_custody(monkeypatch, tmp_path,
     with pytest.raises(KeyProviderError, match=var_name) as excinfo:
         provider.resolve_key()
     assert secret not in str(excinfo.value)
+
+
+def test_adaptive_provider_strict_ignores_a_foreign_appstate_key(monkeypatch, tmp_path):
+    """A set-but-ignored APPSTATE_KEY must not trip the strict refusal.
+
+    The provider never considers the shared-namespace name for custody unless
+    ``allow_legacy_env_vars`` is set, so its mere presence is not a custody
+    breach - refusing on it would let an unrelated tool's variable deny
+    startup. The provider should fall through to the tiers' own refusal.
+    """
+    monkeypatch.setenv("APPSTATE_KEY", "cd" * 32)  # gitleaks:allow
+    _force_machine_file_tier(monkeypatch)
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, strict=True)
+
+    with pytest.raises(KeyProviderError, match="Refusing headless fallback") as excinfo:
+        provider.resolve_key()
+    # The refusal is Tier 3's disk-fallback refusal, not strict custody
+    # refusing on the foreign variable.
+    assert not isinstance(excinfo.value, CustodyDowngradeError)
+
+
+def test_adaptive_provider_strict_refuses_opted_in_appstate_key(monkeypatch, tmp_path):
+    """Opted in, APPSTATE_KEY IS a custody source - strict must refuse it."""
+    monkeypatch.setenv("APPSTATE_KEY", "cd" * 32)  # gitleaks:allow
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, strict=True, allow_legacy_env_vars=True)
+
+    with pytest.raises(KeyProviderError, match="APPSTATE_KEY"):
+        provider.resolve_key()
+
+
+def test_adaptive_provider_ignored_appstate_key_does_not_veto_namespaced_key(monkeypatch, tmp_path):
+    """Under warnings-as-errors a stray APPSTATE_KEY must not abort a valid
+    namespaced resolution - the ignore-warning fires only when no namespaced
+    (or opted-in) variable supplied the key."""
+    monkeypatch.setenv("APPSTATE_KEY", "ab" * 32)  # gitleaks:allow
+    monkeypatch.setenv("FLOOR_VAULT_KEY", "bb" * 32)  # gitleaks:allow
+
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        key = provider.resolve_key()
+    assert key.get_bytes() == bytes.fromhex("bb" * 32)
+    key.wipe()
 
 
 def test_adaptive_provider_ignores_legacy_appstate_key_by_default(monkeypatch, tmp_path):
