@@ -136,9 +136,7 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     # No length, hash or prefix: even the exact plaintext
                     # length is a leak once this output lands in logs.
-                    print(
-                        "Decrypted value: <redacted> (pass --reveal to print plaintext)"
-                    )
+                    print("Decrypted value: <redacted> (pass --reveal to print plaintext)")
                 return 0
             except Exception as exc:
                 print(f"Decryption failed: {exc}", file=sys.stderr)
