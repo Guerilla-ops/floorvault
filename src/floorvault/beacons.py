@@ -78,7 +78,7 @@ def _coerce_key_material(
 ) -> Union[bytes, bytearray, memoryview]:
     """Coerce a key argument to a bytes-like buffer, accepting a hardened handle.
 
-    Shared by :func:`compute_beacon` (key, at least ``_KEY_BYTES``) and
+    Shared by :func:`compute_beacon` (key, exactly ``_KEY_BYTES``) and
     :func:`derive_beacon_key` (master key, exactly ``_KEY_BYTES``) so the
     isinstance dispatch and type error live in one place. Callers apply their
     own length contract on top.
@@ -105,15 +105,24 @@ def _coerce_key_material(
 def _validate_key(
     key: Union[bytes, bytearray, HardenedMemoryKey],
 ) -> Union[bytes, bytearray, memoryview]:
-    """Return 32+ bytes of key material, accepting a hardened handle.
+    """Return exactly ``_KEY_BYTES`` of key material, accepting a hardened handle.
 
     Returns the buffer as-is rather than re-wrapping it in ``bytes``: for a
     hardened handle that re-wrap would reintroduce exactly the un-wipeable heap
     copy this function exists to avoid.
+
+    The length must be EXACTLY ``_KEY_BYTES``: the AEAD path's 64-byte SIV
+    subkey otherwise passes as a "beacon key", and reusing one key across the
+    encryption and index purposes is precisely the cross-domain defect
+    :func:`derive_beacon_key` exists to prevent. Anything longer than the
+    derived subkey is overwhelmingly another domain's key.
     """
     key_bytes = _coerce_key_material(key, what="beacon key")
-    if len(key_bytes) < _KEY_BYTES:
-        raise ValueError(f"beacon key must be at least {_KEY_BYTES} bytes")
+    if len(key_bytes) != _KEY_BYTES:
+        raise ValueError(
+            f"beacon key must be exactly {_KEY_BYTES} bytes "
+            f"(use derive_beacon_key to derive the index subkey)"
+        )
     return key_bytes
 
 
@@ -202,7 +211,7 @@ def compute_beacon(
     *,
     scope: str,
     key: Union[bytes, bytearray, HardenedMemoryKey],
-    bits: int = 8,
+    bits: int,
 ) -> bytes:
     """Return the truncated, keyed equality beacon for ``value`` under ``scope``.
 
@@ -215,8 +224,10 @@ def compute_beacon(
     Args:
         value: Plaintext value to index.
         scope: Domain separator, e.g. ``"users.email"``. Must be non-empty.
-        key: Beacon subkey, at least 32 bytes. Use :func:`derive_beacon_key`.
+        key: Beacon subkey, exactly 32 bytes. Use :func:`derive_beacon_key`.
         bits: Requested width in ``[4, 64]``; storage rounds up to whole bytes.
+            Required, not defaulted: no width is universally safe, so choose
+            with :func:`suggest_beacon_bits`.
 
     Returns:
         ``ceil(bits / 8)`` bytes.
@@ -241,7 +252,7 @@ def beacon_matches(
     scope: str,
     key: Union[bytes, bytearray, HardenedMemoryKey],
     beacon: Union[bytes, bytearray, memoryview],
-    bits: int = 8,
+    bits: int,
 ) -> bool:
     """True iff ``value``'s beacon equals ``beacon`` — bucket agreement, only.
 
@@ -338,7 +349,7 @@ class BeaconIndexer:
         self,
         key: Union[bytes, bytearray, HardenedMemoryKey],
         *,
-        bits: int = 8,
+        bits: int,
         expected_rows: int | None = None,
     ) -> None:
         beacon_bucket_bytes(bits)  # range check first, for the clearer message

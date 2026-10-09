@@ -288,6 +288,15 @@ but not malleable.
   evicted nonce may be re-tracked. **The window is an implementation detail,
   not part of the format.** It provides within-process belt-and-suspenders
   dedup only; it does not survive restart and is not a freshness mechanism.
+- Bounded-window consequence: AES-SIV is deterministic in
+  `(key, nonce, AAD, plaintext)`, so a nonce that recurs after eviction or
+  restart — under the same key and the same coordinates — produces
+  byte-identical ciphertext for identical plaintext. A read-only observer can
+  then infer plaintext *equality* across those records. This is the SIV
+  misuse-resistance guarantee working as designed: nonce reuse leaks
+  equality, never plaintext or key. Callers that must not leak even equality
+  across long-lived stores MUST bind caller-managed freshness (`revision`,
+  §5) so a repeated coordinate pair cannot recur.
 - Cross-session freshness — defense against same-coordinate replay — is the
   caller's responsibility via `revision` bound into the AAD (§5), and only
   when the revision comes from state the attacker cannot roll back together
@@ -330,8 +339,11 @@ beacon_key = HKDF-SHA256(master_key, salt=absent,
                          info="floorvault-v1-beacon-index", L=32)
 ```
 
-The key argument to `compute_beacon` MUST be at least 32 bytes; longer keys
-are accepted and passed to HMAC as-is.
+The key argument to `compute_beacon` MUST be exactly 32 bytes — the
+`derive_beacon_key` output length. Longer keys are refused: the AEAD path's
+64-byte SIV subkey must not double as the index key (reusing one key across
+the encryption and index purposes is the defect the subkey separation
+exists to prevent).
 
 ### 9.2 Payload and truncation
 
@@ -345,10 +357,13 @@ beacon  = HMAC-SHA256(beacon_key, payload)[:ceil(bits/8)]
   the domain separator, conventionally `"<table>.<column>"`.
 - The scope is length-prefixed so the `(scope, value)` encoding is
   injective; `value` is not length-prefixed (it is last).
-- `bits` MUST be an integer in `[4, 64]`; `bool` is rejected. Storage is
-  byte-aligned: `ceil(bits/8)` bytes are emitted, so 4–8 bits are the same
-  stored index and 9–16 are the same index. Implementations reporting a
-  width to users MUST report the stored byte width, not the requested bits.
+- `bits` MUST be an integer in `[4, 64]`; `bool` is rejected. The parameter
+  is required — there is no universally safe default (the coarsest stored
+  form is still 256 buckets), so callers choose with `suggest_beacon_bits`.
+  Storage is byte-aligned: `ceil(bits/8)` bytes are emitted, so 4–8 bits are
+  the same stored index and 9–16 are the same index. Implementations
+  reporting a width to users MUST report the stored byte width, not the
+  requested bits.
 - `beacon_matches` is bucket agreement under `hmac.compare_digest`; a match
   is NOT an equality proof — confirm by decrypting the candidate.
 - The `BeaconIndexer` convenience wrapper additionally refuses a `bits`
@@ -851,7 +866,7 @@ accept/refuse decisions; error names are its own.
 | Master key not bytes-like (`TypeError`), not 32 B (`ValueError`) | as noted |
 | Beacon `bits` bool/non-int (`TypeError`), outside [4,64] (`ValueError`) | as noted |
 | Beacon value non-str (`TypeError`), scope empty (`ValueError`) | as noted |
-| Beacon key < 32 B | `ValueError` |
+| Beacon key != 32 B | `ValueError` |
 | Recovery bundle < 22 B or bad magic / recovered key != 32 B | `ValueError` |
 | Store missing | `ProtectedStoreMissing` |
 | Store non-regular/wrong owner/oversized/unverifiable ACL/exists-on-write | `ProtectedStoreError` |

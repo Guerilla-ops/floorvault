@@ -718,6 +718,16 @@ def main() -> int:
         "x",
         scope="s",
         key=b"short",
+        bits=8,
+    )
+    expect_raises(
+        "aead-subkey-length beacon key refused",
+        (ValueError,),
+        beacons.compute_beacon,
+        "x",
+        scope="s",
+        key=b"k" * 64,
+        bits=8,
     )
     wrong_scope_rows = bconn.execute(
         "SELECT COUNT(*) FROM users WHERE email_beacon = ?",

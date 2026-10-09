@@ -608,7 +608,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "ROT-5",
         "src/floorvault/vaultkit/vault.py",
-        "                self._verify_rotation_target(row[2], target_vault, target_key_id)",
+        "                self._verify_rotation_target(conn, row[2], target_vault, target_key_id)",
         "                pass  # MUTANT: resume binds to the 1-byte key id again",
         "Resume stops authenticating the committed target master: the same key id "
         "under a different master re-seals the remaining records onto the wrong key",

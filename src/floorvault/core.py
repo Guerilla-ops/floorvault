@@ -405,7 +405,13 @@ class FloorVault:
         """Deduplicate nonces in a process-lifetime sliding window.
 
         This in-memory window is bounded and is not a cross-session freshness
-        mechanism. Cross-session freshness requires caller-managed revision
+        mechanism. Because AES-SIV is deterministic in
+        ``(key, nonce, AAD, plaintext)``, a nonce that recurs after eviction
+        or restart under the same key and coordinates yields byte-identical
+        ciphertext for identical plaintext — an observer can infer plaintext
+        *equality*, though never the plaintext itself or the key (that is the
+        SIV misuse-resistance guarantee). Cross-session freshness — including
+        suppressing even equality leakage — requires caller-managed revision
         counters bound into the associated data.
 
         Caller must hold ``self._lock``: dedup + eviction run in the same
