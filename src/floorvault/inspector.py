@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
+import urllib.parse
 from pathlib import Path
 
 from .core import FloorVault
@@ -44,15 +45,35 @@ def main(argv: list[str] | None = None) -> int:
         "--app-instance",
         help="App instance the record's context was bound to (default: default)",
     )
+    inspect_parser.add_argument(
+        "--reveal",
+        action="store_true",
+        help="print the decrypted plaintext (default: redacted)",
+    )
 
     args = parser.parse_args(argv)
 
     if args.command == "inspect":
-        if not args.db_path.exists():
+        # Containment: the target must resolve to a regular file that is
+        # actually a SQLite database before it is opened. A FIFO, device or
+        # non-database file never reaches sqlite3.connect, and the read-only
+        # URI keeps the tool from writing to (or journaling beside) the file.
+        db_path = args.db_path.expanduser().resolve()
+        if not db_path.is_file():
             print(f"Error: Database file not found: {args.db_path}", file=sys.stderr)
             return 1
+        try:
+            with open(db_path, "rb") as handle:
+                magic = handle.read(16)
+        except OSError as exc:
+            print(f"Error: cannot read database file: {exc}", file=sys.stderr)
+            return 1
+        if magic != b"SQLite format 3\x00":
+            print(f"Error: {args.db_path} is not a SQLite database", file=sys.stderr)
+            return 1
 
-        with sqlite3.connect(args.db_path) as conn:
+        db_uri = f"file:{urllib.parse.quote(db_path.as_posix(), safe='/')}?mode=ro"
+        with sqlite3.connect(db_uri, uri=True) as conn:
             try:
                 table = safe_identifier(args.table)
                 column = safe_identifier(args.column)
@@ -104,7 +125,13 @@ def main(argv: list[str] | None = None) -> int:
                     record_id=args.record_id,
                     column=args.column,
                 )
-                print(f"Decrypted value: {decrypted}")
+                if args.reveal:
+                    print(f"Decrypted value: {decrypted}")
+                else:
+                    print(
+                        "Decrypted value: <redacted> "
+                        f"({len(decrypted)} characters; pass --reveal to print plaintext)"
+                    )
                 return 0
             except Exception as exc:
                 print(f"Decryption failed: {exc}", file=sys.stderr)

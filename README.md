@@ -390,15 +390,17 @@ Workload-specific measurements, not universal claims; includes contextual AAD an
 
 ## CLI
 
-`floorvault inspect` **decrypts** a field and prints the plaintext — treat its output as secret:
-`floorvault inspect local_vault.db users user-123 private_value_cipher --service-name my-app --app-instance my-app`.
+`floorvault inspect` **decrypts** a field and reports it — the value is `<redacted>` by default; pass
+`--reveal` to print the plaintext (treat that output as secret):
+`floorvault inspect local_vault.db users user-123 private_value_cipher --service-name my-app --app-instance my-app --reveal`.
 The flags must match how the record was written: the CLI resolves the key under `--service-name` and binds
 decryption to `--app-instance`. Defaults are `floorvault` and `default`, so records written under those
 defaults need no flags. `--service-name` selects the key only when custody comes from the OS store tiers
 (macOS Keychain, Linux Secret Service, or the local file key): records written under `FLOOR_VAULT_KEY`/
 `VAULT_MASTER_KEY` need that same environment variable set for `inspect` instead, and Windows DPAPI keys
-are machine-bound rather than service-scoped. Inspection never creates keys — a mistyped service name
-fails with an error rather than minting a new custody entry.
+are machine-bound rather than service-scoped. The target must be a real SQLite database — the tool refuses
+non-database and non-regular paths — and it opens it read-only. Inspection never creates keys — a mistyped
+service name fails with an error rather than minting a new custody entry.
 
 ## Reporting a vulnerability
 

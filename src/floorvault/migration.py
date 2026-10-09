@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -24,6 +25,7 @@ from typing import Any, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from .providers.platform_custody import ProtectedStoreError, read_protected
 from .vaultkit.vault import VaultError, VaultStore, normalize_origin, normalize_otp_secret
 
 
@@ -87,20 +89,34 @@ class MigratingVaultStore:
     # ---- legacy Fernet access (non-destructive) ---------------------------
 
     def _has_legacy(self) -> bool:
-        return self._vault_path.is_file() and self._key_path.is_file()
+        # lexists() also sees broken symlinks and non-regular files (FIFOs,
+        # sockets), so a tampered entry is reported by _legacy_items instead of
+        # silently treated as "no legacy vault present".
+        return os.path.lexists(self._vault_path) and os.path.lexists(self._key_path)
 
     def _legacy_items(self) -> dict[str, dict[str, Any]]:
         """Decrypt the whole legacy Fernet vault once. Read-only; never mutates."""
         if not self._has_legacy():
             return {}
+        if not self._vault_path.is_file():
+            raise LegacyVaultError("Legacy vault is not a regular file")
+        if not self._key_path.is_file():
+            # A FIFO or socket at the key path must be refused before open():
+            # opening one would block the caller indefinitely.
+            raise LegacyVaultError("Legacy vault key is not a regular file")
         try:
-            key = self._key_path.read_bytes().strip()
+            # The key is read through read_protected like every other key
+            # store: symlinks, foreign owners and group/other-readable modes
+            # are refused rather than silently adopted.
+            key = read_protected(self._key_path, header=b"", expected_length=None).strip()
             fernet = Fernet(key)
             raw = _base64url_decode(self._vault_path.read_text(encoding="utf-8").strip())
             plaintext = fernet.decrypt(raw)
             value = json.loads(plaintext.decode("utf-8"))
         except InvalidToken as exc:
             raise LegacyVaultError("Legacy vault key does not decrypt the vault") from exc
+        except ProtectedStoreError as exc:
+            raise LegacyVaultError(f"Refusing legacy key file: {exc}") from exc
         except (ValueError, UnicodeDecodeError, OSError) as exc:
             raise LegacyVaultError(f"Legacy vault is corrupt: {exc}") from exc
         if not isinstance(value, dict):

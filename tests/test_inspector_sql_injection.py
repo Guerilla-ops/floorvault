@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSPECTOR = REPO_ROOT / "src" / "floorvault" / "inspector.py"
 
@@ -69,9 +71,80 @@ def test_good_identifier_inspected(tmp_path):
     conn.execute("UPDATE vault_items SET payload_cipher=? WHERE id=?", (blob, coords["record_id"]))
     conn.commit()
     conn.close()
-    result = _run(["inspect", str(db), coords["table"], coords["record_id"], "payload_cipher"])
+    result = _run(
+        ["inspect", str(db), coords["table"], coords["record_id"], "payload_cipher", "--reveal"]
+    )
     assert result.returncode == 0
     assert plaintext in result.stdout
+
+
+def test_decrypted_value_is_redacted_by_default(tmp_path):
+    """Decrypted plaintext must not reach stdout without an explicit --reveal.
+
+    The inspector previously printed ``Decrypted value: {plaintext}``
+    unconditionally, so shoulder-surfing a terminal or scraping shell logs
+    recovered secrets the tool exists to protect. The default output must
+    confirm decryption without disclosing the value.
+    """
+    from floorvault.core import FloorVault
+    from floorvault.memory import HardenedMemoryKey
+
+    db = tmp_path / "v.db"
+    coords = _write_sample_db(db)
+    fv = FloorVault(HardenedMemoryKey(bytes.fromhex("a" * 64)))
+    plaintext = "encrypted-value-DO-NOT-PRINT"
+    blob = fv.encrypt(
+        plaintext, table=coords["table"], record_id=coords["record_id"], column="payload_cipher"
+    )
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE vault_items SET payload_cipher=? WHERE id=?", (blob, coords["record_id"]))
+    conn.commit()
+    conn.close()
+
+    result = _run(["inspect", str(db), coords["table"], coords["record_id"], "payload_cipher"])
+    assert result.returncode == 0
+    assert plaintext not in result.stdout
+    assert "redact" in result.stdout.lower()
+
+
+def test_inspect_refuses_non_sqlite_file(tmp_path):
+    """An arbitrary non-database path must be refused before sqlite3 opens it.
+
+    The CLI used to hand any existing path to sqlite3.connect(); containment
+    means the target must be a regular file that is actually a SQLite
+    database.
+    """
+    not_a_db = tmp_path / "credentials.txt"
+    not_a_db.write_text("FLOORVAULT-internal-plaintext-secret\n")
+
+    result = _run(["inspect", str(not_a_db), "vault_items", "r1", "label"])
+    assert result.returncode == 1
+    assert "not a SQLite" in result.stderr
+
+
+def test_inspect_refuses_fifo(tmp_path):
+    """A FIFO at the db path must be refused, not opened (blocking-read DoS)."""
+    import os
+
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("mkfifo is POSIX-only")
+    fifo = tmp_path / "trap.db"
+    os.mkfifo(fifo)
+
+    result = _run(["inspect", str(fifo), "vault_items", "r1", "label"])
+    assert result.returncode == 1
+
+
+def test_inspect_works_on_readonly_db(tmp_path):
+    """Inspection is read-only: it must succeed on a mode-0444 database."""
+    import os
+
+    db = tmp_path / "v.db"
+    coords = _write_sample_db(db)
+    os.chmod(db, 0o444)
+
+    result = _run(["inspect", str(db), coords["table"], coords["record_id"], coords["column"]])
+    assert result.returncode == 0
 
 
 def test_sql_injection_column_name_refused(tmp_path):
