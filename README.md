@@ -339,11 +339,13 @@ store = VaultStore(VAULT_DIR, crypto=old_crypto)
 # A new_master_key from your key provider, wrapped in its own engine.
 new_crypto = FloorVault(new_master_key, app_instance_id="my-app")
 
-rotate_vault_store(store, source_ring=KeyRing({0: old_crypto}), new_vault=new_crypto, new_key_id=1)
+# default_key_id=0 attributes v1 envelopes (which carry no key id in their
+# header) to the old key; without it a legacy v1 record is refused.
+rotate_vault_store(store, source_ring=KeyRing({0: old_crypto}, default_key_id=0), new_vault=new_crypto, new_key_id=1)
 
 # If the call above was interrupted, resume with BOTH generations in the ring:
 # items already committed under key_id 1 can't be read by a ring holding only the old key.
-# rotate_vault_store(store, source_ring=KeyRing({0: old_crypto, 1: new_crypto}),
+# rotate_vault_store(store, source_ring=KeyRing({0: old_crypto, 1: new_crypto}, default_key_id=0),
 #                    new_vault=new_crypto, new_key_id=1)
 
 # REQUIRED: the `store` above was built on old_crypto and CANNOT read the
@@ -392,7 +394,11 @@ Workload-specific measurements, not universal claims; includes contextual AAD an
 `floorvault inspect local_vault.db users user-123 private_value_cipher --service-name my-app --app-instance my-app`.
 The flags must match how the record was written: the CLI resolves the key under `--service-name` and binds
 decryption to `--app-instance`. Defaults are `floorvault` and `default`, so records written under those
-defaults need no flags.
+defaults need no flags. `--service-name` selects the key only when custody comes from the OS store tiers
+(macOS Keychain, Linux Secret Service, or the local file key): records written under `FLOOR_VAULT_KEY`/
+`VAULT_MASTER_KEY` need that same environment variable set for `inspect` instead, and Windows DPAPI keys
+are machine-bound rather than service-scoped. Inspection never creates keys — a mistyped service name
+fails with an error rather than minting a new custody entry.
 
 ## Reporting a vulnerability
 
