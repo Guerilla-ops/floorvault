@@ -284,3 +284,59 @@ def test_migrate_all_key_backup_is_owner_only(tmp_path):
 
     key_backup = base / "modern" / "vault.key.pre-migration.bak"
     assert stat_module.S_IMODE(os.stat(key_backup).st_mode) == 0o600
+
+
+# ---- legacy json.loads must be depth-guarded (red-team P1 #9) ---------------
+
+
+def _write_nested_legacy(base_dir: Path, depth: int) -> None:
+    """A legacy vault whose decrypted payload is ``depth``-nested JSON."""
+    base_dir.mkdir(parents=True, exist_ok=True)
+    key = Fernet.generate_key()
+    payload = b"[" * depth + b"]" * depth
+    enc = base64.urlsafe_b64encode(Fernet(key).encrypt(payload))
+    (base_dir / "vault.json.enc").write_bytes(enc)
+    key_path = base_dir / "vault.key"
+    key_path.write_bytes(key)
+    # read_protected (slice 3) refuses group/other-readable keys; the depth
+    # guard must be reached, so the fixture's key must satisfy custody first.
+    os.chmod(key_path, 0o600)
+
+
+def test_deeply_nested_legacy_payload_fails_as_vault_error(tmp_path):
+    """Deep nesting must surface LegacyVaultError, not crash the process.
+
+    The legacy payload is attacker-influenceable (a foreign store's file),
+    and bare json.loads recurses on the C stack: ~8 MB of frames and an
+    unhandled RecursionError escaping resolve_secret/get_meta/
+    list_item_ids/migrate_all/verify.
+    """
+    base = tmp_path / "vault"
+    modern = VaultStore(base / "modern", crypto=_make_crypto())
+    _write_nested_legacy(base / "modern", depth=10_000)
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+
+    for call in (facade.list_item_ids, facade.migrate_all):
+        with pytest.raises(LegacyVaultError):
+            call()
+    # verify() is a boolean verdict: the guarded parse failure maps to its
+    # existing VaultError -> False contract rather than escaping.
+    assert facade.verify() is False
+
+
+def test_legacy_json_recursion_error_surfaces_as_vault_error(tmp_path, monkeypatch):
+    """A parser hitting its recursion ceiling maps to LegacyVaultError."""
+    base = tmp_path / "vault"
+    modern = VaultStore(base / "modern", crypto=_make_crypto())
+    _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+
+    import floorvault.migration as migration_module
+
+    monkeypatch.setattr(
+        migration_module.json,
+        "loads",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RecursionError("maximum recursion depth")),
+    )
+    with pytest.raises(LegacyVaultError):
+        facade.list_item_ids()

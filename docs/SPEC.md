@@ -859,6 +859,7 @@ accept/refuse decisions; error names are its own.
 | Env key non-64-hex / key file malformed | `KeyProviderError` |
 | OS-native tier present but unusable | `CustodyDowngradeError` |
 | Tombstone auth/match failure, plaintext metadata post-migration, write during rotation | `VaultError` |
+| Legacy vault JSON nested deeper than 64 levels, or parser recursion | `LegacyVaultError` (subclass of `VaultError`) |
 | Retired legacy id whose modern record is missing | `LegacyRetiredError` |
 | `session_id`/`message_id` non-empty-on-write violation or containing NUL | `VaultError` |
 | SQL identifier rejected | `ValueError` |

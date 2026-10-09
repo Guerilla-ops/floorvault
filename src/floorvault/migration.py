@@ -33,6 +33,37 @@ class LegacyVaultError(VaultError):
     """Raised when the legacy source is missing, corrupt, or not decryptable."""
 
 
+#: Deepest JSON nesting a legacy payload may carry. A genuine legacy vault is
+#: a flat ``{item_id: {field: value}}`` mapping; json.loads recurses on the C
+#: stack, so a deeply-nested payload would otherwise crash every legacy entry
+#: point with an unhandled RecursionError. The guard pre-flights the payload
+#: and the parser's own RecursionError is still mapped as a second line.
+_LEGACY_JSON_MAX_DEPTH = 64
+
+
+def _json_nesting_depth(text: str) -> int:
+    """Maximum ``[]``/``{}`` nesting in a JSON document, ignoring strings."""
+    depth = deepest = 0
+    in_string = escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > deepest:
+                deepest = depth
+        elif char in "]}":
+            depth -= 1
+    return deepest
+
+
 class LegacyRetiredError(VaultError):
     """Raised when a legacy id has been migrated and must not be read again.
 
@@ -112,11 +143,18 @@ class MigratingVaultStore:
             fernet = Fernet(key)
             raw = _base64url_decode(self._vault_path.read_text(encoding="utf-8").strip())
             plaintext = fernet.decrypt(raw)
-            value = json.loads(plaintext.decode("utf-8"))
+            document = plaintext.decode("utf-8")
+            if _json_nesting_depth(document) > _LEGACY_JSON_MAX_DEPTH:
+                raise LegacyVaultError(
+                    f"Legacy vault nests JSON deeper than {_LEGACY_JSON_MAX_DEPTH} levels"
+                )
+            value = json.loads(document)
         except InvalidToken as exc:
             raise LegacyVaultError("Legacy vault key does not decrypt the vault") from exc
         except ProtectedStoreError as exc:
             raise LegacyVaultError(f"Refusing legacy key file: {exc}") from exc
+        except RecursionError as exc:
+            raise LegacyVaultError("Legacy vault JSON is too deeply nested") from exc
         except (ValueError, UnicodeDecodeError, OSError) as exc:
             raise LegacyVaultError(f"Legacy vault is corrupt: {exc}") from exc
         if not isinstance(value, dict):
