@@ -100,6 +100,50 @@ def test_sql_injection_table_name_refused(tmp_path):
     assert ("vault_items",) in rows
 
 
+def test_inspect_never_creates_a_key_for_unknown_service(tmp_path):
+    """A typo'd --service-name must error, not mint custody (read-only path).
+
+    Before the fix, ``resolve_key()`` ran with the default
+    ``allow_create=True``: an absent service name produced a fresh
+    Keychain/Secret-Service/file key seconds before decryption failed.
+    Resolution now runs ``allow_create=False`` and only after ciphertext
+    exists, so the failure is a clean ``Error:`` with nothing created.
+    """
+    import os
+
+    db = tmp_path / "v.db"
+    coords = _write_sample_db(db)
+    fake_home = tmp_path / "isolated-home"
+    fake_home.mkdir()
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src"), "HOME": str(fake_home)}
+    for var in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
+        env.pop(var, None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "floorvault.inspector",
+            "inspect",
+            str(db),
+            coords["table"],
+            coords["record_id"],
+            "payload_cipher",
+            "--service-name",
+            f"fv-inspect-test-absent-{os.getpid()}",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env=env,
+    )
+
+    assert result.returncode == 1
+    assert "Error:" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not list(fake_home.rglob("*.key"))
+
+
 def test_plaintext_value_is_not_echoed(tmp_path):
     """A non-ciphertext cell must be reported by shape, never by content.
 
