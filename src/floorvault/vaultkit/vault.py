@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
 import sqlite3
 import threading
 import uuid
@@ -312,7 +313,8 @@ class VaultStore:
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     active INTEGER NOT NULL CHECK (active IN (0, 1)),
                     target_key_id INTEGER NOT NULL,
-                    target_commitment BLOB
+                    target_commitment BLOB,
+                    store_nonce BLOB
                 )
             """)
             conn.execute("""
@@ -417,10 +419,21 @@ class VaultStore:
         conn.execute("ALTER TABLE vault_items_without_origin_idx RENAME TO vault_items")
 
     def _ensure_rotation_commitment_column(self, conn: sqlite3.Connection) -> None:
-        """Add the target-commitment column to stores created before it existed."""
+        """Add the target-commitment and store-nonce columns to older stores."""
         columns = {row[1] for row in conn.execute("PRAGMA table_info(vault_rotation_state)")}
         if "target_commitment" not in columns:
             conn.execute("ALTER TABLE vault_rotation_state ADD COLUMN target_commitment BLOB")
+        if "store_nonce" not in columns:
+            conn.execute("ALTER TABLE vault_rotation_state ADD COLUMN store_nonce BLOB")
+        # The per-store nonce is what makes a rotation commitment unique to
+        # THIS database: two stores with identical record ids still produce
+        # different commitments, so an envelope transplanted between them
+        # cannot authenticate. Minted once, then sticky.
+        conn.execute(
+            "UPDATE vault_rotation_state SET store_nonce = ? "
+            "WHERE singleton = 1 AND store_nonce IS NULL",
+            (secrets.token_bytes(32),),
+        )
 
     def _encrypt_metadata(self, item_id: str, column: str, value: Optional[str]) -> Optional[bytes]:
         if value is None:
@@ -488,19 +501,25 @@ class VaultStore:
             )
 
     def _rotation_commitment_payload(self, conn: sqlite3.Connection) -> bytes:
-        """The canary bound to this store's record-id universe.
+        """The canary bound to this store's identity and record-id universe.
 
         A bare constant sealed under the target vault verifies for ANY store
         the envelope is transplanted into, because the plaintext and its AAD
-        coordinates are public constants. Binding the store's content
-        fingerprint inside the commitment means an envelope sealed for one
-        vault database can never authenticate a rotation on another.
+        coordinates are public constants. Binding the store's random
+        ``store_nonce`` plus its content fingerprint inside the commitment
+        means an envelope sealed for one vault database can never
+        authenticate a rotation on another - even one holding identical
+        record ids.
         """
+        nonce_row = conn.execute(
+            "SELECT store_nonce FROM vault_rotation_state WHERE singleton = 1"
+        ).fetchone()
+        fingerprint = hashlib.sha256()
+        fingerprint.update(b"nonce:" + (bytes(nonce_row[0]) if nonce_row and nonce_row[0] else b""))
         ids = sorted(
             [row[0] for row in conn.execute("SELECT id FROM vault_items")]
             + [row[0] for row in conn.execute("SELECT legacy_id FROM vault_legacy_retirements")]
         )
-        fingerprint = hashlib.sha256()
         for record_id in ids:
             encoded = str(record_id).encode("utf-8", errors="surrogatepass")
             fingerprint.update(str(len(encoded)).encode("ascii") + b":" + encoded)

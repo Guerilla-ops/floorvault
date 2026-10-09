@@ -407,3 +407,34 @@ def test_a_bare_canary_commitment_is_refused(tmp_path):
             new_vault=_crypto(NEW),
             new_key_id=1,
         )
+
+
+def test_commitment_rejected_when_record_ids_match_across_stores(tmp_path):
+    """Identical record ids across stores must not equalize commitments.
+
+    Two vaults seeded from the same source legitimately share record ids, so
+    the content fingerprint alone cannot distinguish them - only the minted
+    per-store nonce does. A commitment transplanted between such stores must
+    still fail the resume check.
+    """
+    store_a = VaultStore(tmp_path / "a", crypto=_crypto(OLD))
+    store_a.add_item("generic", "item", {"note": "a"}, item_id="shared-id")
+    store_a.begin_rotation(1, target_vault=_crypto(NEW))
+    *_, stolen = _in_flight_state(tmp_path / "a" / "vault.db")
+
+    store_b = VaultStore(tmp_path / "b", crypto=_crypto(OLD))
+    store_b.add_item("generic", "item", {"note": "b"}, item_id="shared-id")
+    with sqlite3.connect(tmp_path / "b" / "vault.db") as conn:
+        conn.execute(
+            "UPDATE vault_rotation_state SET active = 1, target_key_id = 1, "
+            "target_commitment = ? WHERE singleton = 1",
+            (stolen,),
+        )
+
+    with pytest.raises(VaultError, match="commitment"):
+        rotate_vault_store(
+            store_b,
+            source_ring=KeyRing({0: _crypto(OLD), 1: _crypto(NEW)}),
+            new_vault=_crypto(NEW),
+            new_key_id=1,
+        )

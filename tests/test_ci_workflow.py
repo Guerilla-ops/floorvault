@@ -284,3 +284,13 @@ def test_ci_audits_the_full_optional_dependency_surface():
     assert "dep-audit" in TEXT, "ci.yml has no dedicated dependency-audit job"
     assert "--all-extras" in TEXT, "the audit leg must resolve every optional extra"
     assert "pip-audit" in TEXT, "the audit leg must run pip-audit"
+
+
+def test_dep_audit_runs_without_resync():
+    """`uv run` re-synchronizes the environment to the default extras before
+    executing, silently dropping the optional extras the dep-audit leg exists
+    to scan - the audit must run with ``--no-sync``."""
+    assert "--no-sync pip-audit" in TEXT, (
+        "the dep-audit leg must run `uv run --no-sync pip-audit` so the "
+        "--all-extras sync is still in effect when the scan runs"
+    )

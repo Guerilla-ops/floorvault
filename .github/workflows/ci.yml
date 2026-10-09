@@ -198,8 +198,10 @@ jobs:
         # pip-audit with it); --all-extras cannot be combined with --extra.
         run: uv sync --all-extras
       - name: pip-audit
-        # Same command as step 2 of scripts/security-check.sh.
-        run: uv run pip-audit --desc on --skip-editable
+        # --no-sync is required: plain `uv run` re-synchronizes the
+        # environment to the default extras first, dropping the audited
+        # optional extras (and potentially pip-audit itself) before the scan.
+        run: uv run --no-sync pip-audit --desc on --skip-editable
 
   # Live-Vault integration leg (roadmap 1f): the hermetic fake-Vault suite can
   # encode a wrong wire assumption in lockstep with the implementation — a real
