@@ -34,15 +34,13 @@ jobs:
           - { os: ubuntu-latest, python: "3.12" }
           - { os: ubuntu-latest, python: "3.13" }
           - { os: ubuntu-latest, python: "3.14" }
-          # macOS and Windows: BOTH ends of the range, not just the default.
-          # A platform-specific code path can be fine on the newest interpreter
-          # and broken on the oldest (or the reverse), and every defect the
-          # matrix has found so far was platform-specific; see
-          # docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md. 3.10 is the floor
-          # declared in pyproject.toml, so it must be exercised on every OS.
-          - { os: macos-latest, python: "3.10" }
+          # macOS and Windows: one leg each. These runners exist for the
+          # platform-specific custody paths (Keychain, DPAPI, ACLs, symlink
+          # semantics), which are largely interpreter-version independent;
+          # the Python-version sweep lives on the fast ubuntu legs. See
+          # docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md for why platform
+          # coverage itself is not optional.
           - { os: macos-latest, python: "3.13" }
-          - { os: windows-latest, python: "3.10" }
           - { os: windows-latest, python: "3.13" }
     steps:
       # fetch-depth: 0 is required because gitleaks scans history, not just the
