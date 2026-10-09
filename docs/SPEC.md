@@ -793,7 +793,10 @@ The following are **not part of this format** and are deliberately excluded:
   pages.
 - **The legacy Fernet store** (`vault.json.enc` + `vault.key`) — a foreign
   format the migration facade reads but never writes; specified by the
-  `cryptography` Fernet spec, not here.
+  `cryptography` Fernet spec, not here. The facade reads `vault.key` through
+  the same protected-store checks as every other key file (regular file,
+  owner-only permissions, no symlink) and refuses an insecure key path
+  instead of adopting it.
 - **Nonce-window mechanics, lock discipline, memory hygiene** — process
   behavior, not format (§7).
 

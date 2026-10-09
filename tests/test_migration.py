@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -21,7 +23,7 @@ from cryptography.fernet import Fernet
 
 from floorvault.core import FloorVault
 from floorvault.memory import HardenedMemoryKey
-from floorvault.migration import MigratingVaultStore
+from floorvault.migration import LegacyVaultError, MigratingVaultStore
 from floorvault.vaultkit.vault import VaultError, VaultStore
 
 
@@ -41,6 +43,7 @@ def _write_legacy_fernet(base_dir: Path, items: dict[str, dict]) -> tuple[bytes,
     key_path = base_dir / "vault.key"
     vault_path.write_text(payload)
     key_path.write_text(key.decode())
+    os.chmod(key_path, 0o600)
     return key, vault_path, key_path
 
 
@@ -178,3 +181,106 @@ def test_migrate_all_recovers_after_modern_write_before_retirement(tmp_path, mon
 
     assert len(modern.list_items()) == 1
     assert set(modern.list_legacy_retirements()) == {"legacy-1"}
+
+
+# ---- legacy vault.key must go through read_protected (red-team P0 #7) ------
+
+
+def test_legacy_key_reached_through_symlink_is_refused(tmp_path):
+    """A ``vault.key`` that is a symlink must be refused, not followed.
+
+    Every other key store reads its master key through ``read_protected``,
+    which refuses symlinks, non-regular files, foreign owners and
+    group/other-accessible modes. The legacy Fernet path used a bare
+    ``Path.read_bytes()`` and skipped all of it, so a planted link could hand
+    the migration an attacker-chosen key silently.
+    """
+    base = tmp_path / "vault"
+    crypto = _make_crypto()
+    modern = VaultStore(base / "modern", crypto=crypto)
+    _, _, key_path = _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
+
+    planted = tmp_path / "planted.key"
+    planted.write_bytes(key_path.read_bytes())
+    os.chmod(planted, 0o600)
+    key_path.unlink()
+    key_path.symlink_to(planted)
+
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+    with pytest.raises(LegacyVaultError, match="key"):
+        facade.list_item_ids()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_legacy_key_group_or_other_readable_is_refused(tmp_path):
+    """A world-readable ``vault.key`` must be refused, not adopted.
+
+    read_protected refuses any mode granting group/other access; a 0666 key
+    file is exactly the exposure the rest of the library rejects.
+    """
+    base = tmp_path / "vault"
+    crypto = _make_crypto()
+    modern = VaultStore(base / "modern", crypto=crypto)
+    _, _, key_path = _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
+    os.chmod(key_path, 0o666)
+
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+    with pytest.raises(LegacyVaultError, match="key"):
+        facade.list_item_ids()
+
+
+def test_legacy_key_replaced_by_fifo_is_refused(tmp_path):
+    """A FIFO at the key path must not hang or be read as a key."""
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("mkfifo is POSIX-only")
+    base = tmp_path / "vault"
+    crypto = _make_crypto()
+    modern = VaultStore(base / "modern", crypto=crypto)
+    _, _, key_path = _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
+    key_path.unlink()
+    os.mkfifo(key_path)
+
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+    with pytest.raises(LegacyVaultError, match="key"):
+        facade.list_item_ids()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_migrate_all_refuses_a_permissive_preexisting_key_backup(tmp_path):
+    """An existing vault.key.pre-migration.bak with group/other access holds
+    the legacy master key - migrate_all must refuse, not report success
+    beside it."""
+    base = tmp_path / "vault"
+    crypto = _make_crypto()
+    modern = VaultStore(base / "modern", crypto=crypto)
+    _, vault_path, key_path = _write_legacy_fernet(
+        base / "modern", {"legacy-1": {"password": "pw"}}
+    )
+    # An existing vault backup skips the whole copy block, so a permissive
+    # key backup planted beside it would otherwise survive untouched.
+    shutil.copy2(vault_path, vault_path.with_name("vault.json.enc.pre-migration.bak"))
+    key_backup = key_path.with_name("vault.key.pre-migration.bak")
+    key_backup.write_bytes(key_path.read_bytes())
+    os.chmod(key_backup, 0o666)
+
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+    with pytest.raises(LegacyVaultError, match="backup"):
+        facade.migrate_all()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_migrate_all_key_backup_is_owner_only(tmp_path):
+    """A freshly created key backup must land owner-only, not merely inherit
+    whatever copy2 preserved."""
+    import stat as stat_module
+
+    base = tmp_path / "vault"
+    crypto = _make_crypto()
+    modern = VaultStore(base / "modern", crypto=crypto)
+    _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
+
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+    facade.migrate_all()
+
+    key_backup = base / "modern" / "vault.key.pre-migration.bak"
+    assert stat_module.S_IMODE(os.stat(key_backup).st_mode) == 0o600

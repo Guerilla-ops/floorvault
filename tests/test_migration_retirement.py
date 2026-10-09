@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -41,7 +42,9 @@ def _write_legacy_fernet(base_dir: Path, items: dict[str, dict]) -> None:
     key = Fernet.generate_key()
     payload = base64.urlsafe_b64encode(Fernet(key).encrypt(json.dumps(items).encode())).decode()
     (base_dir / "vault.json.enc").write_text(payload)
-    (base_dir / "vault.key").write_text(key.decode())
+    key_path = base_dir / "vault.key"
+    key_path.write_text(key.decode())
+    os.chmod(key_path, 0o600)
 
 
 def _facade(modern: VaultStore, base: Path) -> MigratingVaultStore:

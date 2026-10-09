@@ -540,7 +540,9 @@ def main() -> int:
             Fernet(fernet_key).encrypt(json.dumps(legacy_items).encode())
         ).decode()
     )
-    (mig_dir / "vault.key").write_bytes(fernet_key)
+    mig_key_path = mig_dir / "vault.key"
+    mig_key_path.write_bytes(fernet_key)
+    os.chmod(mig_key_path, 0o600)
 
     modern_store = VaultStore(mig_dir / "modern", crypto=vault)
     facade = MigratingVaultStore(modern_store=modern_store, legacy_base_dir=mig_dir)
@@ -569,7 +571,9 @@ def main() -> int:
     bad_dir = root / "migrate-bad"
     bad_dir.mkdir()
     (bad_dir / "vault.json.enc").write_text((mig_dir / "vault.json.enc").read_text())
-    (bad_dir / "vault.key").write_bytes(Fernet.generate_key())
+    bad_key_path = bad_dir / "vault.key"
+    bad_key_path.write_bytes(Fernet.generate_key())
+    os.chmod(bad_key_path, 0o600)
     badfacade = MigratingVaultStore(
         modern_store=VaultStore(bad_dir / "modern", crypto=vault), legacy_base_dir=bad_dir
     )
@@ -788,8 +792,14 @@ def main() -> int:
             timeout=60,
         )
 
-    r = cli("inspect", str(idb), "secrets", "rec-1", "value")
+    r = cli("inspect", str(idb), "secrets", "rec-1", "value", "--reveal")
     check("cli decrypts record", r.returncode == 0 and "topsecret" in r.stdout, r.stderr.strip())
+    r = cli("inspect", str(idb), "secrets", "rec-1", "value")
+    check(
+        "cli redacts plaintext by default",
+        r.returncode == 0 and "topsecret" not in r.stdout and "<redacted>" in r.stdout,
+        r.stdout.strip(),
+    )
     r = cli("inspect", str(idb), "secrets", "rec-2", "value")
     check(
         "cli reports non-ciphertext column",

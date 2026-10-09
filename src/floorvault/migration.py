@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -24,6 +25,7 @@ from typing import Any, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from .providers.platform_custody import ProtectedStoreError, read_protected
 from .vaultkit.vault import VaultError, VaultStore, normalize_origin, normalize_otp_secret
 
 
@@ -87,20 +89,34 @@ class MigratingVaultStore:
     # ---- legacy Fernet access (non-destructive) ---------------------------
 
     def _has_legacy(self) -> bool:
-        return self._vault_path.is_file() and self._key_path.is_file()
+        # lexists() also sees broken symlinks and non-regular files (FIFOs,
+        # sockets), so a tampered entry is reported by _legacy_items instead of
+        # silently treated as "no legacy vault present".
+        return os.path.lexists(self._vault_path) and os.path.lexists(self._key_path)
 
     def _legacy_items(self) -> dict[str, dict[str, Any]]:
         """Decrypt the whole legacy Fernet vault once. Read-only; never mutates."""
         if not self._has_legacy():
             return {}
+        if not self._vault_path.is_file():
+            raise LegacyVaultError("Legacy vault is not a regular file")
+        if not self._key_path.is_file():
+            # A FIFO or socket at the key path must be refused before open():
+            # opening one would block the caller indefinitely.
+            raise LegacyVaultError("Legacy vault key is not a regular file")
         try:
-            key = self._key_path.read_bytes().strip()
+            # The key is read through read_protected like every other key
+            # store: symlinks, foreign owners and group/other-readable modes
+            # are refused rather than silently adopted.
+            key = read_protected(self._key_path, header=b"", expected_length=None).strip()
             fernet = Fernet(key)
             raw = _base64url_decode(self._vault_path.read_text(encoding="utf-8").strip())
             plaintext = fernet.decrypt(raw)
             value = json.loads(plaintext.decode("utf-8"))
         except InvalidToken as exc:
             raise LegacyVaultError("Legacy vault key does not decrypt the vault") from exc
+        except ProtectedStoreError as exc:
+            raise LegacyVaultError(f"Refusing legacy key file: {exc}") from exc
         except (ValueError, UnicodeDecodeError, OSError) as exc:
             raise LegacyVaultError(f"Legacy vault is corrupt: {exc}") from exc
         if not isinstance(value, dict):
@@ -278,13 +294,30 @@ class MigratingVaultStore:
             return {"migrated": 0, "verified": True, "removed_legacy": False}
         # 1. Immutable backup (non-destructive).
         backup = self._vault_path.with_name(f"{self._vault_path.name}{self._backup_suffix}")
+        key_backup = self._key_path.with_name(f"{self._key_path.name}{self._backup_suffix}")
         if not backup.exists():
             shutil.copy2(self._vault_path, backup)
             if self._key_path.is_file():
-                shutil.copy2(
-                    self._key_path,
-                    self._key_path.with_name(f"{self._key_path.name}{self._backup_suffix}"),
-                )
+                shutil.copy2(self._key_path, key_backup)
+                # copy2 preserves the source's owner-only mode, which
+                # read_protected just verified; pin it anyway so the backup's
+                # protection never depends on copy semantics.
+                try:
+                    os.chmod(key_backup, 0o600)
+                except OSError:
+                    # POSIX mode bits do not exist on Windows; the ACL check
+                    # below is the control there.
+                    pass
+        # The key backup holds the legacy master key, so it is held to the
+        # same protected-store bar as the key itself. A backup that already
+        # existed never passed through read_protected - refuse to report a
+        # successful migration while a readable copy of the key sits beside
+        # the vault.
+        if os.path.lexists(key_backup):
+            try:
+                read_protected(key_backup, header=b"", expected_length=None)
+            except ProtectedStoreError as exc:
+                raise LegacyVaultError(f"Refusing legacy key backup: {exc}") from exc
         # 2. Convert each legacy item lazily (idempotent for already-modern).
         migrated = 0
         for item_id, item in legacy.items():
