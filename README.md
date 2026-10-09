@@ -1,13 +1,13 @@
 <div align="center">
-  <img src="docs/assets/floorvault-hero.svg" width="100%" alt="FloorVault — Your data. Its place. Cryptographically bound.">
+  <img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/floorvault-hero.svg" width="100%" alt="FloorVault — Your data. Its place. Cryptographically bound.">
   <h1>FloorVault</h1>
   <p><strong>Your data. Its place. Cryptographically bound.</strong><br>
   Context-bound, misuse-resistant field encryption for SQLite — AES-256-SIV (RFC 5297), no SQLCipher, no C extension.</p>
-  <p><a href="#quickstart">Quickstart</a> · <a href="#how-it-works">How it works</a> · <a href="#install">Install</a> · <a href="#existing-sqlite-tables">SQLite adapter</a> · <a href="#security-boundaries">Boundaries</a> · <a href="SECURITY.md">Security model</a> · <a href="#documentation">Docs</a></p>
-  <p><a href="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml"><img src="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main"></a> <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10 and newer"></a> <a href="SECURITY.md"><img src="https://img.shields.io/badge/status-beta-f0a45d.svg" alt="Project status: beta"></a> <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg" alt="MIT or Apache 2.0 license"></a></p>
+  <p><a href="#quickstart">Quickstart</a> · <a href="#how-it-works">How it works</a> · <a href="#install">Install</a> · <a href="#existing-sqlite-tables">SQLite adapter</a> · <a href="#security-boundaries">Boundaries</a> · <a href="https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md">Security model</a> · <a href="#documentation">Docs</a></p>
+  <p><a href="https://pypi.org/project/floorvault/"><img src="https://img.shields.io/pypi/v/floorvault.svg" alt="PyPI version"></a> <a href="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml"><img src="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main"></a> <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10 and newer"></a> <a href="https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md"><img src="https://img.shields.io/badge/status-beta-f0a45d.svg" alt="Project status: beta"></a> <a href="https://github.com/Guerilla-ops/floorvault/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg" alt="MIT or Apache 2.0 license"></a></p>
 </div>
 
-> **Beta — no external security audit.** Review the [security model](SECURITY.md) before using FloorVault for production secrets.
+> **Beta — no external security audit.** Review the [security model](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md) before using FloorVault for production secrets.
 
 | Bound to its place | Your existing SQLite | Fail-closed key custody |
 | --- | --- | --- |
@@ -40,7 +40,7 @@ Never hard-code a production master key in source — use an OS-backed provider 
 
 ## How it works
 
-<img src="docs/assets/context-binding.svg" width="100%" alt="Diagram: a ciphertext sealed for users/u1/api_key verifies under those coordinates; under users/u2/api_key it is rejected.">
+<img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/context-binding.svg" width="100%" alt="Diagram: a ciphertext sealed for users/u1/api_key verifies under those coordinates; under users/u2/api_key it is rejected.">
 
 FloorVault authenticates each value against the place it belongs. Every envelope's associated data binds five
 coordinates — `table`, `record_id`, `column`, `schema_id`/`schema_version`, and the `app_instance_id` of the
@@ -116,7 +116,7 @@ equivalent to hardware-backed or OS-managed custody, and anyone who can copy it 
 unusable native backend raises `CustodyDowngradeError` instead of downgrading. Constructing a key handle sets
 `RLIMIT_CORE` to 0 process-wide and never restores it — a core dump would write the held master key to disk.
 Live CI coverage exists for Windows DPAPI only; the macOS and Linux tiers are unit-tested but not
-live-verified — per-tier status in [`SECURITY.md`](SECURITY.md).
+live-verified — per-tier status in [`SECURITY.md`](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md).
 
 ## Security boundaries
 
@@ -124,7 +124,7 @@ live-verified — per-tier status in [`SECURITY.md`](SECURITY.md).
 | --- | --- |
 | Database or ciphertext theft; accidental cryptographic misuse; moving ciphertext to another authenticated context; some forms of key-memory exposure where platform hardening succeeds. | Process isolation against same-user malware; endpoint compromise protection; hardware-backed trust by itself; whole-database freshness or rollback protection; protection from plaintext copies created by Python, OpenSSL, or other dependencies. |
 
-For replay protection, bind encryption to a caller-controlled `revision` an attacker cannot roll back with the database — full statement: [`SECURITY.md`](SECURITY.md).
+For replay protection, bind encryption to a caller-controlled `revision` an attacker cannot roll back with the database — full statement: [`SECURITY.md`](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md).
 
 ## Guides
 
@@ -170,7 +170,7 @@ with Session() as session:
     assert session.get(User, "u1").ssn == "123-45-6789"
 ```
 
-Fail-closed invariants (full contract: [SPEC.md §14.1](docs/SPEC.md)):
+Fail-closed invariants (full contract: [SPEC.md §14.1](https://github.com/Guerilla-ops/floorvault/blob/main/docs/SPEC.md)):
 
 - `obj.ssn_ct = b"plaintext"` is refused at assignment — only envelope-shaped values may occupy a ciphertext column.
 - `session.execute(insert(User).values(ssn_ct=...))`, executemany sets, `Query.update`, and the legacy bulk APIs (`bulk_insert_mappings`/`bulk_update_mappings`/`bulk_save_objects`) on ciphertext columns or protected classes raise `UnsupportedWriteError`.
@@ -263,7 +263,7 @@ still tracks the plaintext distribution, so a skewed column shows a skewed beaco
 the index non-injective — it does not make the data uniform — so size the width to the row count, and do not
 beacon a low-cardinality column or one you never look up by equality. Widths are byte-aligned (4 and 8 bits are
 the same index); `BeaconIndexer` rejects a width it cannot store rather than rounding it. A beacon hit is not
-proof of equality — always confirm by decrypting. Full statement: [SECURITY.md §5](SECURITY.md).
+proof of equality — always confirm by decrypting. Full statement: [SECURITY.md §5](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md).
 
 </details>
 
@@ -293,7 +293,7 @@ crypto = FloorVault(AdaptiveKeyProvider(service_name="my-app").resolve_key(), ap
 
 `VaultTransitProvider` is a fourth option: it keeps the master key wrapped by a HashiCorp Vault Transit key
 instead of a local file; the wrapped blob lives in a governed on-disk generation store
-([SPEC.md §10.6–10.7](docs/SPEC.md)):
+([SPEC.md §10.6–10.7](https://github.com/Guerilla-ops/floorvault/blob/main/docs/SPEC.md)):
 
 ```python
 from floorvault.providers.vault_transit import VaultTransitProvider
@@ -314,7 +314,7 @@ provider.rewrap()
 Every Vault failure raises `CustodyDowngradeError`; a configured provider never silently falls back to file
 custody. HTTPS only, verified TLS, bounded timeouts/retries, redirects refused unless a standby host is
 trusted. The resolved key is cached briefly (300 s default) — that bounds Transit latency, not revocation
-protection. Full setup: [`docs/VAULT-TRANSIT.md`](docs/VAULT-TRANSIT.md).
+protection. Full setup: [`docs/VAULT-TRANSIT.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/VAULT-TRANSIT.md).
 
 </details>
 
@@ -381,7 +381,7 @@ The recovery bundle is not a substitute for protecting the recovery key.
 ## Performance
 
 A measured macOS benchmark using five independent 10,000-iteration runs and a 1,019-byte payload reported
-(methodology and limits: [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](docs/COMPARATIVE-BENCHMARK-2026-09-15.md)):
+(methodology and limits: [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/COMPARATIVE-BENCHMARK-2026-09-15.md)):
 
 | Operation | FloorVault | Fernet |
 | --- | ---: | ---: |
@@ -405,16 +405,16 @@ fails with an error rather than minting a new custody entry.
 ## Reporting a vulnerability
 
 Do not report security issues in public GitHub issues or pull requests. Use GitHub private vulnerability
-reporting on this repository (preferred), or email **floorbond@pm.me** — [`SECURITY.md`](SECURITY.md) has scope and PGP details.
+reporting on this repository (preferred), or email **floorbond@pm.me** — [`SECURITY.md`](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md) has scope and PGP details.
 
 ## Documentation
 
-- [`SECURITY.md`](SECURITY.md) — security model, limitations, and reporting
-- [`docs/SPEC.md`](docs/SPEC.md) — full protocol and adapter contracts
-- [`docs/VAULT-TRANSIT.md`](docs/VAULT-TRANSIT.md) — Vault Transit custody setup
-- [`docs/RECORD-FORMAT-2026-09-15.md`](docs/RECORD-FORMAT-2026-09-15.md) — `FLV2` envelope format
-- [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](docs/COMPARATIVE-BENCHMARK-2026-09-15.md) — benchmark methodology
-- [`docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md`](docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md) — platform findings
+- [`SECURITY.md`](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md) — security model, limitations, and reporting
+- [`docs/SPEC.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/SPEC.md) — full protocol and adapter contracts
+- [`docs/VAULT-TRANSIT.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/VAULT-TRANSIT.md) — Vault Transit custody setup
+- [`docs/RECORD-FORMAT-2026-09-15.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/RECORD-FORMAT-2026-09-15.md) — `FLV2` envelope format
+- [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/COMPARATIVE-BENCHMARK-2026-09-15.md) — benchmark methodology
+- [`docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md) — platform findings
 
 ## Development
 
@@ -431,4 +431,4 @@ CI tests on Linux, macOS, and Windows across supported Python versions.
 
 ## License
 
-FloorVault is dual-licensed under [MIT](LICENSE-MIT) or [Apache License 2.0](LICENSE-APACHE), at your option.
+FloorVault is dual-licensed under [MIT](https://github.com/Guerilla-ops/floorvault/blob/main/LICENSE-MIT) or [Apache License 2.0](https://github.com/Guerilla-ops/floorvault/blob/main/LICENSE-APACHE), at your option.

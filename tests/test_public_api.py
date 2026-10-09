@@ -27,6 +27,8 @@ EXPECTED_ALL = {
     "DecryptionVerificationError",
     "EncryptedField",
     "EncryptedLibSqlTable",
+    "EncryptedMySQLTable",
+    "EncryptedPostgresTable",
     "EncryptedSQLiteTable",
     "EncryptedWriteError",
     "FloorVault",
@@ -94,6 +96,28 @@ EXPECTED_SIGNATURES = {
     },
     "EncryptedLibSqlTable": {
         "signature": "(connection: '_LibSqlConnection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'floor.vault.v1') -> 'None'",
+        "methods": {
+            "load": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'str'",
+            "load_bytes": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'bytes'",
+            "load_fields": "(self, record_id: 'str', encrypted_columns: 'list[str] | tuple[str, ...]', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'dict[str, str]'",
+            "load_fields_bytes": "(self, record_id: 'str', encrypted_columns: 'list[str] | tuple[str, ...]', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'dict[str, bytes]'",
+            "store": "(self, record_id: 'str', encrypted_column: 'str', value: 'Union[str, bytes]', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'None'",
+            "store_fields": "(self, record_id: 'str', fields: 'Mapping[str, Union[str, bytes]]', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'None'",
+        },
+    },
+    "EncryptedMySQLTable": {
+        "signature": "(connection: 'DBAPIConnection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'floor.vault.v1') -> 'None'",
+        "methods": {
+            "load": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'str'",
+            "load_bytes": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'bytes'",
+            "load_fields": "(self, record_id: 'str', encrypted_columns: 'list[str] | tuple[str, ...]', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'dict[str, str]'",
+            "load_fields_bytes": "(self, record_id: 'str', encrypted_columns: 'list[str] | tuple[str, ...]', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'dict[str, bytes]'",
+            "store": "(self, record_id: 'str', encrypted_column: 'str', value: 'Union[str, bytes]', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'None'",
+            "store_fields": "(self, record_id: 'str', fields: 'Mapping[str, Union[str, bytes]]', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'None'",
+        },
+    },
+    "EncryptedPostgresTable": {
+        "signature": "(connection: 'DBAPIConnection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'floor.vault.v1') -> 'None'",
         "methods": {
             "load": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'str'",
             "load_bytes": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'bytes'",
