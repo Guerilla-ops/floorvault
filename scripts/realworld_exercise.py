@@ -308,20 +308,20 @@ def main() -> int:
 
     # ------------------------------------------------------------------
     section("10. Key providers")
-    os.environ["APPSTATE_KEY"] = KEY_HEX
+    os.environ["FLOOR_VAULT_KEY"] = KEY_HEX
     try:
         k = AdaptiveKeyProvider(fallback_dir=root / "prov").resolve_key()
         check("tier-1 env key resolves", k.get_bytes() == KEY_A)
         k.wipe()
-        os.environ["APPSTATE_KEY"] = "nothex"
+        os.environ["FLOOR_VAULT_KEY"] = "nothex"
         expect_raises(
             "malformed env key rejected",
             (KeyProviderError,),
             AdaptiveKeyProvider(fallback_dir=root / "prov").resolve_key,
         )
-        os.environ["APPSTATE_KEY"] = KEY_HEX
+        os.environ["FLOOR_VAULT_KEY"] = KEY_HEX
     finally:
-        os.environ.pop("APPSTATE_KEY", None)
+        os.environ.pop("FLOOR_VAULT_KEY", None)
 
     # Force the machine-file tier (skip env + native store) so the atomic
     # publish path we hardened is exercised on the real filesystem.
@@ -540,7 +540,9 @@ def main() -> int:
             Fernet(fernet_key).encrypt(json.dumps(legacy_items).encode())
         ).decode()
     )
-    (mig_dir / "vault.key").write_bytes(fernet_key)
+    mig_key_path = mig_dir / "vault.key"
+    mig_key_path.write_bytes(fernet_key)
+    os.chmod(mig_key_path, 0o600)
 
     modern_store = VaultStore(mig_dir / "modern", crypto=vault)
     facade = MigratingVaultStore(modern_store=modern_store, legacy_base_dir=mig_dir)
@@ -569,7 +571,9 @@ def main() -> int:
     bad_dir = root / "migrate-bad"
     bad_dir.mkdir()
     (bad_dir / "vault.json.enc").write_text((mig_dir / "vault.json.enc").read_text())
-    (bad_dir / "vault.key").write_bytes(Fernet.generate_key())
+    bad_key_path = bad_dir / "vault.key"
+    bad_key_path.write_bytes(Fernet.generate_key())
+    os.chmod(bad_key_path, 0o600)
     badfacade = MigratingVaultStore(
         modern_store=VaultStore(bad_dir / "modern", crypto=vault), legacy_base_dir=bad_dir
     )
@@ -786,7 +790,7 @@ def main() -> int:
     iconn.commit()
     iconn.close()
 
-    env = dict(os.environ, APPSTATE_KEY=KEY_HEX)
+    env = dict(os.environ, FLOOR_VAULT_KEY=KEY_HEX)
     py = sys.executable
 
     def cli(*args) -> subprocess.CompletedProcess:
@@ -798,8 +802,14 @@ def main() -> int:
             timeout=60,
         )
 
-    r = cli("inspect", str(idb), "secrets", "rec-1", "value")
+    r = cli("inspect", str(idb), "secrets", "rec-1", "value", "--reveal")
     check("cli decrypts record", r.returncode == 0 and "topsecret" in r.stdout, r.stderr.strip())
+    r = cli("inspect", str(idb), "secrets", "rec-1", "value")
+    check(
+        "cli redacts plaintext by default",
+        r.returncode == 0 and "topsecret" not in r.stdout and "<redacted>" in r.stdout,
+        r.stdout.strip(),
+    )
     r = cli("inspect", str(idb), "secrets", "rec-2", "value")
     check(
         "cli reports non-ciphertext column",
@@ -812,7 +822,7 @@ def main() -> int:
     check("cli rejects injected identifier", r.returncode == 1)
     r = cli("inspect", str(root / "nope.db"), "t", "r", "c")
     check("cli missing db -> exit 1", r.returncode == 1)
-    env2 = dict(env, APPSTATE_KEY=secrets.token_bytes(32).hex())
+    env2 = dict(env, FLOOR_VAULT_KEY=secrets.token_bytes(32).hex())
     r2 = subprocess.run(  # argv is sys.executable plus fixed arguments  # nosec B603
         [py, "-m", "floorvault.inspector", "inspect", str(idb), "secrets", "rec-1", "value"],
         capture_output=True,

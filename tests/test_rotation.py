@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -45,7 +46,9 @@ def _legacy_files(base: Path, items: dict[str, dict]) -> None:
     (base / "vault.json.enc").write_text(
         base64.urlsafe_b64encode(Fernet(key).encrypt(json.dumps(items).encode())).decode()
     )
-    (base / "vault.key").write_text(key.decode())
+    key_path = base / "vault.key"
+    key_path.write_text(key.decode())
+    os.chmod(key_path, 0o600)
 
 
 # ---------------------------------------------------------------------------

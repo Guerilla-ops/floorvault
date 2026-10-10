@@ -11,12 +11,16 @@ the repository's on-disk state holds only ciphertext. Normative formats are in
 <store_dir>/                 (owner-only directory, 0700)
   store.id                   FVSTORID1 + 16 random bytes — the store's identity
   g-00000001.gen             FVGW1 + the Vault "vault:v1:<...>" wrapped blob
-  active                     FVGW0 + generation + SHA-256(payload)
+  active                     FVGW0 + generation + SHA-256(payload) + version
+  highest                    FVHW0 + u64be high-water generation
 ```
 
 - `store.id` is minted once. It is part of the Transit **encryption context**,
   so a blob wrapped for one store directory can never be decrypted for another.
 - `g-*.gen` files are immutable; `active` is the only replaced object.
+- `highest` is ratcheted before every repoint, so a restored superseded
+  `active` — a KEK-rotation rollback — is refused instead of resurrecting
+  the pre-rotation blob.
 - Nothing in `store_dir` is secret in itself — it is ciphertext and identity —
   but the directory is still hardened to the protected-store contract so that
   an attacker who can only *replace* files cannot point the provider at a
