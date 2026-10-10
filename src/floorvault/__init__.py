@@ -11,6 +11,7 @@ from .core import (
     NonceReuseError,
     associated_data,
 )
+from .dbapi_adapter import EncryptedMySQLTable, EncryptedPostgresTable
 from .key_recovery import recover_master_key, wrap_master_key
 from .keyring import KeyRing, UnknownKeyIdError
 from .libsql_adapter import EncryptedLibSqlTable
@@ -69,6 +70,11 @@ __all__ = [
     "EncryptedSQLiteTable",
     # libSQL adapter (driver-free module; the 'libsql' extra supplies the client)
     "EncryptedLibSqlTable",
+    # DB-API adapters (driver-free imports; the drivers themselves are the
+    # 'postgres'/'mysql' extras). PEP 249 connections are duck-checked, so
+    # nothing here imports psycopg or mysql-connector at module load.
+    "EncryptedPostgresTable",
+    "EncryptedMySQLTable",
     "migrate_plaintext_column",
     "verify_encrypted_column",
     "drop_plaintext_column",

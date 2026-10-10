@@ -6,7 +6,7 @@ import sqlite3
 from typing import Any
 
 from .core import FloorVault
-from .sqlite_adapter import _quoted_identifier, _safe_identifier
+from .sqlite_adapter import _fold_sqlite, _quoted_identifier, _safe_column, _safe_identifier
 
 
 def _validate_inputs(
@@ -21,10 +21,13 @@ def _validate_inputs(
         raise TypeError("connection must be a sqlite3.Connection")
     if not isinstance(crypto, FloorVault):
         raise TypeError("crypto must be a FloorVault")
-    table_name = _safe_identifier(table)
-    id_name = _safe_identifier(id_column)
-    source_name = _safe_identifier(source_column)
-    destination_name = _safe_identifier(destination_column)
+    # Fold to SQLite's physical identity so migrated ciphertext binds the same
+    # coordinates EncryptedSQLiteTable reads; columns stay bare so a qualified
+    # spelling cannot smuggle a different target.
+    table_name = _fold_sqlite(_safe_identifier(table))
+    id_name = _fold_sqlite(_safe_column(id_column))
+    source_name = _fold_sqlite(_safe_column(source_column))
+    destination_name = _fold_sqlite(_safe_column(destination_column))
     if source_name == destination_name:
         raise ValueError("source and destination columns must differ")
     return table_name, id_name, source_name, destination_name
@@ -81,18 +84,23 @@ def migrate_plaintext_column(
                 raise ValueError("record ID cannot be NULL")
             if not isinstance(plaintext, (str, bytes, bytearray)):
                 raise TypeError("plaintext values must be str or bytes")
+            # str() both normalizes the AAD coordinate and strips a custom
+            # text_factory's str subclass before the value reaches SQL binding
+            # (sqlite3 honours __conform__; a subclass must not split the SQL
+            # coordinate from the signed one).
+            bound_id = str(record_id)
             ciphertext = crypto.encrypt(
                 bytes(plaintext) if isinstance(plaintext, bytearray) else plaintext,
                 table=table,
-                record_id=str(record_id),
+                record_id=bound_id,
                 column=destination_column,
             )
             cursor = connection.execute(
                 f"UPDATE {sql_table} SET {sql_dest} = ? WHERE {sql_id} = ?",  # identifiers allow-listed + quoted  # nosec B608
-                (ciphertext, record_id),
+                (ciphertext, bound_id),
             )
             if cursor.rowcount != 1:
-                raise LookupError(f"record not found during migration: {record_id!r}")
+                raise LookupError("record not found during migration")
             migrated += 1
 
         skipped_null = connection.execute(
@@ -186,8 +194,8 @@ def drop_plaintext_column(
             "drop_plaintext_column must not run inside an open transaction; "
             "commit or roll back first"
         )
-    table_name = _safe_identifier(table)
-    column_name = _safe_identifier(column)
+    table_name = _fold_sqlite(_safe_identifier(table))
+    column_name = _fold_sqlite(_safe_identifier(column))
     # _safe_identifier's charset admits one schema qualifier, but
     # PRAGMA table_info() cannot express a bracket-qualified name
     # ([s].[t] is a syntax error there) and a column name is never
@@ -202,13 +210,16 @@ def drop_plaintext_column(
             f"DROP COLUMN requires SQLite >= 3.35 (this build has {sqlite3.sqlite_version})"
         )
     columns = {
-        row[1].casefold()
+        _fold_sqlite(row[1]): row[1]
         for row in connection.execute(
             f"PRAGMA table_info({_quoted_identifier(table_name)})"
         ).fetchall()
     }
-    if column_name.casefold() not in columns:
+    if column_name not in columns:
         raise ValueError(f"column {column_name!r} not present in {table_name!r}")
+    # Report the schema's own spelling, not the caller's: 'TOKEN' and 'token'
+    # name one column, and the honest result names the column as declared.
+    dropped_name = columns[column_name]
 
     # secure_delete applies to content freed *after* it is set, so it must be
     # armed before the drop, on this connection.
@@ -231,7 +242,7 @@ def drop_plaintext_column(
     if vacuum:
         connection.execute("VACUUM")
     return {
-        "dropped": column_name,
+        "dropped": dropped_name,
         "journal_mode": journal_mode,
         "wal_truncated": wal_truncated,
         "vacuumed": vacuum,

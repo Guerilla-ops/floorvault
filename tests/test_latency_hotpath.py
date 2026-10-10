@@ -112,6 +112,26 @@ def test_aad_lone_surrogate_raises_same_error_as_associated_data(crypto):
         crypto._aad(**kwargs)
 
 
+def test_lone_surrogate_in_any_coordinate_is_a_value_error(crypto):
+    """The refusal is the documented ValueError contract, not a codec error:
+    UnicodeEncodeError subclasses ValueError, so the exact type is pinned."""
+    for kwargs in (
+        dict(column="lone-\udfff"),
+        dict(record_id="r\ud800"),
+        dict(schema_id="s\ud800"),
+        # A surrogate riding alongside escapable characters takes the
+        # json.dumps fallback path; it must refuse there too, not emit \ud800.
+        dict(record_id='r\ud800"'),
+    ):
+        base = dict(table="t", record_id="r", column="c")
+        base.update(kwargs)
+        with pytest.raises(ValueError) as exc_info:
+            crypto.encrypt("v", **base)
+        assert exc_info.type is ValueError, (
+            f"raw codec error escaped for {kwargs}: {exc_info.value!r}"
+        )
+
+
 def test_aad_int_subclass_cannot_inject_bytes(crypto):
     """An int subclass overriding ``__str__`` must not smuggle bytes into the
     AAD: ``int.__repr__`` is what ``json.dumps`` uses, so the templated path

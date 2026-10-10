@@ -113,10 +113,12 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
         attribute: str = "master-key",
         random_bytes: Callable[[int], bytes] = _random,
         allow_file_fallback: bool = True,
+        allow_legacy_adoption: bool = False,
     ) -> None:
         if not service or not isinstance(service, str):
             raise ValueError("service must be a non-empty string")
         self._path = Path(store_path)
+        self._allow_legacy_adoption = allow_legacy_adoption
         self._service = service
         self._attribute = attribute
         self._random_bytes = random_bytes
@@ -274,6 +276,7 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
                 self._path,
                 header=_HEADER,
                 legacy_path=self._legacy_store_path(),
+                allow_legacy_adoption=self._allow_legacy_adoption,
             )
         except ProtectedStoreMissing:
             # Absent: creating below is correct. Other read failures propagate,

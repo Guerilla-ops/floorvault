@@ -14,8 +14,10 @@ repository; when in doubt, the code and the mutation suite win.
   providers, adapters (SQLite / SQLAlchemy / libSQL), rotation, migration, recovery
   bundles, session framing, search beacons, Vault Transit custody, `inspector` CLI.
 - `tests/test_rfc5297_independent.py` — independent RFC 5297 implementation used for
-  cross-validation (test-support, not production crypto). PR #31 moves it to a stable
-  importable path at `src/floorvault/testing/siv_reference.py`.
+  cross-validation (test-support, not production crypto). On `main` (post-`v0.1.0`,
+  PR #31) it is also exposed at the stable importable path
+  `src/floorvault/testing/siv_reference.py`; at the `v0.1.0` audit target it lives
+  only in the test file.
 - `scripts/` — `gen_vectors.py`, `mutation_check.py`, `realworld_exercise.py`,
   `verify_wheel.py`, `security-check.sh`, `benchmark_compare.py`.
 - `fuzz/` — ClusterFuzzLite harnesses.
@@ -34,7 +36,7 @@ repository; when in doubt, the code and the mutation suite win.
 
 | Primitive | Purpose | Construction | Source |
 | --- | --- | --- | --- |
-| AES-256-SIV | Field encryption | RFC 5297 (S2V + CTR), 128-bit tag doubles as nonce — misuse-resistant | `cryptography` `AESSIV` in production; independent from-spec reference in `tests/test_rfc5297_independent.py` (single-block ECB primitive for CMAC/S2V/CTR; moving to `src/floorvault/testing/` in #31) |
+| AES-256-SIV | Field encryption | RFC 5297 (S2V + CTR), 128-bit tag doubles as nonce — misuse-resistant | `cryptography` `AESSIV` in production; independent from-spec reference in `tests/test_rfc5297_independent.py` (single-block ECB primitive for CMAC/S2V/CTR; also at `src/floorvault/testing/siv_reference.py` on `main` post-#31 — not at `v0.1.0`) |
 | HKDF-SHA256 | Master key → encryption key derivation | RFC 5869, context-separated info | `src/floorvault/core.py` |
 | Envelope | `FLV2` record format | Header `crypto_version`+`key_id`+`nonce_len` is *cleartext but authenticated* via AAD; full layout in `docs/SPEC.md` and `docs/RECORD-FORMAT-2026-09-15.md` | `src/floorvault/records.py` |
 | Contextual AAD | Anti-splice binding | `table`, `record_id`, `column`, `schema_id`/`schema_version`, `app_instance_id`, optional `revision` — exact byte serialization frozen in SPEC §4 (NFC/NFD as-written, `ensure_ascii=False`, unbounded ints) | `src/floorvault/records.py` |
@@ -65,8 +67,9 @@ repository; when in doubt, the code and the mutation suite win.
   mocks, public surfaces) → universal-wheel verification → curated mutation suite.
 - **Mutation suite:** `scripts/mutation_check.py` — a curated named-mutant roster (`PC`, `AD`,
   `WACL`, `MIG`, `KR`, `ROT`, `DS`, `CR`, `SS`, `KP`, `IQ`, `REC`, `DUR`, `BC`,
-  `VS`, `GS`, `VT`, `SA`, `LQ` families) each anchored to a specific security
-  invariant; every mutant must be killed by a test or documented as an equivalent.
+  `VS`, `GS`, `VT`, `SA`, `LQ`, `UTF`, `WD` families) each anchored to a specific
+  security invariant; every mutant must be killed by a test or documented as an
+  equivalent.
 - **Wire vectors:** `tests/vectors/floorvault_wire_vectors.json` +
   `tests/vectors/independent_wire.py` — a serializer that does **not** import
   `floorvault`; a second implementation can prove byte-compatibility without reading

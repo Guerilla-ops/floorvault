@@ -145,6 +145,75 @@ def test_required_mode_fails_closed_without_a_lock_backend(monkeypatch):
     key.wipe()
 
 
+def test_required_mode_refuses_a_plain_heap_fallback(monkeypatch):
+    """mode='required' must not silently accept the non-mmap heap fallback.
+
+    Forcing ``mmap.mmap`` to fail used to drop the key onto a plain ctypes
+    heap buffer; on Darwin - which implements neither MADV_DONTDUMP nor
+    MADV_DONTFORK - the only remaining required-mode check is mlock, which
+    succeeds even on an unaligned heap allocation. The object then reported
+    ``is_locked=True`` with no dump or fork exclusion behind it. Required
+    mode means the page-aligned protected allocation exists; when it cannot
+    be established, construction must refuse.
+    """
+    import floorvault.memory as mem
+
+    def no_mmap(*_args, **_kwargs):
+        raise OSError("mmap unavailable")
+
+    monkeypatch.setattr(mem.mmap, "mmap", no_mmap)
+
+    with pytest.raises(mem.SecurityHardeningError, match="protected allocation"):
+        mem.HardenedMemoryKey(b"\x82" * 32, mode="required")
+
+    # Opportunistic keeps the documented heap fallback.
+    key = mem.HardenedMemoryKey(b"\x82" * 32, mode="opportunistic")
+    try:
+        assert key._mmap_base is None
+        assert key.get_bytes() == b"\x82" * 32
+    finally:
+        key.wipe()
+
+
+def test_constructor_consumes_mutable_input():
+    """A caller-supplied bytearray is zeroed once the key is copied in.
+
+    The constructor's bytes() coercion used to leave the caller's mutable
+    buffer holding the key material after the object was built - an unwiped
+    ghost the object's own wipe() can never reach.
+    """
+    source = bytearray(b"\xab" * 32)
+    key = HardenedMemoryKey(source, mode="disabled")
+    try:
+        assert bytes(source) == b"\x00" * 32
+        assert key.get_bytes() == b"\xab" * 32
+    finally:
+        key.wipe()
+
+
+def test_wipe_runs_after_module_globals_are_torn_down(monkeypatch):
+    """wipe() must still zero the buffer when module globals are gone.
+
+    At interpreter teardown, ``__del__`` ran ``wipe()`` against module
+    globals already cleared to None, so ``ctypes.memset`` raised
+    AttributeError and the buffer survived unwiped. The teardown path binds
+    everything it needs at construction.
+    """
+    import floorvault.memory as mem
+
+    key = HardenedMemoryKey(b"\x83" * 32, mode="disabled")
+    view = key.get_buffer()
+    monkeypatch.setattr(mem, "ctypes", None)
+    monkeypatch.setattr(mem, "is_macos", None)
+    monkeypatch.setattr(mem, "is_linux", None)
+    monkeypatch.setattr(mem, "is_windows", None)
+
+    key.wipe()
+    assert key.is_wiped is True
+    assert bytes(view) == b"\x00" * 32
+    view.release()
+
+
 def test_required_mode_fails_when_core_dumps_cannot_be_disabled(monkeypatch):
     """A failed setrlimit must not masquerade as protection under 'required'.
 

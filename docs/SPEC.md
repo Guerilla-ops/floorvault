@@ -234,6 +234,10 @@ only readable by parties knowing the exact values used.
   error rather than a type error. `schema_version` and `revision` MUST be
   `int` — `bool` is rejected (`TypeError`), and `revision < 0` is rejected
   (`ValueError`). Rejection details are in §16.
+- Every string coordinate MUST be UTF-8 encodable: a lone surrogate (a `str`
+  containing `U+D800`–`U+DFFF`) is refused with `ValueError` on both the
+  canonical (`associated_data`) and fast (`_quote_json`) serializers — never
+  a raw `UnicodeEncodeError`, and never a silently emitted `\uXXXX` escape.
 - The encoding is injective over the accepted domain: no two distinct
   coordinate sets produce the same bytes.
 
@@ -288,6 +292,15 @@ but not malleable.
   evicted nonce may be re-tracked. **The window is an implementation detail,
   not part of the format.** It provides within-process belt-and-suspenders
   dedup only; it does not survive restart and is not a freshness mechanism.
+- Bounded-window consequence: AES-SIV is deterministic in
+  `(key, nonce, AAD, plaintext)`, so a nonce that recurs after eviction or
+  restart — under the same key and the same coordinates — produces
+  byte-identical ciphertext for identical plaintext. A read-only observer can
+  then infer plaintext *equality* across those records. This is the SIV
+  misuse-resistance guarantee working as designed: nonce reuse leaks
+  equality, never plaintext or key. Callers that must not leak even equality
+  across long-lived stores MUST bind caller-managed freshness (`revision`,
+  §5) so a repeated coordinate pair cannot recur.
 - Cross-session freshness — defense against same-coordinate replay — is the
   caller's responsibility via `revision` bound into the AAD (§5), and only
   when the revision comes from state the attacker cannot roll back together
@@ -330,8 +343,11 @@ beacon_key = HKDF-SHA256(master_key, salt=absent,
                          info="floorvault-v1-beacon-index", L=32)
 ```
 
-The key argument to `compute_beacon` MUST be at least 32 bytes; longer keys
-are accepted and passed to HMAC as-is.
+The key argument to `compute_beacon` MUST be exactly 32 bytes — the
+`derive_beacon_key` output length. Longer keys are refused: the AEAD path's
+64-byte SIV subkey must not double as the index key (reusing one key across
+the encryption and index purposes is the defect the subkey separation
+exists to prevent).
 
 ### 9.2 Payload and truncation
 
@@ -345,10 +361,13 @@ beacon  = HMAC-SHA256(beacon_key, payload)[:ceil(bits/8)]
   the domain separator, conventionally `"<table>.<column>"`.
 - The scope is length-prefixed so the `(scope, value)` encoding is
   injective; `value` is not length-prefixed (it is last).
-- `bits` MUST be an integer in `[4, 64]`; `bool` is rejected. Storage is
-  byte-aligned: `ceil(bits/8)` bytes are emitted, so 4–8 bits are the same
-  stored index and 9–16 are the same index. Implementations reporting a
-  width to users MUST report the stored byte width, not the requested bits.
+- `bits` MUST be an integer in `[4, 64]`; `bool` is rejected. The parameter
+  is required — there is no universally safe default (the coarsest stored
+  form is still 256 buckets), so callers choose with `suggest_beacon_bits`.
+  Storage is byte-aligned: `ceil(bits/8)` bytes are emitted, so 4–8 bits are
+  the same stored index and 9–16 are the same index. Implementations
+  reporting a width to users MUST report the stored byte width, not the
+  requested bits.
 - `beacon_matches` is bucket agreement under `hmac.compare_digest`; a match
   is NOT an equality proof — confirm by decrypting the candidate.
 - The `BeaconIndexer` convenience wrapper additionally refuses a `bits`
@@ -376,7 +395,12 @@ store = scheme_header || payload      (max read: 4096 bytes)
 Scheme paths are disjoint by construction (`master.key.<scheme>`); a file is
 only *this* scheme's store if it parses under this scheme's header. A reader
 whose scheme path is absent MAY adopt the legacy `master.key` path, but only
-when that file parses under the scheme's header (adoption emits a warning).
+when that file parses under the scheme's header AND the caller explicitly
+opted in (`allow_legacy_adoption=True`; adoption emits a warning). Without
+the opt-in, a parseable legacy file is refused — never replaced — because
+the scheme payloads are deterministic public transforms: a planted file is
+indistinguishable from a genuine pre-split store, so the upgrade is an
+operator decision rather than a silent default.
 
 ### 10.2 `ss` mask (normative, byte-for-byte)
 
@@ -401,8 +425,12 @@ else.
 - Windows: `CryptProtectData(key, entropy)` — variable-length OS blob;
   `entropy` is caller-supplied or the public constant `b"floorvault-dpapi"`
   (a label, not a secret).
-- Non-Windows (contract testing): `mask = SHA256(entropy)`, `out[i] = in[i]
-  XOR mask[i]` with the same `zip` truncation semantics as §10.2.
+- Non-Windows (contract testing only): `mask = SHA256(entropy)`, `out[i] =
+  in[i] XOR mask[i]` with the same `zip` truncation semantics as §10.2. With
+  the default public entropy this is plaintext-equivalent custody, so
+  `resolve_key` on a non-Windows host MUST refuse unless the provider was
+  constructed with `allow_nonwindows_stub=True` — the opt-in names the risk
+  rather than hiding it behind a DPAPI-looking header.
 - Payload length is validated only after unprotection (must be 32).
 
 ### 10.4 Store file safety contract (normative)
@@ -434,10 +462,14 @@ else.
 
 ### 10.5 Adaptive provider resolution order
 
-1. Environment, in this order: `APPSTATE_KEY`, `FLOOR_VAULT_KEY`,
-   `VAULT_MASTER_KEY` — first non-empty wins; value MUST be exactly 64
-   hexadecimal characters (32 bytes); `APPSTATE_KEY` emits a deprecation
-   warning.
+1. Environment, in this order: `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY` — first
+   non-empty wins; value MUST be exactly 64 hexadecimal characters (32
+   bytes). `APPSTATE_KEY` shares a process-wide namespace with other tools
+   and is read only when the provider is constructed with
+   `allow_legacy_env_vars=True`; it then sorts last and still emits a
+   deprecation warning. `strict=True` refuses environment custody outright —
+   a plaintext env var is below the OS-backed pledge — raising
+   `CustodyDowngradeError` that names the variable (never its value).
 2. OS-native custody: Windows DPAPI store; Linux Secret Service (when a
    session bus and the `secretstorage` package are reachable, else absent);
    macOS Keychain. A present-but-unusable native tier raises rather than
@@ -454,7 +486,9 @@ to §10.4's owner-only contract:
 
 ```
 g-%08x.gen     = "FVGW1" (5 B) || opaque wrapped-key payload   - immutable
-active         = "FVGW0" (5 B) || u64be generation || SHA-256(payload)  - 45 B
+active         = "FVGW0" (5 B) || u64be generation || SHA-256(payload)
+                 [ || 0x01 monotonic-version byte ]           - 45 or 46 B
+highest        = "FVHW0" (5 B) || u64be high-water generation  - 13 B
 .active.lock   = "pid=<pid>\n"  - present only while a writer holds the lock
 ```
 
@@ -466,6 +500,17 @@ Normative rules:
 - **The pointer** is the only replaced object: 0600 temp, fsync, atomic
   `os.replace`, directory fsync. Readers take a whole old or whole new
   pointer on every platform with atomic rename; reads never take the lock.
+- **The high-water marker** records the highest generation ever published.
+  It is ratcheted under the writer lock *before* the pointer is repointed,
+  so a crash between the two leaves the marker ahead of the pointer. A
+  reader MUST refuse a pointer below the marker (`PointerRollbackError`),
+  MUST refuse a pointer ahead of the marker (inconsistent state), and MUST
+  refuse a versioned pointer whose marker is missing. A 45-byte pointer
+  (version 1) with no marker is a pre-monotonicity store and is accepted;
+  the first post-upgrade publish writes the version byte and marker.
+  A writer observing the marker ahead of the pointer completes the marked
+  generation when its file exists — repairing either an interrupted publish
+  or a rolled-back pointer — and refuses when the file is missing.
 - **Pointer integrity:** the reader resolves the pointer's generation file
   and verifies its payload SHA-256 equals the pointer's digest. A missing
   file or a mismatch is `ProtectedStoreError`, *not* `ProtectedStoreMissing`
@@ -709,12 +754,26 @@ column    = "content"
 `EncryptedSQLiteTable` stores §4 envelopes verbatim in caller-declared BLOB
 columns — no additional framing exists at the SQL layer. Column/table
 identifiers are allow-listed (`^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?$`,
-max 128 chars) and bracket-quoted at the SQL boundary. `migrate_plaintext_column`
+max 128 chars), bracket-quoted at the SQL boundary, and **ASCII-case-folded**
+before they enter AAD: SQLite resolves identifiers case-insensitively, so
+`users` and `Users` name one physical table — and therefore one cryptographic
+coordinate. `store_fields` refuses a `fields` mapping that names the same
+physical column under two spellings. Record ids are normalized to a plain
+`str` before both SQL binding and AAD construction, so a `str` subclass's
+`__conform__`/codec hooks cannot make the bound SQL value diverge from the
+signed coordinate. Driver-level errors (missing column, unattached schema)
+surface as `ValueError`, never as raw `sqlite3` exceptions, and failure
+messages do not echo record coordinates. `migrate_plaintext_column`
 seals each non-NULL source value under `table=<table>`,
-`record_id=str(<id-column value>)`, `column=<destination_column>` and refuses
+`record_id=str(<id-column value>)`, `column=<destination_column>` (all
+ASCII-folded, matching the adapter) and refuses
 to overwrite a destination that already holds data; `verify_encrypted_column`
 decrypts every destination and compares to the source, failing on any NULL id,
-missing ciphertext, or mismatch.
+missing ciphertext, or mismatch. The DB-API adapters
+(`EncryptedPostgresTable`/`EncryptedMySQLTable`) apply the same exactly-one
+write invariant, id-column refusal, and record-id normalization; PostgreSQL
+quoted identifiers are case-sensitive while MySQL column names are not, so
+the id-column comparison follows each dialect's own resolution rules.
 
 `drop_plaintext_column` carries a residue contract worth one paragraph: it
 arms `PRAGMA secure_delete=ON` (and leaves it on), drops the column inside a
@@ -785,7 +844,10 @@ The following are **not part of this format** and are deliberately excluded:
   pages.
 - **The legacy Fernet store** (`vault.json.enc` + `vault.key`) — a foreign
   format the migration facade reads but never writes; specified by the
-  `cryptography` Fernet spec, not here.
+  `cryptography` Fernet spec, not here. The facade reads `vault.key` through
+  the same protected-store checks as every other key file (regular file,
+  owner-only permissions, no symlink) and refuses an insecure key path
+  instead of adopting it.
 - **Nonce-window mechanics, lock discipline, memory hygiene** — process
   behavior, not format (§7).
 
@@ -822,7 +884,7 @@ accept/refuse decisions; error names are its own.
 | Master key not bytes-like (`TypeError`), not 32 B (`ValueError`) | as noted |
 | Beacon `bits` bool/non-int (`TypeError`), outside [4,64] (`ValueError`) | as noted |
 | Beacon value non-str (`TypeError`), scope empty (`ValueError`) | as noted |
-| Beacon key < 32 B | `ValueError` |
+| Beacon key != 32 B | `ValueError` |
 | Recovery bundle < 22 B or bad magic / recovered key != 32 B | `ValueError` |
 | Store missing | `ProtectedStoreMissing` |
 | Store non-regular/wrong owner/oversized/unverifiable ACL/exists-on-write | `ProtectedStoreError` |
@@ -830,6 +892,7 @@ accept/refuse decisions; error names are its own.
 | Env key non-64-hex / key file malformed | `KeyProviderError` |
 | OS-native tier present but unusable | `CustodyDowngradeError` |
 | Tombstone auth/match failure, plaintext metadata post-migration, write during rotation | `VaultError` |
+| Legacy vault JSON nested deeper than 64 levels, or parser recursion | `LegacyVaultError` (subclass of `VaultError`) |
 | Retired legacy id whose modern record is missing | `LegacyRetiredError` |
 | `session_id`/`message_id` non-empty-on-write violation or containing NUL | `VaultError` |
 | SQL identifier rejected | `ValueError` |

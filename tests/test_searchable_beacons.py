@@ -205,11 +205,11 @@ def test_scope_and_value_boundaries_cannot_be_blurred():
 
 def test_empty_scope_and_non_string_value_are_rejected():
     with pytest.raises(ValueError):
-        compute_beacon("v", scope="", key=KEY)
+        compute_beacon("v", scope="", key=KEY, bits=8)
     with pytest.raises(ValueError):
-        compute_beacon("v", scope="   ", key=KEY)
+        compute_beacon("v", scope="   ", key=KEY, bits=8)
     with pytest.raises(TypeError):
-        compute_beacon(b"v", scope="s", key=KEY)  # type: ignore[arg-type]
+        compute_beacon(b"v", scope="s", key=KEY, bits=8)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -217,11 +217,44 @@ def test_empty_scope_and_non_string_value_are_rejected():
 # ---------------------------------------------------------------------------
 
 
-def test_key_must_be_at_least_32_bytes():
+def test_key_must_be_exactly_32_bytes():
     with pytest.raises(ValueError):
-        compute_beacon("v", scope="s", key=b"\x01" * 16)
+        compute_beacon("v", scope="s", key=b"\x01" * 16, bits=8)
     with pytest.raises(ValueError):
-        compute_beacon("v", scope="s", key=b"")
+        compute_beacon("v", scope="s", key=b"", bits=8)
+
+
+def test_a_64_byte_aead_subkey_is_refused_as_a_beacon_key():
+    """The AEAD path's 64-byte SIV subkey must not double as the index key.
+
+    Reusing one key across the AEAD and beacon purposes is exactly the
+    cross-domain misuse ``derive_beacon_key`` exists to prevent; a >32-byte
+    input is overwhelmingly that subkey (or another key meant for a different
+    domain), so the validator now requires exactly the derived subkey length.
+    """
+    with pytest.raises(ValueError, match="exactly 32 bytes"):
+        compute_beacon("v", scope="s", key=b"\x11" * 64, bits=8)
+    with pytest.raises(ValueError, match="exactly 32 bytes"):
+        BeaconIndexer(b"\x11" * 64, bits=8)
+    with pytest.raises(ValueError, match="exactly 32 bytes"):
+        beacon_matches("v", scope="s", key=b"\x11" * 64, beacon=b"\x00", bits=8)
+
+
+# ---------------------------------------------------------------------------
+# Width is a required choice - there is no universally safe default
+# ---------------------------------------------------------------------------
+
+
+def test_beacon_width_is_a_required_argument():
+    """No width is universally safe (256 buckets is the coarsest stored form),
+    so the API refuses to pick one for the caller. ``suggest_beacon_bits``
+    is the supported way to choose."""
+    with pytest.raises(TypeError):
+        compute_beacon("v", scope="s", key=KEY)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        beacon_matches("v", scope="s", key=KEY, beacon=b"\x00")  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        BeaconIndexer(KEY)  # type: ignore[call-arg]
 
 
 def test_hardened_memory_key_is_accepted():
@@ -306,7 +339,7 @@ def test_suggest_beacon_bits_rejects_invalid_input():
 
 
 def test_beacon_indexer_round_trip_and_width_sizing():
-    indexer = BeaconIndexer(KEY)
+    indexer = BeaconIndexer(KEY, bits=8)
     assert indexer.bits == 8
     beacon = indexer.beacon("alice@example.com", scope="users.email")
     assert len(beacon) == 1
@@ -487,11 +520,11 @@ def test_indexer_silent_at_or_below_suggested_width():
 
 def test_indexer_rejects_bad_expected_rows():
     with pytest.raises(TypeError):
-        BeaconIndexer(KEY, expected_rows="many")
+        BeaconIndexer(KEY, bits=8, expected_rows="many")
     with pytest.raises(TypeError):
-        BeaconIndexer(KEY, expected_rows=True)
+        BeaconIndexer(KEY, bits=8, expected_rows=True)
     with pytest.raises(ValueError):
-        BeaconIndexer(KEY, expected_rows=0)
+        BeaconIndexer(KEY, bits=8, expected_rows=0)
 
 
 # ---------------------------------------------------------------------------
@@ -523,7 +556,9 @@ def test_coerce_does_not_materialize_hardened_key_as_bytes(monkeypatch):
 
     monkeypatch.setattr(HardenedMemoryKey, "get_bytes", counting_get_bytes)
     for index in range(50):
-        beacons_module.compute_beacon(f"user{index}@example.com", scope="users.email", key=hardened)
+        beacons_module.compute_beacon(
+            f"user{index}@example.com", scope="users.email", key=hardened, bits=8
+        )
 
     assert calls["n"] == 0, (
         f"compute_beacon materialized the hardened key as heap bytes "
@@ -538,9 +573,13 @@ def test_coerce_accepts_hardened_key_and_still_computes():
     from floorvault.memory import HardenedMemoryKey
 
     raw = bytes(range(32))
-    expected = beacons_module.compute_beacon("alice@example.com", scope="users.email", key=raw)
+    expected = beacons_module.compute_beacon(
+        "alice@example.com", scope="users.email", key=raw, bits=8
+    )
     hardened = HardenedMemoryKey(raw)
-    actual = beacons_module.compute_beacon("alice@example.com", scope="users.email", key=hardened)
+    actual = beacons_module.compute_beacon(
+        "alice@example.com", scope="users.email", key=hardened, bits=8
+    )
     assert actual == expected
 
 
@@ -565,7 +604,7 @@ def test_beacon_refuses_a_key_wiped_between_view_and_copy():
     from floorvault.memory import HardenedMemoryKey
 
     correct = beacons_module.compute_beacon(
-        "alice@example.com", scope="users.email", key=bytes(range(32))
+        "alice@example.com", scope="users.email", key=bytes(range(32)), bits=8
     )
 
     hardened = HardenedMemoryKey(bytes(range(32)))
@@ -656,7 +695,7 @@ def test_a_wiped_owner_refuses_while_the_buffer_is_still_nonzero(monkeypatch, op
 
     if operation == "compute":
         call = lambda: beacons_module.compute_beacon(  # noqa: E731
-            "alice@example.com", scope="users.email", key=hardened
+            "alice@example.com", scope="users.email", key=hardened, bits=8
         )
     else:
         call = lambda: beacons_module.derive_beacon_key(hardened)  # noqa: E731

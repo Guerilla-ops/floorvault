@@ -25,6 +25,8 @@ store when it is *this* scheme's, and ignores another scheme's file.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from floorvault.providers import adaptive as adaptive_module
@@ -33,6 +35,7 @@ from floorvault.providers.adaptive import AdaptiveKeyProvider
 from floorvault.providers.linux_keyring import LinuxSecretServiceKeyProvider
 from floorvault.providers.platform_custody import (
     LEGACY_STORE_NAME,
+    ProtectedStoreError,
     ProtectedStoreHeaderError,
     read_protected,
     store_path_for,
@@ -48,18 +51,20 @@ def _headless(monkeypatch):
     monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
 
 
-def _linux_provider(base, monkeypatch):
+def _linux_provider(base, monkeypatch, **kwargs):
     _headless(monkeypatch)
     monkeypatch.setattr(lk_module, "is_linux", lambda: True)
     return LinuxSecretServiceKeyProvider(
-        store_path=LinuxSecretServiceKeyProvider.default_store_path(base)
+        store_path=LinuxSecretServiceKeyProvider.default_store_path(base), **kwargs
     )
 
 
-def _dpapi_provider(base):
+def _dpapi_provider(base, **kwargs):
     return WindowsDPAPIKeyProvider(
         store_path=WindowsDPAPIKeyProvider.default_store_path(base),
         allow_outside_user_profile=True,
+        allow_nonwindows_stub=True,
+        **kwargs,
     )
 
 
@@ -148,7 +153,10 @@ def test_linux_provider_adopts_a_pre_split_store(tmp_path, monkeypatch):
     """A store written before the split sits at ``master.key`` and must be used.
 
     Minting a new key here would leave the existing data undecryptable, which is
-    worse than the collision being fixed.
+    worse than the collision being fixed. Adoption requires an explicit opt-in
+    because the masked payload is a public transform: a planted file is
+    indistinguishable from a genuine pre-split store, so the upgrade must be
+    an operator decision rather than a silent default.
     """
     key = b"\x2b" * 32
     provider_before_split = LinuxSecretServiceKeyProvider(store_path=tmp_path / LEGACY_STORE_NAME)
@@ -156,7 +164,7 @@ def test_linux_provider_adopts_a_pre_split_store(tmp_path, monkeypatch):
         provider_before_split._mask(key), tmp_path / LEGACY_STORE_NAME, header=b"FLOORLV1"
     )
 
-    provider = _linux_provider(tmp_path, monkeypatch)
+    provider = _linux_provider(tmp_path, monkeypatch, allow_legacy_adoption=True)
     resolved = provider.resolve_key(allow_create=True)
 
     assert resolved.get_bytes() == key, "the pre-split store was not adopted"
@@ -168,15 +176,52 @@ def test_dpapi_provider_adopts_a_pre_split_store(tmp_path):
     """Same adoption rule for the Windows store."""
     key = b"\x3c" * 32
     legacy = tmp_path / LEGACY_STORE_NAME
-    before = WindowsDPAPIKeyProvider(store_path=legacy, allow_outside_user_profile=True)
+    before = WindowsDPAPIKeyProvider(
+        store_path=legacy,
+        allow_outside_user_profile=True,
+        allow_nonwindows_stub=True,
+    )
     write_protected(before._protect(key), legacy, header=b"FLOORWV1", expected_length=None)
 
-    provider = _dpapi_provider(tmp_path)
+    provider = _dpapi_provider(tmp_path, allow_legacy_adoption=True)
     resolved = provider.resolve_key(allow_create=True)
 
     assert resolved.get_bytes() == key, "the pre-split DPAPI store was not adopted"
     assert not provider._path.exists()
     resolved.wipe()
+
+
+def test_linux_provider_refuses_pre_split_store_without_opt_in(tmp_path, monkeypatch):
+    """A legacy ``master.key`` parsing as this scheme is refused by default.
+
+    Red-team P0 #8: because the scheme pads are public deterministic
+    functions, an attacker with vault-directory write access can plant a
+    ``master.key`` holding a key of their choosing and have it adopted - a
+    silent custody downgrade. Refusal (not minting) keeps the data reachable.
+    """
+    key = b"\x2b" * 32
+    provider_before_split = LinuxSecretServiceKeyProvider(store_path=tmp_path / LEGACY_STORE_NAME)
+    write_protected(
+        provider_before_split._mask(key), tmp_path / LEGACY_STORE_NAME, header=b"FLOORLV1"
+    )
+
+    provider = _linux_provider(tmp_path, monkeypatch)
+    with pytest.raises(ProtectedStoreError, match="allow_legacy_adoption"):
+        provider.resolve_key(allow_create=True)
+    assert not provider._path.exists(), "a new store was minted beside the refused legacy file"
+
+
+def test_dpapi_provider_refuses_pre_split_store_without_opt_in(tmp_path):
+    """Same refusal rule for the Windows store."""
+    key = b"\x3c" * 32
+    legacy = tmp_path / LEGACY_STORE_NAME
+    before = WindowsDPAPIKeyProvider(store_path=legacy, allow_outside_user_profile=True)
+    write_protected(before._protect(key), legacy, header=b"FLOORWV1", expected_length=None)
+
+    provider = _dpapi_provider(tmp_path)
+    with pytest.raises(ProtectedStoreError, match="allow_legacy_adoption"):
+        provider.resolve_key(allow_create=True)
+    assert not provider._path.exists()
 
 
 def test_adoption_does_not_hijack_another_scheme(tmp_path, monkeypatch):
@@ -242,3 +287,40 @@ def test_scheme_store_reads_back_only_its_own_header(tmp_path):
     # the file-store boundary keeps its own error family.
     with pytest.raises(ProtectedStoreHeaderError):
         read_protected(path, header=b"FLOORWV1", expected_length=None)
+
+
+def test_adaptive_forwards_legacy_adoption_to_the_platform_provider(tmp_path, monkeypatch):
+    """``allow_legacy_adoption`` must reach the platform provider it gates.
+
+    Adaptive is the tier most callers construct; the opt-in would be
+    unreachable if it stopped at the adaptive constructor.
+    """
+    captured = {}
+
+    class _Spy:
+        @staticmethod
+        def default_store_path(base):
+            return Path(base) / "master.key.ss"
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def _secret_service_available(self):
+            return False
+
+        def resolve_key(self, *, allow_create=True):
+            return None
+
+    _headless(monkeypatch)
+    monkeypatch.setattr(adaptive_module, "is_windows", lambda: False)
+    monkeypatch.setattr(adaptive_module, "is_linux", lambda: True)
+    monkeypatch.setattr(adaptive_module, "LinuxSecretServiceKeyProvider", _Spy)
+    for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    provider = AdaptiveKeyProvider(
+        fallback_dir=tmp_path, allow_disk_fallback=True, allow_legacy_adoption=True
+    )
+    provider._resolve_from_system_keyring(allow_create=True)
+
+    assert captured["allow_legacy_adoption"] is True

@@ -30,7 +30,13 @@ from typing import Any, Protocol
 
 from .core import FloorVault
 from .records import RecordBinding
-from .sqlite_adapter import EncryptedSQLiteTable, _quoted_identifier, _safe_identifier
+from .sqlite_adapter import (
+    EncryptedSQLiteTable,
+    _fold_sqlite,
+    _quoted_identifier,
+    _safe_column,
+    _safe_identifier,
+)
 
 
 class _LibSqlConnection(Protocol):
@@ -75,9 +81,11 @@ class EncryptedLibSqlTable(EncryptedSQLiteTable):
             raise TypeError("crypto must be a FloorVault")
         self.connection = connection
         self.crypto = crypto
-        self.table_name = _safe_identifier(table_name)
-        self.id_column = _safe_identifier(id_column)
+        # libSQL shares SQLite's ASCII-case-insensitive identifier resolution:
+        # fold to physical identity exactly as EncryptedSQLiteTable does.
+        self.table_name = _fold_sqlite(_safe_identifier(table_name))
+        self.id_column = _fold_sqlite(_safe_column(id_column))
         self.schema_id = schema_id
-        self._table_sql = _quoted_identifier(table_name)
-        self._id_sql = _quoted_identifier(id_column)
+        self._table_sql = _quoted_identifier(self.table_name)
+        self._id_sql = _quoted_identifier(self.id_column)
         self._binding = RecordBinding(crypto, self.table_name, schema_id=schema_id)

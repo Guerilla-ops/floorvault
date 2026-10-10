@@ -6,8 +6,10 @@ application-level search index.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import secrets
 import sqlite3
 import threading
 import uuid
@@ -57,6 +59,19 @@ REQUIRED_FIELDS = {
 }
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _require_envelope_key_id(key_id: int) -> None:
+    """A key generation persisted anywhere must fit the envelope's u8 field.
+
+    Journal and state rows name a generation the record format has to be able
+    to express; an out-of-range or wrongly-typed value would persist rotation
+    metadata no envelope can carry. Same contract as ``FloorVault.encrypt``.
+    """
+    if isinstance(key_id, bool) or not isinstance(key_id, int):
+        raise TypeError("key_id must be an integer")
+    if not 0 <= key_id <= 255:
+        raise ValueError("key_id must be in [0, 255]")
 
 
 class VaultError(Exception):
@@ -298,7 +313,8 @@ class VaultStore:
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     active INTEGER NOT NULL CHECK (active IN (0, 1)),
                     target_key_id INTEGER NOT NULL,
-                    target_commitment BLOB
+                    target_commitment BLOB,
+                    store_nonce BLOB
                 )
             """)
             conn.execute("""
@@ -403,10 +419,21 @@ class VaultStore:
         conn.execute("ALTER TABLE vault_items_without_origin_idx RENAME TO vault_items")
 
     def _ensure_rotation_commitment_column(self, conn: sqlite3.Connection) -> None:
-        """Add the target-commitment column to stores created before it existed."""
+        """Add the target-commitment and store-nonce columns to older stores."""
         columns = {row[1] for row in conn.execute("PRAGMA table_info(vault_rotation_state)")}
         if "target_commitment" not in columns:
             conn.execute("ALTER TABLE vault_rotation_state ADD COLUMN target_commitment BLOB")
+        if "store_nonce" not in columns:
+            conn.execute("ALTER TABLE vault_rotation_state ADD COLUMN store_nonce BLOB")
+        # The per-store nonce is what makes a rotation commitment unique to
+        # THIS database: two stores with identical record ids still produce
+        # different commitments, so an envelope transplanted between them
+        # cannot authenticate. Minted once, then sticky.
+        conn.execute(
+            "UPDATE vault_rotation_state SET store_nonce = ? "
+            "WHERE singleton = 1 AND store_nonce IS NULL",
+            (secrets.token_bytes(32),),
+        )
 
     def _encrypt_metadata(self, item_id: str, column: str, value: Optional[str]) -> Optional[bytes]:
         if value is None:
@@ -448,6 +475,7 @@ class VaultStore:
         """
         if not isinstance(target_vault, FloorVault):
             raise TypeError("target_vault must be a FloorVault")
+        _require_envelope_key_id(target_key_id)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -457,10 +485,10 @@ class VaultStore:
             if row is not None and bool(row[0]):
                 if int(row[1]) != target_key_id:
                     raise VaultError("another vault rotation is already in progress")
-                self._verify_rotation_target(row[2], target_vault, target_key_id)
+                self._verify_rotation_target(conn, row[2], target_vault, target_key_id)
                 return
             commitment = target_vault.encrypt(
-                self._ROTATION_COMMITMENT_CANARY,
+                self._rotation_commitment_payload(conn),
                 key_id=target_key_id,
                 table=self._ROTATION_COMMITMENT_TABLE,
                 record_id=self._ROTATION_COMMITMENT_RECORD_ID,
@@ -472,15 +500,41 @@ class VaultStore:
                 (target_key_id, commitment),
             )
 
+    def _rotation_commitment_payload(self, conn: sqlite3.Connection) -> bytes:
+        """The canary bound to this store's identity and record-id universe.
+
+        A bare constant sealed under the target vault verifies for ANY store
+        the envelope is transplanted into, because the plaintext and its AAD
+        coordinates are public constants. Binding the store's random
+        ``store_nonce`` plus its content fingerprint inside the commitment
+        means an envelope sealed for one vault database can never
+        authenticate a rotation on another - even one holding identical
+        record ids.
+        """
+        nonce_row = conn.execute(
+            "SELECT store_nonce FROM vault_rotation_state WHERE singleton = 1"
+        ).fetchone()
+        fingerprint = hashlib.sha256()
+        fingerprint.update(b"nonce:" + (bytes(nonce_row[0]) if nonce_row and nonce_row[0] else b""))
+        ids = sorted(
+            [row[0] for row in conn.execute("SELECT id FROM vault_items")]
+            + [row[0] for row in conn.execute("SELECT legacy_id FROM vault_legacy_retirements")]
+        )
+        for record_id in ids:
+            encoded = str(record_id).encode("utf-8", errors="surrogatepass")
+            fingerprint.update(str(len(encoded)).encode("ascii") + b":" + encoded)
+        return self._ROTATION_COMMITMENT_CANARY + fingerprint.digest()
+
     def _verify_rotation_target(
-        self, stored: Any, target_vault: FloorVault, target_key_id: int
+        self, conn: sqlite3.Connection, stored: Any, target_vault: FloorVault, target_key_id: int
     ) -> None:
         """Fail closed unless ``target_vault`` reads the recorded commitment.
 
         The commitment is an ordinary envelope sealed under the vault that began
         the rotation: reading it back proves the resuming caller holds that same
         key generation (same master key, same application instance, same key
-        id), which a bare ``target_key_id`` cannot.
+        id), which a bare ``target_key_id`` cannot, and the bound store
+        fingerprint proves the rotation was begun on THIS database.
         """
         if stored is None:
             raise VaultError(
@@ -501,7 +555,7 @@ class VaultStore:
                 "rotation resume presented a different target master key than the "
                 "one the in-flight rotation committed to; refusing before any write"
             ) from exc
-        if canary != self._ROTATION_COMMITMENT_CANARY:
+        if canary != self._rotation_commitment_payload(conn):
             raise VaultError("rotation commitment did not authenticate to the expected value")
 
     def add_item(
@@ -709,6 +763,7 @@ class VaultStore:
         target_key_id: int,
     ) -> None:
         """Record rotation progress on ``conn`` (same transaction as the write)."""
+        _require_envelope_key_id(target_key_id)
         for kind, record_id, column in rows or ():
             conn.execute(
                 """
@@ -898,12 +953,16 @@ class VaultStore:
     #: cannot leave rotation silently behind.
     _SEALED_META_COLUMNS = ("label", "origin", "identifier_type", "identifier", "created_at")
 
-    #: Rotation-resume commitment: a fixed canary sealed under the target vault
-    #: and stored in ``vault_rotation_state.target_commitment`` when a rotation
-    #: begins. Resuming authenticates the stored envelope with the presented
-    #: vault, which binds the resume to the target key generation itself
-    #: (master key + application instance + key id) rather than the 1-byte id
-    #: alone. The coordinates name a slot no real record can occupy.
+    #: Rotation-resume commitment: a canary sealed under the target vault and
+    #: stored in ``vault_rotation_state.target_commitment`` when a rotation
+    #: begins. The sealed payload is the canary concatenated with a SHA-256
+    #: fingerprint of the store's record-id universe, so the envelope
+    #: authenticates only for the database it was sealed against - an envelope
+    #: transplanted into another vault store fails the resume check even under
+    #: the same target key. Resuming therefore binds to the target key
+    #: generation (master key + application instance + key id) AND this store,
+    #: rather than the 1-byte id alone. The coordinates name a slot no real
+    #: record can occupy.
     _ROTATION_COMMITMENT_TABLE = "vault_rotation_state"
     _ROTATION_COMMITMENT_RECORD_ID = "target"
     _ROTATION_COMMITMENT_COLUMN = "commitment"

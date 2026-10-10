@@ -191,10 +191,11 @@ def test_drop_plaintext_column_rejects_schema_qualified_names(tmp_path):
 
 def test_drop_plaintext_column_matches_column_case_insensitively(tmp_path):
     """SQLite identifiers are case-insensitive; the existence check must fold
-    case so ``TOKEN`` finds the ``token`` column and drops it."""
+    case so ``TOKEN`` finds the ``token`` column and drops it. The result
+    reports the column's own (DDL) spelling, not the caller's."""
     _, connection = _marker_db(tmp_path)
     result = drop_plaintext_column(connection, table="creds", column="TOKEN")
-    assert result["dropped"] == "TOKEN"
+    assert result["dropped"] == "token"
     columns = {row[1] for row in connection.execute("PRAGMA table_info([creds])")}
     assert "token" not in columns
     connection.close()
