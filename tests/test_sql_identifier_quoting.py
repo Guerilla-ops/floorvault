@@ -75,18 +75,20 @@ class TestEncryptedSQLiteTableQuoting:
         assert isinstance(raw, bytes) and raw.startswith(b"FLV")
 
     def test_missing_column_fails_closed(self, crypto):
+        """A column the schema does not have is a caller error surfaced as a
+        library error - the raw driver OperationalError must not escape."""
         connection = sqlite3.connect(":memory:")
         table = self._make_table(connection, crypto)
         connection.execute("INSERT INTO users (id) VALUES ('r2')")
 
-        with pytest.raises(sqlite3.OperationalError, match="no such column"):
+        with pytest.raises(ValueError, match="no such column"):
             table.load("r2", "nosuchcol")
 
     def test_missing_column_fails_closed_on_store(self, crypto):
         connection = sqlite3.connect(":memory:")
         table = self._make_table(connection, crypto)
 
-        with pytest.raises(sqlite3.OperationalError, match="no such column"):
+        with pytest.raises(ValueError, match="no such column"):
             table.store("r1", "nosuchcol", "x")
 
     def test_keyword_table_name(self, crypto):
@@ -108,15 +110,19 @@ class TestEncryptedSQLiteTableQuoting:
         assert table.load("r1", "cipher") == "v"
 
     def test_crypto_context_keeps_unquoted_name(self, crypto):
-        """AAD must bind the logical name, not the quoted SQL form."""
+        """AAD binds the physical-identity name: the adapter folds to SQLite's
+        case-insensitive resolution, so 'TRUE' binds 'true' - the folded name
+        decrypts, the raw spelling and the quoted SQL form do not."""
         connection = sqlite3.connect(":memory:")
         table = self._make_table(connection, crypto)
         table.store("r1", "TRUE", "bound-value")
 
         row = connection.execute("SELECT [TRUE] FROM users WHERE id = 'r1'").fetchone()[0]
-        assert crypto.decrypt(row, table="users", record_id="r1", column="TRUE") == "bound-value"
+        assert crypto.decrypt(row, table="users", record_id="r1", column="true") == "bound-value"
         with pytest.raises(Exception):
-            crypto.decrypt(row, table="[users]", record_id="r1", column="TRUE")
+            crypto.decrypt(row, table="users", record_id="r1", column="TRUE")
+        with pytest.raises(Exception):
+            crypto.decrypt(row, table="[users]", record_id="r1", column="true")
 
 
 class TestMigrationQuoting:

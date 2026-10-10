@@ -25,6 +25,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,70 @@ _KEY = bytes(range(32))
 def test_absent_store_raises_the_missing_error(tmp_path):
     with pytest.raises(ProtectedStoreMissing):
         read_protected(tmp_path / "nope.store", header=_HEADER)
+
+
+def test_read_protected_refuses_a_fifo_without_blocking(tmp_path):
+    """A FIFO at a store path must fail fast, not hang the caller.
+
+    ``open(fifo, O_RDONLY)`` waits for a writer, so a FIFO planted at
+    ``master.key`` used to block ``resolve_key()`` indefinitely - a liveness
+    denial of service. The store is opened O_NONBLOCK so a non-regular path
+    is rejected by the same post-open fstat check, without the wait.
+    """
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFOs are POSIX-only")
+    fifo_path = tmp_path / "master.key"
+    os.mkfifo(fifo_path)
+
+    outcome: list[BaseException] = []
+
+    def _read():
+        try:
+            read_protected(fifo_path, header=_HEADER)
+        except Exception as exc:
+            outcome.append(exc)
+
+    reader = threading.Thread(target=_read, daemon=True)
+    reader.start()
+    reader.join(timeout=15)
+
+    assert not reader.is_alive(), "read_protected blocked on a FIFO"
+    assert isinstance(outcome[0], ProtectedStoreError)
+    assert "regular file" in str(outcome[0])
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are POSIX-only")
+def test_adaptive_tier3_does_not_block_on_a_fifo(tmp_path, monkeypatch):
+    """End-to-end: a FIFO planted at ``master.key`` cannot wedge
+    ``AdaptiveKeyProvider.resolve_key``; it surfaces as a store error."""
+    from floorvault.providers.adaptive import AdaptiveKeyProvider
+
+    for name in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "APPSTATE_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    # Force the tier-3 file path even where a native keyring tier would answer.
+    monkeypatch.setattr(
+        AdaptiveKeyProvider,
+        "_resolve_from_system_keyring",
+        lambda self, *, allow_create: None,
+    )
+    os.mkfifo(tmp_path / "master.key")
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, allow_disk_fallback=True)
+
+    outcome: list[BaseException] = []
+
+    def _resolve():
+        try:
+            provider.resolve_key()
+        except Exception as exc:
+            outcome.append(exc)
+
+    resolver = threading.Thread(target=_resolve, daemon=True)
+    resolver.start()
+    resolver.join(timeout=15)
+
+    assert not resolver.is_alive(), "resolve_key blocked on a FIFO at master.key"
+    assert isinstance(outcome[0], Exception)
+    assert "regular file" in str(outcome[0])
 
 
 def test_missing_error_is_still_a_protected_store_error(tmp_path):

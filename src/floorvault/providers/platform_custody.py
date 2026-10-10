@@ -374,6 +374,12 @@ def read_protected(path: Path, *, header: bytes, expected_length: int | None = 3
         | binary_mode_flag()
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
+        # O_NONBLOCK makes a FIFO (or other non-regular path an OS would block
+        # opening, like a device node) return immediately; the fstat/lstat
+        # identity checks below then reject it as "not a regular file". A
+        # blocking open is a planted-FIFO liveness denial of service against
+        # resolve_key(). The flag is inert on regular files.
+        | getattr(os, "O_NONBLOCK", 0)
     )
     try:
         fd = os.open(path, flags)

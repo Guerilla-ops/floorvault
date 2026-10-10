@@ -234,6 +234,10 @@ only readable by parties knowing the exact values used.
   error rather than a type error. `schema_version` and `revision` MUST be
   `int` — `bool` is rejected (`TypeError`), and `revision < 0` is rejected
   (`ValueError`). Rejection details are in §16.
+- Every string coordinate MUST be UTF-8 encodable: a lone surrogate (a `str`
+  containing `U+D800`–`U+DFFF`) is refused with `ValueError` on both the
+  canonical (`associated_data`) and fast (`_quote_json`) serializers — never
+  a raw `UnicodeEncodeError`, and never a silently emitted `\uXXXX` escape.
 - The encoding is injective over the accepted domain: no two distinct
   coordinate sets produce the same bytes.
 
@@ -750,12 +754,26 @@ column    = "content"
 `EncryptedSQLiteTable` stores §4 envelopes verbatim in caller-declared BLOB
 columns — no additional framing exists at the SQL layer. Column/table
 identifiers are allow-listed (`^[A-Za-z_][A-Za-z0-9_$]*(\.[A-Za-z_][A-Za-z0-9_$]*)?$`,
-max 128 chars) and bracket-quoted at the SQL boundary. `migrate_plaintext_column`
+max 128 chars), bracket-quoted at the SQL boundary, and **ASCII-case-folded**
+before they enter AAD: SQLite resolves identifiers case-insensitively, so
+`users` and `Users` name one physical table — and therefore one cryptographic
+coordinate. `store_fields` refuses a `fields` mapping that names the same
+physical column under two spellings. Record ids are normalized to a plain
+`str` before both SQL binding and AAD construction, so a `str` subclass's
+`__conform__`/codec hooks cannot make the bound SQL value diverge from the
+signed coordinate. Driver-level errors (missing column, unattached schema)
+surface as `ValueError`, never as raw `sqlite3` exceptions, and failure
+messages do not echo record coordinates. `migrate_plaintext_column`
 seals each non-NULL source value under `table=<table>`,
-`record_id=str(<id-column value>)`, `column=<destination_column>` and refuses
+`record_id=str(<id-column value>)`, `column=<destination_column>` (all
+ASCII-folded, matching the adapter) and refuses
 to overwrite a destination that already holds data; `verify_encrypted_column`
 decrypts every destination and compares to the source, failing on any NULL id,
-missing ciphertext, or mismatch.
+missing ciphertext, or mismatch. The DB-API adapters
+(`EncryptedPostgresTable`/`EncryptedMySQLTable`) apply the same exactly-one
+write invariant, id-column refusal, and record-id normalization; PostgreSQL
+quoted identifiers are case-sensitive while MySQL column names are not, so
+the id-column comparison follows each dialect's own resolution rules.
 
 `drop_plaintext_column` carries a residue contract worth one paragraph: it
 arms `PRAGMA secure_delete=ON` (and leaves it on), drops the column inside a

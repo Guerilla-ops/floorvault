@@ -42,7 +42,7 @@ from typing import Any, Mapping, Protocol, Union, runtime_checkable
 
 from .core import FloorVault
 from .records import RecordBinding
-from .sqlite_adapter import _safe_identifier
+from .sqlite_adapter import _bound_record_id, _safe_column, _safe_identifier
 
 __all__ = [
     "EncryptedPostgresTable",
@@ -86,6 +86,10 @@ class _EncryptedDBAPITable:
     """
 
     _QUOTE = ""
+    # MySQL column names are case-insensitive even when quoted; PostgreSQL
+    # quoted identifiers are case-sensitive. The id-column guard compares
+    # under the dialect's own resolution rules.
+    _FOLD_ID = False
 
     def __init__(
         self,
@@ -103,11 +107,51 @@ class _EncryptedDBAPITable:
         self.connection = connection
         self.crypto = crypto
         self.table_name = _safe_identifier(table_name)
-        self.id_column = _safe_identifier(id_column)
+        # A qualified id_column ("users.id") could still resolve to the same
+        # physical column a bare encrypted_column names, slipping the guard -
+        # column positions stay bare.
+        self.id_column = _safe_column(id_column)
         self.schema_id = schema_id
         self._binding = RecordBinding(crypto, self.table_name, schema_id=schema_id)
-        self._table_sql = _quote_all(table_name, self._QUOTE)
-        self._id_sql = _quote_all(id_column, self._QUOTE)
+        self._table_sql = _quote_all(self.table_name, self._QUOTE)
+        self._id_sql = _quote_all(self.id_column, self._QUOTE)
+
+    def _is_id_column(self, column: str) -> bool:
+        """Whether ``column`` names the id column under this dialect's rules."""
+        if self._FOLD_ID:
+            return column.lower() == self.id_column.lower()
+        return column == self.id_column
+
+    def _refuse_id_column(self, column: str) -> None:
+        if self._is_id_column(column):
+            raise ValueError(
+                f"encrypted column {column!r} must not be the id column "
+                f"{self.id_column!r}: writing it would destroy the record's own key"
+            )
+
+    def _raise_for_refused_write(self, cursor: Any, record_id: str) -> None:
+        """Name why the atomically-guarded UPDATE wrote zero rows.
+
+        The ``COUNT(*) = 1`` predicate is inside the UPDATE's own WHERE, so a
+        multi-row match already wrote nothing; this follow-up lookup exists
+        only to classify the failure: no matching row is ``LookupError``,
+        several is a schema violation, ``ValueError``.
+        """
+        try:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM {self._table_sql} WHERE {self._id_sql} = %s",  # identifiers allow-listed + quoted  # nosec B608
+                (record_id,),
+            )
+            row = cursor.fetchone()
+            matches = int(row[0]) if row else 0
+        except Exception as exc:
+            raise ValueError(f"store failed on {self.table_name}: {exc}") from exc
+        if matches > 1:
+            raise ValueError(
+                f"the id column matched more than one row in "
+                f"{self.table_name}; the id column must be unique"
+            )
+        raise LookupError(f"record not found in {self.table_name}")
 
     def store(
         self,
@@ -123,8 +167,10 @@ class _EncryptedDBAPITable:
         The caller must call ``connection.commit()``. A missing record raises
         ``LookupError`` and does not insert a new row accidentally.
         """
-        column = _safe_identifier(encrypted_column)
-        column_sql = _quote_all(encrypted_column, self._QUOTE)
+        record_id = _bound_record_id(record_id)
+        column = _safe_column(encrypted_column)
+        self._refuse_id_column(column)
+        column_sql = _quote_all(column, self._QUOTE)
         ciphertext = self._binding.encrypt_field(
             record_id,
             column,
@@ -134,12 +180,19 @@ class _EncryptedDBAPITable:
         )
         cursor = self.connection.cursor()
         try:
-            cursor.execute(
-                f"UPDATE {self._table_sql} SET {column_sql} = %s WHERE {self._id_sql} = %s",  # identifiers allow-listed + quoted  # nosec B608
-                (ciphertext, record_id),
-            )
+            try:
+                cursor.execute(
+                    f"UPDATE {self._table_sql} SET {column_sql} = %s "
+                    f"WHERE {self._id_sql} = %s AND ("
+                    f"SELECT COUNT(*) FROM ("
+                    f"SELECT 1 FROM {self._table_sql} WHERE {self._id_sql} = %s"
+                    f") AS _fv_match) = 1",  # identifiers allow-listed + quoted  # nosec B608
+                    (ciphertext, record_id, record_id),
+                )
+            except Exception as exc:
+                raise ValueError(f"store failed on {self.table_name}: {exc}") from exc
             if cursor.rowcount != 1:
-                raise LookupError(f"record not found: {record_id!r}")
+                self._raise_for_refused_write(cursor, record_id)
         finally:
             cursor.close()
 
@@ -157,6 +210,7 @@ class _EncryptedDBAPITable:
         cannot be returned here - use :meth:`load_bytes` for those, so the
         binary path is not one-way.
         """
+        record_id = _bound_record_id(record_id)
         column, ciphertext = self._fetch_ciphertext(record_id, encrypted_column)
         return self._binding.decrypt_field(
             record_id,
@@ -180,6 +234,7 @@ class _EncryptedDBAPITable:
         text, so without this a binary value could be written and never read
         back. Text values decrypt to their UTF-8 bytes here.
         """
+        record_id = _bound_record_id(record_id)
         column, ciphertext = self._fetch_ciphertext(record_id, encrypted_column)
         return self._binding.decrypt_field_bytes(
             record_id,
@@ -203,9 +258,12 @@ class _EncryptedDBAPITable:
         one shared AAD build replace a statement and a full AAD construction
         per field. The caller must still call ``connection.commit()``.
         """
-        columns = [_safe_identifier(name) for name in fields]
+        record_id = _bound_record_id(record_id)
+        columns = [_safe_column(name) for name in fields]
         if not columns:
             raise ValueError("fields must not be empty")
+        for column in columns:
+            self._refuse_id_column(column)
         envelopes = self._binding.encrypt_fields(
             record_id,
             fields,
@@ -215,12 +273,19 @@ class _EncryptedDBAPITable:
         assignments = ", ".join(f"{_quote_all(column, self._QUOTE)} = %s" for column in columns)
         cursor = self.connection.cursor()
         try:
-            cursor.execute(
-                f"UPDATE {self._table_sql} SET {assignments} WHERE {self._id_sql} = %s",  # identifiers allow-listed + quoted  # nosec B608
-                (*(envelopes[column] for column in columns), record_id),
-            )
+            try:
+                cursor.execute(
+                    f"UPDATE {self._table_sql} SET {assignments} "
+                    f"WHERE {self._id_sql} = %s AND ("
+                    f"SELECT COUNT(*) FROM ("
+                    f"SELECT 1 FROM {self._table_sql} WHERE {self._id_sql} = %s"
+                    f") AS _fv_match) = 1",  # identifiers allow-listed + quoted  # nosec B608
+                    (*(envelopes[column] for column in columns), record_id, record_id),
+                )
+            except Exception as exc:
+                raise ValueError(f"store failed on {self.table_name}: {exc}") from exc
             if cursor.rowcount != 1:
-                raise LookupError(f"record not found: {record_id!r}")
+                self._raise_for_refused_write(cursor, record_id)
         finally:
             cursor.close()
 
@@ -273,25 +338,29 @@ class _EncryptedDBAPITable:
         schema_version: int,
         revision: int | None,
     ) -> dict[str, bytes]:
-        columns = [_safe_identifier(name) for name in encrypted_columns]
+        record_id = _bound_record_id(record_id)
+        columns = [_safe_column(name) for name in encrypted_columns]
         if not columns:
             return {}
         cursor = self.connection.cursor()
         try:
-            cursor.execute(
-                f"SELECT {', '.join(_quote_all(c, self._QUOTE) for c in columns)} "
-                f"FROM {self._table_sql} WHERE {self._id_sql} = %s",  # identifiers allow-listed + quoted  # nosec B608
-                (record_id,),
-            )
+            try:
+                cursor.execute(
+                    f"SELECT {', '.join(_quote_all(c, self._QUOTE) for c in columns)} "
+                    f"FROM {self._table_sql} WHERE {self._id_sql} = %s",  # identifiers allow-listed + quoted  # nosec B608
+                    (record_id,),
+                )
+            except Exception as exc:
+                raise ValueError(f"load failed on {self.table_name}: {exc}") from exc
             row = cursor.fetchone()
             second = None if row is None else cursor.fetchone()
         finally:
             cursor.close()
         if row is None:
-            raise LookupError(f"record not found: {record_id!r}")
+            raise LookupError(f"record not found in {self.table_name}")
         if second is not None:
             raise ValueError(
-                f"record_id {record_id!r} matched more than one row in "
+                f"the id column matched more than one row in "
                 f"{self.table_name}; the id column must be unique"
             )
         envelopes = dict(zip(columns, row))
@@ -311,23 +380,27 @@ class _EncryptedDBAPITable:
         Shared by both accessors so the "exactly one existing record" and NULL
         invariants cannot drift apart between the text and bytes paths.
         """
-        column = _safe_identifier(encrypted_column)
-        column_sql = _quote_all(encrypted_column, self._QUOTE)
+        record_id = _bound_record_id(record_id)
+        column = _safe_column(encrypted_column)
+        column_sql = _quote_all(column, self._QUOTE)
         cursor = self.connection.cursor()
         try:
-            cursor.execute(
-                f"SELECT {column_sql} FROM {self._table_sql} WHERE {self._id_sql} = %s",  # identifiers allow-listed + quoted  # nosec B608
-                (record_id,),
-            )
+            try:
+                cursor.execute(
+                    f"SELECT {column_sql} FROM {self._table_sql} WHERE {self._id_sql} = %s",  # identifiers allow-listed + quoted  # nosec B608
+                    (record_id,),
+                )
+            except Exception as exc:
+                raise ValueError(f"load failed on {self.table_name}: {exc}") from exc
             row = cursor.fetchone()
             second = None if row is None else cursor.fetchone()
         finally:
             cursor.close()
         if row is None:
-            raise LookupError(f"record not found: {record_id!r}")
+            raise LookupError(f"record not found in {self.table_name}")
         if second is not None:
             raise ValueError(
-                f"record_id {record_id!r} matched more than one row in "
+                f"the id column matched more than one row in "
                 f"{self.table_name}; the id column must be unique"
             )
         if row[0] is None:
@@ -358,3 +431,5 @@ class EncryptedMySQLTable(_EncryptedDBAPITable):
     """
 
     _QUOTE = "`"
+    # MySQL column names are case-insensitive even backtick-quoted.
+    _FOLD_ID = True

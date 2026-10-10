@@ -273,3 +273,123 @@ def test_load_fields_on_duplicate_id_raises(dup_table):
 
     with pytest.raises(ValueError, match="more than one row"):
         table.load_fields("r1", ["ssn"])
+
+
+# --------------------------------------------------------------------------
+# Physical-identity binding (red-team P2): SQLite resolves identifiers
+# ASCII-case-insensitively, so "users" and "Users" are ONE physical table.
+# Two adapters spelling the name differently used to produce different AAD
+# coordinates for the same physical object: writes that each believed they
+# owned a distinct logical table clobbered each other or failed to decrypt.
+# The adapter now folds coordinates to SQLite's physical identity, so every
+# spelling of one physical object shares one cryptographic identity.
+# --------------------------------------------------------------------------
+
+
+def test_case_folded_table_spellings_share_one_binding(encrypted_users):
+    """'users' and 'Users' resolve to the same table; they must not diverge."""
+    connection, table = encrypted_users
+    differently_cased = EncryptedSQLiteTable(connection, table.crypto, "Users", id_column="id")
+    connection.execute("INSERT INTO users (id) VALUES (?)", ("r1",))
+
+    table.store("r1", "api_token_cipher", "v")
+
+    # Same physical table => same cryptographic coordinate => the write is
+    # readable through either spelling, never clobbered by it.
+    assert differently_cased.load("r1", "api_token_cipher") == "v"
+
+
+def test_case_folded_column_spellings_share_one_binding(encrypted_users):
+    connection, table = encrypted_users
+    connection.execute("INSERT INTO users (id) VALUES (?)", ("r1",))
+
+    table.store("r1", "api_token_cipher", "v")
+
+    assert table.load("r1", "API_TOKEN_CIPHER") == "v"
+
+
+def test_store_fields_rejects_case_folded_duplicate_columns(encrypted_users):
+    """{'ssn': a, 'SSN': b} names ONE physical column twice: the SQL would
+    assign it twice while AAD bound two names. Refuse the ambiguity."""
+    connection, table = encrypted_users
+    connection.execute("INSERT INTO users (id) VALUES (?)", ("r1",))
+
+    with pytest.raises(ValueError, match="same physical column"):
+        table.store_fields("r1", {"api_token_cipher": "a", "API_TOKEN_CIPHER": "b"})
+
+
+# --------------------------------------------------------------------------
+# __conform__ smuggling (red-team P2): a str subclass can answer SQLite's
+# PrepareProtocol with a different value, so the SQL bound 'HIJACKED' while
+# AAD bound 'r1' - the write landed on a different row than its cryptographic
+# coordinate. Record ids are normalized to an exact str before use, so the
+# adaptation hook can never run.
+# --------------------------------------------------------------------------
+
+
+def test_conforming_record_id_cannot_split_sql_from_aad(encrypted_users):
+    class ConformingId(str):
+        def __conform__(self, protocol):
+            if protocol is sqlite3.PrepareProtocol:
+                return "HIJACKED"
+            return str(self)
+
+    connection, table = encrypted_users
+    connection.executemany("INSERT INTO users (id) VALUES (?)", [("r1",), ("HIJACKED",)])
+
+    table.store(ConformingId("r1"), "api_token_cipher", "v")
+
+    hijacked = connection.execute(
+        "SELECT api_token_cipher FROM users WHERE id = 'HIJACKED'"
+    ).fetchone()[0]
+    assert hijacked == b"", "the conformed value must never reach SQL"
+
+    # The write landed on the row AAD bound it to: it decrypts under 'r1'.
+    assert table.load("r1", "api_token_cipher") == "v"
+
+
+def test_load_conforming_record_id_binds_the_real_value(encrypted_users):
+    class ConformingId(str):
+        def __conform__(self, protocol):
+            if protocol is sqlite3.PrepareProtocol:
+                return "HIJACKED"
+            return str(self)
+
+    connection, table = encrypted_users
+    connection.execute("INSERT INTO users (id) VALUES (?)", ("r1",))
+    table.store("r1", "api_token_cipher", "v")
+
+    # Without normalization this SELECT bound 'HIJACKED' and reported missing.
+    assert table.load(ConformingId("r1"), "api_token_cipher") == "v"
+
+
+# --------------------------------------------------------------------------
+# Coordinate hygiene (red-team P2): failures must surface as library errors,
+# not raw driver exceptions, and must not echo record coordinates into logs.
+# --------------------------------------------------------------------------
+
+
+def test_unattached_schema_qualified_table_raises_a_library_error(encrypted_users):
+    """'nosuch.users' is a legal identifier shape but names an unattached
+    schema; the raw OperationalError must surface as a clean ValueError."""
+    connection, table = encrypted_users
+    qualified = EncryptedSQLiteTable(connection, table.crypto, "nosuch.users")
+    connection.execute("INSERT INTO users (id) VALUES (?)", ("r1",))
+
+    with pytest.raises(ValueError):
+        qualified.store("r1", "api_token_cipher", "v")
+
+
+def test_failure_messages_do_not_echo_the_record_id(encrypted_users):
+    connection, table = encrypted_users
+    secret_id = "victim-id-7f3a"
+    connection.execute("INSERT INTO users (id, api_token_cipher) VALUES (?, X'00')", (secret_id,))
+
+    with pytest.raises(DecryptionVerificationError) as tampered:
+        table.load(secret_id, "api_token_cipher")
+    assert secret_id not in str(tampered.value)
+
+    missing_id = "missing-id-9b2c"
+    with pytest.raises(LookupError) as missing:
+        table.load(missing_id, "api_token_cipher")
+    assert missing_id not in str(missing.value)
