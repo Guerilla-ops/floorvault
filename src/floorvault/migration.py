@@ -330,22 +330,25 @@ class MigratingVaultStore:
         legacy = self._legacy_items()
         if not legacy:
             return {"migrated": 0, "verified": True, "removed_legacy": False}
-        # 1. Immutable backup (non-destructive).
+        # 1. Immutable backup (non-destructive). The vault copy and the key
+        # copy are gated independently: a pre-existing vault backup must not
+        # veto creating the key backup, or the migration would report success
+        # beside a backup that cannot decrypt after the key is removed.
         backup = self._vault_path.with_name(f"{self._vault_path.name}{self._backup_suffix}")
         key_backup = self._key_path.with_name(f"{self._key_path.name}{self._backup_suffix}")
         if not backup.exists():
             shutil.copy2(self._vault_path, backup)
-            if self._key_path.is_file():
-                shutil.copy2(self._key_path, key_backup)
-                # copy2 preserves the source's owner-only mode, which
-                # read_protected just verified; pin it anyway so the backup's
-                # protection never depends on copy semantics.
-                try:
-                    os.chmod(key_backup, 0o600)
-                except OSError:
-                    # POSIX mode bits do not exist on Windows; the ACL check
-                    # below is the control there.
-                    pass
+        if self._key_path.is_file() and not os.path.lexists(key_backup):
+            shutil.copy2(self._key_path, key_backup)
+            # copy2 preserves the source's owner-only mode, which
+            # read_protected just verified; pin it anyway so the backup's
+            # protection never depends on copy semantics.
+            try:
+                os.chmod(key_backup, 0o600)
+            except OSError:
+                # POSIX mode bits do not exist on Windows; the ACL check
+                # below is the control there.
+                pass
         # The key backup holds the legacy master key, so it is held to the
         # same protected-store bar as the key itself. A backup that already
         # existed never passed through read_protected - refuse to report a

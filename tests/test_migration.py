@@ -340,3 +340,21 @@ def test_legacy_json_recursion_error_surfaces_as_vault_error(tmp_path, monkeypat
     )
     with pytest.raises(LegacyVaultError):
         facade.list_item_ids()
+
+
+def test_migrate_all_creates_key_backup_when_vault_backup_predates_it(tmp_path):
+    """A pre-existing vault backup must not veto the key backup: otherwise
+    migration reports success beside a backup that cannot decrypt once the
+    original key is removed."""
+    base = tmp_path / "vault"
+    crypto = _make_crypto()
+    modern = VaultStore(base / "modern", crypto=crypto)
+    _, vault_path, key_path = _write_legacy_fernet(
+        base / "modern", {"legacy-1": {"password": "pw"}}
+    )
+    shutil.copy2(vault_path, vault_path.with_name("vault.json.enc.pre-migration.bak"))
+
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+    facade.migrate_all()
+
+    assert (base / "modern" / "vault.key.pre-migration.bak").exists()
