@@ -330,7 +330,7 @@ class HardenedMemoryKey:
     def __del__(self) -> None:
         try:
             self.wipe()
-        except Exception:
+        except Exception:  # interpreter teardown must never raise  # nosec B110
             pass
 
     def __enter__(self) -> HardenedMemoryKey:
