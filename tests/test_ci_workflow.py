@@ -58,24 +58,21 @@ def test_every_supported_python_version_is_tested_somewhere():
     assert not missing, f"declared as supported but never tested: {sorted(missing)}"
 
 
-def test_every_operating_system_has_a_leg():
-    """macOS and Windows each keep exactly one leg.
+def test_every_operating_system_tests_the_declared_python_floor():
+    """macOS and Windows initially ran only the newest interpreter.
 
-    The OS legs exist for platform-specific custody paths (Keychain, DPAPI,
-    ACLs), which are largely interpreter-version independent; the version
-    sweep lives on the ubuntu legs. The floor-in-every-OS policy was dropped
-    when the matrix grew a third platform leg - one leg per OS is the
-    deliberate point of the new policy.
+    A platform-specific code path can pass on 3.13 and fail on the 3.10 floor
+    that pyproject.toml declares, which is precisely the class of defect this
+    matrix exists to find. Asking for both ends of the range on every OS is
+    deliberate.
     """
-    cells = _cells()
-    for os_name in ("macos-latest", "windows-latest"):
-        versions = {version for cell_os, version in cells if cell_os == os_name}
-        assert len(versions) == 1, (
-            f"{os_name} should run exactly one matrix leg, found {sorted(versions)}"
-        )
     floor = _floor()
-    ubuntu_versions = {version for os_name, version in cells if os_name == "ubuntu-latest"}
-    assert floor in ubuntu_versions, "the declared floor must still be tested on ubuntu"
+    cells = _cells()
+    for os_name in sorted({os_name for os_name, _ in cells}):
+        versions = {version for cell_os, version in cells if cell_os == os_name}
+        assert floor in versions, (
+            f"{os_name} does not test the declared floor {floor}: it tests {sorted(versions)}"
+        )
 
 
 # ---------------------------------------------------------------------------
