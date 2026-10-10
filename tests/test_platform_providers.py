@@ -54,8 +54,12 @@ def test_windows_dpapi_round_trips_a_variable_length_blob(tmp_path, monkeypatch)
         return bytes(byte ^ 0x5A for byte in blob[2:34])
 
     store = tmp_path / "store"
-    first = wd_module.WindowsDPAPIKeyProvider(store_path=store, entropy=b"e")
-    second = wd_module.WindowsDPAPIKeyProvider(store_path=store, entropy=b"e")
+    first = wd_module.WindowsDPAPIKeyProvider(
+        store_path=store, entropy=b"e", allow_nonwindows_stub=True
+    )
+    second = wd_module.WindowsDPAPIKeyProvider(
+        store_path=store, entropy=b"e", allow_nonwindows_stub=True
+    )
     for provider in (first, second):
         monkeypatch.setattr(provider, "_protect", fake_protect)
         monkeypatch.setattr(provider, "_unprotect", fake_unprotect)
@@ -74,21 +78,67 @@ def test_provider_interface_exists():
 
 
 def test_windows_dpapi_round_trip_on_posix_via_fallback(tmp_path):
-    """On POSIX (current host) the DPAPI provider must fall back to a locked
-    file so the round-trip contract holds; on Windows it uses CryptProtectData.
+    """On POSIX (current host) the DPAPI provider's simulated store needs the
+    explicit opt-in - it is plaintext-equivalent custody. With it, the
+    round-trip contract holds; on Windows it uses CryptProtectData.
     This keeps the contract testable cross-platform."""
     from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
     store = tmp_path / "winstore"
-    first = WindowsDPAPIKeyProvider(store_path=store, entropy=b"secondary-entropy")
-    second = WindowsDPAPIKeyProvider(store_path=store, entropy=b"secondary-entropy")
+    first = WindowsDPAPIKeyProvider(
+        store_path=store, entropy=b"secondary-entropy", allow_nonwindows_stub=True
+    )
+    second = WindowsDPAPIKeyProvider(
+        store_path=store, entropy=b"secondary-entropy", allow_nonwindows_stub=True
+    )
     _assert_key_contract(first, second)
 
 
-def test_windows_dpapi_missing_store_without_create_fails_closed(tmp_path):
+def test_windows_dpapi_refuses_stub_custody_off_windows_by_default(monkeypatch, tmp_path):
+    """The non-Windows store is masked with a public-constant pad: anyone who
+    can read the 0600 file recovers the key in two lines, so it is
+    plaintext-equivalent custody masquerading under a DPAPI name. Default is
+    fail-closed on both the create and the read path.
+    """
+    from floorvault import platform_support
+    from floorvault.providers.platform_custody import ProtectedStoreError
     from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
-    p = WindowsDPAPIKeyProvider(store_path=tmp_path / "absent", entropy=b"e")
+    monkeypatch.setattr(platform_support, "IS_WINDOWS", False)
+
+    provider = WindowsDPAPIKeyProvider(store_path=tmp_path / "s", entropy=b"e")
+    with pytest.raises(ProtectedStoreError, match="non-Windows"):
+        provider.resolve_key(allow_create=True)
+    assert not (tmp_path / "s").exists(), "the refused store was still written"
+
+
+def test_windows_dpapi_refuses_to_read_a_stub_store_without_opt_in(monkeypatch, tmp_path):
+    """A store the stub wrote stays plaintext-equivalent; adopting it silently
+    would perpetuate the false boundary, so reads refuse too."""
+    from floorvault import platform_support
+    from floorvault.providers.platform_custody import ProtectedStoreError
+    from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+
+    monkeypatch.setattr(platform_support, "IS_WINDOWS", False)
+    store = tmp_path / "s"
+
+    WindowsDPAPIKeyProvider(store_path=store, entropy=b"e", allow_nonwindows_stub=True).resolve_key(
+        allow_create=True
+    )
+
+    provider = WindowsDPAPIKeyProvider(store_path=store, entropy=b"e")
+    with pytest.raises(ProtectedStoreError, match="non-Windows"):
+        provider.resolve_key(allow_create=False)
+
+
+def test_windows_dpapi_missing_store_without_create_fails_closed(tmp_path, monkeypatch):
+    from floorvault import platform_support
+    from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+
+    monkeypatch.setattr(platform_support, "IS_WINDOWS", False)
+    p = WindowsDPAPIKeyProvider(
+        store_path=tmp_path / "absent", entropy=b"e", allow_nonwindows_stub=True
+    )
     with pytest.raises(MissingKeyError):
         p.resolve_key(allow_create=False)
 

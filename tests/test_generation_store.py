@@ -9,13 +9,18 @@ expected-generation CAS.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import struct
+from pathlib import Path
 
 import pytest
 
 from floorvault.providers.generation_store import (
     GENERATION_HEADER,
+    HIGHWATER_HEADER,
     MAX_PAYLOAD_BYTES,
+    POINTER_HEADER,
     GenerationMismatchError,
     GenerationStore,
     StoreLockError,
@@ -31,6 +36,25 @@ from floorvault.providers.platform_custody import (
 PAYLOAD_A = b"vault:v1:wrapped-blob-A"
 PAYLOAD_B = b"vault:v1:wrapped-blob-B"
 PAYLOAD_C = b"vault:v1:wrapped-blob-C"
+
+
+def _rewrite_pointer(directory: Path, generation: int, payload: bytes, *, version: int = 2) -> None:
+    """Replace ``active`` with a crafted pointer, as a writer inside the store
+    directory would (restoring a superseded pointer or forging a fresh one)."""
+    body = POINTER_HEADER + struct.pack(">Q", generation) + hashlib.sha256(payload).digest()
+    if version == 2:
+        body += b"\x01"
+    temporary = directory / ".active.rewrite.tmp"
+    temporary.write_bytes(body)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, directory / "active")
+
+
+def _write_high_water(directory: Path, generation: int) -> None:
+    temporary = directory / ".highest.rewrite.tmp"
+    temporary.write_bytes(HIGHWATER_HEADER + struct.pack(">Q", generation))
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, directory / "highest")
 
 
 def test_uninitialized_store_reports_missing(tmp_path):
@@ -306,3 +330,176 @@ def test_lock_metadata_write_failure_leaves_no_stranded_lock(tmp_path, monkeypat
     # A healthy writer takes the lock immediately - nothing stranded.
     with store.writer_lock():
         pass
+
+
+# --------------------------------------------------------------------------
+# Monotonic pointer: a restored superseded pointer must never resurrect a
+# rolled-back generation (red-team P0 #5)
+# --------------------------------------------------------------------------
+
+
+def test_restored_superseded_pointer_is_refused(tmp_path):
+    """Swapping ``active`` back to a superseded generation must fail closed.
+
+    After a KEK rewrap publishes generation 2, restoring the generation-1
+    pointer resurrects the pre-rotation wrapped blob - the whole point of the
+    rotation is silently undone. The high-water marker records that a
+    generation-2 publish committed, so the rolled-back pointer is refused.
+    """
+    directory = tmp_path / "gens"
+    store = GenerationStore(directory)
+    store.provision(PAYLOAD_A)
+    store.update(PAYLOAD_B, expected_generation=1)
+
+    _rewrite_pointer(directory, 1, PAYLOAD_A)
+
+    with pytest.raises(ProtectedStoreError):
+        store.read_active()
+
+
+def test_restored_superseded_v1_pointer_is_refused(tmp_path):
+    """The same rollback with a pre-monotonicity (40-byte) pointer is refused."""
+    directory = tmp_path / "gens"
+    store = GenerationStore(directory)
+    store.provision(PAYLOAD_A)
+    store.update(PAYLOAD_B, expected_generation=1)
+
+    _rewrite_pointer(directory, 1, PAYLOAD_A, version=1)
+
+    with pytest.raises(ProtectedStoreError):
+        store.read_active()
+
+
+def test_rolled_back_store_is_healed_by_the_next_update(tmp_path):
+    """A pointer-only rollback is repaired, not adopted, by the next writer.
+
+    The recorded high-water generation still has its immutable generation
+    file, so the interrupted/reverted publish can be completed: the writer
+    repoints ``active`` at the high-water generation rather than honoring the
+    restored pointer.
+    """
+    directory = tmp_path / "gens"
+    store = GenerationStore(directory)
+    store.provision(PAYLOAD_A)
+    store.update(PAYLOAD_B, expected_generation=1)
+
+    _rewrite_pointer(directory, 1, PAYLOAD_A)
+
+    # The rollback is healed transparently: the CAS proceeds against the
+    # repaired authoritative state, not the restored pointer.
+    assert store.update(PAYLOAD_C, expected_generation=2) == 3
+    assert store.read_active() == (3, PAYLOAD_C)
+
+
+def test_rollback_with_deleted_generation_file_fails_closed(tmp_path):
+    """A rollback that also removed the newer generation cannot be healed."""
+    directory = tmp_path / "gens"
+    store = GenerationStore(directory)
+    store.provision(PAYLOAD_A)
+    store.update(PAYLOAD_B, expected_generation=1)
+
+    _rewrite_pointer(directory, 1, PAYLOAD_A)
+    (directory / "g-00000002.gen").unlink()
+
+    with pytest.raises(ProtectedStoreError):
+        store.read_active()
+    with pytest.raises(ProtectedStoreError):
+        store.update(PAYLOAD_C, expected_generation=2)
+
+
+def test_deleted_high_water_marker_is_refused(tmp_path):
+    """A monotonic pointer without its marker is tamper evidence, not legacy."""
+    directory = tmp_path / "gens"
+    store = GenerationStore(directory)
+    store.provision(PAYLOAD_A)
+
+    (directory / "highest").unlink()
+
+    with pytest.raises(ProtectedStoreError):
+        store.read_active()
+
+
+def test_pointer_ahead_of_high_water_is_refused(tmp_path):
+    """A pointer ahead of the marker is forged or malformed: refuse.
+
+    Publications ratchet the marker before repointing, so a legitimate store
+    can never sit at a generation higher than the recorded high water.
+    """
+    directory = tmp_path / "gens"
+    store = GenerationStore(directory)
+    store.provision(PAYLOAD_A)
+
+    write_protected(
+        PAYLOAD_B,
+        directory / "g-00000002.gen",
+        header=GENERATION_HEADER,
+        expected_length=None,
+    )
+    _rewrite_pointer(directory, 2, PAYLOAD_B)
+
+    with pytest.raises(ProtectedStoreError):
+        store.read_active()
+    with pytest.raises(ProtectedStoreError):
+        store.update(PAYLOAD_C, expected_generation=1)
+
+
+def test_interrupted_publish_is_completed_by_the_next_update(tmp_path):
+    """Crash between the marker ratchet and the pointer publish heals.
+
+    Marker-first publication means an interrupted publish leaves the marker
+    ahead of the pointer - a state indistinguishable from a pointer rollback,
+    so reads refuse. The next writer completes the recorded generation when
+    its file exists.
+    """
+    directory = tmp_path / "gens"
+    store = GenerationStore(directory)
+    store.provision(PAYLOAD_A)
+    write_protected(
+        PAYLOAD_B,
+        directory / "g-00000002.gen",
+        header=GENERATION_HEADER,
+        expected_length=None,
+    )
+    _write_high_water(directory, 2)
+
+    with pytest.raises(ProtectedStoreError):
+        store.read_active()
+
+    with pytest.raises(GenerationMismatchError):
+        store.update(PAYLOAD_C, expected_generation=1)
+    # The interrupted publish was completed: generation 2 is authoritative.
+    assert store.read_active() == (2, PAYLOAD_B)
+
+
+def test_interrupted_publish_without_generation_file_fails_closed(tmp_path):
+    """A marker naming a generation with no file is corruption, not a crash."""
+    directory = tmp_path / "gens"
+    store = GenerationStore(directory)
+    store.provision(PAYLOAD_A)
+    _write_high_water(directory, 2)
+
+    with pytest.raises(ProtectedStoreError):
+        store.read_active()
+    with pytest.raises(ProtectedStoreError) as excinfo:
+        store.update(PAYLOAD_C, expected_generation=1)
+    assert not isinstance(excinfo.value, GenerationMismatchError)
+
+
+def test_v1_store_without_marker_remains_readable(tmp_path):
+    """Pre-monotonicity stores (40-byte pointer, no marker file) keep working.
+
+    The marker is introduced by the first post-upgrade publish; until then a
+    legacy pointer has no monotonicity to check against and is accepted.
+    """
+    directory = tmp_path / "gens"
+    directory.mkdir()
+    write_protected(
+        PAYLOAD_A,
+        directory / "g-00000001.gen",
+        header=GENERATION_HEADER,
+        expected_length=None,
+    )
+    _rewrite_pointer(directory, 1, PAYLOAD_A, version=1)
+
+    store = GenerationStore(directory)
+    assert store.read_active() == (1, PAYLOAD_A)

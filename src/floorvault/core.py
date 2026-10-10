@@ -136,12 +136,17 @@ def _parse_envelope(
 
 def canonical_json_bytes(data: Mapping[str, Any]) -> bytes:
     """Serialize dictionary to deterministic, canonical UTF-8 JSON bytes."""
-    return json.dumps(
-        data,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    try:
+        return json.dumps(
+            data,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            "AAD coordinates must be UTF-8 encodable; lone surrogates are refused"
+        ) from exc
 
 
 # Characters json.dumps(ensure_ascii=False) escapes inside a JSON string:
@@ -159,8 +164,17 @@ def _quote_json(value: str) -> bytes:
     ``json.dumps`` for the exact escaping rules, so output can never diverge
     from :func:`associated_data`.
     """
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        # A lone surrogate cannot be UTF-8-encoded. Refuse it as the documented
+        # caller error - both here and on the json.dumps path, where it would
+        # otherwise be silently emitted as a \ud800 escape.
+        raise ValueError(
+            "AAD coordinates must be UTF-8 encodable; lone surrogates are refused"
+        ) from exc
     if _JSON_UNSAFE.search(value) is None:
-        return b'"' + value.encode("utf-8") + b'"'
+        return b'"' + encoded + b'"'
     return json.dumps(value, ensure_ascii=False).encode("utf-8")
 
 
@@ -405,7 +419,13 @@ class FloorVault:
         """Deduplicate nonces in a process-lifetime sliding window.
 
         This in-memory window is bounded and is not a cross-session freshness
-        mechanism. Cross-session freshness requires caller-managed revision
+        mechanism. Because AES-SIV is deterministic in
+        ``(key, nonce, AAD, plaintext)``, a nonce that recurs after eviction
+        or restart under the same key and coordinates yields byte-identical
+        ciphertext for identical plaintext — an observer can infer plaintext
+        *equality*, though never the plaintext itself or the key (that is the
+        SIV misuse-resistance guarantee). Cross-session freshness — including
+        suppressing even equality leakage — requires caller-managed revision
         counters bound into the associated data.
 
         Caller must hold ``self._lock``: dedup + eviction run in the same
@@ -577,8 +597,8 @@ class FloorVault:
             decrypted_bytes = aead.decrypt(raw_cipher, self._ad_components(aad, header, nonce))
         except InvalidTag as exc:
             raise DecryptionVerificationError(
-                f"Contextual decryption verification failed for {table}.{column} "
-                f"(record: {record_id}). Data was tampered with, spliced, or corrupted."
+                f"Contextual decryption verification failed for {table}.{column}. "
+                "Data was tampered with, spliced, or corrupted."
             ) from exc
         try:
             return decrypted_bytes.decode("utf-8")
@@ -626,8 +646,8 @@ class FloorVault:
             return aead.decrypt(raw_cipher, self._ad_components(aad, header, nonce))
         except InvalidTag as exc:
             raise DecryptionVerificationError(
-                f"Contextual decryption verification failed for {table}.{column} "
-                f"(record: {record_id}). Data was tampered with, spliced, or corrupted."
+                f"Contextual decryption verification failed for {table}.{column}. "
+                "Data was tampered with, spliced, or corrupted."
             ) from exc
 
     def encrypt_fields(
@@ -723,8 +743,8 @@ class FloorVault:
                 out[column] = aead.decrypt(raw_cipher, self._ad_components(aad, header, nonce))
             except InvalidTag as exc:
                 raise DecryptionVerificationError(
-                    f"Contextual decryption verification failed for {table}.{column} "
-                    f"(record: {record_id}). Data was tampered with, spliced, or corrupted."
+                    f"Contextual decryption verification failed for {table}.{column}. "
+                    "Data was tampered with, spliced, or corrupted."
                 ) from exc
         return out
 

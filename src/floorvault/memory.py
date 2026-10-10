@@ -68,11 +68,18 @@ class HardenedMemoryKey:
 
     Scope, stated plainly: ``wipe()`` zeroes and releases the mapped buffer.
     It cannot reach copies made by third-party crypto libraries from the
-    material (e.g. the key inside an AEAD engine object), heap-resident
-    ``bytes`` intermediates produced by ``get_bytes()`` or the constructor's
-    coercion, or the caller's own buffers. Callers needing the strongest
-    hygiene should pass mutable input, consume via :meth:`get_buffer` where
-    the consumer accepts buffer objects, and wipe their own intermediates.
+    material (e.g. the key inside an AEAD engine object) or heap-resident
+    ``bytes`` intermediates produced by ``get_bytes()``. A caller-supplied
+    ``bytearray`` is *consumed* - zeroed in place once the key material is
+    copied into the managed buffer - so passing mutable input does not leave
+    a live ghost the caller must wipe by hand. Callers needing the strongest
+    hygiene should consume via :meth:`get_buffer` where the consumer accepts
+    buffer objects.
+
+    ``mode="required"`` fails closed: if the page-aligned protected
+    allocation (or any control it demands) cannot be established, the
+    constructor raises :class:`SecurityHardeningError` rather than silently
+    holding the key on a plain heap buffer.
     """
 
     def __init__(
@@ -89,6 +96,15 @@ class HardenedMemoryKey:
         self._size = 0
         self._mode = mode
         self._core_dumps_disabled = False
+        # Bound at construction: wipe() must still work when __del__ runs after
+        # interpreter teardown has cleared this module's globals to None.
+        self._teardown_memset = ctypes.memset
+        self._teardown_cdll = ctypes.CDLL
+        self._teardown_windll = getattr(ctypes, "windll", None)
+        self._teardown_c_size_t = ctypes.c_size_t
+        self._teardown_is_macos = is_macos()
+        self._teardown_is_linux = is_linux()
+        self._teardown_is_windows = is_windows()
 
         if mode not in {"disabled", "opportunistic", "required"}:
             raise ValueError("mode must be one of 'disabled', 'opportunistic', or 'required'")
@@ -114,15 +130,35 @@ class HardenedMemoryKey:
         self._alloc_size = PAGE_SIZE
         self._mmap_base: Any = None
         self._mapping: Any = None
+        # memmove accepts a bytes object or a raw address; a bytearray needs
+        # its buffer address so the copy happens without a bytes() ghost.
+        source_addr = (
+            ctypes.addressof(ctypes.c_char.from_buffer(key_bytes))
+            if isinstance(key_bytes, bytearray)
+            else key_bytes
+        )
         try:
             self._mapping = mmap.mmap(-1, self._alloc_size)
             self._mmap_base = ctypes.addressof(ctypes.c_char.from_buffer(self._mapping))
             self._buffer = (ctypes.c_char * self._alloc_size).from_address(self._mmap_base)
-            ctypes.memmove(self._buffer, bytes(key_bytes), self._size)
-        except Exception:
+            ctypes.memmove(self._buffer, source_addr, self._size)
+        except Exception as exc:
             self._mmap_base = None
             self._mapping = None
-            self._buffer = ctypes.create_string_buffer(bytes(key_bytes), self._size)
+            if mode == "required":
+                # The heap fallback offers no dump/fork exclusion and only a
+                # best-effort unaligned lock - required mode promised more.
+                raise SecurityHardeningError(
+                    "required mode: the page-aligned protected allocation could "
+                    "not be established; refusing to hold the key on a plain "
+                    "heap buffer"
+                ) from exc
+            self._buffer = ctypes.create_string_buffer(self._size)
+            ctypes.memmove(self._buffer, source_addr, self._size)
+        # Mutable caller input is consumed: the caller's buffer would otherwise
+        # keep a live copy of the key that wipe() can never reach.
+        if isinstance(key_bytes, bytearray):
+            key_bytes[:] = b"\x00" * len(key_bytes)
         self._alloc_size = self._size if self._mmap_base is None else PAGE_SIZE
         self._locked_size = self._size if self._mmap_base is None else PAGE_SIZE
         self._closed = False
@@ -255,21 +291,28 @@ class HardenedMemoryKey:
         # Mark closed first so a partial failure cannot leave the key readable.
         self._closed = True
 
+        # Everything below reaches only construction-bound attributes: module
+        # globals (``ctypes``, the platform probes) may already be None when a
+        # ``__del__`` runs during interpreter shutdown - and a memset that
+        # raises leaves the key material in place.
+        memset = self._teardown_memset
+        c_size_t = self._teardown_c_size_t
+
         # 1. Overwrite the whole mapped region with zeroes
-        ctypes.memset(self._buffer, 0, self._alloc_size)
+        memset(self._buffer, 0, self._alloc_size)
 
         # 2. Unlock memory pages
         if self._locked:
-            if is_macos() or is_linux():
+            if self._teardown_is_macos or self._teardown_is_linux:
                 try:
-                    libc = ctypes.CDLL(None)
-                    libc.munlock(self._buffer, ctypes.c_size_t(self._locked_size))
+                    libc = self._teardown_cdll(None)
+                    libc.munlock(self._buffer, c_size_t(self._locked_size))
                 except Exception:  # best-effort unlock  # nosec B110
                     pass
-            elif is_windows():
+            elif self._teardown_is_windows:
                 try:
-                    kernel32 = ctypes.windll.kernel32
-                    kernel32.VirtualUnlock(self._buffer, ctypes.c_size_t(self._locked_size))
+                    kernel32 = self._teardown_windll.kernel32
+                    kernel32.VirtualUnlock(self._buffer, c_size_t(self._locked_size))
                 except Exception:  # best-effort unlock  # nosec B110
                     pass
             self._locked = False
@@ -285,7 +328,10 @@ class HardenedMemoryKey:
         self._mmap_base = None
 
     def __del__(self) -> None:
-        self.wipe()
+        try:
+            self.wipe()
+        except Exception:  # interpreter teardown must never raise  # nosec B110
+            pass
 
     def __enter__(self) -> HardenedMemoryKey:
         return self

@@ -102,10 +102,12 @@ parameters or cryptographic inputs. A missing record is an error — the adapter
 ## Key custody
 
 `AdaptiveKeyProvider` resolves an available custody tier rather than silently weakening an explicitly requested
-one — an environment variable first (`FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY`, or the legacy `APPSTATE_KEY`, 64 hex
-characters), then the OS-native tier (**macOS Keychain**, needs the `macos` extra; **Windows DPAPI**, built in,
+one — an environment variable first (`FLOOR_VAULT_KEY` or `VAULT_MASTER_KEY`, 64 hex
+characters; the legacy shared-namespace `APPSTATE_KEY` only when the provider is built with
+`allow_legacy_env_vars=True`), then the OS-native tier (**macOS Keychain**, needs the `macos` extra; **Windows DPAPI**, built in,
 a store outside the user profile is refused; **Linux Secret Service**, needs the `linux` extra), and only then
-a **0600 local file** (Tier 3, off unless `allow_disk_fallback=True`; `strict=True` forbids it outright).
+a **0600 local file** (Tier 3, off unless `allow_disk_fallback=True`; `strict=True` forbids it outright —
+and refuses environment-variable custody too, since a plaintext env var is below the OS-backed pledge).
 Resolving a key with no OS store — macOS without its extra, or a headless container — fails closed with a
 `KeyProviderError` that names the remedies (resolution options in the custody guide below).
 
@@ -276,7 +278,7 @@ import os
 from floorvault import AdaptiveKeyProvider, FloorVault
 
 # 1. Explicit key, 64 hex characters, from your own secret source.
-crypto = FloorVault(bytes.fromhex(os.environ["APPSTATE_KEY"]), app_instance_id="my-app")
+crypto = FloorVault(bytes.fromhex(os.environ["FLOOR_VAULT_KEY"]), app_instance_id="my-app")
 
 # 2. A 0600 local key file, created on first use and reused afterwards. This is
 #    Tier 3: anyone who can copy the file can recover the key.
@@ -390,15 +392,17 @@ Workload-specific measurements, not universal claims; includes contextual AAD an
 
 ## CLI
 
-`floorvault inspect` **decrypts** a field and prints the plaintext — treat its output as secret:
-`floorvault inspect local_vault.db users user-123 private_value_cipher --service-name my-app --app-instance my-app`.
+`floorvault inspect` **decrypts** a field and reports it — the value is `<redacted>` by default; pass
+`--reveal` to print the plaintext (treat that output as secret):
+`floorvault inspect local_vault.db users user-123 private_value_cipher --service-name my-app --app-instance my-app --reveal`.
 The flags must match how the record was written: the CLI resolves the key under `--service-name` and binds
 decryption to `--app-instance`. Defaults are `floorvault` and `default`, so records written under those
 defaults need no flags. `--service-name` selects the key only when custody comes from the OS store tiers
 (macOS Keychain, Linux Secret Service, or the local file key): records written under `FLOOR_VAULT_KEY`/
 `VAULT_MASTER_KEY` need that same environment variable set for `inspect` instead, and Windows DPAPI keys
-are machine-bound rather than service-scoped. Inspection never creates keys — a mistyped service name
-fails with an error rather than minting a new custody entry.
+are machine-bound rather than service-scoped. The target must be a real SQLite database — the tool refuses
+non-database and non-regular paths — and it opens it read-only. Inspection never creates keys — a mistyped
+service name fails with an error rather than minting a new custody entry.
 
 ## Reporting a vulnerability
 

@@ -42,6 +42,8 @@ class AdaptiveKeyProvider(KeyProvider):
         strict: bool = False,
         allow_disk_fallback: bool = False,
         dpapi_entropy: Optional[bytes] = None,
+        allow_legacy_env_vars: bool = False,
+        allow_legacy_adoption: bool = False,
     ) -> None:
         self.service_name = service_name
         self.account_name = account_name
@@ -54,6 +56,13 @@ class AdaptiveKeyProvider(KeyProvider):
         # the provider uses a public constant - still user-bound through DPAPI,
         # but without the extra secret an infostealer cannot guess.
         self.dpapi_entropy = dpapi_entropy
+        # APPSTATE_KEY shares a process-wide namespace with other tools, so it
+        # is read only when this is set; the namespaced variables always are.
+        self.allow_legacy_env_vars = allow_legacy_env_vars
+        # Opt-in for adopting a pre-split ``master.key`` store whose payload
+        # parses under a custody scheme. Default False: a planted legacy file
+        # is refused rather than silently adopted as the master key.
+        self.allow_legacy_adoption = allow_legacy_adoption
         self.keychain_unavailable_reason: Optional[str] = None
 
     def _is_interactive_desktop(self) -> bool:
@@ -63,29 +72,65 @@ class AdaptiveKeyProvider(KeyProvider):
     def resolve_key(self, *, allow_create: bool = True) -> HardenedMemoryKey:
         """Resolve the master key across the three autonomous tiers."""
         # --- Tier 1: Explicit Environment Variable (CI / Cloud / Kubernetes) ---
-        for var_name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
-            val = os.environ.get(var_name)
-            if val:
-                if var_name == "APPSTATE_KEY":
-                    warnings.warn(
-                        "APPSTATE_KEY is a legacy, non-namespaced variable name; "
-                        "prefer FLOOR_VAULT_KEY or VAULT_MASTER_KEY so a value "
-                        "set for another tool cannot be silently adopted as the "
-                        "vault master key",
-                        UserWarning,
-                        stacklevel=2,
+        # strict=True is a pledge of OS-backed custody. A plaintext environment
+        # variable is the weakest custody there is - readable through
+        # /proc/<pid>/environ, `ps e`, and CI logs - so adopting one under
+        # strict silently downgrades below the pledge.
+        if self.strict:
+            # Only names this provider would actually consider for custody: a
+            # foreign APPSTATE_KEY (not opted into) is ignored, not a breach.
+            strict_env = ["FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"]
+            if self.allow_legacy_env_vars:
+                strict_env.append("APPSTATE_KEY")
+            for var_name in strict_env:
+                if os.environ.get(var_name):
+                    raise CustodyDowngradeError(
+                        f"strict=True refuses environment-variable key custody, "
+                        f"but {var_name} is set. Unset it, construct the provider "
+                        "without strict, or rely on OS-backed custody."
                     )
-                raw_bytes: bytes
-                clean_val = val.strip()
-                if len(clean_val) != 64:
-                    raise KeyProviderError(
-                        "Environment key must be 64 hexadecimal characters (32 bytes hex-encoded)"
-                    )
-                try:
-                    raw_bytes = bytes.fromhex(clean_val)
-                except ValueError as exc:
-                    raise KeyProviderError("Environment key must be valid hexadecimal") from exc
-                return HardenedMemoryKey(raw_bytes)
+        else:
+            # Namespaced variables first; the legacy shared-namespace name is
+            # read only on explicit opt-in - a value another tool placed there
+            # must not be adopted as the vault master key.
+            env_names = ["FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"]
+            if self.allow_legacy_env_vars:
+                env_names.append("APPSTATE_KEY")
+            for var_name in env_names:
+                val = os.environ.get(var_name)
+                if val:
+                    if var_name == "APPSTATE_KEY":
+                        warnings.warn(
+                            "APPSTATE_KEY is a legacy, non-namespaced variable name; "
+                            "prefer FLOOR_VAULT_KEY or VAULT_MASTER_KEY so a value "
+                            "set for another tool cannot be silently adopted as the "
+                            "vault master key",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+                    raw_bytes: bytes
+                    clean_val = val.strip()
+                    if len(clean_val) != 64:
+                        raise KeyProviderError(
+                            "Environment key must be 64 hexadecimal characters (32 bytes hex-encoded)"
+                        )
+                    try:
+                        raw_bytes = bytes.fromhex(clean_val)
+                    except ValueError as exc:
+                        raise KeyProviderError("Environment key must be valid hexadecimal") from exc
+                    return HardenedMemoryKey(raw_bytes)
+            # Warn about the ignored legacy name only once the namespaced
+            # variables had their chance: under warnings-as-errors a stray
+            # APPSTATE_KEY must not veto a valid FLOOR_VAULT_KEY.
+            if not self.allow_legacy_env_vars and os.environ.get("APPSTATE_KEY"):
+                warnings.warn(
+                    "APPSTATE_KEY is set but ignored: it shares a namespace "
+                    "with other tools, so FloorVault honours it only when the "
+                    "provider is constructed with allow_legacy_env_vars=True. "
+                    "Prefer FLOOR_VAULT_KEY or VAULT_MASTER_KEY.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         # --- Tier 2: Direct system-keyring capability probe ---
         # Do not infer keyring availability from SSH_CONNECTION, DISPLAY, or
@@ -104,6 +149,7 @@ class AdaptiveKeyProvider(KeyProvider):
             return WindowsDPAPIKeyProvider(
                 store_path=WindowsDPAPIKeyProvider.default_store_path(self.fallback_dir),
                 entropy=self.dpapi_entropy,
+                allow_legacy_adoption=self.allow_legacy_adoption,
             ).resolve_key(allow_create=allow_create)
 
         if is_linux():
@@ -115,6 +161,7 @@ class AdaptiveKeyProvider(KeyProvider):
                 # gated on the same opt-in as Tier 3: strict mode, or a caller
                 # that never enabled disk fallback, must not read master.key.ss.
                 allow_file_fallback=self.allow_disk_fallback,
+                allow_legacy_adoption=self.allow_legacy_adoption,
             )
             # A headless Linux session has no Secret Service capability. Preserve
             # AdaptiveKeyProvider's explicit local-file policy in that case.
@@ -205,8 +252,9 @@ class AdaptiveKeyProvider(KeyProvider):
         )
         return (
             f"Refusing headless fallback to plaintext disk key ({cause}).{missing_tier} "
-            "Provide the key explicitly (APPSTATE_KEY, FLOOR_VAULT_KEY or "
-            "VAULT_MASTER_KEY as 64 hexadecimal characters), install the OS-native "
+            "Provide the key explicitly (FLOOR_VAULT_KEY or VAULT_MASTER_KEY as 64 "
+            "hexadecimal characters; APPSTATE_KEY requires allow_legacy_env_vars=True "
+            "and neither is honoured while strict=True), install the OS-native "
             "custody extra for this platform, or opt in to a 0600 local key file with "
             "AdaptiveKeyProvider(allow_disk_fallback=True)."
         )
