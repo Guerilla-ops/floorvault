@@ -2,16 +2,54 @@
   <img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/floorvault-hero.svg" width="100%" alt="FloorVault — Your data. Its place. Cryptographically bound.">
   <h1>FloorVault</h1>
   <p><strong>Your data. Its place. Cryptographically bound.</strong><br>
-  Context-bound, misuse-resistant field encryption for SQLite — AES-256-SIV (RFC 5297), no SQLCipher, no C extension.</p>
-  <p><a href="#quickstart">Quickstart</a> · <a href="#how-it-works">How it works</a> · <a href="#install">Install</a> · <a href="#existing-sqlite-tables">SQLite adapter</a> · <a href="#security-boundaries">Boundaries</a> · <a href="https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md">Security model</a> · <a href="#documentation">Docs</a></p>
+  Context-bound, misuse-resistant field encryption for SQLite, libSQL, PostgreSQL, and MySQL — AES-256-SIV (RFC 5297), no custom database build.</p>
+  <p><a href="#install">Install</a> · <a href="#quickstart">Quickstart</a> · <a href="#how-it-works">How it works</a> · <a href="#existing-sqlite-tables">SQLite adapter</a> · <a href="#api-overview">API</a> · <a href="#guides">Adapter guides</a> · <a href="#security-boundaries">Boundaries</a> · <a href="https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md">Security model</a> · <a href="#documentation">Docs</a></p>
   <p><a href="https://pypi.org/project/floorvault/"><img src="https://img.shields.io/pypi/v/floorvault.svg" alt="PyPI version"></a> <a href="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml"><img src="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main"></a> <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10 and newer"></a> <a href="https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md"><img src="https://img.shields.io/badge/status-beta-f0a45d.svg" alt="Project status: beta"></a> <a href="https://github.com/Guerilla-ops/floorvault/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg" alt="MIT or Apache 2.0 license"></a></p>
 </div>
 
 > **Beta — no external security audit.** Review the [security model](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md) before using FloorVault for production secrets.
 
-| Bound to its place | Your existing SQLite | Fail-closed key custody |
+| Bound to its place | Your existing databases | Fail-closed key custody |
 | --- | --- | --- |
-| Every ciphertext authenticates against its table, record, column, schema, and application instance — moved or replayed under different coordinates, verification fails instead of returning wrong plaintext. | Field-level encryption for ordinary `sqlite3` databases — plus an opt-in SQLAlchemy adapter — with no SQLCipher or custom SQLite build. | macOS Keychain, Windows DPAPI, Linux Secret Service, or Vault Transit — never a silent downgrade to a weaker store. |
+| Every ciphertext authenticates against its table, record, column, schema, and application instance — moved or replayed under different coordinates, verification fails instead of returning wrong plaintext. | Field-level encryption for SQLite, libSQL, PostgreSQL, and MySQL — plus an opt-in SQLAlchemy adapter — with no SQLCipher or custom database build. | macOS Keychain, Windows DPAPI, Linux Secret Service, or Vault Transit — never a silent downgrade to a weaker store. |
+
+## Install
+
+```bash
+python -m pip install floorvault
+```
+
+Or, in a uv-managed project, run `uv add floorvault`. Python 3.10 or newer is required.
+
+This README tracks `main`. The PostgreSQL/MySQL adapters and RFC 5297 testing helpers below were
+merged after the current PyPI release (`0.1.0`). To use those APIs before the next release, install from source:
+
+```bash
+git clone https://github.com/Guerilla-ops/floorvault.git
+cd floorvault
+python -m pip install .
+# Include the drivers for the database adapters you need:
+python -m pip install ".[postgres,mysql]"
+```
+
+The release workflow checks artifact reproducibility and generates Sigstore provenance — see
+[Verifying a download](https://github.com/Guerilla-ops/floorvault/blob/main/docs/RELEASING.md#verifying-a-download).
+
+Add extras as needed — `floorvault[macos]`, `floorvault[macos,sqlalchemy]`, …:
+
+| Extra | Enables |
+| --- | --- |
+| `macos` | macOS Keychain custody tier |
+| `linux` | Linux Secret Service custody tier |
+| `sqlalchemy` | `SqlAlchemyEncryption` ORM adapter |
+| `libsql` | `EncryptedLibSqlTable` — same contract over libSQL (local files, embedded replicas, Turso) |
+| `postgres` | `psycopg` driver for `EncryptedPostgresTable` (on `main`; install `.[postgres]` from source) |
+| `mysql` | `mysql-connector-python` driver for `EncryptedMySQLTable` (on `main`; install `.[mysql]` from source) |
+| `dev` | Test, lint, and security-gate toolchain |
+
+A stock install does not provide an OS key store on every host: the `macos`/`linux` extras enable Keychain and
+Secret Service, Windows uses built-in DPAPI, and the local-file tier stays off unless you opt in. With no
+usable provider, `resolve_key()` fails closed with a `KeyProviderError` naming the remedies — no unprotected key file.
 
 ## Quickstart
 
@@ -49,30 +87,6 @@ than decrypting. The master key derives an AES-SIV key with HKDF-SHA256; each fi
 AES-256-SIV (RFC 5297) into an `FLV2` envelope in an ordinary `BLOB` column. An optional caller-held `revision`
 can bind a per-record version into the same context — replay detection, not whole-database rollback protection.
 
-## Install
-
-```bash
-pip install floorvault
-uv add floorvault
-```
-
-Published artifacts are reproducible and carry Sigstore provenance — see
-[Verifying a download](https://github.com/Guerilla-ops/floorvault/blob/main/docs/RELEASING.md#verifying-a-download).
-
-Add extras as needed — `floorvault[macos]`, `floorvault[macos,sqlalchemy]`, …:
-
-| Extra | Enables |
-| --- | --- |
-| `macos` | macOS Keychain custody tier |
-| `linux` | Linux Secret Service custody tier |
-| `sqlalchemy` | `SqlAlchemyEncryption` ORM adapter |
-| `libsql` | `EncryptedLibSqlTable` — same contract over libSQL (local files, embedded replicas, Turso) |
-| `dev` | Test, lint, and security-gate toolchain |
-
-A stock install does not provide an OS key store on every host: the `macos`/`linux` extras enable Keychain and
-Secret Service, Windows uses built-in DPAPI, and the local-file tier stays off unless you opt in. With no
-usable provider, `resolve_key()` fails closed with a `KeyProviderError` naming the remedies — no unprotected key file.
-
 ## Existing SQLite tables
 
 FloorVault does not own your schema or transactions. Add an encrypted `BLOB` column to an existing table, then use the adapter:
@@ -98,6 +112,24 @@ assert fields.load("u1", "api_token_cipher") == "secret-token"
 
 Table and column identifiers are validated before SQL is constructed; record IDs and values stay bound
 parameters or cryptographic inputs. A missing record is an error — the adapter never inserts one accidentally.
+Writes require exactly one matching row, and ciphertext columns cannot be the ID column. SQLite and libSQL
+table/column names are ASCII case-folded to match the database's physical identifiers; column arguments must
+be bare names, while table names may be qualified.
+
+All four table adapters expose `store()` / `load()` for one field, `load_bytes()` for binary values,
+and `store_fields()` / `load_fields()` / `load_fields_bytes()` for several fields in one database statement:
+
+```python
+# Continues the SQLite example above.
+fields.store_fields("u1", {"api_token_cipher": "replacement-token"}, revision=2)
+connection.commit()
+assert fields.load_fields("u1", ["api_token_cipher"], revision=2) == {
+    "api_token_cipher": "replacement-token"
+}
+```
+
+Supply the same `schema_version` and `revision` when reading as when writing. Keep the expected revision
+outside an attacker's rollback control if you need replay detection.
 
 ## Key custody
 
@@ -118,6 +150,10 @@ unusable native backend raises `CustodyDowngradeError` instead of downgrading. C
 Live CI coverage exists for Windows DPAPI only; the macOS and Linux tiers are unit-tested but not
 live-verified — per-tier status in [`SECURITY.md`](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md).
 
+Legacy key-store adoption is also opt-in: `allow_legacy_adoption=True` allows migration of a pre-split
+`master.key` into the native provider's scheme-specific store. Leave it off for new deployments; a parseable
+legacy file is refused by default rather than silently becoming the application's key.
+
 ## Security boundaries
 
 | Protects against | Does not provide |
@@ -126,7 +162,106 @@ live-verified — per-tier status in [`SECURITY.md`](https://github.com/Guerilla
 
 For replay protection, bind encryption to a caller-controlled `revision` an attacker cannot roll back with the database — full statement: [`SECURITY.md`](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md).
 
+## API overview
+
+Application APIs below are imported from `floorvault` unless an explicit module is shown.
+
+| API | Purpose |
+| --- | --- |
+| `FloorVault.encrypt()` / `decrypt()` / `decrypt_bytes()` | Seal a field against its coordinates; read UTF-8 text or raw bytes. |
+| `FloorVault.encrypt_fields()` / `decrypt_fields()` | Seal or open a mapping of columns for one record with shared context. `decrypt_fields()` returns bytes. |
+| `associated_data()` | Build the canonical coordinate-bound associated-data bytes. |
+| `EncryptedSQLiteTable`, `EncryptedLibSqlTable`, `EncryptedPostgresTable`, `EncryptedMySQLTable` | Store and load encrypted fields in existing tables; the caller owns schema and commits. |
+| `ContextualSQLite.table()` / `ContextualTable.encrypt()` / `decrypt()` | Bind table/schema context once for applications that handle SQL themselves. |
+| `SqlAlchemyEncryption.protect()` / `session_factory()` | Bind plaintext descriptors to mapped ciphertext columns and create guarded ORM sessions. |
+| `RecordBinding.encrypt_field()` / `decrypt_field()` / `decrypt_field_bytes()` / `encrypt_fields()` / `decrypt_fields()` | Share record-binding logic across custom adapters without coupling it to a driver. |
+| `AdaptiveKeyProvider.resolve_key()` | Resolve a master-key handle with explicit custody policy; `allow_create=False` reads existing keys only. |
+| `HardenedMemoryKey`, `FloorVault.wipe()` | Hold key material with platform memory hardening and explicitly wipe the engine's derived key. Wipe the caller-owned master-key handle separately. |
+| `KeyRing`, `rotate_vault_store()` | Read multiple key generations and perform resumable VaultStore rotation. |
+| `wrap_master_key()` / `recover_master_key()` | Create and open an authenticated recovery bundle with a separate recovery key. |
+| `migrate_plaintext_column()` / `verify_encrypted_column()` / `drop_plaintext_column()` | Migrate, verify, and retire a plaintext SQLite column. |
+| `MigratingVaultStore` | Migrate legacy VaultStore items with fail-closed retirement of the legacy source. |
+| `floorvault.beacons.BeaconIndexer`, `derive_beacon_key()`, `suggest_beacon_bits()` | Build an opt-in exact-match index with a separate subkey and an explicit width. |
+| `floorvault.beacons.compute_beacon()`, `beacon_matches()`, `beacon_bucket_bytes()` | Compute or compare a beacon and inspect its stored width without constructing an indexer. |
+| `floorvault.testing.siv_reference.s2v()`, `siv_encrypt()`, `siv_decrypt()` | Cross-check raw RFC 5297 AES-SIV in conformance tests. |
+
 ## Guides
+
+<details>
+<summary><strong>libSQL adapter</strong> — local files, embedded replicas, and Turso</summary>
+
+Install `floorvault[libsql]` (or `.[libsql]` from a checkout). The synchronous libSQL adapter uses the same
+field and batch methods as `EncryptedSQLiteTable`; the caller creates rows and commits writes.
+
+```python
+import libsql
+
+from floorvault import AdaptiveKeyProvider, EncryptedLibSqlTable, FloorVault
+
+crypto = FloorVault(AdaptiveKeyProvider(service_name="my-app").resolve_key(), app_instance_id="my-app")
+connection = libsql.connect(":memory:")
+connection.execute("CREATE TABLE users (id TEXT PRIMARY KEY, api_token_cipher BLOB)")
+connection.execute("INSERT INTO users (id) VALUES (?)", ("u1",))
+
+fields = EncryptedLibSqlTable(connection, crypto, "users", id_column="id")
+fields.store("u1", "api_token_cipher", "secret-token")
+connection.commit()
+assert fields.load("u1", "api_token_cipher") == "secret-token"
+```
+
+For embedded replicas or Turso, pass your configured synchronous `libsql.connect(...)` connection instead.
+Async clients are refused. Envelope portability requires the same key and authenticated coordinates.
+
+</details>
+
+<details>
+<summary><strong>PostgreSQL and MySQL adapters</strong> — synchronous DB-API connections</summary>
+
+These adapters are on `main`; install `.[postgres]` or `.[mysql]` from a checkout until the next PyPI release.
+They accept synchronous DB-API connections with `%s` placeholders. The extras supply drivers; the adapter
+modules do not import them. Create the table and record yourself, use `BYTEA` for PostgreSQL ciphertext or
+`VARBINARY`/`BLOB` for MySQL, and commit after writing.
+
+The PostgreSQL example requires `DATABASE_URL` for a database where you can create a temporary table,
+plus a configured [key-custody source](#key-custody):
+
+```python
+import os
+
+import psycopg
+
+from floorvault import AdaptiveKeyProvider, EncryptedPostgresTable, FloorVault
+
+crypto = FloorVault(AdaptiveKeyProvider(service_name="my-app").resolve_key(), app_instance_id="my-app")
+with psycopg.connect(os.environ["DATABASE_URL"]) as connection:
+    with connection.cursor() as cursor:
+        cursor.execute("CREATE TEMPORARY TABLE users (id TEXT PRIMARY KEY, api_token_cipher BYTEA)")
+        cursor.execute("INSERT INTO users (id) VALUES (%s)", ("u1",))
+
+    fields = EncryptedPostgresTable(connection, crypto, "users", id_column="id")
+    fields.store("u1", "api_token_cipher", "secret-token")
+    connection.commit()
+    assert fields.load("u1", "api_token_cipher") == "secret-token"
+```
+
+For an existing MySQL connection and table, use the same API:
+
+```python
+from floorvault import EncryptedMySQLTable
+
+# crypto is your FloorVault engine; mysql_connection is a synchronous mysql.connector or PyMySQL connection;
+# users already contains u1 and an api_token_cipher BLOB column.
+fields = EncryptedMySQLTable(mysql_connection, crypto, "users", id_column="id")
+fields.store("u1", "api_token_cipher", "secret-token")
+mysql_connection.commit()
+assert fields.load("u1", "api_token_cipher") == "secret-token"
+```
+
+Table names may be qualified (`app.users` on PostgreSQL, `shop.users` on MySQL); columns must be bare names.
+Missing or non-unique record IDs are refused. Moving ciphertext between engines needs no re-encryption when
+the key and authenticated table, record, column, schema, revision, and app instance remain identical.
+
+</details>
 
 <details>
 <summary><strong>SQLAlchemy ORM adapter</strong> — plaintext attributes encrypt at assignment; bulk writes refused</summary>
@@ -296,6 +431,8 @@ instead of a local file; the wrapped blob lives in a governed on-disk generation
 ([SPEC.md §10.6–10.7](https://github.com/Guerilla-ops/floorvault/blob/main/docs/SPEC.md)):
 
 ```python
+import os
+
 from floorvault.providers.vault_transit import VaultTransitProvider
 
 provider = VaultTransitProvider(
@@ -378,6 +515,40 @@ The recovery bundle is not a substitute for protecting the recovery key.
 
 </details>
 
+<details>
+<summary><strong>RFC 5297 reference helpers</strong> — independent AES-SIV conformance checks</summary>
+
+The recently merged `floorvault.testing.siv_reference` module exposes `s2v()`, `siv_encrypt()`, and
+`siv_decrypt()` for external test harnesses. Import it explicitly; these helpers are not re-exported from
+`floorvault`. They implement CMAC, S2V, and CTR framing from the RFC using AES-ECB as the underlying
+single-block primitive, giving tests a separate implementation to compare against.
+
+```python
+import secrets
+
+from floorvault.testing.siv_reference import s2v, siv_decrypt, siv_encrypt
+
+key = secrets.token_bytes(64)  # full AES-256-SIV key, not FloorVault's 32-byte master key
+plaintext = b"conformance test payload"
+ad = [b"table:users", b"record:u1", b"column:api_token"]
+
+sealed = siv_encrypt(key, plaintext, ad)  # raw 16-byte synthetic IV followed by ciphertext
+assert sealed[:16] == s2v(key[:32], [*ad, plaintext])
+assert siv_decrypt(key, sealed, ad) == plaintext
+assert siv_decrypt(key, sealed, [b"wrong-context"]) is None
+```
+
+`s2v()` takes the S2V half-key and an ordered list whose final element is the plaintext.
+`siv_encrypt()` / `siv_decrypt()` take the full SIV key and an ordered list of associated-data components.
+Use 32-byte keys for AES-128-SIV or 64-byte keys for AES-256-SIV. Authentication failure returns `None`;
+never use a failed result as plaintext. The raw `V || C` output is not an `FLV2` envelope. Use `FloorVault`
+for application encryption; use these helpers to cross-check primitives in tests.
+
+See the [reference module](https://github.com/Guerilla-ops/floorvault/blob/main/src/floorvault/testing/siv_reference.py)
+and its [conformance tests](https://github.com/Guerilla-ops/floorvault/blob/main/tests/test_siv_reference_module.py).
+
+</details>
+
 ## Performance
 
 A measured macOS benchmark using five independent 10,000-iteration runs and a 1,019-byte payload reported
@@ -400,7 +571,8 @@ decryption to `--app-instance`. Defaults are `floorvault` and `default`, so reco
 defaults need no flags. `--service-name` selects the key only when custody comes from the OS store tiers
 (macOS Keychain, Linux Secret Service, or the local file key): records written under `FLOOR_VAULT_KEY`/
 `VAULT_MASTER_KEY` need that same environment variable set for `inspect` instead, and Windows DPAPI keys
-are machine-bound rather than service-scoped. The target must be a real SQLite database — the tool refuses
+are bound to the Windows user account and use a shared store path rather than a service-scoped entry.
+The target must be a real SQLite database — the tool refuses
 non-database and non-regular paths — and it opens it read-only. Inspection never creates keys — a mistyped
 service name fails with an error rather than minting a new custody entry.
 
@@ -414,6 +586,7 @@ reporting on this repository (preferred), or email **floorbond@pm.me** — [`SEC
 - [`SECURITY.md`](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md) — security model, limitations, and reporting
 - [`docs/SPEC.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/SPEC.md) — full protocol and adapter contracts
 - [`docs/VAULT-TRANSIT.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/VAULT-TRANSIT.md) — Vault Transit custody setup
+- [`docs/HARDWARE-CUSTODY.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/HARDWARE-CUSTODY.md) — proposed PKCS#11 hardware custody design and mechanism limits
 - [`docs/RECORD-FORMAT-2026-09-15.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/RECORD-FORMAT-2026-09-15.md) — `FLV2` envelope format
 - [`docs/COMPARATIVE-BENCHMARK-2026-09-15.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/COMPARATIVE-BENCHMARK-2026-09-15.md) — benchmark methodology
 - [`docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md`](https://github.com/Guerilla-ops/floorvault/blob/main/docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md) — platform findings
