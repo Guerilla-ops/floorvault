@@ -3,7 +3,8 @@
 Scales from interactive desktop storage to headless cloud/Docker environments:
   Tier 1: Explicit Environment Variable (APPSTATE_KEY, FLOOR_VAULT_KEY)
   Tier 2: macOS Keychain when available
-  Tier 3: Explicitly Opt-In Local 0600 File Key (Headless Docker / Remote SSH)
+  Tier 3: Explicitly Opt-In Local 0600 File Key (Headless Docker / Remote SSH),
+          optionally wrapped under a caller-held passphrase (``passphrase=``)
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import os
 import warnings
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from ..memory import HardenedMemoryKey
 from ..platform_support import (
@@ -19,6 +20,7 @@ from ..platform_support import (
     is_macos,
     is_windows,
 )
+from . import passphrase_store
 from .base import CustodyDowngradeError, KeyProvider, KeyProviderError
 from .linux_keyring import LinuxSecretServiceKeyProvider
 from .platform_custody import (
@@ -44,6 +46,7 @@ class AdaptiveKeyProvider(KeyProvider):
         dpapi_entropy: Optional[bytes] = None,
         allow_legacy_env_vars: bool = False,
         allow_legacy_adoption: bool = False,
+        passphrase: Optional[Union[str, bytes]] = None,
     ) -> None:
         self.service_name = service_name
         self.account_name = account_name
@@ -64,6 +67,13 @@ class AdaptiveKeyProvider(KeyProvider):
         # is refused rather than silently adopted as the master key.
         self.allow_legacy_adoption = allow_legacy_adoption
         self.keychain_unavailable_reason: Optional[str] = None
+        # Tier-3 only: wrap the local key file under this passphrase (FVPW1,
+        # SPEC.md §10.8) so a copy of the file alone does not yield the key.
+        # Validated now so an empty passphrase fails at construction, not at
+        # the first resolve after a key was already generated.
+        if passphrase is not None:
+            passphrase_store._normalize_passphrase(passphrase)
+        self._passphrase = passphrase
 
     def _is_interactive_desktop(self) -> bool:
         """Deprecated compatibility hook; capability probing is unconditional."""
@@ -277,6 +287,19 @@ class AdaptiveKeyProvider(KeyProvider):
         if self.strict or not self.allow_disk_fallback:
             raise KeyProviderError(self._disk_fallback_refusal())
 
+        key_file = self.fallback_dir / "master.key"
+        wrapped_file = self.fallback_dir / WRAPPED_KEY_FILENAME
+        if self._passphrase is not None:
+            return self._resolve_passphrase_file_key(key_file, wrapped_file, allow_create)
+        # Fail closed: once the key is passphrase-wrapped, resolving without the
+        # passphrase must never fall through to creating a fresh raw key beside
+        # it - that would silently fork the master key.
+        if self._read_wrapped_key_file(wrapped_file) is not None:
+            raise KeyProviderError(
+                f"{wrapped_file} is passphrase-protected; construct the provider "
+                "with passphrase= to unlock it"
+            )
+
         warnings.warn(
             "FloorVault is using Tier-3 file-based key custody "
             "(~/.floorvault/master.key); this is not a hardware or OS "
@@ -284,7 +307,6 @@ class AdaptiveKeyProvider(KeyProvider):
             UserWarning,
             stacklevel=2,
         )
-        key_file = self.fallback_dir / "master.key"
 
         stored = self._read_raw_key_file(key_file)
         if stored is not None:
@@ -313,6 +335,68 @@ class AdaptiveKeyProvider(KeyProvider):
 
         return HardenedMemoryKey(new_key)
 
+    def _resolve_passphrase_file_key(
+        self, key_file: Path, wrapped_file: Path, allow_create: bool
+    ) -> HardenedMemoryKey:
+        """Resolve the passphrase-wrapped Tier-3 key (``FVPW1``).
+
+        A raw ``master.key`` beside the wrapped store is refused, not ignored:
+        while it exists a copy of the directory still yields the key without
+        the passphrase, which is exactly what wrapping exists to prevent. A raw
+        store with no wrapped one is refused too - converting it is an explicit
+        step (:func:`protect_key_file`), never a side effect of resolving.
+        """
+        passphrase = self._passphrase
+        if passphrase is None:  # pragma: no cover - guarded by the caller
+            raise KeyProviderError("passphrase custody requested without a passphrase")
+        payload = self._read_wrapped_key_file(wrapped_file)
+        raw_present = self._read_raw_key_file(key_file) is not None
+        if raw_present:
+            raise KeyProviderError(
+                f"an unwrapped key file exists at {key_file}; convert it with "
+                "floorvault.providers.adaptive.protect_key_file() (which removes "
+                "the raw copy) before using passphrase custody"
+            )
+        if payload is not None:
+            try:
+                key = passphrase_store.unwrap(payload, passphrase)
+            except passphrase_store.PassphraseStoreError as exc:
+                raise KeyProviderError(str(exc)) from exc
+            try:
+                return HardenedMemoryKey(bytes(key))
+            finally:
+                key[:] = bytes(len(key))
+        if not allow_create:
+            raise KeyProviderError(f"Master key file not found: {wrapped_file}")
+        new_key = bytearray(os.urandom(32))
+        try:
+            payload = passphrase_store.wrap(new_key, passphrase)
+            try:
+                write_protected(
+                    payload,
+                    wrapped_file,
+                    header=passphrase_store.MAGIC,
+                    expected_length=passphrase_store.PAYLOAD_BYTES,
+                )
+            except ProtectedStoreError as exc:
+                raise KeyProviderError(f"Refusing to overwrite the key file: {exc}") from exc
+            return HardenedMemoryKey(bytes(new_key))
+        finally:
+            new_key[:] = bytes(len(new_key))
+
+    def _read_wrapped_key_file(self, wrapped_file: Path) -> Optional[bytes]:
+        """Return the ``FVPW1`` payload, or ``None`` when the store is absent."""
+        try:
+            return read_protected(
+                wrapped_file,
+                header=passphrase_store.MAGIC,
+                expected_length=passphrase_store.PAYLOAD_BYTES,
+            )
+        except ProtectedStoreMissing:
+            return None
+        except ProtectedStoreError as exc:
+            raise KeyProviderError(f"Refusing key file: {exc}") from exc
+
     def _read_raw_key_file(self, key_file: Path) -> Optional[bytes]:
         """Return the raw key file's bytes, or ``None`` when it does not exist.
 
@@ -327,3 +411,70 @@ class AdaptiveKeyProvider(KeyProvider):
             return None
         except ProtectedStoreError as exc:
             raise KeyProviderError(f"Refusing key file: {exc}") from exc
+
+
+#: File name of the passphrase-wrapped Tier-3 store, beside ``master.key``.
+WRAPPED_KEY_FILENAME = "master.key.fvpw"
+
+
+def protect_key_file(
+    passphrase: Union[str, bytes],
+    *,
+    fallback_dir: Optional[Path | str] = None,
+) -> Path:
+    """Wrap an existing raw Tier-3 ``master.key`` under ``passphrase``.
+
+    Writes ``master.key.fvpw`` (no-clobber), proves it unwraps to the same key,
+    then overwrites the raw file with zeros, flushes it, and unlinks it. The
+    master key is unchanged, so existing ciphertext stays readable.
+
+    The overwrite is best effort: on copy-on-write or journaling filesystems,
+    SSDs, snapshots and backups, earlier copies of the raw key can survive (the
+    same residue limit as ``drop_plaintext_column``). Treat a key that has ever
+    sat unwrapped on a backed-up disk as exposed, and rotate it if that matters.
+
+    Returns the path of the wrapped store.
+    """
+    provider = AdaptiveKeyProvider(fallback_dir=fallback_dir, allow_disk_fallback=True)
+    key_file = provider.fallback_dir / "master.key"
+    wrapped_file = provider.fallback_dir / WRAPPED_KEY_FILENAME
+    stored = provider._read_raw_key_file(key_file)
+    if stored is None:
+        raise KeyProviderError(f"no raw key file to protect at {key_file}")
+    if len(stored) == 64:
+        try:
+            stored = bytes.fromhex(stored.decode("ascii").strip())
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise KeyProviderError("Refusing malformed hexadecimal key file") from exc
+    if len(stored) != 32:
+        raise KeyProviderError(f"Refusing key file with unexpected length ({len(stored)} bytes)")
+    master = bytearray(stored)
+    try:
+        payload = passphrase_store.wrap(master, passphrase)
+        try:
+            write_protected(
+                payload,
+                wrapped_file,
+                header=passphrase_store.MAGIC,
+                expected_length=passphrase_store.PAYLOAD_BYTES,
+            )
+        except ProtectedStoreError as exc:
+            raise KeyProviderError(f"Refusing to overwrite the key file: {exc}") from exc
+        check = passphrase_store.unwrap(
+            provider._read_wrapped_key_file(wrapped_file) or b"", passphrase
+        )
+        try:
+            if bytes(check) != bytes(master):
+                raise KeyProviderError(
+                    "wrapped key file does not round-trip; raw key left in place"
+                )
+        finally:
+            check[:] = bytes(len(check))
+    finally:
+        master[:] = bytes(len(master))
+    size = key_file.stat().st_size
+    with open(key_file, "r+b", buffering=0) as handle:
+        handle.write(bytes(size))
+        os.fsync(handle.fileno())
+    key_file.unlink()
+    return wrapped_file

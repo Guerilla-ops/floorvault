@@ -16,7 +16,7 @@ from __future__ import annotations
 import inspect
 
 import floorvault
-from floorvault import beacons, vaultkit
+from floorvault import beacons, freshness, vaultkit
 
 EXPECTED_ALL = {
     "AdaptiveKeyProvider",
@@ -69,7 +69,7 @@ FV_CRYPTO_METHODS = {
 
 EXPECTED_SIGNATURES = {
     "AdaptiveKeyProvider": {
-        "signature": "(service_name: 'str' = 'floorvault', account_name: 'str' = 'default-v1', *, fallback_dir: 'Optional[Path | str]' = None, strict: 'bool' = False, allow_disk_fallback: 'bool' = False, dpapi_entropy: 'Optional[bytes]' = None, allow_legacy_env_vars: 'bool' = False, allow_legacy_adoption: 'bool' = False) -> 'None'",
+        "signature": "(service_name: 'str' = 'floorvault', account_name: 'str' = 'default-v1', *, fallback_dir: 'Optional[Path | str]' = None, strict: 'bool' = False, allow_disk_fallback: 'bool' = False, dpapi_entropy: 'Optional[bytes]' = None, allow_legacy_env_vars: 'bool' = False, allow_legacy_adoption: 'bool' = False, passphrase: 'Optional[Union[str, bytes]]' = None) -> 'None'",
         "methods": {
             "resolve_key": "(self, *, allow_create: 'bool' = True) -> 'HardenedMemoryKey'",
         },
@@ -236,6 +236,12 @@ SUBMODULE_ALL = {
         "derive_beacon_key",
         "suggest_beacon_bits",
     },
+    "floorvault.freshness": {
+        "AnchorStore",
+        "FileAnchorStore",
+        "FreshnessAnchor",
+        "RollbackDetectedError",
+    },
     "floorvault.vaultkit": {
         "SessionCrypto",
         "VaultError",
@@ -289,3 +295,4 @@ def test_public_signatures_match_the_snapshot():
 def test_submodule_exports_match_the_snapshot():
     assert set(beacons.__all__) == SUBMODULE_ALL["floorvault.beacons"]
     assert set(vaultkit.__all__) == SUBMODULE_ALL["floorvault.vaultkit"]
+    assert set(freshness.__all__) == SUBMODULE_ALL["floorvault.freshness"]

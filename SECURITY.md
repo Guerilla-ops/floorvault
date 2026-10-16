@@ -190,16 +190,26 @@ material.
   ciphertext written back into its *original* coordinates authenticates
   successfully — AES-SIV provides authenticity, not freshness. FloorVault
   detects rollback when the caller binds a monotonic `revision` sourced from
-  trusted state (`encrypt(..., revision=)` / `decrypt(..., revision=)`); where
-  no such trusted source exists, rollback protection is out of scope. If the
+  trusted state (`encrypt(..., revision=)` / `decrypt(..., revision=)`). If the
   revision is stored beside the ciphertext, an attacker who can rewrite one can
-  roll back both.
-- **The file-based key fallbacks are not a confidentiality boundary.** Where no
-  OS-native key store is available or enabled, the fallback store keeps the key
-  recoverable from the file itself (raw, or masked with a deterministic pad
-  seeded by public constants): a copy of the store is enough to recover the
-  key. The OS-native tiers (macOS Keychain, Windows DPAPI, Linux Secret
-  Service) bind the key to the OS user instead.
+  roll back both. For SQLite/libSQL tables, the opt-in
+  `floorvault.freshness.FreshnessAnchor` supplies that trusted state: it keeps
+  a keyed digest of the anchored tables outside the database and refuses a
+  database that was rolled back, or whose rows were replayed, deleted or added
+  (SPEC §14.3). It is only as strong as the anchor store's placement — an
+  attacker who can roll back the anchor together with the database (for
+  example a whole-disk snapshot containing a file anchor) defeats it — and it
+  covers only the tables it is told about.
+- **The file-based key fallbacks are not a confidentiality boundary — unless
+  passphrase-wrapped.** Where no OS-native key store is available or enabled,
+  the fallback store keeps the key recoverable from the file itself (raw, or
+  masked with a deterministic pad seeded by public constants): a copy of the
+  store is enough to recover the key. The OS-native tiers (macOS Keychain,
+  Windows DPAPI, Linux Secret Service) bind the key to the OS user instead.
+  `AdaptiveKeyProvider(passphrase=...)` wraps the Tier-3 file under scrypt +
+  AES-SIV (`master.key.fvpw`, SPEC §10.8), so a copied file also needs the
+  passphrase; the protection is the passphrase's strength, and it does not
+  help against anyone who can observe the passphrase or run as the user.
 - **Schema metadata leakage is an accepted design residual.** To preserve fast
   listing and filtering without decrypting every item, stored metadata such as
   item cardinality, item kind, and whether an item contains an OTP is visible
@@ -231,7 +241,9 @@ material.
   owner-only filesystem permissions reduce accidental exposure but do not
   provide Keychain, DPAPI, Secure Enclave, or hardware-backed confidentiality.
   Use an OS-native provider or external secret source when that boundary is
-  required.
+  required, or wrap the file with a passphrase (above) when a copied disk or
+  backup is the threat. A key that once sat unwrapped on a backed-up disk
+  should be treated as exposed even after `protect_key_file()`.
 - **`wipe()` zeroes only the buffers FloorVault manages.** `FloorVault.wipe()`
   and `HardenedMemoryKey.wipe()` deterministically zero the locked/mapped key
   buffers under the library's control. They cannot reach key copies made
@@ -261,7 +273,8 @@ material.
   live in the same database as the data, though, so an attacker who can roll the
   *whole* database back rolls the retirement back with it. This closes silent
   resurrection and makes a downgrade detectable; genuine freshness still needs
-  state the attacker cannot roll back, as above.
+  state the attacker cannot roll back — anchor `vault_legacy_retirements` with
+  a `FreshnessAnchor` whose store lives outside the attacker's reach.
 
 ### Attacker capabilities, and what to expect from each
 
@@ -271,12 +284,12 @@ cannot be mistaken for one that is covered.
 | Attacker | Can read store | Can modify store | Can read the process | Controls the account | Expected protection |
 |---|:---:|:---:|:---:|:---:|---|
 | A1 — stolen database file | ✅ | ❌ | ❌ | ❌ | **Strong**: no plaintext in protected fields |
-| A2 — stolen disk / backup files | ✅ | ❌ | ❌ | ❌ | **Strong**, minus what the key store itself gives up (see the fallback limit above) |
-| A3 — malicious store writer | ✅ | ✅ | ❌ | ❌ | **Partial**: values cannot be forged or spliced; rows can be deleted, duplicated or replayed (see freshness above) |
+| A2 — stolen disk / backup files | ✅ | ❌ | ❌ | ❌ | **Strong**, minus what the key store itself gives up (see the fallback limit above); a passphrase-wrapped Tier-3 file needs the passphrase too |
+| A3 — malicious store writer | ✅ | ✅ | ❌ | ❌ | **Partial**: values cannot be forged or spliced; rows can be deleted, duplicated or replayed — **detected** for tables under a `FreshnessAnchor` whose store the attacker cannot write |
 | A4 — malicious same-UID process | ✅ | ✅ | Possibly | ✅ | **Weak**: it can use the same custody the application uses |
 | A5 — compromised application | ✅ | ✅ | ✅ | ✅ | **Not protected** — see the next section |
 | A6 — administrator / root | ✅ | ✅ | ✅ | ✅ | **Not protected** |
-| A7 — snapshot / backup attacker | ✅ | Possibly rollback | ❌ | ❌ | **Partial**, as A3 |
+| A7 — snapshot / backup attacker | ✅ | Possibly rollback | ❌ | ❌ | **Partial**, as A3: a `FreshnessAnchor` detects the rollback if the snapshot does not also contain the anchor |
 
 ### When the caller is an autonomous agent (authorised-use attacks)
 

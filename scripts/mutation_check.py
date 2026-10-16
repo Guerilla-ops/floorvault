@@ -1075,6 +1075,90 @@ MUTATIONS: tuple[Mutation, ...] = (
         "Async execute accepted: a coroutine reaches the DBAPI path and fails "
         "mid-operation instead of at the boundary",
     ),
+    Mutation(
+        "PW-1",
+        "src/floorvault/providers/passphrase_store.py",
+        "    if not MIN_LOG2_N <= log2_n <= MAX_LOG2_N or (r, p) != (_R, _P):",
+        "    if False:  # MUTANT",
+        "Passphrase key file cost parameters trusted from the file: a planted "
+        "store downgrades the work factor or demands unbounded memory",
+    ),
+    Mutation(
+        "PW-2",
+        "src/floorvault/providers/passphrase_store.py",
+        "    if not encoded:",
+        "    if False:  # MUTANT",
+        "Empty passphrase accepted: the wrapped key file is unlockable by anyone",
+    ),
+    Mutation(
+        "PW-3",
+        "src/floorvault/providers/adaptive.py",
+        "        if self._read_wrapped_key_file(wrapped_file) is not None:",
+        "        if False:  # MUTANT",
+        "Resolving without the passphrase beside a wrapped store silently forks "
+        "a fresh raw master key",
+    ),
+    Mutation(
+        "PW-4",
+        "src/floorvault/providers/adaptive.py",
+        "        if raw_present:",
+        "        if False:  # MUTANT",
+        "A raw master.key beside the wrapped store is ignored: a copy of the "
+        "directory still yields the key without the passphrase",
+    ),
+    Mutation(
+        "FA-1",
+        "src/floorvault/freshness.py",
+        "        if hmac.compare_digest(current, committed):",
+        "        if True:  # MUTANT",
+        "Freshness verify accepts any database state: rollback and replay pass",
+    ),
+    Mutation(
+        "FA-2",
+        "src/floorvault/freshness.py",
+        "        if pending is not None and hmac.compare_digest(current, pending):",
+        "        if pending is not None:  # MUTANT",
+        "A pending anchor state accepts any database, not just the pending digest",
+    ),
+    Mutation(
+        "FA-3",
+        "src/floorvault/freshness.py",
+        "        if not hmac.compare_digest(mac, self._record_mac(committed, pending)):",
+        "        if False:  # MUTANT",
+        "Anchor record no longer authenticated: whoever can write the store can "
+        "re-baseline it to a rolled-back database",
+    ),
+    Mutation(
+        "FA-4",
+        "src/floorvault/freshness.py",
+        "        if self._trusted is None or not hmac.compare_digest(self._trusted, committed):",
+        "        if False:  # MUTANT",
+        "commit()/update() advance from an unverified state, blessing a "
+        "rolled-back database as the new baseline",
+    ),
+    Mutation(
+        "FA-5",
+        "src/floorvault/freshness.py",
+        "        if self._load_record() is not None:",
+        "        if False:  # MUTANT",
+        "initialize() re-baselines over an existing anchor, accepting whatever "
+        "state the database is in",
+    ),
+    Mutation(
+        "FA-6",
+        "src/floorvault/freshness.py",
+        '        tag = b"t"',
+        '        tag = b"b"  # MUTANT',
+        "Digest encoding conflates TEXT and BLOB: a type change is not a content change",
+    ),
+    Mutation(
+        "FA-7",
+        "src/floorvault/freshness.py",
+        "        self.store.save(self.name, self._encode_record(committed, new_state))",
+        "        pass  # MUTANT",
+        "commit() skips the pending phase: a crash after the database commit "
+        "raises a false rollback alarm",
+    ),
 )
 
 # --------------------------------------------------------------------------

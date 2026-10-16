@@ -120,7 +120,11 @@ requested operation is allowed. Resolve identity and permission in your applicat
 
 Replaying an older ciphertext under the **same** context is not detected by default.
 An expected `revision` helps only when an attacker cannot roll that expected value
-back with the ciphertext. AES-SIV misuse resistance does not make nonce reuse
+back with the ciphertext. For SQLite and libSQL tables, the opt-in
+`floorvault.freshness.FreshnessAnchor` keeps a keyed digest of the anchored tables
+outside the database and refuses one that was rolled back or whose rows were replayed,
+deleted, or added — as long as the anchor store sits where the attacker cannot roll it
+back too ([SPEC §14.3](https://github.com/Guerilla-ops/floorvault/blob/main/docs/SPEC.md)). AES-SIV misuse resistance does not make nonce reuse
 harmless: repetition of the same key, nonce, context, and plaintext can reveal equality.
 
 ## Databases
@@ -178,7 +182,7 @@ weaker store.
 | macOS Keychain | Requires the `macos` extra and a usable Keychain. It does not imply Secure Enclave storage. |
 | Windows DPAPI | Uses the Windows account boundary and a shared store path, rather than a service-scoped Keychain entry. |
 | Linux Secret Service | Requires the `linux` extra and an accessible Secret Service. |
-| Local file | Disabled by default. `allow_disk_fallback=True` opts in; an attacker who copies the key file can recover the key. |
+| Local file | Disabled by default. `allow_disk_fallback=True` opts in; an attacker who copies the key file can recover the key. Add `passphrase=` to wrap it under scrypt + AES-SIV so a copy alone is not enough; `protect_key_file()` converts an existing raw file. |
 | Vault Transit | Separate `VaultTransitProvider`. A remote key wraps the application master key; the unwrapped master key is used locally. |
 
 For OS-backed custody, construct

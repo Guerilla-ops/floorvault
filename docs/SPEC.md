@@ -83,20 +83,21 @@ the plaintext is UTF-8 (§4.4).
 All keys derive from a 32-byte **master key**. A master key MUST be exactly
 32 bytes; other lengths MUST be rejected before derivation.
 
-Two HKDF-SHA256 subkeys are defined, domain-separated by their `info`
+The HKDF-SHA256 subkeys below are defined, domain-separated by their `info`
 strings. The `info` strings are normative bytes (ASCII, no NUL terminator):
 
 | Subkey | `info` | `length` |
 |---|---|---|
 | AEAD (SIV) key | `floorvault-v1-aes-siv` | 64 |
 | Beacon index key | `floorvault-v1-beacon-index` | 32 |
+| Freshness anchor MAC key (opt-in, §14.3) | `floorvault-v1-freshness` | 32 |
 
-`salt` is absent in both derivations (RFC 5869 default of `HashLen` zero
-octets). Both derive directly from the 32-byte master key — the beacon key is
-not derived from the SIV key or vice versa.
+`salt` is absent in every derivation (RFC 5869 default of `HashLen` zero
+octets). All derive directly from the 32-byte master key — no subkey is
+derived from another.
 
-Implementations deriving additional subkeys MUST NOT reuse either `info`
-string for a different purpose (collision between purposes is the defect the
+Implementations deriving additional subkeys MUST NOT reuse any of these `info`
+strings for a different purpose (collision between purposes is the defect the
 separation exists to prevent).
 
 ---
@@ -391,6 +392,7 @@ store = scheme_header || payload      (max read: 4096 bytes)
 | tier-3 raw | `master.key` | *(empty)* | 32 raw key bytes | also accepts a 64-byte ASCII-hex encoding on read (decoded to 32 bytes) |
 | Secret Service | `master.key.ss` | `FLOORLV1` (8 B) | masked key, exactly 32 B | mask is deterministic — see §10.2 |
 | DPAPI | `master.key.dpapi` | `FLOORWV1` (8 B) | OS DPAPI blob, variable length | non-Windows fallback: XOR mask — see §10.3 |
+| tier-3 passphrase | `master.key.fvpw` | `FVPW1` (5 B) | exactly 67 B — see §10.8 | written only when the provider is given `passphrase=` |
 
 Scheme paths are disjoint by construction (`master.key.<scheme>`); a file is
 only *this* scheme's store if it parses under this scheme's header. A reader
@@ -579,6 +581,38 @@ g-<n>.gen      = "FVGW1" || ASCII "vault:v<kek_version>:<base64>" blob
   bounded TTL (default 300 s) in a wipeable buffer, dropped on expiry or
   `wipe()`. The cache bounds Transit latency; it is NOT a revocation
   mechanism — Vault-side revocation takes effect no later than the TTL.
+
+### 10.8 Passphrase-wrapped tier-3 store (`FVPW1`)
+
+The plain tier-3 store *is* the key. The passphrase scheme wraps it so a copy
+of the file alone does not yield the key:
+
+```
+file    = "FVPW1" || params || siv
+params  = log2_n (1 B) || r (1 B) || p (1 B) || salt (16 B)
+kek     = scrypt(P, salt, N = 2**log2_n, r, p, dkLen = 64)
+siv     = AES-SIV(kek).encrypt(master_key, AD = ["FVPW1" || params])   # 48 B
+```
+
+`P` is the passphrase: text is NFC-normalised then UTF-8 encoded; bytes are
+used verbatim; an empty passphrase MUST be refused. Writers use `log2_n = 17`,
+`r = 8`, `p = 1` and a fresh random salt. Readers MUST refuse, **before
+deriving**, any file whose `log2_n` is outside `[15, 20]` or whose `(r, p)` is
+not `(8, 1)` — a planted file must not be able to lower the work factor or
+demand unbounded memory. A failed unwrap (wrong passphrase or any altered
+byte) is one error; it never falls back to another tier.
+
+Resolution with a passphrase (normative):
+
+- `master.key.fvpw` present, `master.key` absent → unwrap.
+- `master.key` present (with or without `.fvpw`) → refuse: a raw copy beside
+  the wrapped store defeats it. Conversion is explicit
+  (`protect_key_file()`: write `.fvpw` no-clobber, prove it round-trips, zero
+  and unlink the raw file; filesystem residue of the raw key may remain).
+- neither present → create `.fvpw` only (when `allow_create`).
+
+Resolution **without** a passphrase MUST refuse when `master.key.fvpw`
+exists, rather than creating a fresh raw `master.key` beside it.
 
 ---
 
@@ -829,6 +863,52 @@ Not in the guard's scope: `Connection.execute`/driver-SQL writes on a
 connection the ORM session does not govern. Those bypass ORM events by
 construction; applications mixing raw SQL with these tables must produce
 ciphertext through the same binding.
+
+### 14.3 Freshness anchor (opt-in rollback detection)
+
+`floorvault.freshness.FreshnessAnchor(master_key, store, name=, tables=)`
+keeps a keyed digest of the full contents of the named tables in an
+`AnchorStore` outside the database, and refuses a database that does not
+match. It detects what §4–§5 cannot: a whole-database rollback, and a row
+replayed into its own coordinates, deleted, or added.
+
+Digest (HMAC-SHA256 under the §3 freshness key; `frame(x) = u64be(len(x)) || x`):
+
+```
+"FVFA1" || "digest" || frame(name)
+for each anchored table, in ascending order of its ASCII-folded name:
+    "T" || frame(table)
+    for each column, in ascending order of its ASCII-folded name: "C" || frame(column)
+    for each row, ordered by the table's order column:
+        "R" || concat(value(v) for v in row, columns in the order above)
+    "E" || u64be(row count)
+
+value(NULL)  = "n"
+value(int)   = "i" || u64be(len(s)) || s      where s = ASCII decimal
+value(float) = "f" || u64be(8) || IEEE-754 binary64 big-endian
+value(text)  = "t" || u64be(len(u)) || u      where u = UTF-8
+value(blob)  = "b" || u64be(len(b)) || b
+```
+
+Anchor record (JSON, sorted keys, compact separators):
+`{"format":"FVFA1","committed":hex,"pending":hex|null,"mac":hex}` with
+`mac = HMAC(k, "FVFA1" || "record" || frame(name) || frame(committed) || frame(pending or ""))`.
+
+Behavioral contract:
+
+- `verify` accepts the database iff its digest equals `committed`, or equals
+  `pending` (then promotes it). A missing or unauthenticated record is
+  refused, never treated as a fresh start.
+- `commit` writes `{committed: old, pending: new}`, commits the database, then
+  writes `{committed: new, pending: null}`. A crash at either point leaves a
+  state `verify` accepts; `pending` can only be the newer state.
+- `commit` and `update` refuse unless the same instance verified (or
+  initialized) the database and the record has not changed since.
+- `initialize` refuses when a record exists.
+
+The guarantee holds only against an attacker who cannot roll the anchor store
+back together with the database. Every `commit`/`verify` reads every anchored
+row.
 
 ---
 
