@@ -7,3 +7,5 @@ platforms:
   - linux
   - macos
   - windows
+python_dependencies:
+  - "pyobjc-framework-Security>=10.0,<13; sys_platform == 'darwin'"
