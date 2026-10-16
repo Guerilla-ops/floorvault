@@ -27,4 +27,6 @@ paths = ['''^tests/vectors/wycheproof/(aes_siv_cmac|aead_aes_siv_cmac)_test\.jso
 # cannot survive the drift check.
 [[allowlists]]
 description = "Hermes Vault wire vectors, pinned by deterministic regeneration"
-paths = ['''^tests/vectors/hermes_vault_wire_vectors\.json$''']
+# Both names: the file was floorvault_wire_vectors.json before the rename, and
+# history scans still walk the old path at old commits.
+paths = ['''^tests/vectors/(hermes_vault|floorvault)_wire_vectors\.json$''']
