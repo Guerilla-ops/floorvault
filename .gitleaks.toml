@@ -25,6 +25,12 @@ paths = ['''^tests/vectors/wycheproof/(aes_siv_cmac|aead_aes_siv_cmac)_test\.jso
 # file is regenerated deterministically and tests/test_wire_vectors.py fails
 # if the committed bytes differ from generate(), so a hand-smuggled secret
 # cannot survive the drift check.
+#
+# The hermes_vault_wire_vectors.json name is the same generator's output on the
+# main-v2 fork (keys from public "hermes_vault-vector-*" labels), which carries
+# this exact pattern in its own config. CI checks out every branch with
+# fetch-depth: 0, so this branch's history scan walks main-v2's commits under
+# this config and must allowlist that path too.
 [[allowlists]]
 description = "FloorVault wire vectors, pinned by deterministic regeneration"
-paths = ['''^tests/vectors/floorvault_wire_vectors\.json$''']
+paths = ['''^tests/vectors/(hermes_vault|floorvault)_wire_vectors\.json$''']
