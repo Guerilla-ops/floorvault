@@ -130,8 +130,7 @@ def _cmd_show(args) -> int:
     if args.reveal:
         items = {field: secret.get(field)} if field else secret
         for name, value in items.items():
-            status = "(empty)" if value in (None, "") else "(redacted)"
-            print(f"{name}\t{status}")
+            print(f"{name}={value}")
     else:
         if field:
             print("(set)" if secret.get(field) else "(empty)")
