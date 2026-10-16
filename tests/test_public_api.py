@@ -54,6 +54,8 @@ EXPECTED_ALL = {
     "VaultItemMeta",
     "VaultStore",
     "associated_data",
+    "connect_encrypted",
+    "derive_libsql_file_key",
     "disable_core_dumps",
     "drop_plaintext_column",
     "get_vault_store",
@@ -249,6 +251,12 @@ EXPECTED_SIGNATURES = {
     },
     "associated_data": {
         "signature": "(*, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'hermes.vault.v1', schema_version: 'int' = 1, app_instance_id: 'str' = 'hermes-agent', revision: 'int | None' = None) -> 'bytes'"
+    },
+    "connect_encrypted": {
+        "signature": "(database: 'Union[str, os.PathLike[str]]', master_key: 'Union[bytes, bytearray, HardenedMemoryKey]', **options: 'Any') -> 'Any'"
+    },
+    "derive_libsql_file_key": {
+        "signature": "(master_key: 'Union[bytes, bytearray, HardenedMemoryKey]') -> 'str'"
     },
     "disable_core_dumps": {"signature": "() -> 'bool'"},
     "drop_plaintext_column": {

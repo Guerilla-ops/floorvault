@@ -14,8 +14,11 @@ Two tiers, matching repo convention:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import importlib.util
 import sqlite3
+import sys
 
 import pytest
 
@@ -24,7 +27,11 @@ from hermes_vault import (
     EncryptedLibSqlTable,
     EncryptedSQLiteTable,
     FloorVault,
+    HardenedMemoryKey,
+    connect_encrypted,
+    derive_libsql_file_key,
 )
+from floorvault.beacons import derive_beacon_key
 
 
 class _FakeLibSqlConnection:
@@ -281,4 +288,294 @@ def test_live_embedded_round_trip(tmp_path):
     conn.commit()
 
     assert table.load("user-123", "api_token_cipher") == "secret-token"
+    conn.close()
+
+
+# --------------------------------------------------------------------------
+# File-layer encryption: derive_libsql_file_key / connect_encrypted
+# --------------------------------------------------------------------------
+
+
+def _hkdf_sha256_stdlib(ikm: bytes, info: bytes, length: int) -> bytes:
+    """RFC 5869 HKDF-SHA256 from hmac/hashlib, independent of `cryptography`."""
+    prk = hmac.new(b"\x00" * 32, ikm, hashlib.sha256).digest()
+    okm, block = b"", b""
+    for counter in range(1, -(-length // 32) + 1):
+        block = hmac.new(prk, block + info + bytes([counter]), hashlib.sha256).digest()
+        okm += block
+    return okm[:length]
+
+
+def test_file_key_is_hkdf_under_its_own_domain_label():
+    master = bytes(range(32))
+    key = derive_libsql_file_key(master)
+
+    assert key == _hkdf_sha256_stdlib(master, b"floorvault-v1-libsql-file", 32).hex()
+    assert len(key) == 64 and key == key.lower()
+    # Never another subkey: the AEAD and beacon derivations use other labels.
+    assert key != derive_beacon_key(master).hex()
+    assert key != _hkdf_sha256_stdlib(master, b"floorvault-v1-aes-siv", 64)[:32].hex()
+
+
+def test_file_key_accepts_a_hardened_handle():
+    master = b"M" * 32
+    assert derive_libsql_file_key(HardenedMemoryKey(master, mode="disabled")) == (
+        derive_libsql_file_key(master)
+    )
+
+
+def test_file_key_refuses_wrong_length_and_type():
+    with pytest.raises(ValueError, match="exactly 32 bytes"):
+        derive_libsql_file_key(b"k" * 31)
+    with pytest.raises(ValueError, match="exactly 32 bytes"):
+        derive_libsql_file_key(b"")
+    with pytest.raises(TypeError, match="master key must be"):
+        derive_libsql_file_key("k" * 32)
+
+
+@pytest.mark.parametrize(
+    "database",
+    [
+        "libsql://example.turso.io",
+        "http://127.0.0.1:8080",
+        "https://example.turso.io",
+        "wss://example.turso.io",
+        "file:local.db?mode=rwc",
+    ],
+)
+def test_connect_encrypted_refuses_remote_and_uri_databases(database):
+    with pytest.raises(ValueError, match="local files only"):
+        connect_encrypted(database, b"k" * 32)
+
+
+@pytest.mark.parametrize("database", ["", ":memory:"])
+def test_connect_encrypted_refuses_in_memory_databases(database):
+    with pytest.raises(ValueError, match="needs a database file"):
+        connect_encrypted(database, b"k" * 32)
+
+
+def test_connect_encrypted_refuses_non_str_paths():
+    with pytest.raises(TypeError, match="not bytes"):
+        connect_encrypted(b"local.db", b"k" * 32)
+    with pytest.raises(TypeError, match="local file path"):
+        connect_encrypted(None, b"k" * 32)
+
+
+@pytest.mark.parametrize(
+    "option",
+    ["encryption_key", "sync_url", "sync_interval", "offline", "auth_token", "_uri"],
+)
+def test_connect_encrypted_refuses_unverifiable_options(tmp_path, option):
+    with pytest.raises(TypeError, match=f"does not accept {option}"):
+        connect_encrypted(tmp_path / "t.db", b"k" * 32, **{option: "x"})
+    assert not (tmp_path / "t.db").exists()
+
+
+def test_connect_encrypted_refuses_an_existing_plaintext_file(tmp_path):
+    path = tmp_path / "plain.db"
+    plain = sqlite3.connect(path)
+    plain.execute("CREATE TABLE t (a)")
+    plain.commit()
+    plain.close()
+
+    with pytest.raises(ValueError, match="unencrypted SQLite file"):
+        connect_encrypted(path, b"k" * 32)
+
+
+def test_connect_encrypted_reports_a_missing_client(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "libsql", None)
+    with pytest.raises(ImportError, match=r"floorvault\[libsql\]"):
+        connect_encrypted(tmp_path / "t.db", b"k" * 32)
+
+
+class _FakeLibSqlModule:
+    """Driver-free stand-in for the ``libsql`` module behind ``connect_encrypted``.
+
+    Records each ``connect()`` call and hands back a connection whose probe
+    either succeeds or raises, so the factory's key hand-off, probe, and
+    close-on-failure are pinned on every leg - including interpreters with no
+    libsql wheel, where the live wrong-key test is skipped.
+    """
+
+    def __init__(self, *, probe_error: Exception | None = None) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.connections: list[_FakeEncryptedConnection] = []
+        self._probe_error = probe_error
+
+    def connect(self, database, **kwargs):
+        self.calls.append((database, kwargs))
+        connection = _FakeEncryptedConnection(self._probe_error)
+        self.connections.append(connection)
+        return connection
+
+
+class _FakeEncryptedConnection:
+    def __init__(self, probe_error: Exception | None) -> None:
+        self._probe_error = probe_error
+        self.executed: list[str] = []
+        self.closed = False
+
+    def execute(self, sql, params=()):
+        self.executed.append(sql)
+        if self._probe_error is not None:
+            raise self._probe_error
+        return sqlite3.connect(":memory:").execute("SELECT 0")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_connect_encrypted_hands_the_derived_key_to_the_client(tmp_path, monkeypatch):
+    fake = _FakeLibSqlModule()
+    monkeypatch.setitem(sys.modules, "libsql", fake)
+    master = b"k" * 32
+
+    connection = connect_encrypted(tmp_path / "t.db", master, timeout=1.5)
+
+    assert connection is fake.connections[0]
+    assert fake.calls == [
+        (
+            str(tmp_path / "t.db"),
+            {"encryption_key": derive_libsql_file_key(master), "timeout": 1.5},
+        )
+    ]
+    assert connection.executed == ["SELECT count(*) FROM sqlite_master"]
+    assert not connection.closed
+
+
+def test_connect_encrypted_closes_and_refuses_when_the_probe_fails(tmp_path, monkeypatch):
+    """A connection that cannot read the schema (wrong key) is closed and never
+    returned - the driver-free twin of the live wrong-key test."""
+    fake = _FakeLibSqlModule(probe_error=ValueError("file is not a database"))
+    monkeypatch.setitem(sys.modules, "libsql", fake)
+
+    with pytest.raises(ValueError, match="derived file key"):
+        connect_encrypted(tmp_path / "t.db", b"k" * 32)
+
+    assert len(fake.connections) == 1
+    assert fake.connections[0].executed == ["SELECT count(*) FROM sqlite_master"]
+    assert fake.connections[0].closed
+
+
+def test_connect_encrypted_refuses_a_bad_master_key_before_connecting(tmp_path, monkeypatch):
+    fake = _FakeLibSqlModule()
+    monkeypatch.setitem(sys.modules, "libsql", fake)
+
+    with pytest.raises(ValueError, match="exactly 32 bytes"):
+        connect_encrypted(tmp_path / "t.db", b"k" * 31)
+    assert fake.calls == []
+
+
+def _populate(conn) -> None:
+    conn.execute(
+        "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT, "
+        "api_token_cipher BLOB NOT NULL DEFAULT X'')"
+    )
+    conn.execute("CREATE INDEX users_email ON users (email)")
+    conn.execute(
+        "INSERT INTO users (id, email) VALUES (?, ?), (?, ?)",
+        ("user-123", "MARKER-ALICE@example.com", "user-456", "MARKER-BOB@example.com"),
+    )
+    conn.commit()
+
+
+def _files_contain(tmp_path, marker: bytes) -> list[str]:
+    return [p.name for p in tmp_path.iterdir() if p.is_file() and marker in p.read_bytes()]
+
+
+@pytest.mark.skipif(
+    not _HAS_LIBSQL, reason="libsql wheel unavailable for this interpreter/platform"
+)
+@pytest.mark.parametrize("journal_mode", ["delete", "wal"])
+def test_live_encrypted_file_is_opaque(tmp_path, journal_mode):
+    master = b"k" * 32
+    conn = connect_encrypted(tmp_path / "t.db", master)
+    assert conn.execute(f"PRAGMA journal_mode={journal_mode}").fetchone()[0] == journal_mode
+    _populate(conn)
+
+    # Main file, index pages, and the WAL/-shm sidecars while still open.
+    assert not _files_contain(tmp_path, b"MARKER-")
+    assert not (tmp_path / "t.db").read_bytes().startswith(b"SQLite format 3\x00")
+    conn.close()
+    assert not _files_contain(tmp_path, b"MARKER-")
+
+    with pytest.raises(sqlite3.DatabaseError):
+        sqlite3.connect(tmp_path / "t.db").execute("SELECT * FROM users").fetchall()
+
+
+@pytest.mark.skipif(
+    not _HAS_LIBSQL, reason="libsql wheel unavailable for this interpreter/platform"
+)
+def test_live_wrong_master_key_is_refused_at_connect(tmp_path):
+    conn = connect_encrypted(tmp_path / "t.db", b"k" * 32)
+    _populate(conn)
+    conn.close()
+
+    with pytest.raises(ValueError, match="derived file key"):
+        connect_encrypted(tmp_path / "t.db", b"w" * 32)
+
+    import libsql
+
+    with pytest.raises(ValueError):
+        libsql.connect(str(tmp_path / "t.db")).execute("SELECT * FROM users").fetchall()
+
+    reopened = connect_encrypted(tmp_path / "t.db", b"k" * 32)
+    assert reopened.execute("SELECT count(*) FROM users").fetchone()[0] == 2
+    reopened.close()
+
+
+@pytest.mark.skipif(
+    not _HAS_LIBSQL, reason="libsql wheel unavailable for this interpreter/platform"
+)
+def test_live_raw_derived_key_opens_the_file(tmp_path):
+    """The factory is a thin wrapper: the documented key alone opens the file."""
+    import libsql
+
+    master = b"k" * 32
+    conn = connect_encrypted(tmp_path / "t.db", master)
+    _populate(conn)
+    conn.close()
+
+    raw = libsql.connect(str(tmp_path / "t.db"), encryption_key=derive_libsql_file_key(master))
+    assert raw.execute("SELECT count(*) FROM users").fetchone()[0] == 2
+    raw.close()
+
+
+@pytest.mark.skipif(
+    not _HAS_LIBSQL, reason="libsql wheel unavailable for this interpreter/platform"
+)
+def test_live_empty_key_plaintext_file_is_refused(tmp_path):
+    """libsql writes a plaintext file for encryption_key="" - the fail-open the
+    factory exists to keep out. Such a file must not be adopted."""
+    import libsql
+
+    leaky = libsql.connect(str(tmp_path / "t.db"), encryption_key="")
+    _populate(leaky)
+    leaky.close()
+    assert _files_contain(tmp_path, b"MARKER-")
+
+    with pytest.raises(ValueError, match="unencrypted SQLite file"):
+        connect_encrypted(tmp_path / "t.db", b"k" * 32)
+
+
+@pytest.mark.skipif(
+    not _HAS_LIBSQL, reason="libsql wheel unavailable for this interpreter/platform"
+)
+def test_live_field_layer_still_binds_coordinates_under_file_encryption(tmp_path):
+    master = b"k" * 32
+    conn = connect_encrypted(tmp_path / "t.db", master)
+    _populate(conn)
+
+    table = EncryptedLibSqlTable(conn, FloorVault(master, memory_mode="disabled"), "users")
+    table.store("user-123", "api_token_cipher", "secret-token")
+    conn.commit()
+    assert table.load("user-123", "api_token_cipher") == "secret-token"
+
+    ciphertext = conn.execute(
+        "SELECT api_token_cipher FROM users WHERE id = ?", ("user-123",)
+    ).fetchone()[0]
+    conn.execute("UPDATE users SET api_token_cipher = ? WHERE id = ?", (ciphertext, "user-456"))
+    conn.commit()
+    with pytest.raises(DecryptionVerificationError):
+        table.load("user-456", "api_token_cipher")
     conn.close()

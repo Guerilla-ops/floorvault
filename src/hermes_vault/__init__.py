@@ -16,7 +16,7 @@ from .core import (
 from .dbapi_adapter import EncryptedMySQLTable, EncryptedPostgresTable
 from .key_recovery import recover_master_key, wrap_master_key
 from .keyring import KeyRing, UnknownKeyIdError
-from .libsql_adapter import EncryptedLibSqlTable
+from .libsql_adapter import EncryptedLibSqlTable, connect_encrypted, derive_libsql_file_key
 from .memory import (
     HardenedMemoryKey,
     SecurityHardeningError,
@@ -87,6 +87,9 @@ __all__ = [
     "EncryptedSQLiteTable",
     # libSQL adapter (driver-free module; the 'libsql' extra supplies the client)
     "EncryptedLibSqlTable",
+    # libSQL native file-layer encryption (local files; imports the client lazily)
+    "connect_encrypted",
+    "derive_libsql_file_key",
     # DB-API adapters (driver-free imports; the drivers themselves are the
     # 'postgres'/'mysql' extras). PEP 249 connections are duck-checked, so
     # nothing here imports psycopg or mysql-connector at module load.

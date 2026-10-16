@@ -245,8 +245,10 @@ material.
   `DROP COLUMN` afterwards leaves the plaintext readable in freed pages and
   the WAL. `drop_plaintext_column` arms `secure_delete`, truncates the WAL,
   and optionally `VACUUM`s — which scrubs the database file's pages but still
-  cannot erase filesystem-level block slack; only destroying the file
-  guarantees complete removal.
+  cannot guarantee erasure from filesystem snapshots, backups, deallocated
+  blocks, or storage media. Deleting or replacing the database file is not
+  a secure-erasure guarantee; handle retained copies and media sanitisation
+  separately for the deployment's threat model.
 
 **A third limit, specific to migration:**
 
@@ -268,7 +270,7 @@ cannot be mistaken for one that is covered.
 
 | Attacker | Can read store | Can modify store | Can read the process | Controls the account | Expected protection |
 |---|:---:|:---:|:---:|:---:|---|
-| A1 — stolen database file | ✅ | ❌ | ❌ | ❌ | **Strong**: no plaintext in protected fields |
+| A1 — stolen database file | ✅ | ❌ | ❌ | ❌ | **Strong**: no plaintext in protected fields. Schema, indexes and unprotected columns stay readable unless a local libSQL file is opened with `connect_encrypted` (page encryption, not authenticated) |
 | A2 — stolen disk / backup files | ✅ | ❌ | ❌ | ❌ | **Strong**, minus what the key store itself gives up (see the fallback limit above) |
 | A3 — malicious store writer | ✅ | ✅ | ❌ | ❌ | **Partial**: values cannot be forged or spliced; rows can be deleted, duplicated or replayed (see freshness above) |
 | A4 — malicious same-UID process | ✅ | ✅ | Possibly | ✅ | **Weak**: it can use the same custody the application uses |
