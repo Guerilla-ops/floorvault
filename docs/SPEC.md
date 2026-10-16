@@ -841,8 +841,10 @@ verified against its coordinates. Behavioral contract:
 
 - Only local file paths are accepted. URL/URI forms (`scheme:` or
   `scheme://`, except a Windows drive letter), the empty path and `:memory:`
-  are refused with `ValueError` — whether a remote server or replica sync
-  honours the key cannot be observed by the client.
+  are refused with `ValueError`. A remote connection silently ignores the
+  key (observed against `sqld` 0.24.30: reads succeed with no key or a wrong
+  key, and the server stores rows in plaintext), and libsql 0.1.11 refuses a
+  key on a synced database outright.
 - Only `timeout`, `isolation_level` and `autocommit` pass through to
   `libsql.connect`; every other option (including `encryption_key`,
   `sync_url`, `sync_interval`, `offline`, `auth_token`) is refused with

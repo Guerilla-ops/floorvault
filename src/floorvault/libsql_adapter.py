@@ -38,9 +38,13 @@ The factory, not the caller, owns the ``libsql.connect()`` call because the
 client offers no way to confirm a connection is encrypted (``PRAGMA cipher``
 reports a cipher on plaintext connections too) and fails open on an empty
 key (``encryption_key=""`` writes a plaintext SQLite file). Remote URLs and
-embedded-replica options are refused: whether a server or replica sync
-honours the key cannot be observed from here. This is the one function in
-the module that imports the client, and it does so lazily.
+embedded-replica options are refused. Against a local ``sqld`` 0.24.30 a
+remote connection accepted any key - including none and a wrong one - and
+the server stored the rows in plaintext, so a key there is silently
+meaningless; libsql 0.1.11 itself refuses a key on a synced (replica)
+database. Server-side encryption is the server operator's concern. This is
+the one function in the module that imports the client, and it does so
+lazily.
 """
 
 from __future__ import annotations
@@ -178,8 +182,8 @@ def _local_database_path(database: Union[str, os.PathLike[str]]) -> str:
     # A Windows drive letter ("C:\\db" / "C:/db") is a path, not a scheme.
     if _URL_SCHEME.match(path) and not re.match(r"^[A-Za-z]:[\\/]", path):
         raise ValueError(
-            "connect_encrypted opens local files only; remote and URI databases "
-            "cannot be verified to honour the encryption key"
+            "connect_encrypted opens local files only; a remote server ignores "
+            "the encryption key, and URI forms are not accepted"
         )
     return path
 
