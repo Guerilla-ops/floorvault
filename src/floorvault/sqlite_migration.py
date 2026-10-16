@@ -57,9 +57,9 @@ def migrate_plaintext_column(
     ``PRAGMA secure_delete=ON`` *and* the WAL is truncated
     (``PRAGMA wal_checkpoint(TRUNCATE)``) or the database is ``VACUUM``ed, the
     plaintext survives inside freelist/old pages of the database file. Even
-    then, filesystem-level block slack may retain copies; the only complete
-    guarantee is destroying the file. Use :func:`drop_plaintext_column` for the
-    drop.
+    then, filesystem-level block slack may retain copies. Neither this helper
+    nor deleting the database file guarantees secure erasure. Use
+    :func:`drop_plaintext_column` for residue-aware cleanup.
     """
     table, id_column, source_column, destination_column = _validate_inputs(
         connection, crypto, table, id_column, source_column, destination_column
@@ -181,9 +181,9 @@ def drop_plaintext_column(
     Honest limit: this scrubs the *database file's* live and freed pages. It
     cannot erase filesystem-level residue — deallocated disk blocks of earlier
     file versions (including a deleted rollback journal) can retain plaintext.
-    The only complete guarantee is destroying the file. Returned flags state
-    exactly what was done so a caller cannot mistake a partial scrub for a
-    full one.
+    Deleting the file does not guarantee erasure of retained copies or storage
+    media. Returned flags state exactly what was done so a caller cannot mistake
+    a partial scrub for a full one.
     """
     if not isinstance(connection, sqlite3.Connection):
         raise TypeError("connection must be a sqlite3.Connection")
@@ -247,6 +247,6 @@ def drop_plaintext_column(
         "wal_truncated": wal_truncated,
         "vacuumed": vacuum,
         # Freed disk blocks (incl. deleted rollback journals) can still hold
-        # earlier plaintext images; only destroying the file removes those.
+        # earlier plaintext images; deleting the file is not a secure-erasure guarantee.
         "filesystem_residue": True,
     }

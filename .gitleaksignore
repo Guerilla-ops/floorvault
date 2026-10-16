@@ -27,3 +27,12 @@
 04d25598a24fe3a757d871009cf42e7cd3951ae8:tests/test_hermes_adapter.py:generic-api-key:62
 ed8c6f7e85b74b42769a1458371f6ed9ada63dc8:tests/test_adaptive_provider.py:generic-api-key:9
 0f2dea78a1478c6dad01d32614223b4301135f14:tests/test_blind_index.py:generic-api-key:30
+# Historical fork wire vectors: the master/recovery keys are SHA-256 of the
+# fixed public labels in that commit's scripts/gen_vectors.py. The beacon key
+# is HKDF-SHA256 of that synthetic master with its public beacon-index label.
+# Verified each reported line against those derivations. Exact findings only:
+# the current path allowlist does not cover this historical fork filename.
+dd0da782e2491c6ffff6e56495986023bbbc8fe9:tests/vectors/hermes_vault_wire_vectors.json:generic-api-key:262
+dd0da782e2491c6ffff6e56495986023bbbc8fe9:tests/vectors/hermes_vault_wire_vectors.json:generic-api-key:303
+dd0da782e2491c6ffff6e56495986023bbbc8fe9:tests/vectors/hermes_vault_wire_vectors.json:generic-api-key:931
+dd0da782e2491c6ffff6e56495986023bbbc8fe9:tests/vectors/hermes_vault_wire_vectors.json:generic-api-key:932
