@@ -245,8 +245,10 @@ material.
   `DROP COLUMN` afterwards leaves the plaintext readable in freed pages and
   the WAL. `drop_plaintext_column` arms `secure_delete`, truncates the WAL,
   and optionally `VACUUM`s — which scrubs the database file's pages but still
-  cannot erase filesystem-level block slack; only destroying the file
-  guarantees complete removal.
+  cannot guarantee erasure from filesystem snapshots, backups, deallocated
+  blocks, or storage media. Deleting or replacing the database file is not
+  a secure-erasure guarantee; handle retained copies and media sanitisation
+  separately for the deployment's threat model.
 
 **A third limit, specific to migration:**
 
