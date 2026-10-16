@@ -15,6 +15,7 @@ import warnings
 from pathlib import Path
 from typing import Optional, Union
 
+from .._filelock import exclusive_lock
 from ..memory import HardenedMemoryKey
 from ..platform_support import (
     is_linux,
@@ -27,6 +28,7 @@ from .linux_keyring import LinuxSecretServiceKeyProvider
 from .platform_custody import (
     ProtectedStoreError,
     ProtectedStoreMissing,
+    _mkdir_owner_only,
     read_protected,
     write_protected,
 )
@@ -171,7 +173,9 @@ class AdaptiveKeyProvider(KeyProvider):
                 # The provider's masked-file tier is disk custody too, so it is
                 # gated on the same opt-in as Tier 3: strict mode, or a caller
                 # that never enabled disk fallback, must not read master.key.ss.
-                allow_file_fallback=self.allow_disk_fallback,
+                # With a passphrase the caller asked for wrapped disk custody;
+                # the masked master.key.ss is unwrapped and must not be used.
+                allow_file_fallback=self.allow_disk_fallback and self._passphrase is None,
                 allow_legacy_adoption=self.allow_legacy_adoption,
             )
             # A headless Linux session has no Secret Service capability. Preserve
@@ -327,14 +331,28 @@ class AdaptiveKeyProvider(KeyProvider):
 
         # Generate new 32-byte key and publish it with the hardened writer.
         new_key = os.urandom(32)
-        try:
-            write_protected(new_key, key_file, header=b"", expected_length=32)
-        except ProtectedStoreError as exc:
-            # The writer creates and never replaces, so an existing store is a
-            # hard error rather than a silent rotation of the master key.
-            raise KeyProviderError(f"Refusing to overwrite the key file: {exc}") from exc
+        with self._tier3_creation_lock():
+            # Re-check the *other* store under the lock: a concurrent resolver
+            # with a passphrase may have just created the wrapped one, and
+            # no-clobber cannot catch that because the file names differ.
+            if self._read_wrapped_key_file(wrapped_file) is not None:
+                raise KeyProviderError(
+                    f"{wrapped_file} is passphrase-protected; construct the provider "
+                    "with passphrase= to unlock it"
+                )
+            try:
+                write_protected(new_key, key_file, header=b"", expected_length=32)
+            except ProtectedStoreError as exc:
+                # The writer creates and never replaces, so an existing store is a
+                # hard error rather than a silent rotation of the master key.
+                raise KeyProviderError(f"Refusing to overwrite the key file: {exc}") from exc
 
         return HardenedMemoryKey(new_key)
+
+    def _tier3_creation_lock(self):
+        """Serialize Tier-3 store creation across processes and both file names."""
+        _mkdir_owner_only(self.fallback_dir)
+        return exclusive_lock(self.fallback_dir / TIER3_LOCK_FILENAME)
 
     def _resolve_passphrase_file_key(
         self, key_file: Path, wrapped_file: Path, allow_create: bool
@@ -372,15 +390,22 @@ class AdaptiveKeyProvider(KeyProvider):
         new_key = bytearray(os.urandom(32))
         try:
             payload = passphrase_store.wrap(new_key, passphrase)
-            try:
-                write_protected(
-                    payload,
-                    wrapped_file,
-                    header=passphrase_store.MAGIC,
-                    expected_length=passphrase_store.PAYLOAD_BYTES,
-                )
-            except ProtectedStoreError as exc:
-                raise KeyProviderError(f"Refusing to overwrite the key file: {exc}") from exc
+            with self._tier3_creation_lock():
+                if self._read_raw_key_file(key_file) is not None:
+                    raise KeyProviderError(
+                        f"an unwrapped key file exists at {key_file}; convert it with "
+                        "floorvault.providers.adaptive.protect_key_file() (which removes "
+                        "the raw copy) before using passphrase custody"
+                    )
+                try:
+                    write_protected(
+                        payload,
+                        wrapped_file,
+                        header=passphrase_store.MAGIC,
+                        expected_length=passphrase_store.PAYLOAD_BYTES,
+                    )
+                except ProtectedStoreError as exc:
+                    raise KeyProviderError(f"Refusing to overwrite the key file: {exc}") from exc
             return HardenedMemoryKey(bytes(new_key))
         finally:
             new_key[:] = bytes(len(new_key))
@@ -417,6 +442,9 @@ class AdaptiveKeyProvider(KeyProvider):
 #: File name of the passphrase-wrapped Tier-3 store, beside ``master.key``.
 WRAPPED_KEY_FILENAME = "master.key.fvpw"
 
+#: Lock file serializing Tier-3 creation and conversion across both store names.
+TIER3_LOCK_FILENAME = "master.key.lock"
+
 
 def protect_key_file(
     passphrase: Union[str, bytes],
@@ -437,62 +465,71 @@ def protect_key_file(
     Returns the path of the wrapped store.
     """
     provider = AdaptiveKeyProvider(fallback_dir=fallback_dir, allow_disk_fallback=True)
-    key_file = provider.fallback_dir / "master.key"
-    wrapped_file = provider.fallback_dir / WRAPPED_KEY_FILENAME
-    stored = provider._read_raw_key_file(key_file)
-    if stored is None:
-        raise KeyProviderError(f"no raw key file to protect at {key_file}")
-    if len(stored) == 64:
-        try:
-            stored = bytes.fromhex(stored.decode("ascii").strip())
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise KeyProviderError("Refusing malformed hexadecimal key file") from exc
-    if len(stored) != 32:
-        raise KeyProviderError(f"Refusing key file with unexpected length ({len(stored)} bytes)")
-    if provider._read_wrapped_key_file(wrapped_file) is not None:
-        raise KeyProviderError(f"Refusing to overwrite the key file: {wrapped_file} already exists")
-    # Open the raw file for the final overwrite *before* publishing anything:
-    # an owner-read-only (0400) key must fail here, with the directory
-    # unchanged, rather than after the wrapped copy exists - which no-clobber
-    # publication would then block a retry from replacing.
-    try:
-        descriptor = os.open(
-            key_file, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-        )
-    except PermissionError as exc:
+    if not provider.fallback_dir.exists():
         raise KeyProviderError(
-            f"{key_file} is not writable by its owner, so it could not be erased after "
-            "wrapping; make it owner-writable (chmod 600) and retry - nothing was changed"
-        ) from exc
-    with os.fdopen(descriptor, "r+b", buffering=0) as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            raise KeyProviderError(f"Refusing key file: {key_file} is not a regular file")
-        master = bytearray(stored)
-        try:
-            payload = passphrase_store.wrap(master, passphrase)
+            f"no raw key file to protect at {provider.fallback_dir / 'master.key'}"
+        )
+    with provider._tier3_creation_lock():
+        key_file = provider.fallback_dir / "master.key"
+        wrapped_file = provider.fallback_dir / WRAPPED_KEY_FILENAME
+        stored = provider._read_raw_key_file(key_file)
+        if stored is None:
+            raise KeyProviderError(f"no raw key file to protect at {key_file}")
+        if len(stored) == 64:
             try:
-                write_protected(
-                    payload,
-                    wrapped_file,
-                    header=passphrase_store.MAGIC,
-                    expected_length=passphrase_store.PAYLOAD_BYTES,
-                )
-            except ProtectedStoreError as exc:
-                raise KeyProviderError(f"Refusing to overwrite the key file: {exc}") from exc
-            check = passphrase_store.unwrap(
-                provider._read_wrapped_key_file(wrapped_file) or b"", passphrase
+                stored = bytes.fromhex(stored.decode("ascii").strip())
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise KeyProviderError("Refusing malformed hexadecimal key file") from exc
+        if len(stored) != 32:
+            raise KeyProviderError(
+                f"Refusing key file with unexpected length ({len(stored)} bytes)"
             )
+        if provider._read_wrapped_key_file(wrapped_file) is not None:
+            raise KeyProviderError(
+                f"Refusing to overwrite the key file: {wrapped_file} already exists"
+            )
+        # Open the raw file for the final overwrite *before* publishing anything:
+        # an owner-read-only (0400) key must fail here, with the directory
+        # unchanged, rather than after the wrapped copy exists - which no-clobber
+        # publication would then block a retry from replacing.
+        try:
+            descriptor = os.open(
+                key_file, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            )
+        except PermissionError as exc:
+            raise KeyProviderError(
+                f"{key_file} is not writable by its owner, so it could not be erased after "
+                "wrapping; make it owner-writable (chmod 600) and retry - nothing was changed"
+            ) from exc
+        with os.fdopen(descriptor, "r+b", buffering=0) as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise KeyProviderError(f"Refusing key file: {key_file} is not a regular file")
+            master = bytearray(stored)
             try:
-                if bytes(check) != bytes(master):
-                    raise KeyProviderError(
-                        "wrapped key file does not round-trip; raw key left in place"
+                payload = passphrase_store.wrap(master, passphrase)
+                try:
+                    write_protected(
+                        payload,
+                        wrapped_file,
+                        header=passphrase_store.MAGIC,
+                        expected_length=passphrase_store.PAYLOAD_BYTES,
                     )
+                except ProtectedStoreError as exc:
+                    raise KeyProviderError(f"Refusing to overwrite the key file: {exc}") from exc
+                check = passphrase_store.unwrap(
+                    provider._read_wrapped_key_file(wrapped_file) or b"", passphrase
+                )
+                try:
+                    if bytes(check) != bytes(master):
+                        raise KeyProviderError(
+                            "wrapped key file does not round-trip; raw key left in place"
+                        )
+                finally:
+                    check[:] = bytes(len(check))
             finally:
-                check[:] = bytes(len(check))
-        finally:
-            master[:] = bytes(len(master))
-        handle.write(bytes(info.st_size))
-        os.fsync(handle.fileno())
-    key_file.unlink()
-    return wrapped_file
+                master[:] = bytes(len(master))
+            handle.write(bytes(info.st_size))
+            os.fsync(handle.fileno())
+        key_file.unlink()
+        return wrapped_file

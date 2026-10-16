@@ -194,9 +194,10 @@ material.
   revision is stored beside the ciphertext, an attacker who can rewrite one can
   roll back both. For SQLite/libSQL tables, the opt-in
   `floorvault.freshness.FreshnessAnchor` supplies that trusted state: it keeps
-  a keyed digest of the anchored tables outside the database and refuses a
-  database that was rolled back, or whose rows were replayed, deleted or added
-  (SPEC §14.3). Write through `anchor.transaction()`, which verifies under
+  a keyed digest of the anchored tables (rows, their schema, and every
+  trigger) outside the database and refuses a database that was rolled back,
+  whose rows were replayed, deleted or added, or that gained a trigger or
+  index (SPEC §14.3). Write through `anchor.transaction()`, which verifies under
   SQLite's write lock; a commit interrupted by a crash fails closed until an
   operator resolves it. It is only as strong as the anchor store's placement — an
   attacker who can roll back the anchor together with the database (for

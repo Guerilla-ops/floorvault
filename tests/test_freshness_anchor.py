@@ -1,19 +1,24 @@
-"""Freshness anchor: rollback, replay, deletion and insertion detection.
+"""Freshness anchor: rollback, replay, deletion, insertion and schema tampering.
 
 Regression for the SECURITY.md §5 limits "same-coordinate replay is not
 detected by default" and attacker rows A3/A7 ("rows can be deleted, duplicated
 or replayed"): with a FreshnessAnchor whose store the attacker cannot roll
-back, every such change to an anchored table is refused.
+back, every such change to an anchored table is refused. Review findings on
+PR #56 (interrupted-commit rollback, cross-connection blessing, concurrent
+anchor overwrite, trigger tampering, unflushed rename) each have a test here.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
+import threading
 
 import pytest
 
 from floorvault import EncryptedSQLiteTable, FloorVault, FloorVaultError, HardenedMemoryKey
+from floorvault import freshness as freshness_module
 from floorvault.freshness import (
     FileAnchorStore,
     FreshnessAnchor,
@@ -26,14 +31,54 @@ KEY = b"\x07" * 32
 class MemoryStore:
     def __init__(self):
         self.records: dict[str, bytes] = {}
-        self.saves = 0
 
     def load(self, name):
         return self.records.get(name)
 
-    def save(self, name, blob):
-        self.saves += 1
-        self.records[name] = blob
+    def compare_and_swap(self, name, expected, new):
+        if self.records.get(name) != expected:
+            return False
+        self.records[name] = new
+        return True
+
+
+class CrashingStore(FileAnchorStore):
+    """Raises KeyboardInterrupt on the Nth compare-and-swap call."""
+
+    def __init__(self, directory):
+        super().__init__(directory)
+        self.calls = 0
+        self.crash_on = None
+
+    def compare_and_swap(self, name, expected, new):
+        self.calls += 1
+        if self.calls == self.crash_on:
+            raise KeyboardInterrupt("simulated crash")
+        return super().compare_and_swap(name, expected, new)
+
+
+class _CommitCrashes:
+    """Connection proxy whose commit() crashes before reaching SQLite."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    @property
+    def in_transaction(self):
+        return self._inner.in_transaction
+
+    def execute(self, *args):
+        return self._inner.execute(*args)
+
+    def commit(self):
+        raise KeyboardInterrupt("crash before the database commit")
+
+    def rollback(self):
+        self._inner.rollback()
+
+
+def _table(connection):
+    return EncryptedSQLiteTable(connection, FloorVault(KEY, memory_mode="disabled"), "users")
 
 
 @pytest.fixture
@@ -43,13 +88,13 @@ def app(tmp_path):
     connection.execute("CREATE TABLE users (id TEXT PRIMARY KEY, token_cipher BLOB, note TEXT)")
     connection.executemany("INSERT INTO users (id) VALUES (?)", [("alice",), ("bob",)])
     connection.commit()
-    store = FileAnchorStore(tmp_path / "anchors")
+    store = CrashingStore(tmp_path / "anchors")
     anchor = FreshnessAnchor(KEY, store, name="app", tables={"users": "id"})
     anchor.initialize(connection)
-    table = EncryptedSQLiteTable(connection, FloorVault(KEY, memory_mode="disabled"), "users")
-    table.store("alice", "token_cipher", "v1")
-    table.store("bob", "token_cipher", "bob")
-    anchor.commit(connection)
+    table = _table(connection)
+    with anchor.transaction(connection):
+        table.store("alice", "token_cipher", "v1")
+        table.store("bob", "token_cipher", "bob")
     yield path, store, connection, anchor, table
     connection.close()
 
@@ -59,42 +104,53 @@ def _reopen(path, store):
     return connection, FreshnessAnchor(KEY, store, name="app", tables={"users": "id"})
 
 
+def _assert_refused(path, store, match=None):
+    fresh, anchor = _reopen(path, store)
+    with pytest.raises(RollbackDetectedError, match=match):
+        anchor.verify(fresh)
+    fresh.close()
+
+
+def _write_crashing_on(store, nth_cas, anchor, connection, value):
+    """Run a transaction whose ``nth_cas`` anchor write (1 = pending, 2 = promote) crashes."""
+    store.crash_on = store.calls + nth_cas
+    with pytest.raises(KeyboardInterrupt):
+        with anchor.transaction(connection):
+            _table(connection).store("alice", "token_cipher", value)
+    store.crash_on = None
+
+
+# -- detection ----------------------------------------------------------------
+
+
 def test_current_database_verifies(app):
-    path, store, connection, _anchor, _table = app
+    path, store, _connection, _anchor, _table_ = app
     fresh, anchor = _reopen(path, store)
     anchor.verify(fresh)
+    assert _table(fresh).load("alice", "token_cipher") == "v1"
     fresh.close()
 
 
 def test_whole_database_restore_is_refused(app, tmp_path):
     path, store, connection, anchor, table = app
     shutil.copy(path, tmp_path / "backup.db")
-    table.store("alice", "token_cipher", "v2")
-    anchor.commit(connection)
+    with anchor.transaction(connection):
+        table.store("alice", "token_cipher", "v2")
     connection.close()
     shutil.copy(tmp_path / "backup.db", path)
-
-    fresh, anchor = _reopen(path, store)
-    with pytest.raises(RollbackDetectedError, match="does not match"):
-        anchor.verify(fresh)
-    fresh.close()
+    _assert_refused(path, store, "does not match")
 
 
 def test_single_row_replay_into_its_own_coordinates_is_refused(app):
     """The case AES-SIV cannot catch: the old envelope authenticates in place."""
     path, store, connection, anchor, table = app
     old = connection.execute("SELECT token_cipher FROM users WHERE id='alice'").fetchone()[0]
-    table.store("alice", "token_cipher", "v2")
-    anchor.commit(connection)
+    with anchor.transaction(connection):
+        table.store("alice", "token_cipher", "v2")
     connection.execute("UPDATE users SET token_cipher=? WHERE id='alice'", (old,))
     connection.commit()
-    # The replayed envelope is cryptographically valid on its own...
-    assert table.load("alice", "token_cipher") == "v1"
-    # ...which is exactly what the anchor exists to catch.
-    fresh, anchor = _reopen(path, store)
-    with pytest.raises(RollbackDetectedError):
-        anchor.verify(fresh)
-    fresh.close()
+    assert table.load("alice", "token_cipher") == "v1"  # cryptographically valid...
+    _assert_refused(path, store)  # ...which is exactly what the anchor catches
 
 
 @pytest.mark.parametrize(
@@ -102,27 +158,60 @@ def test_single_row_replay_into_its_own_coordinates_is_refused(app):
     [
         "DELETE FROM users WHERE id='bob'",
         "INSERT INTO users (id, token_cipher) SELECT 'carol', token_cipher FROM users WHERE id='bob'",
-        "UPDATE users SET note='x' WHERE id='bob'",  # unprotected column
-        "UPDATE users SET note=NULL WHERE id='bob'",  # NULL vs absent value
+        "UPDATE users SET note='x' WHERE id='bob'",
         "UPDATE users SET id='bob2' WHERE id='bob'",
         "ALTER TABLE users ADD COLUMN extra TEXT",
+        "CREATE INDEX users_note ON users (note)",
+        "ALTER TABLE users ADD COLUMN gen TEXT GENERATED ALWAYS AS (note || 'x') VIRTUAL",
     ],
 )
 def test_out_of_band_changes_are_refused(app, tamper):
-    path, store, connection, _anchor, _table = app
-    if "NULL" in tamper:
-        # Give the NULL case a non-NULL baseline to move away from.
-        connection.execute("UPDATE users SET note='' WHERE id='bob'")
-        _anchor.commit(connection)
+    path, store, connection, _anchor, _table_ = app
     connection.execute(tamper)
     connection.commit()
+    _assert_refused(path, store)
+
+
+def test_unanchored_tables_are_not_covered(app):
+    path, store, connection, _anchor, _table_ = app
+    connection.execute("CREATE TABLE other (x)")
+    connection.execute("INSERT INTO other VALUES (1)")
+    connection.commit()
     fresh, anchor = _reopen(path, store)
-    with pytest.raises(RollbackDetectedError):
-        anchor.verify(fresh)
+    anchor.verify(fresh)
     fresh.close()
 
 
-def test_values_of_different_types_are_distinct(tmp_path):
+def test_planted_trigger_is_refused(app):
+    """Review finding: a trigger that silently undoes later writes."""
+    path, store, connection, _anchor, _table_ = app
+    connection.execute(
+        "CREATE TRIGGER keep_old AFTER UPDATE OF token_cipher ON users "
+        "BEGIN UPDATE users SET token_cipher = OLD.token_cipher WHERE id = NEW.id; END"
+    )
+    connection.commit()
+    _assert_refused(path, store)
+
+
+def test_trigger_on_an_unanchored_table_is_refused_too(app):
+    """A trigger on another table can still write the anchored one."""
+    path, store, connection, _anchor, _table_ = app
+    connection.execute("CREATE TABLE side (x)")
+    connection.execute("CREATE TRIGGER via_side AFTER INSERT ON side BEGIN DELETE FROM users; END")
+    connection.commit()
+    _assert_refused(path, store)
+
+
+def test_null_versus_empty_is_a_change(app):
+    path, store, connection, anchor, _table_ = app
+    with anchor.transaction(connection):
+        connection.execute("UPDATE users SET note='' WHERE id='bob'")
+    connection.execute("UPDATE users SET note=NULL WHERE id='bob'")
+    connection.commit()
+    _assert_refused(path, store)
+
+
+def test_values_of_different_types_are_distinct():
     connection = sqlite3.connect(":memory:")
     connection.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v)")
     anchor = FreshnessAnchor(KEY, MemoryStore(), name="t", tables={"t": "id"})
@@ -134,13 +223,13 @@ def test_values_of_different_types_are_distinct(tmp_path):
     assert len(digests) == 5
 
 
+# -- anchor record integrity --------------------------------------------------
+
+
 def test_missing_anchor_record_is_refused_not_reinitialized(app):
-    path, store, connection, _anchor, _table = app
+    path, store, _connection, _anchor, _table_ = app
     (store.directory / "app.fvanchor").unlink()
-    fresh, anchor = _reopen(path, store)
-    with pytest.raises(RollbackDetectedError, match="no record"):
-        anchor.verify(fresh)
-    fresh.close()
+    _assert_refused(path, store, "no record")
 
 
 @pytest.mark.parametrize(
@@ -153,17 +242,14 @@ def test_missing_anchor_record_is_refused_not_reinitialized(app):
     ],
 )
 def test_tampered_anchor_record_is_refused(app, mutate):
-    path, store, connection, _anchor, _table = app
+    path, store, _connection, _anchor, _table_ = app
     record = store.directory / "app.fvanchor"
     record.write_bytes(mutate(record.read_bytes()))
-    fresh, anchor = _reopen(path, store)
-    with pytest.raises(RollbackDetectedError):
-        anchor.verify(fresh)
-    fresh.close()
+    _assert_refused(path, store)
 
 
 def test_anchor_record_from_another_key_is_refused(app):
-    path, store, _connection, _anchor, _table = app
+    path, store, _connection, _anchor, _table_ = app
     fresh = sqlite3.connect(path)
     other = FreshnessAnchor(b"\x08" * 32, store, name="app", tables={"users": "id"})
     with pytest.raises(RollbackDetectedError, match="authentication"):
@@ -172,9 +258,8 @@ def test_anchor_record_from_another_key_is_refused(app):
 
 
 def test_anchor_name_is_bound(app):
-    """A record copied to another anchor name does not authenticate there."""
-    path, store, _connection, _anchor, _table = app
-    store.save("other", store.load("app"))
+    path, store, _connection, _anchor, _table_ = app
+    assert store.compare_and_swap("other", None, store.load("app"))
     fresh = sqlite3.connect(path)
     other = FreshnessAnchor(KEY, store, name="other", tables={"users": "id"})
     with pytest.raises(RollbackDetectedError, match="authentication"):
@@ -182,229 +267,22 @@ def test_anchor_name_is_bound(app):
     fresh.close()
 
 
-def test_commit_without_verify_is_refused(app):
-    """An app that forgot verify() must not bless a rolled-back state."""
-    path, store, _connection, _anchor, _table = app
+def test_initialize_refuses_to_rebaseline(app):
+    path, store, _connection, _anchor, _table_ = app
     fresh, anchor = _reopen(path, store)
-    with pytest.raises(RollbackDetectedError, match="verify"):
-        anchor.commit(fresh)
-    with pytest.raises(RollbackDetectedError, match="verify"):
-        anchor.update(fresh)
+    with pytest.raises(FloorVaultError, match="already initialized"):
+        anchor.initialize(fresh)
     fresh.close()
 
 
-def test_commit_refuses_when_the_anchor_moved_since_verify(app):
-    """Two writers: the second must re-verify instead of overwriting the first."""
-    path, store, connection, _anchor, _table = app
-    first, a1 = _reopen(path, store)
-    second, a2 = _reopen(path, store)
-    a1.verify(first)
-    a2.verify(second)
-    first.execute("UPDATE users SET note='a' WHERE id='alice'")
-    a1.commit(first)
-    second.execute("UPDATE users SET note='b' WHERE id='bob'")
-    with pytest.raises(RollbackDetectedError, match="verify"):
-        a2.commit(second)
-    first.close()
-    second.close()
-
-
-def test_crash_after_database_commit_recovers_without_false_alarm(app, monkeypatch):
-    """Pending state written, DB committed, crash before promotion."""
-    path, store, connection, anchor, table = app
-    real_save = store.save
-    calls = []
-
-    def save_then_crash(name, blob):
-        calls.append(name)
-        if len(calls) == 2:
-            raise KeyboardInterrupt("simulated crash before the anchor is promoted")
-        real_save(name, blob)
-
-    monkeypatch.setattr(store, "save", save_then_crash)
-    table.store("alice", "token_cipher", "v2")
-    with pytest.raises(KeyboardInterrupt):
-        anchor.commit(connection)
-    monkeypatch.setattr(store, "save", real_save)
-
-    fresh, anchor = _reopen(path, store)
-    anchor.verify(fresh)  # accepts the committed-but-unpromoted pending state
-    assert '"pending":null' in store.load("app").decode()
-    fresh.close()
-
-
-def test_pending_state_accepts_only_the_pending_digest(app, monkeypatch):
-    """A crash leaves pending=new; any *other* state is still refused."""
-    path, store, connection, anchor, table = app
-    real_save = store.save
-    calls = []
-
-    def save_then_crash(name, blob):
-        calls.append(name)
-        if len(calls) == 2:
-            raise KeyboardInterrupt
-        real_save(name, blob)
-
-    monkeypatch.setattr(store, "save", save_then_crash)
-    table.store("alice", "token_cipher", "v2")
-    with pytest.raises(KeyboardInterrupt):
-        anchor.commit(connection)
-    monkeypatch.setattr(store, "save", real_save)
-    connection.execute("UPDATE users SET note='tampered' WHERE id='bob'")
-    connection.commit()
-
-    fresh, anchor = _reopen(path, store)
-    with pytest.raises(RollbackDetectedError):
-        anchor.verify(fresh)
-    fresh.close()
-
-
-def _crash_on_save(monkeypatch, store, nth):
-    real_save = store.save
-    calls = []
-
-    def save(name, blob):
-        calls.append(name)
-        if len(calls) == nth:
-            raise KeyboardInterrupt("simulated crash")
-        real_save(name, blob)
-
-    monkeypatch.setattr(store, "save", save)
-    return lambda: monkeypatch.setattr(store, "save", real_save)
-
-
-def test_rollback_during_an_interrupted_commit_is_refused(app, tmp_path, monkeypatch):
-    """Review finding: crash after the DB commit, then restore the old DB.
-
-    The anchor is left pending with the old digest still recorded as
-    committed; the restored old database must not be accepted.
-    """
-    path, store, connection, anchor, table = app
-    shutil.copy(path, tmp_path / "before.db")
-    restore = _crash_on_save(monkeypatch, store, 2)
-    table.store("alice", "token_cipher", "v2-rotated")
-    with pytest.raises(KeyboardInterrupt):
-        anchor.commit(connection)
-    restore()
-    connection.close()
-    shutil.copy(tmp_path / "before.db", path)
-
-    fresh, anchor = _reopen(path, store)
-    with pytest.raises(RollbackDetectedError, match="interrupted commit"):
-        anchor.verify(fresh)
-    fresh.close()
-
-
-def test_crash_before_database_commit_fails_closed_until_discarded(app):
-    """Pending written, DB commit never happened: ambiguous, so refused,
-    and recoverable only by the operator's explicit assertion."""
-    path, store, connection, anchor, table = app
-    table.store("alice", "token_cipher", "v2")
-
-    class _Crash(Exception):
-        pass
-
-    class _NoCommit:
-        def __init__(self, inner):
-            self._inner = inner
-
-        def execute(self, *args):
-            return self._inner.execute(*args)
-
-        def commit(self):
-            raise _Crash
-
-    proxy = _NoCommit(connection)
-    anchor._trusted_connection = proxy  # the proxy stands in for the verified connection
-    with pytest.raises(_Crash):
-        anchor.commit(proxy)
-    connection.rollback()
-
-    fresh, anchor = _reopen(path, store)
-    with pytest.raises(RollbackDetectedError, match="interrupted commit"):
-        anchor.verify(fresh)
-    anchor.discard_interrupted_commit(fresh)
-    anchor.verify(fresh)
-    fresh.close()
-
-
-def test_discard_refuses_without_a_pending_commit(app):
-    path, store, _connection, _anchor, _table = app
-    fresh, anchor = _reopen(path, store)
-    with pytest.raises(FloorVaultError, match="no interrupted commit"):
-        anchor.discard_interrupted_commit(fresh)
-    fresh.close()
-
-
-def test_discard_refuses_a_database_matching_neither_state(app, monkeypatch):
-    path, store, connection, anchor, table = app
-    restore = _crash_on_save(monkeypatch, store, 2)
-    table.store("alice", "token_cipher", "v2")
-    with pytest.raises(KeyboardInterrupt):
-        anchor.commit(connection)
-    restore()
-    connection.execute("UPDATE users SET note='other' WHERE id='bob'")
-    connection.commit()
-    fresh, anchor = _reopen(path, store)
-    with pytest.raises(RollbackDetectedError, match="neither"):
-        anchor.discard_interrupted_commit(fresh)
-    fresh.close()
-
-
-def test_commit_from_a_different_connection_is_refused(app, tmp_path):
-    """Review finding: verify one database, commit another (rolled back) one."""
-    path, store, connection, anchor, table = app
-    shutil.copy(path, tmp_path / "old.db")
-    table.store("alice", "token_cipher", "v2")
-    anchor.commit(connection)
-
-    verified, anchor = _reopen(path, store)
-    anchor.verify(verified)
-    stale = sqlite3.connect(tmp_path / "old.db")
-    with pytest.raises(RollbackDetectedError, match="not the one verified"):
-        anchor.commit(stale)
-    with pytest.raises(RollbackDetectedError, match="not the one verified"):
-        anchor.update(stale)
-    verified.close()
-    stale.close()
-
-
-def test_transaction_commits_and_advances(app):
-    path, store, _connection, _anchor, _table = app
-    fresh, anchor = _reopen(path, store)
-    table = EncryptedSQLiteTable(fresh, FloorVault(KEY, memory_mode="disabled"), "users")
-    with anchor.transaction(fresh):
-        table.store("alice", "token_cipher", "v3")
-    other, verifier = _reopen(path, store)
-    verifier.verify(other)
-    assert (
-        EncryptedSQLiteTable(other, FloorVault(KEY, memory_mode="disabled"), "users").load(
-            "alice", "token_cipher"
-        )
-        == "v3"
-    )
-    fresh.close()
-    other.close()
-
-
-def test_transaction_rolls_back_on_error_and_leaves_the_anchor(app):
-    path, store, _connection, _anchor, _table = app
-    before = store.load("app")
-    fresh, anchor = _reopen(path, store)
-    with pytest.raises(RuntimeError):
-        with anchor.transaction(fresh):
-            fresh.execute("UPDATE users SET note='x' WHERE id='bob'")
-            raise RuntimeError("boom")
-    assert store.load("app") == before
-    anchor.verify(fresh)
-    fresh.close()
+# -- write authorization ------------------------------------------------------
 
 
 def test_transaction_refuses_a_rolled_back_database(app, tmp_path):
     path, store, connection, anchor, table = app
     shutil.copy(path, tmp_path / "old.db")
-    table.store("alice", "token_cipher", "v2")
-    anchor.commit(connection)
+    with anchor.transaction(connection):
+        table.store("alice", "token_cipher", "v2")
     connection.close()
     shutil.copy(tmp_path / "old.db", path)
     fresh, anchor = _reopen(path, store)
@@ -415,9 +293,23 @@ def test_transaction_refuses_a_rolled_back_database(app, tmp_path):
     fresh.close()
 
 
+def test_transaction_rolls_back_on_error_and_leaves_the_anchor(app):
+    path, store, _connection, _anchor, _table_ = app
+    before = store.load("app")
+    fresh, anchor = _reopen(path, store)
+    with pytest.raises(RuntimeError):
+        with anchor.transaction(fresh):
+            fresh.execute("UPDATE users SET note='x' WHERE id='bob'")
+            raise RuntimeError("boom")
+    assert store.load("app") == before
+    assert not fresh.in_transaction
+    anchor.verify(fresh)
+    fresh.close()
+
+
 def test_transaction_holds_the_write_lock(app):
     """No other writer can slip a change in between verify and commit."""
-    path, store, _connection, _anchor, _table = app
+    path, store, _connection, _anchor, _table_ = app
     fresh, anchor = _reopen(path, store)
     intruder = sqlite3.connect(path, timeout=0)
     with anchor.transaction(fresh):
@@ -429,7 +321,7 @@ def test_transaction_holds_the_write_lock(app):
 
 
 def test_transaction_refuses_an_already_open_transaction(app):
-    path, store, _connection, _anchor, _table = app
+    path, store, _connection, _anchor, _table_ = app
     fresh, anchor = _reopen(path, store)
     fresh.execute("UPDATE users SET note='open' WHERE id='bob'")
     assert fresh.in_transaction
@@ -440,33 +332,214 @@ def test_transaction_refuses_an_already_open_transaction(app):
     fresh.close()
 
 
-def test_file_store_flushes_the_directory(tmp_path, monkeypatch):
-    """Review finding: the rename must be made durable, not just the file."""
-    from floorvault import freshness as freshness_module
-
-    flushed = []
-    monkeypatch.setattr(freshness_module, "_fsync_directory", lambda d: flushed.append(d))
-    store = FileAnchorStore(tmp_path / "a")
-    store.save("x", b"one")
-    assert flushed == [tmp_path / "a"]
-
-
-def test_update_after_self_committed_write(app):
-    path, store, connection, anchor, table = app
-    table.store("alice", "token_cipher", "v2")
-    connection.commit()
-    anchor.update(connection)
+def test_failed_verify_revokes_write_authorization(app):
+    """Review finding: a failed verify must not leave earlier trust in place."""
+    path, store, connection, _anchor, _table_ = app
     fresh, anchor = _reopen(path, store)
     anchor.verify(fresh)
+    connection.execute("UPDATE users SET note='replayed' WHERE id='bob'")
+    connection.commit()
+    with pytest.raises(RollbackDetectedError):
+        anchor.verify(fresh)
+    with pytest.raises(RollbackDetectedError, match="verify"):
+        anchor.accept_external_write(fresh)
     fresh.close()
 
 
-def test_initialize_refuses_to_rebaseline(app):
-    path, store, _connection, _anchor, _table = app
+def test_external_write_from_a_different_connection_is_refused(app, tmp_path):
+    """Review finding: verify one database, then record another (rolled back) one."""
+    path, store, connection, anchor, table = app
+    shutil.copy(path, tmp_path / "old.db")
+    with anchor.transaction(connection):
+        table.store("alice", "token_cipher", "v2")
+    verified, anchor = _reopen(path, store)
+    anchor.verify(verified)
+    stale = sqlite3.connect(tmp_path / "old.db")
+    with pytest.raises(RollbackDetectedError, match="not the one verified"):
+        anchor.accept_external_write(stale)
+    verified.close()
+    stale.close()
+
+
+def test_external_write_after_verify(app):
+    path, store, connection, anchor, table = app
+    anchor.verify(connection)
+    table.store("alice", "token_cipher", "v2")
+    connection.commit()
+    anchor.accept_external_write(connection)
+    fresh, verifier = _reopen(path, store)
+    verifier.verify(fresh)
+    fresh.close()
+
+
+def test_external_write_refuses_when_the_anchor_moved(app):
+    path, store, connection, anchor, _table_ = app
+    other, other_anchor = _reopen(path, store)
+    anchor.verify(connection)
+    with other_anchor.transaction(other):
+        other.execute("UPDATE users SET note='other' WHERE id='bob'")
+    with pytest.raises(RollbackDetectedError):
+        anchor.accept_external_write(connection)
+    other.close()
+
+
+# -- crash safety -------------------------------------------------------------
+
+
+def test_crash_after_database_commit_recovers(app):
+    """Pending written, DB committed, crash before promotion: accepted."""
+    path, store, connection, anchor, _table_ = app
+    _write_crashing_on(store, 2, anchor, connection, "v2")
     fresh, anchor = _reopen(path, store)
-    with pytest.raises(FloorVaultError, match="already initialized"):
-        anchor.initialize(fresh)
+    anchor.verify(fresh)
+    assert '"pending":null' in store.load("app").decode()
+    assert _table(fresh).load("alice", "token_cipher") == "v2"
     fresh.close()
+
+
+def test_rollback_during_an_interrupted_commit_is_refused(app, tmp_path):
+    """Review finding: crash after the DB commit, then restore the old DB."""
+    path, store, connection, anchor, _table_ = app
+    shutil.copy(path, tmp_path / "before.db")
+    _write_crashing_on(store, 2, anchor, connection, "v2-rotated")
+    connection.close()
+    shutil.copy(tmp_path / "before.db", path)
+    _assert_refused(path, store, "interrupted commit")
+
+
+def test_crash_before_database_commit_fails_closed_until_discarded(app):
+    """Pending written, DB commit never happened: ambiguous, so refused, and
+    recoverable only by the operator's explicit assertion."""
+    path, store, connection, anchor, _table_ = app
+    with pytest.raises(KeyboardInterrupt):
+        with anchor.transaction(_CommitCrashes(connection)):
+            _table(connection).store("alice", "token_cipher", "v2")
+    assert not connection.in_transaction  # rolled back
+    fresh, anchor = _reopen(path, store)
+    with pytest.raises(RollbackDetectedError, match="interrupted commit"):
+        anchor.verify(fresh)
+    anchor.discard_interrupted_commit(fresh)
+    anchor.verify(fresh)
+    assert _table(fresh).load("alice", "token_cipher") == "v1"
+    fresh.close()
+
+
+def test_pending_state_accepts_only_the_pending_digest(app):
+    path, store, connection, anchor, _table_ = app
+    _write_crashing_on(store, 2, anchor, connection, "v2")
+    connection.execute("UPDATE users SET note='tampered' WHERE id='bob'")
+    connection.commit()
+    _assert_refused(path, store)
+
+
+def test_discard_refuses_without_a_pending_commit(app):
+    path, store, _connection, _anchor, _table_ = app
+    fresh, anchor = _reopen(path, store)
+    with pytest.raises(FloorVaultError, match="no interrupted commit"):
+        anchor.discard_interrupted_commit(fresh)
+    fresh.close()
+
+
+def test_discard_refuses_a_database_matching_neither_state(app):
+    path, store, connection, anchor, _table_ = app
+    _write_crashing_on(store, 2, anchor, connection, "v2")
+    connection.execute("UPDATE users SET note='other' WHERE id='bob'")
+    connection.commit()
+    fresh, anchor = _reopen(path, store)
+    with pytest.raises(RollbackDetectedError, match="neither"):
+        anchor.discard_interrupted_commit(fresh)
+    fresh.close()
+
+
+# -- concurrency --------------------------------------------------------------
+
+
+def test_stale_promotion_cannot_overwrite_a_newer_record(app, monkeypatch):
+    """Review finding: writer A pauses before promoting; B commits; A resumes.
+
+    A's promotion is a compare-and-swap against its own pending record, so it
+    cannot replace B's newer record, and the database stays verifiable.
+    """
+    path, store, connection, _anchor, _table_ = app
+    connection.close()
+    anchor_a = FreshnessAnchor(KEY, store, name="app", tables={"users": "id"})
+    other, anchor_b = _reopen(path, store)
+
+    paused = threading.Event()
+    resume = threading.Event()
+    real_cas = FileAnchorStore.compare_and_swap
+    a_calls = []
+
+    def pausing_cas(self, name, expected, new):
+        if threading.current_thread().name == "writer-a":
+            a_calls.append(name)
+            if len(a_calls) == 2:  # A's promotion, after its DB commit
+                paused.set()
+                resume.wait(10)
+        return real_cas(self, name, expected, new)
+
+    monkeypatch.setattr(CrashingStore, "compare_and_swap", pausing_cas)
+    errors = []
+
+    def writer_a():
+        a = sqlite3.connect(path, check_same_thread=False)
+        try:
+            with anchor_a.transaction(a):
+                _table(a).store("alice", "token_cipher", "from-a")
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            a.close()
+
+    thread = threading.Thread(target=writer_a, name="writer-a")
+    thread.start()
+    assert paused.wait(10)
+    with anchor_b.transaction(other):  # B verifies (promoting A's pending) and commits
+        _table(other).store("bob", "token_cipher", "from-b")
+    resume.set()
+    thread.join(10)
+
+    assert errors == []  # A finds its pending already promoted and accepts that
+    final, verifier = _reopen(path, store)
+    verifier.verify(final)  # B's newer state is the anchor, not A's older one
+    assert _table(final).load("bob", "token_cipher") == "from-b"
+    assert _table(final).load("alice", "token_cipher") == "from-a"
+    final.close()
+    other.close()
+
+
+def test_file_store_cas_refuses_a_stale_expectation(tmp_path):
+    store = FileAnchorStore(tmp_path / "a")
+    assert store.compare_and_swap("x", None, b"one")
+    assert not store.compare_and_swap("x", None, b"two")
+    assert not store.compare_and_swap("x", b"wrong", b"two")
+    assert store.compare_and_swap("x", b"one", b"two")
+    assert store.load("x") == b"two"
+
+
+def test_file_store_flushes_new_directories_and_the_rename(tmp_path, monkeypatch):
+    """Review finding: the rename (and any new directory) must be durable."""
+    flushed = []
+    monkeypatch.setattr(freshness_module, "_fsync_directory", lambda d: flushed.append(d))
+    store = FileAnchorStore(tmp_path / "a" / "b")
+    store.compare_and_swap("x", None, b"one")
+    assert flushed == [tmp_path, tmp_path / "a", tmp_path / "a" / "b"]
+
+
+def test_file_store_round_trip_and_permissions(tmp_path):
+    store = FileAnchorStore(tmp_path / "a")
+    assert store.load("x") is None
+    store.compare_and_swap("x", None, b"one")
+    assert store.load("x") == b"one"
+    assert sorted(p.name for p in (tmp_path / "a").iterdir()) == [
+        "x.fvanchor",
+        "x.fvanchor.lock",
+    ]
+    if os.name == "posix":
+        assert ((tmp_path / "a" / "x.fvanchor").stat().st_mode & 0o077) == 0
+
+
+# -- construction -------------------------------------------------------------
 
 
 def test_accepts_a_hardened_key_handle():
@@ -506,7 +579,7 @@ def test_table_identifiers_fold_like_sqlite():
         ({"tables": {"users; DROP": "id"}}, ValueError, "valid SQL identifier"),
         ({"tables": {"main.users": "id"}}, ValueError, "bare column name"),
         ({"tables": {"users": "id", "USERS": "id"}}, ValueError, "listed twice"),
-        ({"store": object()}, TypeError, "load"),
+        ({"store": object()}, TypeError, "compare_and_swap"),
     ],
 )
 def test_constructor_validation(kwargs, error, match):
@@ -521,21 +594,10 @@ def test_master_key_length_is_enforced():
         FreshnessAnchor(b"k" * 31, MemoryStore(), name="t", tables={"t": "id"})
 
 
-def test_missing_table_and_order_column(tmp_path):
+def test_missing_table_and_order_column():
     connection = sqlite3.connect(":memory:")
     connection.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
     with pytest.raises(RollbackDetectedError, match="does not exist"):
         FreshnessAnchor(KEY, MemoryStore(), name="x", tables={"gone": "id"}).digest(connection)
     with pytest.raises(ValueError, match="order column"):
         FreshnessAnchor(KEY, MemoryStore(), name="x", tables={"t": "nope"}).digest(connection)
-
-
-def test_file_store_round_trip_and_permissions(tmp_path):
-    store = FileAnchorStore(tmp_path / "a")
-    assert store.load("x") is None
-    store.save("x", b"one")
-    store.save("x", b"two")
-    assert store.load("x") == b"two"
-    assert sorted(p.name for p in (tmp_path / "a").iterdir()) == ["x.fvanchor"]
-    if hasattr(__import__("os"), "geteuid"):
-        assert ((tmp_path / "a" / "x.fvanchor").stat().st_mode & 0o077) == 0

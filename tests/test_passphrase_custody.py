@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from floorvault.providers import adaptive as adaptive_module
 from floorvault.providers import passphrase_store
 from floorvault.providers.adaptive import (
+    TIER3_LOCK_FILENAME,
     WRAPPED_KEY_FILENAME,
     AdaptiveKeyProvider,
     protect_key_file,
@@ -47,10 +48,15 @@ def _key(handle) -> bytes:
     return bytes(handle.get_buffer())
 
 
+def _stores(directory) -> list[str]:
+    """Key-store files in ``directory``, ignoring the creation lock file."""
+    return sorted(p.name for p in directory.iterdir() if p.name != TIER3_LOCK_FILENAME)
+
+
 def test_new_key_is_written_wrapped_only(tmp_path):
     key = _key(_provider(tmp_path, passphrase=PASSPHRASE).resolve_key())
 
-    assert sorted(p.name for p in tmp_path.iterdir()) == [WRAPPED_KEY_FILENAME]
+    assert _stores(tmp_path) == [WRAPPED_KEY_FILENAME]
     stored = (tmp_path / WRAPPED_KEY_FILENAME).read_bytes()
     assert stored.startswith(b"FVPW1")
     assert len(stored) == 5 + passphrase_store.PAYLOAD_BYTES
@@ -82,14 +88,25 @@ def test_raw_key_beside_wrapped_store_is_refused(tmp_path):
     with pytest.raises(KeyProviderError, match="unwrapped key file exists"):
         _provider(tmp_path, passphrase=PASSPHRASE).resolve_key()
     # Nothing was created: the raw key is still the only store.
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["master.key"]
+    assert _stores(tmp_path) == ["master.key"]
     assert (tmp_path / "master.key").read_bytes() == raw
+
+
+@pytest.mark.parametrize("passphrase", [None, PASSPHRASE])
+def test_both_stores_present_is_refused_either_way(tmp_path, passphrase):
+    """A raw copy beside the wrapped store is refused with or without the passphrase."""
+    raw = _key(_provider(tmp_path).resolve_key())
+    protect_key_file(PASSPHRASE, fallback_dir=tmp_path)
+    (tmp_path / "master.key").write_bytes(raw)
+    os.chmod(tmp_path / "master.key", 0o600)
+    with pytest.raises(KeyProviderError, match="passphrase-protected|unwrapped key file exists"):
+        _provider(tmp_path, passphrase=passphrase).resolve_key()
 
 
 def test_allow_create_false_does_not_create(tmp_path):
     with pytest.raises(KeyProviderError, match="not found"):
         _provider(tmp_path, passphrase=PASSPHRASE).resolve_key(allow_create=False)
-    assert list(tmp_path.iterdir()) == []
+    assert _stores(tmp_path) == []
 
 
 @pytest.mark.parametrize("bad", ["", b""])
@@ -102,7 +119,7 @@ def test_strict_mode_still_refuses_tier3(tmp_path):
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, strict=True, passphrase=PASSPHRASE)
     with pytest.raises(KeyProviderError):
         provider.resolve_key()
-    assert list(tmp_path.iterdir()) == []
+    assert _stores(tmp_path) == []
 
 
 def test_protect_key_file_keeps_the_key_and_removes_the_raw_copy(tmp_path):
@@ -111,7 +128,7 @@ def test_protect_key_file_keeps_the_key_and_removes_the_raw_copy(tmp_path):
     wrapped = protect_key_file(PASSPHRASE, fallback_dir=tmp_path)
 
     assert wrapped == tmp_path / WRAPPED_KEY_FILENAME
-    assert sorted(p.name for p in tmp_path.iterdir()) == [WRAPPED_KEY_FILENAME]
+    assert _stores(tmp_path) == [WRAPPED_KEY_FILENAME]
     assert _key(_provider(tmp_path, passphrase=PASSPHRASE).resolve_key()) == raw
 
 
@@ -134,7 +151,7 @@ def test_protect_key_file_on_a_read_only_key_changes_nothing(tmp_path):
 
     with pytest.raises(KeyProviderError, match="nothing was changed"):
         protect_key_file(PASSPHRASE, fallback_dir=tmp_path)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["master.key"]
+    assert _stores(tmp_path) == ["master.key"]
 
     os.chmod(tmp_path / "master.key", 0o600)
     protect_key_file(PASSPHRASE, fallback_dir=tmp_path)
@@ -220,3 +237,62 @@ def test_default_work_factor_is_owasp_minimum():
     # Captured at import, before the autouse fixture lowers it for speed.
     assert _MODULE_DEFAULT_LOG2_N == 17
     assert passphrase_store.MIN_LOG2_N <= _MODULE_DEFAULT_LOG2_N <= passphrase_store.MAX_LOG2_N
+
+
+def test_mixed_mode_creation_race_cannot_fork_the_key(tmp_path, monkeypatch):
+    """Review finding: a passphrase resolver and a raw resolver racing on first
+    creation must not each publish a different key under different names."""
+    real_lock = AdaptiveKeyProvider._tier3_creation_lock
+
+    def lock_after_rival_created_wrapped(self):
+        # The rival (passphrase) resolver wins the race while this raw
+        # resolver is between its absence check and taking the lock.
+        monkeypatch.setattr(AdaptiveKeyProvider, "_tier3_creation_lock", real_lock)
+        _provider(tmp_path, passphrase=PASSPHRASE).resolve_key()
+        return real_lock(self)
+
+    monkeypatch.setattr(
+        AdaptiveKeyProvider, "_tier3_creation_lock", lock_after_rival_created_wrapped
+    )
+    with pytest.raises(KeyProviderError, match="passphrase-protected"):
+        _provider(tmp_path).resolve_key()
+    assert _stores(tmp_path) == [WRAPPED_KEY_FILENAME]
+
+
+def test_mixed_mode_race_the_other_way_round(tmp_path, monkeypatch):
+    real_lock = AdaptiveKeyProvider._tier3_creation_lock
+
+    def lock_after_rival_created_raw(self):
+        monkeypatch.setattr(AdaptiveKeyProvider, "_tier3_creation_lock", real_lock)
+        _provider(tmp_path).resolve_key()
+        return real_lock(self)
+
+    monkeypatch.setattr(AdaptiveKeyProvider, "_tier3_creation_lock", lock_after_rival_created_raw)
+    with pytest.raises(KeyProviderError, match="unwrapped key file exists"):
+        _provider(tmp_path, passphrase=PASSPHRASE).resolve_key()
+    assert _stores(tmp_path) == ["master.key"]
+
+
+@pytest.mark.parametrize(("passphrase", "expected"), [(None, True), (PASSPHRASE, False)])
+def test_linux_masked_file_fallback_is_off_with_a_passphrase(
+    tmp_path, monkeypatch, passphrase, expected
+):
+    """Review finding: with passphrase=, the Secret Service tier must not fall
+    back to its publicly masked master.key.ss."""
+    seen = {}
+
+    class _FakeSecretService:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        @staticmethod
+        def default_store_path(directory):
+            return directory / "master.key.ss"
+
+        def _secret_service_available(self):
+            return False
+
+    monkeypatch.setattr(adaptive_module, "is_linux", lambda: True)
+    monkeypatch.setattr(adaptive_module, "LinuxSecretServiceKeyProvider", _FakeSecretService)
+    _provider(tmp_path, passphrase=passphrase).resolve_key()
+    assert seen["allow_file_fallback"] is expected

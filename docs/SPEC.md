@@ -887,18 +887,24 @@ ciphertext through the same binding.
 ### 14.3 Freshness anchor (opt-in rollback detection)
 
 `floorvault.freshness.FreshnessAnchor(master_key, store, name=, tables=)`
-keeps a keyed digest of the full contents of the named tables in an
-`AnchorStore` outside the database, and refuses a database that does not
-match. It detects what §4–§5 cannot: a whole-database rollback, and a row
-replayed into its own coordinates, deleted, or added.
+keeps a keyed digest of the named tables — their rows and the schema that
+governs them — in an `AnchorStore` outside the database, and refuses a
+database that does not match. It detects what §4–§5 cannot: a whole-database
+rollback; a row replayed into its own coordinates, deleted, or added; and a
+planted trigger, index or column definition.
 
 Digest (HMAC-SHA256 under the §3 freshness key; `frame(x) = u64be(len(x)) || x`):
 
 ```
 "FVFA1" || "digest" || frame(name)
+for each sqlite_master row of type 'index', 'table' or 'trigger',
+        ordered by (type, name), that is a trigger (on ANY table) or whose
+        ASCII-folded tbl_name is an anchored table:
+    "S" || frame(type) || frame(name) || frame(tbl_name) || value(sql)
 for each anchored table, in ascending order of its ASCII-folded name:
     "T" || frame(table)
-    for each column, in ascending order of its ASCII-folded name: "C" || frame(column)
+    for each column of PRAGMA table_xinfo, in ascending order of its
+        ASCII-folded name: "C" || frame(column)
     for each row, ordered by the table's order column:
         "R" || concat(value(v) for v in row, columns in the order above)
     "E" || u64be(row count)
@@ -910,9 +916,18 @@ value(text)  = "t" || u64be(len(u)) || u      where u = UTF-8
 value(blob)  = "b" || u64be(len(b)) || b
 ```
 
+Every trigger is covered, not only those on anchored tables, because a trigger
+on any table can write an anchored one.
+
 Anchor record (JSON, sorted keys, compact separators):
 `{"format":"FVFA1","committed":hex,"pending":hex|null,"mac":hex}` with
 `mac = HMAC(k, "FVFA1" || "record" || frame(name) || frame(committed) || frame(pending or ""))`.
+
+`AnchorStore` is `load(name) -> bytes | None` and
+`compare_and_swap(name, expected, new) -> bool`, which replaces the record only
+if it is still byte-for-byte `expected` (`None` = absent) and is durable before
+returning. Every record transition below is such a swap against the exact
+record it was computed from.
 
 Behavioral contract:
 
@@ -923,23 +938,27 @@ Behavioral contract:
   indistinguishable from outside. Only `discard_interrupted_commit` (an
   operator assertion, requiring the database to match `committed`) clears
   that state. A missing or unauthenticated record is refused, never treated
-  as a fresh start.
-- `commit` writes `{committed: old, pending: new}`, commits the database, then
-  writes `{committed: new, pending: null}`.
-- `commit` and `update` refuse unless the same instance verified (or
-  initialized) the database **on the same connection** and the record has
-  not changed since.
-- `transaction(connection)` issues `BEGIN IMMEDIATE`, verifies inside it, runs
-  the caller's writes, and commits as above; on an exception it rolls back
-  and leaves the record untouched. It refuses a connection that already has
-  an open transaction.
+  as a fresh start. Any failure revokes the instance's write authorization.
+- Writes go through `transaction(connection)`: `BEGIN IMMEDIATE`, `verify`
+  inside the write lock, the caller's writes, then swap `{committed: old,
+  pending: new}`, commit the database, swap `{committed: new, pending: null}`.
+  On an exception before the database commit it rolls back and leaves the
+  record untouched. It refuses a connection with an open transaction. If the
+  final swap loses to another holder of the key (who already promoted this
+  commit), the write stands and the instance must re-verify before writing
+  again.
+- `accept_external_write(connection)` records the current state after a write
+  the caller committed itself. It requires a prior `verify` on the same
+  instance and connection, with the record unchanged since, and is weaker:
+  it cannot see another writer between that verify and the call.
 - `initialize` refuses when a record exists.
-- `FileAnchorStore` writes a temporary file, fsyncs it, renames it over the
-  record, and fsyncs the directory.
+- `FileAnchorStore` performs the swap under a cross-process lock
+  (`<name>.fvanchor.lock`), writes a temporary file, fsyncs it, renames it
+  over the record, and fsyncs the directory (and any directory it created).
 
 The guarantee holds only against an attacker who cannot roll the anchor store
-back together with the database. Every `commit`/`verify` reads every anchored
-row.
+back together with the database. Every `transaction`/`verify` reads every
+anchored row.
 
 ---
 
