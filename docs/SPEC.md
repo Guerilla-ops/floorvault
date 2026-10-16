@@ -916,15 +916,26 @@ Anchor record (JSON, sorted keys, compact separators):
 
 Behavioral contract:
 
-- `verify` accepts the database iff its digest equals `committed`, or equals
-  `pending` (then promotes it). A missing or unauthenticated record is
-  refused, never treated as a fresh start.
+- `verify` accepts the database iff its digest equals `pending` (then
+  promotes it), or equals `committed` **and `pending` is null**. A database at
+  `committed` while `pending` is set MUST be refused: "the commit never
+  landed" and "it landed and the database was rolled back" are
+  indistinguishable from outside. Only `discard_interrupted_commit` (an
+  operator assertion, requiring the database to match `committed`) clears
+  that state. A missing or unauthenticated record is refused, never treated
+  as a fresh start.
 - `commit` writes `{committed: old, pending: new}`, commits the database, then
-  writes `{committed: new, pending: null}`. A crash at either point leaves a
-  state `verify` accepts; `pending` can only be the newer state.
+  writes `{committed: new, pending: null}`.
 - `commit` and `update` refuse unless the same instance verified (or
-  initialized) the database and the record has not changed since.
+  initialized) the database **on the same connection** and the record has
+  not changed since.
+- `transaction(connection)` issues `BEGIN IMMEDIATE`, verifies inside it, runs
+  the caller's writes, and commits as above; on an exception it rolls back
+  and leaves the record untouched. It refuses a connection that already has
+  an open transaction.
 - `initialize` refuses when a record exists.
+- `FileAnchorStore` writes a temporary file, fsyncs it, renames it over the
+  record, and fsyncs the directory.
 
 The guarantee holds only against an attacker who cannot roll the anchor store
 back together with the database. Every `commit`/`verify` reads every anchored

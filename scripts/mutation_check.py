@@ -1203,6 +1203,34 @@ MUTATIONS: tuple[Mutation, ...] = (
         "                # MUTANT",
         "Rotation leaves sealed kind/has_otp under the retired key",
     ),
+    Mutation(
+        "FA-8",
+        "src/floorvault/freshness.py",
+        '            if pending is not None:\n                raise RollbackDetectedError(\n                    "an interrupted commit',
+        '            if False:  # MUTANT\n                raise RollbackDetectedError(\n                    "an interrupted commit',
+        "An interrupted commit lets the pre-commit state verify: a database-only attacker rolls back the commit that crashed before promotion",
+    ),
+    Mutation(
+        "FA-9",
+        "src/floorvault/freshness.py",
+        "        if connection is not self._trusted_connection:",
+        "        if False:  # MUTANT",
+        "commit()/update() accept a connection other than the verified one, so an unverified (rolled-back) database becomes the baseline",
+    ),
+    Mutation(
+        "FA-10",
+        "src/floorvault/freshness.py",
+        '        connection.execute("BEGIN IMMEDIATE")',
+        "        pass  # MUTANT",
+        "transaction() verifies without the write lock: a concurrent writer's change lands between the check and the commit",
+    ),
+    Mutation(
+        "FA-11",
+        "src/floorvault/freshness.py",
+        "                _fsync_directory(self.directory)",
+        "                pass  # MUTANT",
+        "Anchor rename not flushed: power loss can revert the anchor to an earlier record a restored database matches",
+    ),
 )
 
 # --------------------------------------------------------------------------

@@ -25,14 +25,26 @@ The guarantee is exactly as strong as the anchor store's placement:
 
 Costs: every :meth:`~FreshnessAnchor.commit` and :meth:`~FreshnessAnchor.verify`
 reads every row of the anchored tables, so this suits stores of modest size.
-Writes must go through :meth:`~FreshnessAnchor.commit` (or be followed by
+Writes must go through :meth:`~FreshnessAnchor.transaction` or
+:meth:`~FreshnessAnchor.commit` (or be followed by
 :meth:`~FreshnessAnchor.update` for code that commits itself); a write that
 bypasses the anchor is - correctly - indistinguishable from tampering.
 
 Crash safety: :meth:`~FreshnessAnchor.commit` records the new digest as
-*pending* before the database commit and promotes it afterwards, so a crash
-between the two never produces a false alarm. The pending state can only ever
-be the newer one, so accepting it does not reopen a rollback.
+*pending* before the database commit and promotes it afterwards. A database
+found in the pending state is accepted and promoted. A database found in the
+*previous* state while a commit is pending is refused: from outside, "the
+commit never landed" and "the commit landed and the database was then rolled
+back" look identical, so only an operator who knows which happened may clear
+it (:meth:`~FreshnessAnchor.discard_interrupted_commit`). That is the one
+case a crash produces a refusal; it fails closed.
+
+Concurrency: use :meth:`~FreshnessAnchor.transaction` for writes. It takes
+SQLite's write lock (``BEGIN IMMEDIATE``) and verifies inside it, so no other
+writer can change the database between the check and the commit.
+:meth:`~FreshnessAnchor.commit` and :meth:`~FreshnessAnchor.update` are bound
+to the connection that was verified, but cannot see a concurrent writer that
+changed the file between that verify and the call.
 """
 
 from __future__ import annotations
@@ -43,8 +55,9 @@ import json
 import os
 import struct
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Mapping, Optional, Protocol, Union
+from typing import Any, Iterator, Mapping, Optional, Protocol, Union
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -52,6 +65,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from .beacons import _KEY_BYTES, _coerce_key_material, _snapshot_key
 from .core import FloorVaultError
 from .memory import HardenedMemoryKey
+from .providers.platform_custody import _fsync_directory
 from .sqlite_adapter import _fold_sqlite, _quoted_identifier, _safe_column
 
 #: HKDF domain-separation label for the anchor MAC key (SPEC.md §3).
@@ -123,6 +137,10 @@ class FileAnchorStore:
                 finally:
                     os.close(descriptor)
                 os.replace(temporary, path)
+                # Flush the rename itself: without it a power loss can revert
+                # the directory entry to the previous anchor record, which a
+                # database restored to that same earlier state would match.
+                _fsync_directory(self.directory)
             except BaseException:
                 temporary.unlink(missing_ok=True)
                 raise
@@ -174,8 +192,8 @@ class FreshnessAnchor:
         anchor.initialize(connection)        # once, on a database you trust
         ...
         anchor.verify(connection)            # on open; raises if rolled back
-        table.store("u1", "token_cipher", new_token)
-        anchor.commit(connection)            # instead of connection.commit()
+        with anchor.transaction(connection): # write lock + verify + commit
+            table.store("u1", "token_cipher", new_token)
     """
 
     def __init__(
@@ -209,6 +227,9 @@ class FreshnessAnchor:
         # application that forgot verify() cannot bless a rolled-back database
         # as the new baseline.
         self._trusted: Optional[bytes] = None
+        # ...and the connection it was established on: a verify on one
+        # database must not license a commit from another.
+        self._trusted_connection: Any = None
 
     @staticmethod
     def _derive_key(master_key: Union[bytes, bytearray, HardenedMemoryKey]) -> bytes:
@@ -317,9 +338,13 @@ class FreshnessAnchor:
             )
         baseline = self.digest(connection)
         self.store.save(self.name, self._encode_record(baseline, None))
-        self._trusted = baseline
+        self._trust(baseline, connection)
 
-    def _require_trusted(self) -> bytes:
+    def _trust(self, state: bytes, connection: Any) -> None:
+        self._trusted = state
+        self._trusted_connection = connection
+
+    def _require_trusted(self, connection: Any) -> bytes:
         """Return the committed digest, refusing unless this instance vouched for it."""
         record = self._load_record()
         if record is None:
@@ -331,6 +356,11 @@ class FreshnessAnchor:
             raise RollbackDetectedError(
                 "call verify() (or initialize()) on this anchor before writing: advancing "
                 "from an unverified state would accept a rolled-back database as current"
+            )
+        if connection is not self._trusted_connection:
+            raise RollbackDetectedError(
+                "this connection was not the one verified; verify() it before writing "
+                "so a different (possibly rolled-back) database cannot become the baseline"
             )
         return committed
 
@@ -350,12 +380,19 @@ class FreshnessAnchor:
             )
         committed, pending = record
         current = self.digest(connection)
-        if hmac.compare_digest(current, committed):
-            self._trusted = committed
-            return
         if pending is not None and hmac.compare_digest(current, pending):
             self.store.save(self.name, self._encode_record(pending, None))
-            self._trusted = pending
+            self._trust(pending, connection)
+            return
+        if hmac.compare_digest(current, committed):
+            if pending is not None:
+                raise RollbackDetectedError(
+                    "an interrupted commit left this anchor pending, and the database "
+                    "is at the state before it: either that commit never reached the "
+                    "database, or it did and the database was rolled back. Call "
+                    "discard_interrupted_commit() only if you know it never landed"
+                )
+            self._trust(committed, connection)
             return
         raise RollbackDetectedError(
             "database does not match its freshness anchor: anchored rows were rolled "
@@ -368,12 +405,57 @@ class FreshnessAnchor:
         Requires that this instance has already :meth:`verify`-ed (or
         initialized) the database, and that the anchor has not moved since.
         """
-        committed = self._require_trusted()
+        committed = self._require_trusted(connection)
         new_state = self.digest(connection)
         self.store.save(self.name, self._encode_record(committed, new_state))
         connection.commit()
         self.store.save(self.name, self._encode_record(new_state, None))
-        self._trusted = new_state
+        self._trust(new_state, connection)
+
+    @contextmanager
+    def transaction(self, connection: Any) -> Iterator[Any]:
+        """Verify, write and commit under SQLite's write lock.
+
+        ``BEGIN IMMEDIATE`` takes the database's reserved lock before the
+        check, so no other writer can change the anchored rows between the
+        verification and the commit. On an exception the transaction is
+        rolled back and the anchor is left untouched::
+
+            with anchor.transaction(connection):
+                table.store("u1", "token_cipher", new_token)
+        """
+        if getattr(connection, "in_transaction", False):
+            raise FloorVaultError(
+                "connection already has an open transaction; commit or roll it back "
+                "before FreshnessAnchor.transaction()"
+            )
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            self.verify(connection)
+            yield connection
+        except BaseException:
+            connection.rollback()
+            raise
+        self.commit(connection)
+
+    def discard_interrupted_commit(self, connection: Any) -> None:
+        """Clear a pending commit that the operator knows never reached the database.
+
+        Only for the state :meth:`verify` refuses as ambiguous: a pending commit
+        with the database at the state before it. This is an assertion by the
+        caller - if the commit *had* landed and the database was rolled back,
+        calling this accepts the rollback.
+        """
+        record = self._load_record()
+        if record is None or record[1] is None:
+            raise FloorVaultError("no interrupted commit to discard")
+        committed, _pending = record
+        if not hmac.compare_digest(self.digest(connection), committed):
+            raise RollbackDetectedError(
+                "database matches neither side of the interrupted commit; refusing to discard"
+            )
+        self.store.save(self.name, self._encode_record(committed, None))
+        self._trust(committed, connection)
 
     def update(self, connection: Any) -> None:
         """Advance the anchor after a write the caller already committed.
@@ -384,10 +466,10 @@ class FreshnessAnchor:
         commit and this call leaves a database the anchor rejects, which fails
         closed and is recovered by re-initializing from a copy you trust.
         """
-        self._require_trusted()
+        self._require_trusted(connection)
         new_state = self.digest(connection)
         self.store.save(self.name, self._encode_record(new_state, None))
-        self._trusted = new_state
+        self._trust(new_state, connection)
 
 
 __all__ = [

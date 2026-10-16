@@ -10,6 +10,7 @@ Scales from interactive desktop storage to headless cloud/Docker environments:
 from __future__ import annotations
 
 import os
+import stat
 import warnings
 from pathlib import Path
 from typing import Optional, Union
@@ -448,33 +449,50 @@ def protect_key_file(
             raise KeyProviderError("Refusing malformed hexadecimal key file") from exc
     if len(stored) != 32:
         raise KeyProviderError(f"Refusing key file with unexpected length ({len(stored)} bytes)")
-    master = bytearray(stored)
+    if provider._read_wrapped_key_file(wrapped_file) is not None:
+        raise KeyProviderError(f"Refusing to overwrite the key file: {wrapped_file} already exists")
+    # Open the raw file for the final overwrite *before* publishing anything:
+    # an owner-read-only (0400) key must fail here, with the directory
+    # unchanged, rather than after the wrapped copy exists - which no-clobber
+    # publication would then block a retry from replacing.
     try:
-        payload = passphrase_store.wrap(master, passphrase)
-        try:
-            write_protected(
-                payload,
-                wrapped_file,
-                header=passphrase_store.MAGIC,
-                expected_length=passphrase_store.PAYLOAD_BYTES,
-            )
-        except ProtectedStoreError as exc:
-            raise KeyProviderError(f"Refusing to overwrite the key file: {exc}") from exc
-        check = passphrase_store.unwrap(
-            provider._read_wrapped_key_file(wrapped_file) or b"", passphrase
+        descriptor = os.open(
+            key_file, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
         )
+    except PermissionError as exc:
+        raise KeyProviderError(
+            f"{key_file} is not writable by its owner, so it could not be erased after "
+            "wrapping; make it owner-writable (chmod 600) and retry - nothing was changed"
+        ) from exc
+    with os.fdopen(descriptor, "r+b", buffering=0) as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise KeyProviderError(f"Refusing key file: {key_file} is not a regular file")
+        master = bytearray(stored)
         try:
-            if bytes(check) != bytes(master):
-                raise KeyProviderError(
-                    "wrapped key file does not round-trip; raw key left in place"
+            payload = passphrase_store.wrap(master, passphrase)
+            try:
+                write_protected(
+                    payload,
+                    wrapped_file,
+                    header=passphrase_store.MAGIC,
+                    expected_length=passphrase_store.PAYLOAD_BYTES,
                 )
+            except ProtectedStoreError as exc:
+                raise KeyProviderError(f"Refusing to overwrite the key file: {exc}") from exc
+            check = passphrase_store.unwrap(
+                provider._read_wrapped_key_file(wrapped_file) or b"", passphrase
+            )
+            try:
+                if bytes(check) != bytes(master):
+                    raise KeyProviderError(
+                        "wrapped key file does not round-trip; raw key left in place"
+                    )
+            finally:
+                check[:] = bytes(len(check))
         finally:
-            check[:] = bytes(len(check))
-    finally:
-        master[:] = bytes(len(master))
-    size = key_file.stat().st_size
-    with open(key_file, "r+b", buffering=0) as handle:
-        handle.write(bytes(size))
+            master[:] = bytes(len(master))
+        handle.write(bytes(info.st_size))
         os.fsync(handle.fileno())
     key_file.unlink()
     return wrapped_file

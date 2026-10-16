@@ -123,6 +123,24 @@ def test_protect_key_file_accepts_a_hex_key_file(tmp_path):
     assert _key(_provider(tmp_path, passphrase=PASSPHRASE).resolve_key()) == hex_key
 
 
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason="needs POSIX permissions enforced on the owner (root bypasses mode 0400)",
+)
+def test_protect_key_file_on_a_read_only_key_changes_nothing(tmp_path):
+    """Review finding: a 0400 raw key must fail before the wrapped copy exists."""
+    raw = _key(_provider(tmp_path).resolve_key())
+    os.chmod(tmp_path / "master.key", 0o400)
+
+    with pytest.raises(KeyProviderError, match="nothing was changed"):
+        protect_key_file(PASSPHRASE, fallback_dir=tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["master.key"]
+
+    os.chmod(tmp_path / "master.key", 0o600)
+    protect_key_file(PASSPHRASE, fallback_dir=tmp_path)
+    assert _key(_provider(tmp_path, passphrase=PASSPHRASE).resolve_key()) == raw
+
+
 def test_protect_key_file_refuses_without_a_raw_key(tmp_path):
     with pytest.raises(KeyProviderError, match="no raw key file"):
         protect_key_file(PASSPHRASE, fallback_dir=tmp_path)
