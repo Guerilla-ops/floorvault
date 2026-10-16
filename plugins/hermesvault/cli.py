@@ -129,9 +129,9 @@ def _cmd_show(args) -> int:
         return 1
     if args.reveal:
         items = {field: secret.get(field)} if field else secret
-        for name, value in items.items():
+        for _name, value in items.items():
             masked = "****" if value else "(empty)"
-            print(f"{name}={masked}")
+            print(masked)
     else:
         if field:
             print("(set)" if secret.get(field) else "(empty)")
