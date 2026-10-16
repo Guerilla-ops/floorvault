@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import inspect
 
-import floorvault
-from floorvault import beacons, freshness, vaultkit
+import hermes_vault
+from hermes_vault import beacons, freshness, vaultkit
 
 EXPECTED_ALL = {
     "AdaptiveKeyProvider",
@@ -34,6 +34,9 @@ EXPECTED_ALL = {
     "FloorVault",
     "FloorVaultError",
     "HardenedMemoryKey",
+    "HermesVault",
+    "HermesVaultError",
+    "HermesVaultStore",
     "KeyProvider",
     "KeyProviderError",
     "KeyRing",
@@ -47,11 +50,15 @@ EXPECTED_ALL = {
     "SqlAlchemyEncryption",
     "UnknownKeyIdError",
     "UnsupportedWriteError",
+    "VaultError",
+    "VaultItemMeta",
+    "VaultStore",
     "associated_data",
     "connect_encrypted",
     "derive_libsql_file_key",
     "disable_core_dumps",
     "drop_plaintext_column",
+    "get_vault_store",
     "migrate_plaintext_column",
     "recover_master_key",
     "rotate_vault_store",
@@ -59,19 +66,40 @@ EXPECTED_ALL = {
     "wrap_master_key",
 }
 
-FV_INIT = "(master_key: 'Union[bytes, HardenedMemoryKey]', app_instance_id: 'str' = 'default', *, maximum_tracked_nonces: 'int' = 10000, memory_mode: 'str' = 'opportunistic', wipe_source_key: 'bool' = False) -> 'None'"
+FV_INIT = "(master_key: 'Union[bytes, HardenedMemoryKey]', app_instance_id: 'str' = 'hermes-agent', *, maximum_tracked_nonces: 'int' = 10000, memory_mode: 'str' = 'opportunistic', wipe_source_key: 'bool' = False, hkdf_info: 'bytes' = b'hermes-v1-aes-siv') -> 'None'"
+VAULT_STORE_INIT = "(base_dir: 'Path | str', *, crypto: 'Optional[FloorVault]' = None, migrate_legacy_metadata: 'bool' = False)"
+VAULT_STORE_METHODS = {
+    "add_item": "(self, kind: 'str', label: 'str', secret: 'dict[str, Any]', origin: 'Optional[str]' = None, *, item_id: 'Optional[str]' = None) -> 'VaultItemMeta'",
+    "begin_rotation": "(self, target_key_id: 'int', *, target_vault: 'FloorVault') -> 'None'",
+    "clear_rotation_journal": "(self) -> 'None'",
+    "delete_item": "(self, item_id: 'str') -> 'bool'",
+    "get_meta": "(self, item_id: 'str') -> 'Optional[VaultItemMeta]'",
+    "get_secret": "(self, item_id: 'str') -> 'dict[str, Any]'",
+    "has_items": "(self) -> 'bool'",
+    "list_items": "(self) -> 'list[VaultItemMeta]'",
+    "list_legacy_retirements": "(self) -> 'dict[str, str]'",
+    "mark_rotation_done": "(self, rows: 'Iterable[tuple[str, str, str]]', *, target_key_id: 'int') -> 'None'",
+    "read_sealed_item": "(self, item_id: 'str', ring: 'KeyRing') -> 'dict[str, Any]'",
+    "remove_item": "(self, item_id: 'str') -> 'bool'",
+    "reseal_retirements": "(self, ring: 'KeyRing', *, new_vault: 'FloorVault', key_id: 'int' = 0) -> 'int'",
+    "resolve_secret": "(self, item_id: 'str') -> 'dict[str, Any]'",
+    "retire_legacy_id": "(self, legacy_id: 'str', modern_id: 'str') -> 'None'",
+    "retired_modern_id": "(self, legacy_id: 'str') -> 'Optional[str]'",
+    "rotation_journal": "(self) -> 'dict[tuple[str, str, str], tuple[int, str]]'",
+    "write_sealed_item": "(self, item_id: 'str', sealed: 'Mapping[str, Any]', *, new_vault: 'FloorVault', key_id: 'int' = 0, journal_rows: 'Optional[Iterable[tuple[str, str, str]]]' = None) -> 'None'",
+}
 FV_CRYPTO_METHODS = {
-    "decrypt": "(self, ciphertext: 'bytes', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'str'",
-    "decrypt_bytes": "(self, ciphertext: 'bytes', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'bytes'",
-    "decrypt_fields": "(self, fields: 'Mapping[str, bytes]', *, table: 'str', record_id: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'dict[str, bytes]'",
-    "encrypt": "(self, plaintext: 'Union[str, bytes, bytearray, memoryview]', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int' = 0) -> 'bytes'",
-    "encrypt_fields": "(self, fields: 'Mapping[str, Union[str, bytes]]', *, table: 'str', record_id: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int' = 0) -> 'dict[str, bytes]'",
+    "decrypt": "(self, ciphertext: 'bytes', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'hermes.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'str'",
+    "decrypt_bytes": "(self, ciphertext: 'bytes', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'hermes.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'bytes'",
+    "decrypt_fields": "(self, fields: 'Mapping[str, bytes]', *, table: 'str', record_id: 'str', schema_id: 'str' = 'hermes.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'dict[str, bytes]'",
+    "encrypt": "(self, plaintext: 'Union[str, bytes, bytearray, memoryview]', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'hermes.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int' = 0) -> 'bytes'",
+    "encrypt_fields": "(self, fields: 'Mapping[str, Union[str, bytes]]', *, table: 'str', record_id: 'str', schema_id: 'str' = 'hermes.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int' = 0) -> 'dict[str, bytes]'",
     "wipe": "(self) -> 'None'",
 }
 
 EXPECTED_SIGNATURES = {
     "AdaptiveKeyProvider": {
-        "signature": "(service_name: 'str' = 'floorvault', account_name: 'str' = 'default-v1', *, fallback_dir: 'Optional[Path | str]' = None, strict: 'bool' = False, allow_disk_fallback: 'bool' = False, dpapi_entropy: 'Optional[bytes]' = None, allow_legacy_env_vars: 'bool' = False, allow_legacy_adoption: 'bool' = False, passphrase: 'Optional[Union[str, bytes]]' = None) -> 'None'",
+        "signature": "(service_name: 'str' = 'hermes-vault', account_name: 'str' = 'default-v1', *, fallback_dir: 'Optional[Path | str]' = None, strict: 'bool' = False, allow_disk_fallback: 'bool' = False, dpapi_entropy: 'Optional[bytes]' = None, allow_legacy_env_vars: 'bool' = False, allow_legacy_adoption: 'bool' = False, passphrase: 'Optional[Union[str, bytes]]' = None) -> 'None'",
         "methods": {
             "resolve_key": "(self, *, allow_create: 'bool' = True) -> 'HardenedMemoryKey'",
         },
@@ -81,11 +109,11 @@ EXPECTED_SIGNATURES = {
     "ContextualSQLite": {
         "signature": "(connection: 'sqlite3.Connection', crypto: 'FloorVault') -> 'None'",
         "methods": {
-            "table": "(self, table_name: 'str', *, schema_id: 'str' = 'floor.vault.v1') -> 'ContextualTable'",
+            "table": "(self, table_name: 'str', *, schema_id: 'str' = 'hermes.vault.v1') -> 'ContextualTable'",
         },
     },
     "ContextualTable": {
-        "signature": "(crypto: 'FloorVault', table_name: 'str', *, schema_id: 'str' = 'floor.vault.v1') -> 'None'",
+        "signature": "(crypto: 'FloorVault', table_name: 'str', *, schema_id: 'str' = 'hermes.vault.v1') -> 'None'",
         "methods": {
             "decrypt": "(self, record_id: 'str', column: 'str', ciphertext: 'bytes', *, schema_version: 'int' = 1) -> 'str'",
             "encrypt": "(self, record_id: 'str', column: 'str', value: 'Union[str, bytes]', *, schema_version: 'int' = 1) -> 'bytes'",
@@ -97,7 +125,7 @@ EXPECTED_SIGNATURES = {
         "methods": {},
     },
     "EncryptedLibSqlTable": {
-        "signature": "(connection: '_LibSqlConnection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'floor.vault.v1') -> 'None'",
+        "signature": "(connection: '_LibSqlConnection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'hermes.vault.v1') -> 'None'",
         "methods": {
             "load": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'str'",
             "load_bytes": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'bytes'",
@@ -108,7 +136,7 @@ EXPECTED_SIGNATURES = {
         },
     },
     "EncryptedMySQLTable": {
-        "signature": "(connection: 'DBAPIConnection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'floor.vault.v1') -> 'None'",
+        "signature": "(connection: 'DBAPIConnection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'hermes.vault.v1') -> 'None'",
         "methods": {
             "load": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'str'",
             "load_bytes": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'bytes'",
@@ -119,7 +147,7 @@ EXPECTED_SIGNATURES = {
         },
     },
     "EncryptedPostgresTable": {
-        "signature": "(connection: 'DBAPIConnection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'floor.vault.v1') -> 'None'",
+        "signature": "(connection: 'DBAPIConnection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'hermes.vault.v1') -> 'None'",
         "methods": {
             "load": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'str'",
             "load_bytes": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'bytes'",
@@ -130,7 +158,7 @@ EXPECTED_SIGNATURES = {
         },
     },
     "EncryptedSQLiteTable": {
-        "signature": "(connection: 'sqlite3.Connection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'floor.vault.v1') -> 'None'",
+        "signature": "(connection: 'sqlite3.Connection', crypto: 'FloorVault', table_name: 'str', *, id_column: 'str' = 'id', schema_id: 'str' = 'hermes.vault.v1') -> 'None'",
         "methods": {
             "load": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'str'",
             "load_bytes": "(self, record_id: 'str', encrypted_column: 'str', *, schema_version: 'int' = 1, revision: 'int | None' = None) -> 'bytes'",
@@ -143,6 +171,12 @@ EXPECTED_SIGNATURES = {
     "EncryptedWriteError": {"signature": None, "methods": {}},
     "FloorVault": {"signature": FV_INIT, "methods": FV_CRYPTO_METHODS},
     "FloorVaultError": {"signature": None, "methods": {}},
+    "HermesVault": {"signature": FV_INIT, "methods": FV_CRYPTO_METHODS},
+    "HermesVaultError": {"signature": None, "methods": {}},
+    "HermesVaultStore": {
+        "signature": VAULT_STORE_INIT,
+        "methods": VAULT_STORE_METHODS,
+    },
     "HardenedMemoryKey": {
         "signature": "(key_bytes: 'bytes', *, mode: 'str' = 'opportunistic') -> 'None'",
         "methods": {
@@ -162,8 +196,8 @@ EXPECTED_SIGNATURES = {
     "KeyRing": {
         "signature": "(keys: 'Mapping[int, FloorVault]', *, default_key_id: 'Optional[int]' = None) -> 'None'",
         "methods": {
-            "decrypt": "(self, ciphertext: 'bytes', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, revision: 'Optional[int]' = None) -> 'str'",
-            "decrypt_bytes": "(self, ciphertext: 'bytes', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, revision: 'Optional[int]' = None) -> 'bytes'",
+            "decrypt": "(self, ciphertext: 'bytes', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'hermes.vault.v1', schema_version: 'int' = 1, revision: 'Optional[int]' = None) -> 'str'",
+            "decrypt_bytes": "(self, ciphertext: 'bytes', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'hermes.vault.v1', schema_version: 'int' = 1, revision: 'Optional[int]' = None) -> 'bytes'",
             "key_ids": "(self) -> 'tuple[int, ...]'",
         },
     },
@@ -175,6 +209,7 @@ EXPECTED_SIGNATURES = {
             "get_meta": "(self, item_id: 'str') -> 'Optional[Any]'",
             "has_items": "(self) -> 'bool'",
             "list_item_ids": "(self) -> 'list[str]'",
+            "list_items": "(self) -> 'list[Any]'",
             "migrate_all": "(self) -> 'dict[str, Any]'",
             "resolve_secret": "(self, item_id: 'str') -> 'dict[str, Any]'",
             "verify": "(self) -> 'bool'",
@@ -183,7 +218,7 @@ EXPECTED_SIGNATURES = {
     "MissingKeyError": {"signature": None, "methods": {}},
     "NonceReuseError": {"signature": None, "methods": {}},
     "RecordBinding": {
-        "signature": "(crypto: 'FloorVault', table: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1) -> None",
+        "signature": "(crypto: 'FloorVault', table: 'str', schema_id: 'str' = 'hermes.vault.v1', schema_version: 'int' = 1) -> None",
         "methods": {
             "decrypt_field": "(self, record_id: 'str', column: 'str', ciphertext: 'bytes', *, schema_version: 'int | None' = None, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'str'",
             "decrypt_field_bytes": "(self, record_id: 'str', column: 'str', ciphertext: 'bytes', *, schema_version: 'int | None' = None, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'bytes'",
@@ -194,7 +229,7 @@ EXPECTED_SIGNATURES = {
     },
     "SecurityHardeningError": {"signature": None, "methods": {}},
     "SqlAlchemyEncryption": {
-        "signature": "(crypto: 'FloorVault', *, schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1) -> 'None'",
+        "signature": "(crypto: 'FloorVault', *, schema_id: 'str' = 'hermes.vault.v1', schema_version: 'int' = 1) -> 'None'",
         "methods": {
             "is_protected": "(self, model: 'type') -> 'bool'",
             "protect": "(self, model: 'type', *, id_attr: 'str', fields: 'dict[str, EncryptedField | str]', tenant_attr: 'str | None' = None, revision_attr: 'str | None' = None) -> 'type'",
@@ -203,8 +238,19 @@ EXPECTED_SIGNATURES = {
     },
     "UnknownKeyIdError": {"signature": None, "methods": {}},
     "UnsupportedWriteError": {"signature": None, "methods": {}},
+    "VaultError": {"signature": None, "methods": {}},
+    "VaultItemMeta": {
+        "signature": "(id: 'str', kind: 'str', label: 'str', origin: 'Optional[str]', created_at: 'str', identifier_type: 'Optional[str]' = None, identifier: 'Optional[str]' = None, has_otp: 'bool' = False) -> None",
+        "methods": {
+            "to_dict": "(self) -> 'dict[str, Any]'",
+        },
+    },
+    "VaultStore": {
+        "signature": VAULT_STORE_INIT,
+        "methods": VAULT_STORE_METHODS,
+    },
     "associated_data": {
-        "signature": "(*, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, app_instance_id: 'str' = 'default', revision: 'int | None' = None) -> 'bytes'"
+        "signature": "(*, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'hermes.vault.v1', schema_version: 'int' = 1, app_instance_id: 'str' = 'hermes-agent', revision: 'int | None' = None) -> 'bytes'"
     },
     "connect_encrypted": {
         "signature": "(database: 'Union[str, os.PathLike[str]]', master_key: 'Union[bytes, bytearray, HardenedMemoryKey]', **options: 'Any') -> 'Any'"
@@ -215,6 +261,9 @@ EXPECTED_SIGNATURES = {
     "disable_core_dumps": {"signature": "() -> 'bool'"},
     "drop_plaintext_column": {
         "signature": "(connection: 'sqlite3.Connection', *, table: 'str', column: 'str', vacuum: 'bool' = False) -> 'dict[str, Any]'"
+    },
+    "get_vault_store": {
+        "signature": "(base_dir: 'Optional[Path | str]' = None, *, auto_migrate: 'bool' = True)"
     },
     "migrate_plaintext_column": {
         "signature": "(connection: 'sqlite3.Connection', crypto: 'FloorVault', *, table: 'str', id_column: 'str', source_column: 'str', destination_column: 'str') -> 'dict[str, int]'"
@@ -234,7 +283,7 @@ EXPECTED_SIGNATURES = {
 }
 
 SUBMODULE_ALL = {
-    "floorvault.beacons": {
+    "hermes_vault.beacons": {
         "MAX_BEACON_BITS",
         "MIN_BEACON_BITS",
         "BeaconIndexer",
@@ -244,13 +293,13 @@ SUBMODULE_ALL = {
         "derive_beacon_key",
         "suggest_beacon_bits",
     },
-    "floorvault.freshness": {
+    "hermes_vault.freshness": {
         "AnchorStore",
         "FileAnchorStore",
         "FreshnessAnchor",
         "RollbackDetectedError",
     },
-    "floorvault.vaultkit": {
+    "hermes_vault.vaultkit": {
         "SessionCrypto",
         "VaultError",
         "VaultItemMeta",
@@ -274,8 +323,8 @@ def _sig(callable_obj) -> str | None:
 
 def _collect():
     snapshot = {}
-    for name in sorted(floorvault.__all__):
-        obj = getattr(floorvault, name)
+    for name in sorted(hermes_vault.__all__):
+        obj = getattr(hermes_vault, name)
         if inspect.isclass(obj):
             if issubclass(obj, BaseException):
                 snapshot[name] = {"signature": None, "methods": {}}
@@ -293,7 +342,7 @@ def _collect():
 
 
 def test_top_level_exports_match_the_snapshot():
-    assert set(floorvault.__all__) == EXPECTED_ALL
+    assert set(hermes_vault.__all__) == EXPECTED_ALL
 
 
 def test_public_signatures_match_the_snapshot():
@@ -301,6 +350,6 @@ def test_public_signatures_match_the_snapshot():
 
 
 def test_submodule_exports_match_the_snapshot():
-    assert set(beacons.__all__) == SUBMODULE_ALL["floorvault.beacons"]
-    assert set(vaultkit.__all__) == SUBMODULE_ALL["floorvault.vaultkit"]
-    assert set(freshness.__all__) == SUBMODULE_ALL["floorvault.freshness"]
+    assert set(beacons.__all__) == SUBMODULE_ALL["hermes_vault.beacons"]
+    assert set(vaultkit.__all__) == SUBMODULE_ALL["hermes_vault.vaultkit"]
+    assert set(freshness.__all__) == SUBMODULE_ALL["hermes_vault.freshness"]

@@ -37,15 +37,17 @@ class NonceReuseError(FloorVaultError):
     """Raised when encryption reuses a nonce within the process lifetime."""
 
 
-RECORD_MAGIC = b"FLRV"  # FloorVault v1 Envelope Magic
-RECORD_MAGIC_V2 = b"FLV2"  # FloorVault v2 Envelope Magic (versioned header)
+RECORD_MAGIC = b"HRMV"  # Hermes Vault v1 Envelope Magic
+RECORD_MAGIC_V2 = b"HV02"  # Hermes Vault v2 Envelope Magic (versioned header)
+LEGACY_RECORD_MAGICS = (b"FLRV", b"FLV2")
+ALL_VALID_MAGICS = (RECORD_MAGIC, RECORD_MAGIC_V2, *LEGACY_RECORD_MAGICS)
 CRYPTO_VERSION = 2  # crypto_version written by this build's encrypt()
 _HEADER_LEN_V2 = 7  # magic(4) + crypto_version(1) + key_id(1) + nonce_len(1)
 _NONCE_LEN = 16
 
 
 def _envelope_header_len(magic: bytes) -> int:
-    return _HEADER_LEN_V2 if magic == RECORD_MAGIC_V2 else 5
+    return _HEADER_LEN_V2 if magic in (RECORD_MAGIC_V2, b"FLV2") else 5
 
 
 def envelope_header(ciphertext: bytes) -> dict[str, Any]:
@@ -60,16 +62,16 @@ def envelope_header(ciphertext: bytes) -> dict[str, Any]:
     if len(ciphertext) < 5:
         raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
     magic = bytes(ciphertext[:4])
-    if magic not in (RECORD_MAGIC, RECORD_MAGIC_V2):
+    if magic not in ALL_VALID_MAGICS:
         raise DecryptionVerificationError("Invalid ciphertext magic header")
-    if magic == RECORD_MAGIC_V2 and len(ciphertext) < _HEADER_LEN_V2:
+    if magic in (RECORD_MAGIC_V2, b"FLV2") and len(ciphertext) < _HEADER_LEN_V2:
         raise DecryptionVerificationError("Malformed ciphertext envelope: too short")
     header: dict[str, Any] = {
         "magic": magic,
         "header_len": _envelope_header_len(magic),
-        "nonce_len": ciphertext[4] if magic == RECORD_MAGIC else ciphertext[6],
+        "nonce_len": ciphertext[4] if magic in (RECORD_MAGIC, b"FLRV") else ciphertext[6],
     }
-    if magic == RECORD_MAGIC_V2:
+    if magic in (RECORD_MAGIC_V2, b"FLV2"):
         header["crypto_version"] = ciphertext[4]
         header["key_id"] = ciphertext[5]
     return header
@@ -107,7 +109,7 @@ def _parse_envelope(
         ciphertext = bytes(ciphertext)
     view = memoryview(ciphertext)
     magic = view[:4]
-    if magic == RECORD_MAGIC_V2:
+    if magic in (RECORD_MAGIC_V2, b"FLV2"):
         crypto_version = view[4]
         if crypto_version != CRYPTO_VERSION:
             raise DecryptionVerificationError(
@@ -117,7 +119,7 @@ def _parse_envelope(
         header = view[:_HEADER_LEN_V2]
         key_id = view[5]
         offset = _HEADER_LEN_V2
-    elif magic == RECORD_MAGIC:
+    elif magic in (RECORD_MAGIC, b"FLRV"):
         header = crypto_version = key_id = None
         offset = 5
     else:
@@ -183,9 +185,9 @@ def associated_data(
     table: str,
     record_id: str,
     column: str,
-    schema_id: str = "floor.vault.v1",
+    schema_id: str = "hermes.vault.v1",
     schema_version: int = 1,
-    app_instance_id: str = "default",
+    app_instance_id: str = "hermes-agent",
     revision: int | None = None,
 ) -> bytes:
     """Construct canonical Associated Authenticated Data (AAD) binding block.
@@ -239,11 +241,12 @@ class FloorVault:
     def __init__(
         self,
         master_key: Union[bytes, HardenedMemoryKey],
-        app_instance_id: str = "default",
+        app_instance_id: str = "hermes-agent",
         *,
         maximum_tracked_nonces: int = 10000,
         memory_mode: str = "opportunistic",
         wipe_source_key: bool = False,
+        hkdf_info: bytes = b"hermes-v1-aes-siv",
     ) -> None:
         """Initialize FloorVault.
 
@@ -316,7 +319,7 @@ class FloorVault:
                 algorithm=hashes.SHA256(),
                 length=64,
                 salt=None,
-                info=b"floorvault-v1-aes-siv",
+                info=hkdf_info,
             ).derive(master_buffer)
 
             # 3. Pin derived subkeys into physical RAM containers
@@ -445,7 +448,7 @@ class FloorVault:
         table: str,
         record_id: str,
         column: str,
-        schema_id: str = "floor.vault.v1",
+        schema_id: str = "hermes.vault.v1",
         schema_version: int = 1,
         revision: int | None = None,
         key_id: int = 0,
@@ -553,7 +556,7 @@ class FloorVault:
         table: str,
         record_id: str,
         column: str,
-        schema_id: str = "floor.vault.v1",
+        schema_id: str = "hermes.vault.v1",
         schema_version: int = 1,
         revision: int | None = None,
         key_id: int | None = None,
@@ -614,7 +617,7 @@ class FloorVault:
         table: str,
         record_id: str,
         column: str,
-        schema_id: str = "floor.vault.v1",
+        schema_id: str = "hermes.vault.v1",
         schema_version: int = 1,
         revision: int | None = None,
         key_id: int | None = None,
@@ -656,7 +659,7 @@ class FloorVault:
         *,
         table: str,
         record_id: str,
-        schema_id: str = "floor.vault.v1",
+        schema_id: str = "hermes.vault.v1",
         schema_version: int = 1,
         revision: int | None = None,
         key_id: int = 0,
@@ -714,7 +717,7 @@ class FloorVault:
         *,
         table: str,
         record_id: str,
-        schema_id: str = "floor.vault.v1",
+        schema_id: str = "hermes.vault.v1",
         schema_version: int = 1,
         revision: int | None = None,
         key_id: int | None = None,
@@ -789,3 +792,8 @@ class FloorVault:
 
 # Backward compatibility alias
 AppStateCrypto = FloorVault
+
+
+# Hermes Vault native aliases
+HermesVault = FloorVault
+HermesVaultError = FloorVaultError

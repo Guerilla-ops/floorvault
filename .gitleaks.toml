@@ -19,18 +19,19 @@ useDefault = true
 description = "Project Wycheproof public test vectors, pinned by SHA-256"
 paths = ['''^tests/vectors/wycheproof/(aes_siv_cmac|aead_aes_siv_cmac)_test\.json$''']
 
-# FloorVault's own wire vectors are synthetic test data: every "key" derives
-# from a fixed public label in scripts/gen_vectors.py. The generic-api-key
-# rule flags the 64-hex master/recovery/beacon key fields. Safe by pin: the
-# file is regenerated deterministically and tests/test_wire_vectors.py fails
-# if the committed bytes differ from generate(), so a hand-smuggled secret
-# cannot survive the drift check.
+# FloorVault and Hermes Vault wire vectors are synthetic test data: every
+# "key" derives from a fixed public label in scripts/gen_vectors.py. The
+# generic-api-key rule flags the 64-hex master/recovery/beacon key fields.
+# Safe by pin: the file is regenerated deterministically and
+# tests/test_wire_vectors.py fails if the committed bytes differ from
+# generate(), so a hand-smuggled secret cannot survive the drift check.
 #
 # The hermes_vault_wire_vectors.json name is the same generator's output on the
-# main-v2 fork (keys from public "hermes_vault-vector-*" labels), which carries
-# this exact pattern in its own config. CI checks out every branch with
-# fetch-depth: 0, so this branch's history scan walks main-v2's commits under
-# this config and must allowlist that path too.
+# main-v2 fork (keys from public "hermes_vault-vector-*" labels). CI checks out
+# every branch with fetch-depth: 0, so this branch's history scan walks those
+# commits under this config and must allowlist that path too.
 [[allowlists]]
-description = "FloorVault wire vectors, pinned by deterministic regeneration"
+description = "FloorVault and Hermes Vault wire vectors, pinned by deterministic regeneration"
+# Both names: the file was floorvault_wire_vectors.json before the rename, and
+# history scans still walk the old path at old commits.
 paths = ['''^tests/vectors/(hermes_vault|floorvault)_wire_vectors\.json$''']

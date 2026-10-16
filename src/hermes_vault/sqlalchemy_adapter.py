@@ -1,7 +1,7 @@
 """SQLAlchemy ORM adapter: fail-closed encrypted fields on mapped classes.
 
 The threat this adapter answers is not the crypto - that is
-:class:`floorvault.core.FloorVault`, unchanged. It is the ORM write surface:
+:class:`hermes_vault.core.FloorVault`, unchanged. It is the ORM write surface:
 bulk ``insert()``/``update()`` statements, ``Query.update``, and direct
 assignment to a mapped ciphertext column all bypass ordinary model code, so
 an encryption layer that only listens to flush events cannot see them.
@@ -28,7 +28,7 @@ be violated, not only at flush:
    ``bulk_save_objects``), which never fire ``do_orm_execute``. Records must
    be written through ``session.add`` with ``EncryptedField`` assignment.
 
-Owner/tenant binding uses :func:`floorvault.records.bound_record_id`: the
+Owner/tenant binding uses :func:`hermes_vault.records.bound_record_id`: the
 AAD record coordinate is a length-prefixed ``tenant:record_id`` composite,
 so a ciphertext written under one tenant cannot be replayed under another.
 
@@ -53,8 +53,8 @@ try:
     from sqlalchemy.orm import ORMExecuteState, Session, sessionmaker
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError(
-        "floorvault.sqlalchemy_adapter requires SQLAlchemy 2.x; "
-        "install the 'sqlalchemy' extra (pip install floorvault[sqlalchemy])"
+        "hermes_vault.sqlalchemy_adapter requires SQLAlchemy 2.x; "
+        "install the 'sqlalchemy' extra (pip install hermes_vault[sqlalchemy])"
     ) from exc
 
 from .core import FloorVault
@@ -340,7 +340,7 @@ class SqlAlchemyEncryption:
         self,
         crypto: FloorVault,
         *,
-        schema_id: str = "floor.vault.v1",
+        schema_id: str = "hermes.vault.v1",
         schema_version: int = 1,
     ) -> None:
         if not isinstance(crypto, FloorVault):

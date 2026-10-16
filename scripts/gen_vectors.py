@@ -1,4 +1,4 @@
-"""Deterministic generator for tests/vectors/floorvault_wire_vectors.json.
+"""Deterministic generator for tests/vectors/hermes_vault_wire_vectors.json.
 
 The vectors pin down the FloorVault wire format described by docs/SPEC.md so
 that ``tests/test_wire_vectors.py`` can check the reference implementation
@@ -26,21 +26,21 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 _VECTORS_DIR = _ROOT / "tests" / "vectors"
-JSON_PATH = _VECTORS_DIR / "floorvault_wire_vectors.json"
+JSON_PATH = _VECTORS_DIR / "hermes_vault_wire_vectors.json"
 if str(_VECTORS_DIR) not in sys.path:
     sys.path.insert(0, str(_VECTORS_DIR))
 
 import independent_wire as iw  # noqa: E402
 
-from floorvault import FloorVault, associated_data  # noqa: E402
-from floorvault.beacons import compute_beacon, derive_beacon_key  # noqa: E402
-from floorvault.key_recovery import wrap_master_key  # noqa: E402
+from hermes_vault import FloorVault, associated_data  # noqa: E402
+from hermes_vault.beacons import compute_beacon, derive_beacon_key  # noqa: E402
+from hermes_vault.key_recovery import wrap_master_key  # noqa: E402
 
 # Fixed keys, derived from labels so they are obviously synthetic test data.
-MASTER_KEY = hashlib.sha256(b"floorvault-vector-master-key-v1").digest()
-RECOVERY_KEY = hashlib.sha256(b"floorvault-vector-recovery-key-v1").digest()
+MASTER_KEY = hashlib.sha256(b"hermes_vault-vector-master-key-v1").digest()
+RECOVERY_KEY = hashlib.sha256(b"hermes_vault-vector-recovery-key-v1").digest()
 
-_URANDOM_SEED = b"floorvault-wire-vector-nonce-stream-v1"
+_URANDOM_SEED = b"hermes_vault-wire-vector-nonce-stream-v1"
 
 
 class _DeterministicUrandom:
@@ -89,8 +89,8 @@ def _vault_for(app_instance_id: str) -> FloorVault:
 def _full_coords(coords: dict) -> dict:
     """Fill in the reference defaults so the stored vector is self-documenting."""
     full = {
-        "app_instance_id": "default",
-        "schema_id": "floor.vault.v1",
+        "app_instance_id": "hermes-agent",
+        "schema_id": "hermes.vault.v1",
         "schema_version": 1,
         **coords,
     }
@@ -233,7 +233,7 @@ def _positive_specs() -> list[dict]:
             "id": "pos-v1-legacy",
             "comment": "v1 FLRV envelope built by the independent implementation — this build "
                        "has no v1 writer, so the spec-conformant record is the vector (§4.2). "
-                       "floorvault must still read it with the v1 AD vector [aad, nonce].",
+                       "hermes_vault must still read it with the v1 AD vector [aad, nonce].",
             "version": 1,
             "producer": "independent_v1",
             "coords": {"table": "users", "record_id": "u-1", "column": "email"},
@@ -267,7 +267,7 @@ def _build_positives() -> tuple[list[dict], dict[str, bytes]]:
         vault = _vault_for(coords["app_instance_id"])
         plaintext = _pt_bytes(spec["plaintext"])
         if spec.get("version") == 1:
-            # No v1 writer exists in floorvault; construct the record with the
+            # No v1 writer exists in hermes_vault; construct the record with the
             # independent implementation per §4.2 — that is the point.
             aad = iw.build_aad(coords)
             nonce = os.urandom(16)
@@ -308,7 +308,7 @@ def _flip(env: bytes, offset: int) -> bytes:
 
 def _build_negatives(envs: dict[str, bytes], positives: list[dict]) -> list[dict]:
     """One vector per §16/§4.3 rejection class. ``expect`` names the class each
-    side must raise; ``floorvault_msg`` is a required substring of the
+    side must raise; ``hermes_vault_msg`` is a required substring of the
     reference error (the spec names classes, not messages, for foreign impls)."""
     by_id = {v["id"]: v for v in positives}
     base = envs["pos-ascii"]
@@ -324,8 +324,8 @@ def _build_negatives(envs: dict[str, bytes], positives: list[dict]) -> list[dict
             "input_hex": data.hex(),
             "coords": coords or base_coords,
             "expect": {
-                "floorvault": "DecryptionVerificationError",
-                "floorvault_msg": msg,
+                "hermes_vault": "DecryptionVerificationError",
+                "hermes_vault_msg": msg,
                 "independent": expect,
             },
         }
@@ -405,8 +405,8 @@ def _build_negatives(envs: dict[str, bytes], positives: list[dict]) -> list[dict
             "input_hex": base.hex(),
             "coords": {**base_coords, "record_id": "u-2"},
             "expect": {
-                "floorvault": "DecryptionVerificationError",
-                "floorvault_msg": "verification failed",
+                "hermes_vault": "DecryptionVerificationError",
+                "hermes_vault_msg": "verification failed",
                 "independent": "AuthenticationError",
             },
         },
@@ -418,8 +418,8 @@ def _build_negatives(envs: dict[str, bytes], positives: list[dict]) -> list[dict
             "input_hex": envs["pos-batch-meta:label"].hex(),
             "coords": by_id["pos-batch-payload"]["coords"],
             "expect": {
-                "floorvault": "DecryptionVerificationError",
-                "floorvault_msg": "verification failed",
+                "hermes_vault": "DecryptionVerificationError",
+                "hermes_vault_msg": "verification failed",
                 "independent": "AuthenticationError",
             },
         },
@@ -434,8 +434,8 @@ def _build_negatives(envs: dict[str, bytes], positives: list[dict]) -> list[dict
             "coords": v1_coords,
             "require_key_id": 0,
             "expect": {
-                "floorvault": "DecryptionVerificationError",
-                "floorvault_msg": "no key id",
+                "hermes_vault": "DecryptionVerificationError",
+                "hermes_vault_msg": "no key id",
                 "independent": "KeyIdMismatchError",
             },
         },
@@ -448,8 +448,8 @@ def _build_negatives(envs: dict[str, bytes], positives: list[dict]) -> list[dict
             "coords": kid7_coords,
             "require_key_id": 3,
             "expect": {
-                "floorvault": "DecryptionVerificationError",
-                "floorvault_msg": "written under key id 7",
+                "hermes_vault": "DecryptionVerificationError",
+                "hermes_vault_msg": "written under key id 7",
                 "independent": "KeyIdMismatchError",
             },
         },
@@ -461,8 +461,8 @@ def _build_negatives(envs: dict[str, bytes], positives: list[dict]) -> list[dict
             "input_str": "FLV2 this is not bytes",
             "coords": base_coords,
             "expect": {
-                "floorvault": "TypeError",
-                "floorvault_msg": "bytes",
+                "hermes_vault": "TypeError",
+                "hermes_vault_msg": "bytes",
                 "independent": "TypeError",
             },
         },
@@ -475,8 +475,8 @@ def _build_negatives(envs: dict[str, bytes], positives: list[dict]) -> list[dict
             "input_memoryview_hex": base.hex(),
             "coords": base_coords,
             "expect": {
-                "floorvault": "TypeError",
-                "floorvault_msg": "bytes",
+                "hermes_vault": "TypeError",
+                "hermes_vault_msg": "bytes",
                 "independent": "TypeError",
             },
         },
@@ -488,8 +488,8 @@ def _build_negatives(envs: dict[str, bytes], positives: list[dict]) -> list[dict
             "(§4.4 step 5).",
             "ref": "pos-nonutf8-bytes",
             "expect": {
-                "floorvault": "DecryptionVerificationError",
-                "floorvault_msg": "not valid UTF-8",
+                "hermes_vault": "DecryptionVerificationError",
+                "hermes_vault_msg": "not valid UTF-8",
                 "independent": "UnicodeDecodeError",
             },
         },
@@ -519,26 +519,26 @@ def _build_aad_vectors(positives: list[dict]) -> list[dict]:
             "id": "aad-reject-whitespace",
             "comment": "Whitespace-after-strip() string coordinate → ValueError (§5.2).",
             "coords": {"table": "   ", "record_id": "r", "column": "c"},
-            "expect_error": {"floorvault": "ValueError", "independent": "ValueError"},
+            "expect_error": {"hermes_vault": "ValueError", "independent": "ValueError"},
         },
         {
             "id": "aad-reject-non-string",
             "comment": "Non-str coordinate raises the same 'non-empty string' ValueError, "
             "not a type error (§5.2 quirk).",
             "coords": {"table": "t", "record_id": 42, "column": "c"},
-            "expect_error": {"floorvault": "ValueError", "independent": "ValueError"},
+            "expect_error": {"hermes_vault": "ValueError", "independent": "ValueError"},
         },
         {
             "id": "aad-reject-bool-schema-version",
             "comment": "bool is rejected where int is required → TypeError (§5.2).",
             "coords": {"table": "t", "record_id": "r", "column": "c", "schema_version": True},
-            "expect_error": {"floorvault": "TypeError", "independent": "TypeError"},
+            "expect_error": {"hermes_vault": "TypeError", "independent": "TypeError"},
         },
         {
             "id": "aad-reject-negative-revision",
             "comment": "revision must be non-negative when present → ValueError (§5.2).",
             "coords": {"table": "t", "record_id": "r", "column": "c", "revision": -1},
-            "expect_error": {"floorvault": "ValueError", "independent": "ValueError"},
+            "expect_error": {"hermes_vault": "ValueError", "independent": "ValueError"},
         },
     ]
     return vectors
@@ -582,17 +582,17 @@ def generate() -> dict:
         "format_version": 1,
         "_doc": {
             "purpose": "Pinned wire vectors for docs/SPEC.md, checked by tests/test_wire_vectors.py "
-            "against both floorvault and tests/vectors/independent_wire.py.",
+            "against both hermes_vault and tests/vectors/independent_wire.py.",
             "encodings": "All *_hex fields are lowercase hex of raw bytes; 'coords' objects are "
             "literal JSON strings mapping to associated_data(...) kwargs. "
             "'app_instance_id' is bound at FloorVault construction, not per call; "
             "an absent 'revision' member means unbound.",
-            "positive": "floorvault.decrypt_bytes(envelope, **coords) == plaintext_hex; when "
-            "'plaintext_utf8' is present floorvault.decrypt() returns that str. "
+            "positive": "hermes_vault.decrypt_bytes(envelope, **coords) == plaintext_hex; when "
+            "'plaintext_utf8' is present hermes_vault.decrypt() returns that str. "
             "'producer' names the writing API; 'independent_v1' records were built "
             "by independent_wire because this build has no v1 writer.",
-            "negative": "'expect.floorvault'/'expect.independent' name the error class each side "
-            "must raise; 'floorvault_msg' is a required substring of the reference "
+            "negative": "'expect.hermes_vault'/'expect.independent' name the error class each side "
+            "must raise; 'hermes_vault_msg' is a required substring of the reference "
             "error message. 'kind' selects the checker's harness path; 'ref' points "
             "at a positive vector's envelope.",
             "determinism": "Regenerate with `PYTHONPATH=src .venv/bin/python scripts/gen_vectors.py`. "
@@ -607,7 +607,7 @@ def generate() -> dict:
         "beacon_vectors": beacons,
         "recovery": {
             "comment": "FVRB1 bundle per §11: master_key wrapped under recovery_key at "
-            "coordinates app_instance_id='floorvault-recovery', table='recovery', "
+            "coordinates app_instance_id='hermes-vault-recovery', table='recovery', "
             "record_id=hex(bundle_id), column='master_key'.",
             "master_key": MASTER_KEY.hex(),
             "recovery_key": RECOVERY_KEY.hex(),

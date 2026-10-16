@@ -120,7 +120,7 @@ class EncryptedLibSqlTable(EncryptedSQLiteTable):
         table_name: str,
         *,
         id_column: str = "id",
-        schema_id: str = "floor.vault.v1",
+        schema_id: str = "hermes.vault.v1",
     ) -> None:
         _check_connection(connection)
         if not isinstance(crypto, FloorVault):

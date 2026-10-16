@@ -30,27 +30,30 @@ verify_wheel = _load_verify_wheel()
 
 
 def test_universal_wheel_is_accepted():
-    assert verify_wheel.is_universal("floorvault-0.1.0-py3-none-any.whl") is True
+    assert verify_wheel.is_universal("hermes_vault-0.1.0-py3-none-any.whl") is True
 
 
 def test_platform_wheel_is_rejected():
     # A compiled / platform-specific wheel must never be shipped.
-    assert verify_wheel.is_universal("floorvault-0.1.0-cp313-cp313-macosx_11_0_arm64.whl") is False
-    assert verify_wheel.is_universal("floorvault-0.1.0-cp313-cp313-win_amd64.whl") is False
     assert (
-        verify_wheel.is_universal("floorvault-0.1.0-cp313-cp313-manylinux_2_17_x86_64.whl") is False
+        verify_wheel.is_universal("hermes_vault-0.1.0-cp313-cp313-macosx_11_0_arm64.whl") is False
+    )
+    assert verify_wheel.is_universal("hermes_vault-0.1.0-cp313-cp313-win_amd64.whl") is False
+    assert (
+        verify_wheel.is_universal("hermes_vault-0.1.0-cp313-cp313-manylinux_2_17_x86_64.whl")
+        is False
     )
 
 
 def test_non_wheel_filename_is_rejected():
-    assert verify_wheel.is_universal("floorvault-0.1.0.tar.gz") is False
+    assert verify_wheel.is_universal("hermes_vault-0.1.0.tar.gz") is False
 
 
 def test_assert_universal_accepts_a_universal_wheel():
-    assert verify_wheel.assert_universal("floorvault-0.1.0-py3-none-any.whl") is None
+    assert verify_wheel.assert_universal("hermes_vault-0.1.0-py3-none-any.whl") is None
 
 
 def test_assert_universal_exits_nonzero_on_a_platform_wheel():
     with pytest.raises(SystemExit) as excinfo:
-        verify_wheel.assert_universal("floorvault-0.1.0-cp313-cp313-win_amd64.whl")
+        verify_wheel.assert_universal("hermes_vault-0.1.0-cp313-cp313-win_amd64.whl")
     assert excinfo.value.code == 1

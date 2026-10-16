@@ -26,10 +26,10 @@ from pathlib import Path
 import pytest
 from cryptography.fernet import Fernet
 
-from floorvault.core import FloorVault
-from floorvault.memory import HardenedMemoryKey
-from floorvault.migration import LegacyRetiredError, MigratingVaultStore
-from floorvault.vaultkit.vault import VaultError, VaultStore
+from hermes_vault.core import FloorVault
+from hermes_vault.memory import HardenedMemoryKey
+from hermes_vault.migration import LegacyRetiredError, MigratingVaultStore
+from hermes_vault.vaultkit.vault import VaultError, VaultStore
 
 
 def _make_crypto() -> FloorVault:

@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from floorvault import platform_support
-from floorvault.memory import HardenedMemoryKey
-from floorvault.providers import adaptive as adaptive_module
-from floorvault.providers import platform_custody as custody_module
-from floorvault.providers.adaptive import AdaptiveKeyProvider
-from floorvault.providers.base import CustodyDowngradeError, KeyProviderError
-from floorvault.providers.linux_keyring import LinuxSecretServiceKeyProvider
-from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+from hermes_vault import platform_support
+from hermes_vault.memory import HardenedMemoryKey
+from hermes_vault.providers import adaptive as adaptive_module
+from hermes_vault.providers import platform_custody as custody_module
+from hermes_vault.providers.adaptive import AdaptiveKeyProvider
+from hermes_vault.providers.base import CustodyDowngradeError, KeyProviderError
+from hermes_vault.providers.linux_keyring import LinuxSecretServiceKeyProvider
+from hermes_vault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
 
 def _force_machine_file_tier(monkeypatch):
@@ -241,7 +241,7 @@ def test_adaptive_provider_records_missing_keychain_backend(monkeypatch, tmp_pat
     with pytest.raises(KeyProviderError):
         provider.resolve_key()
     assert provider.keychain_unavailable_reason is not None
-    assert "floorvault[macos]" in provider.keychain_unavailable_reason
+    assert "hermes_vault[macos]" in provider.keychain_unavailable_reason
 
 
 def test_adaptive_provider_machine_file_fallback(monkeypatch, tmp_path):
@@ -601,8 +601,8 @@ def test_disk_fallback_refusal_names_the_real_gate_and_the_remedy(monkeypatch, t
 def test_disk_fallback_refusal_repeats_the_native_tier_reason(monkeypatch, tmp_path):
     """When the OS-native tier explained why it was unavailable, say so.
 
-    On macOS without ``floorvault[macos]`` the provider records the fix
-    ("install floorvault[macos]") and previously never surfaced it.
+    On macOS without ``hermes_vault[macos]`` the provider records the fix
+    ("install hermes_vault[macos]") and previously never surfaced it.
     """
     for name in ("APPSTATE_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
         monkeypatch.delenv(name, raising=False)
@@ -615,7 +615,7 @@ def test_disk_fallback_refusal_repeats_the_native_tier_reason(monkeypatch, tmp_p
     with pytest.raises(KeyProviderError) as excinfo:
         provider.resolve_key()
 
-    assert "floorvault[macos]" in str(excinfo.value)
+    assert "hermes_vault[macos]" in str(excinfo.value)
     assert "allow_disk_fallback" in str(excinfo.value)
 
 
@@ -705,7 +705,7 @@ def _seed_ss_store(monkeypatch, tmp_path: Path, key: bytes) -> Path:
         monkeypatch.delenv(name, raising=False)
     seed = LinuxSecretServiceKeyProvider(
         store_path=ss_path,
-        service="floorvault",
+        service="hermes-vault",
         attribute="default-v1",
         random_bytes=lambda n: key[:n],
     )

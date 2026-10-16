@@ -29,11 +29,11 @@ from pathlib import Path
 
 import pytest
 
-from floorvault.providers import adaptive as adaptive_module
-from floorvault.providers import linux_keyring as lk_module
-from floorvault.providers.adaptive import AdaptiveKeyProvider
-from floorvault.providers.linux_keyring import LinuxSecretServiceKeyProvider
-from floorvault.providers.platform_custody import (
+from hermes_vault.providers import adaptive as adaptive_module
+from hermes_vault.providers import linux_keyring as lk_module
+from hermes_vault.providers.adaptive import AdaptiveKeyProvider
+from hermes_vault.providers.linux_keyring import LinuxSecretServiceKeyProvider
+from hermes_vault.providers.platform_custody import (
     LEGACY_STORE_NAME,
     ProtectedStoreError,
     ProtectedStoreHeaderError,
@@ -41,7 +41,7 @@ from floorvault.providers.platform_custody import (
     store_path_for,
     write_protected,
 )
-from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+from hermes_vault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
 
 def _headless(monkeypatch):

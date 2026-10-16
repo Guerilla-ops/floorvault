@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from floorvault import DecryptionVerificationError, FloorVault
-from floorvault.sqlalchemy_adapter import (
+from hermes_vault import DecryptionVerificationError, FloorVault
+from hermes_vault.sqlalchemy_adapter import (
     EncryptedField,
     EncryptedWriteError,
     SqlAlchemyEncryption,
@@ -97,7 +97,7 @@ def test_plaintext_round_trip_and_ciphertext_at_rest():
     assert row is not None
     blob = row[0]
     assert isinstance(blob, bytes)
-    assert blob[:4] == b"FLV2", "the stored value must be a FloorVault envelope"
+    assert blob[:4] == b"HV02", "the stored value must be a FloorVault envelope"
     assert b"123-45-6789" not in blob
 
     with Session() as session:
@@ -305,8 +305,8 @@ def test_unprotected_model_encrypted_field_fails_closed():
 
 def test_records_layer_is_shared_not_duplicated():
     """records.py owns coordinate assembly; the ORM adapter must not reimplement it."""
-    import floorvault.records as records
-    import floorvault.sqlalchemy_adapter as adapter
+    import hermes_vault.records as records
+    import hermes_vault.sqlalchemy_adapter as adapter
 
     assert adapter.RecordBinding is records.RecordBinding
     assert adapter.bound_record_id is records.bound_record_id
@@ -484,7 +484,7 @@ def test_require_envelope_rejects_header_only_fragments():
     ``envelope_header`` accepts a bare v2 header; a truncated blob that
     parses as a header but has no nonce/ciphertext is not an envelope.
     """
-    from floorvault.records import require_envelope
+    from hermes_vault.records import require_envelope
 
     with pytest.raises(TypeError):
         require_envelope(b"FLRV\x01\x00\x10", where="test")  # header, no body

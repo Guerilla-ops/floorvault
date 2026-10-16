@@ -2,11 +2,11 @@
 
 import pytest
 
-from floorvault.core import FloorVault
-from floorvault.memory import HardenedMemoryKey
+from hermes_vault.core import FloorVault
+from hermes_vault.memory import HardenedMemoryKey
 
 
-def test_floorvault_preserves_caller_key_by_default() -> None:
+def test_hermes_vault_preserves_caller_key_by_default() -> None:
     source = HardenedMemoryKey(b"K" * 32, mode="disabled")
 
     vault = FloorVault(source, memory_mode="disabled")

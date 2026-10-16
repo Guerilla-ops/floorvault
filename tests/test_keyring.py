@@ -15,15 +15,15 @@ from __future__ import annotations
 
 import pytest
 
-from floorvault.core import (
+from hermes_vault.core import (
     RECORD_MAGIC_V2,
     DecryptionVerificationError,
     FloorVault,
     associated_data,
     envelope_header,
 )
-from floorvault.keyring import KeyRing, UnknownKeyIdError
-from floorvault.memory import HardenedMemoryKey
+from hermes_vault.keyring import KeyRing, UnknownKeyIdError
+from hermes_vault.memory import HardenedMemoryKey
 
 KEY_0 = bytes.fromhex("01" * 32)
 KEY_1 = bytes.fromhex("02" * 32)
@@ -46,10 +46,10 @@ def _v1_envelope(plaintext: str, seed: bytes = KEY_0) -> bytes:
     from cryptography.hazmat.primitives.ciphers.aead import AESSIV
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-    from floorvault.core import RECORD_MAGIC
+    from hermes_vault.core import RECORD_MAGIC
 
     siv_key = HKDF(
-        algorithm=hashes.SHA256(), length=64, salt=None, info=b"floorvault-v1-aes-siv"
+        algorithm=hashes.SHA256(), length=64, salt=None, info=b"hermes-v1-aes-siv"
     ).derive(seed)
     aad = associated_data(table="users", record_id="u-1", column="email")
     nonce = os.urandom(16)
@@ -191,9 +191,9 @@ def test_the_ring_does_not_mutate_its_input_mapping():
 
 def test_the_ring_is_part_of_the_public_api():
     """A read path a caller must use during a rotation belongs in the package surface."""
-    import floorvault
+    import hermes_vault
 
-    assert floorvault.KeyRing is KeyRing
-    assert floorvault.UnknownKeyIdError is UnknownKeyIdError
-    assert "KeyRing" in floorvault.__all__
-    assert "UnknownKeyIdError" in floorvault.__all__
+    assert hermes_vault.KeyRing is KeyRing
+    assert hermes_vault.UnknownKeyIdError is UnknownKeyIdError
+    assert "KeyRing" in hermes_vault.__all__
+    assert "UnknownKeyIdError" in hermes_vault.__all__

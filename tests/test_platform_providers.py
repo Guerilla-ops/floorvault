@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import pytest
 
-from floorvault.memory import HardenedMemoryKey
-from floorvault.providers.base import KeyProvider, KeyProviderError, MissingKeyError
+from hermes_vault.memory import HardenedMemoryKey
+from hermes_vault.providers.base import KeyProvider, KeyProviderError, MissingKeyError
 
 
 def _assert_key_contract(provider: KeyProvider, second: KeyProvider) -> None:
@@ -44,7 +44,7 @@ def test_windows_dpapi_round_trips_a_variable_length_blob(tmp_path, monkeypatch)
     exactly this reason, with "master key must be exactly 32 bytes", before the
     store learned to carry an opaque payload.
     """
-    from floorvault.providers import windows_dpapi as wd_module
+    from hermes_vault.providers import windows_dpapi as wd_module
 
     def fake_protect(key: bytes) -> bytes:
         # Stand-in for a DPAPI blob: same key, but a size the OS would pick.
@@ -70,8 +70,8 @@ def test_windows_dpapi_round_trips_a_variable_length_blob(tmp_path, monkeypatch)
 
 
 def test_provider_interface_exists():
-    from floorvault.providers.linux_keyring import LinuxSecretServiceKeyProvider
-    from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+    from hermes_vault.providers.linux_keyring import LinuxSecretServiceKeyProvider
+    from hermes_vault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
     for cls in (WindowsDPAPIKeyProvider, LinuxSecretServiceKeyProvider):
         assert issubclass(cls, KeyProvider)
@@ -82,7 +82,7 @@ def test_windows_dpapi_round_trip_on_posix_via_fallback(tmp_path):
     explicit opt-in - it is plaintext-equivalent custody. With it, the
     round-trip contract holds; on Windows it uses CryptProtectData.
     This keeps the contract testable cross-platform."""
-    from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+    from hermes_vault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
     store = tmp_path / "winstore"
     first = WindowsDPAPIKeyProvider(
@@ -100,9 +100,9 @@ def test_windows_dpapi_refuses_stub_custody_off_windows_by_default(monkeypatch, 
     plaintext-equivalent custody masquerading under a DPAPI name. Default is
     fail-closed on both the create and the read path.
     """
-    from floorvault import platform_support
-    from floorvault.providers.platform_custody import ProtectedStoreError
-    from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+    from hermes_vault import platform_support
+    from hermes_vault.providers.platform_custody import ProtectedStoreError
+    from hermes_vault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
     monkeypatch.setattr(platform_support, "IS_WINDOWS", False)
 
@@ -115,9 +115,9 @@ def test_windows_dpapi_refuses_stub_custody_off_windows_by_default(monkeypatch, 
 def test_windows_dpapi_refuses_to_read_a_stub_store_without_opt_in(monkeypatch, tmp_path):
     """A store the stub wrote stays plaintext-equivalent; adopting it silently
     would perpetuate the false boundary, so reads refuse too."""
-    from floorvault import platform_support
-    from floorvault.providers.platform_custody import ProtectedStoreError
-    from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+    from hermes_vault import platform_support
+    from hermes_vault.providers.platform_custody import ProtectedStoreError
+    from hermes_vault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
     monkeypatch.setattr(platform_support, "IS_WINDOWS", False)
     store = tmp_path / "s"
@@ -132,8 +132,8 @@ def test_windows_dpapi_refuses_to_read_a_stub_store_without_opt_in(monkeypatch, 
 
 
 def test_windows_dpapi_missing_store_without_create_fails_closed(tmp_path, monkeypatch):
-    from floorvault import platform_support
-    from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+    from hermes_vault import platform_support
+    from hermes_vault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
     monkeypatch.setattr(platform_support, "IS_WINDOWS", False)
     p = WindowsDPAPIKeyProvider(
@@ -146,7 +146,7 @@ def test_windows_dpapi_missing_store_without_create_fails_closed(tmp_path, monke
 def test_linux_keyring_round_trip_via_fallback(tmp_path):
     """The Linux provider uses Secret Service when available and a fail-closed
     locked-file fallback otherwise; round-trip contract holds either way."""
-    from floorvault.providers.linux_keyring import LinuxSecretServiceKeyProvider
+    from hermes_vault.providers.linux_keyring import LinuxSecretServiceKeyProvider
 
     store = tmp_path / "linstore"
     first = LinuxSecretServiceKeyProvider(store_path=store, service="test")
@@ -155,7 +155,7 @@ def test_linux_keyring_round_trip_via_fallback(tmp_path):
 
 
 def test_key_error_does_not_echo_key_material(tmp_path):
-    from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+    from hermes_vault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
     WindowsDPAPIKeyProvider(
         store_path=tmp_path / "x", entropy=b"e", random_bytes=lambda n: b"\x00" * n
@@ -169,7 +169,7 @@ def test_key_error_does_not_echo_key_material(tmp_path):
 
 
 def test_linux_keyring_invalid_service_fails_closed(tmp_path):
-    from floorvault.providers.linux_keyring import LinuxSecretServiceKeyProvider
+    from hermes_vault.providers.linux_keyring import LinuxSecretServiceKeyProvider
 
     with pytest.raises(ValueError):
         LinuxSecretServiceKeyProvider(store_path=tmp_path, service="")

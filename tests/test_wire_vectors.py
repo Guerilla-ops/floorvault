@@ -1,11 +1,11 @@
-"""Wire-format vectors: floorvault vs. an independent implementation.
+"""Wire-format vectors: hermes_vault vs. an independent implementation.
 
 Why this file exists
 --------------------
-The committed vectors in ``tests/vectors/floorvault_wire_vectors.json`` pin
+The committed vectors in ``tests/vectors/hermes_vault_wire_vectors.json`` pin
 down the byte-level contract of docs/SPEC.md. Every vector is checked twice:
 
-* **floorvault** — the reference implementation must decrypt each positive
+* **hermes_vault** — the reference implementation must decrypt each positive
   envelope and refuse each negative one, in the documented rejection class.
 * **independent_wire** — a second implementation of the same spec (own AAD
   serializer, own RFC 5297 SIV over AES-ECB, own RFC 5869 HKDF) must parse
@@ -17,7 +17,7 @@ down the byte-level contract of docs/SPEC.md. Every vector is checked twice:
 A drift check regenerates the document in memory and compares it to the
 committed file, so the vectors can never silently diverge from the code
 that produced them. An independence check proves ``independent_wire`` never
-imports ``floorvault`` — otherwise the "second implementation" would be a
+imports ``hermes_vault`` — otherwise the "second implementation" would be a
 tautology.
 """
 
@@ -41,11 +41,11 @@ for _p in (str(_VECTORS_DIR), str(_ROOT / "scripts")):
 import gen_vectors  # noqa: E402
 import independent_wire as iw  # noqa: E402
 
-from floorvault import FloorVault, associated_data, recover_master_key  # noqa: E402
-from floorvault.beacons import compute_beacon, derive_beacon_key  # noqa: E402
-from floorvault.core import DecryptionVerificationError  # noqa: E402
+from hermes_vault import FloorVault, associated_data, recover_master_key  # noqa: E402
+from hermes_vault.beacons import compute_beacon, derive_beacon_key  # noqa: E402
+from hermes_vault.core import DecryptionVerificationError  # noqa: E402
 
-VECTOR_PATH = _VECTORS_DIR / "floorvault_wire_vectors.json"
+VECTOR_PATH = _VECTORS_DIR / "hermes_vault_wire_vectors.json"
 VECTORS = json.loads(VECTOR_PATH.read_text(encoding="utf-8"))
 
 MASTER_KEY = bytes.fromhex(VECTORS["master_key"])
@@ -62,7 +62,7 @@ _POS_BY_ID = {v["id"]: v for v in POSITIVE}
 _VAULTS: dict[str, FloorVault] = {}
 
 
-def _vault(app_instance_id: str = "default") -> FloorVault:
+def _vault(app_instance_id: str = "hermes-agent") -> FloorVault:
     if app_instance_id not in _VAULTS:
         _VAULTS[app_instance_id] = FloorVault(
             MASTER_KEY, app_instance_id=app_instance_id, memory_mode="disabled"
@@ -116,8 +116,8 @@ _IW_ERRORS = {
 
 
 @pytest.mark.parametrize("vec", POSITIVE, ids=[v["id"] for v in POSITIVE])
-def test_positive_floorvault_decrypts(vec):
-    """floorvault opens every envelope: bytes always, text when it is UTF-8."""
+def test_positive_hermes_vault_decrypts(vec):
+    """hermes_vault opens every envelope: bytes always, text when it is UTF-8."""
     env = bytes.fromhex(vec["envelope_hex"])
     fv = _vault(vec["coords"].get("app_instance_id", "default"))
     kwargs = _op_kwargs(vec["coords"])
@@ -160,7 +160,7 @@ def test_aad_vectors(vec):
     coords = vec["coords"]
     if "expect_error" in vec:
         expect = vec["expect_error"]
-        with pytest.raises(_FV_ERRORS[expect["floorvault"]]):
+        with pytest.raises(_FV_ERRORS[expect["hermes_vault"]]):
             associated_data(**coords)
         with pytest.raises(_IW_ERRORS[expect["independent"]]):
             iw.build_aad(coords)
@@ -179,7 +179,7 @@ def test_aad_vectors(vec):
 
 @pytest.mark.parametrize("vec", BEACON_VECTORS, ids=[v["id"] for v in BEACON_VECTORS])
 def test_beacon_vectors(vec):
-    """floorvault and the independent impl produce the stored digest, which
+    """hermes_vault and the independent impl produce the stored digest, which
     is exactly ceil(bits/8) bytes of HMAC-SHA256."""
     fv_key = derive_beacon_key(MASTER_KEY)
     assert fv_key.hex() == VECTORS["beacon_key"]
@@ -206,7 +206,7 @@ def test_beacon_bits_4_and_8_share_one_byte_width():
 
 
 def test_recovery_bundle():
-    """floorvault unwraps the FVRB1 bundle; the independent parser splits it
+    """hermes_vault unwraps the FVRB1 bundle; the independent parser splits it
     and opens the inner envelope under the §11 coordinates."""
     rec = VECTORS["recovery"]
     bundle = bytes.fromhex(rec["bundle_hex"])
@@ -242,13 +242,13 @@ def test_envelope_bytearray_input_accepted():
 
 
 @pytest.mark.parametrize("vec", NEGATIVE, ids=[v["id"] for v in NEGATIVE])
-def test_negative_floorvault(vec):
-    """floorvault must refuse in the documented class (and message)."""
+def test_negative_hermes_vault(vec):
+    """hermes_vault must refuse in the documented class (and message)."""
     expect = vec["expect"]
-    err_cls = _FV_ERRORS[expect["floorvault"]]
-    msg = expect["floorvault_msg"]
+    err_cls = _FV_ERRORS[expect["hermes_vault"]]
+    msg = expect["hermes_vault_msg"]
     coords = vec.get("coords") or {}
-    fv = _vault(coords.get("app_instance_id", "default"))
+    fv = _vault(coords.get("app_instance_id", "hermes-agent"))
 
     if vec["kind"] == "non_bytes":
         if "input_memoryview_hex" in vec:
@@ -346,21 +346,21 @@ def test_committed_vector_file_is_not_stale():
     )
 
 
-def test_independent_wire_source_never_imports_floorvault():
-    """Source-level guard: no import statement may name floorvault."""
+def test_independent_wire_source_never_imports_hermes_vault():
+    """Source-level guard: no import statement may name hermes_vault."""
     src = (_VECTORS_DIR / "independent_wire.py").read_text(encoding="utf-8")
-    offenders = re.findall(r"^\s*(?:from|import)\s+floorvault\b[^\n]*", src, re.MULTILINE)
-    assert not offenders, f"floorvault import found in independent_wire: {offenders}"
+    offenders = re.findall(r"^\s*(?:from|import)\s+hermes_vault\b[^\n]*", src, re.MULTILINE)
+    assert not offenders, f"hermes_vault import found in independent_wire: {offenders}"
 
 
-def test_independent_wire_imports_without_floorvault_in_subprocess():
+def test_independent_wire_imports_without_hermes_vault_in_subprocess():
     """Hard independence check: in a fresh interpreter, importing
-    independent_wire must leave no floorvault module in sys.modules — this
+    independent_wire must leave no hermes_vault module in sys.modules — this
     catches transitive leaks the source scan could miss."""
     code = (
         "import sys; sys.path.insert(0, {p!r}); import independent_wire; "
-        "assert not any(m == 'floorvault' or m.startswith('floorvault.') "
-        "for m in sys.modules), 'floorvault leaked into sys.modules'"
+        "assert not any(m == 'hermes_vault' or m.startswith('hermes_vault.') "
+        "for m in sys.modules), 'hermes_vault leaked into sys.modules'"
     ).format(p=str(_VECTORS_DIR))
     proc = subprocess.run(
         [sys.executable, "-c", code],

@@ -19,10 +19,10 @@ import types
 
 import pytest
 
-from floorvault import platform_support
-from floorvault.providers import linux_keyring as linux_module
-from floorvault.providers import windows_dpapi as wd_module
-from floorvault.providers.platform_custody import ProtectedStoreError
+from hermes_vault import platform_support
+from hermes_vault.providers import linux_keyring as linux_module
+from hermes_vault.providers import windows_dpapi as wd_module
+from hermes_vault.providers.platform_custody import ProtectedStoreError
 
 # --------------------------------------------------------------------------
 # Predicates
@@ -114,7 +114,7 @@ def test_windows_accepts_a_store_inside_the_user_profile(monkeypatch, tmp_path):
     profile = _fake_profile(monkeypatch, tmp_path)
 
     provider = wd_module.WindowsDPAPIKeyProvider(
-        store_path=profile / "AppData" / "Local" / "floorvault" / "store", entropy=b"e"
+        store_path=profile / "AppData" / "Local" / "hermes_vault" / "store", entropy=b"e"
     )
     assert provider is not None
 

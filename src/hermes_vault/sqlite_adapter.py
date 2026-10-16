@@ -90,7 +90,7 @@ class EncryptedSQLiteTable:
         table_name: str,
         *,
         id_column: str = "id",
-        schema_id: str = "floor.vault.v1",
+        schema_id: str = "hermes.vault.v1",
     ) -> None:
         if not isinstance(connection, sqlite3.Connection):
             raise TypeError("connection must be a sqlite3.Connection")
@@ -386,7 +386,7 @@ class ContextualTable:
         crypto: FloorVault,
         table_name: str,
         *,
-        schema_id: str = "floor.vault.v1",
+        schema_id: str = "hermes.vault.v1",
     ) -> None:
         self.crypto = crypto
         self.table_name = table_name
@@ -436,6 +436,6 @@ class ContextualSQLite:
         self.connection = connection
         self.crypto = crypto
 
-    def table(self, table_name: str, *, schema_id: str = "floor.vault.v1") -> ContextualTable:
+    def table(self, table_name: str, *, schema_id: str = "hermes.vault.v1") -> ContextualTable:
         """Get table-bound cryptographic helper."""
         return ContextualTable(self.crypto, table_name, schema_id=schema_id)

@@ -40,7 +40,7 @@ class AdaptiveKeyProvider(KeyProvider):
 
     def __init__(
         self,
-        service_name: str = "floorvault",
+        service_name: str = "hermes-vault",
         account_name: str = "default-v1",
         *,
         fallback_dir: Optional[Path | str] = None,
@@ -53,9 +53,14 @@ class AdaptiveKeyProvider(KeyProvider):
     ) -> None:
         self.service_name = service_name
         self.account_name = account_name
-        self.fallback_dir = (
-            Path(fallback_dir) if fallback_dir is not None else (Path.home() / ".floorvault")
-        )
+        if fallback_dir is not None:
+            self.fallback_dir = Path(fallback_dir)
+        else:
+            hermes_home = os.environ.get("HERMES_HOME")
+            if hermes_home:
+                self.fallback_dir = Path(hermes_home) / "vault"
+            else:
+                self.fallback_dir = Path.home() / ".hermes" / "vault"
         self.strict = strict
         self.allow_disk_fallback = allow_disk_fallback and not strict
         # Optional secondary entropy for the Windows DPAPI tier. When omitted
@@ -92,7 +97,7 @@ class AdaptiveKeyProvider(KeyProvider):
         if self.strict:
             # Only names this provider would actually consider for custody: a
             # foreign APPSTATE_KEY (not opted into) is ignored, not a breach.
-            strict_env = ["FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"]
+            strict_env = ["HERMES_VAULT_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"]
             if self.allow_legacy_env_vars:
                 strict_env.append("APPSTATE_KEY")
             for var_name in strict_env:
@@ -106,7 +111,7 @@ class AdaptiveKeyProvider(KeyProvider):
             # Namespaced variables first; the legacy shared-namespace name is
             # read only on explicit opt-in - a value another tool placed there
             # must not be adopted as the vault master key.
-            env_names = ["FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"]
+            env_names = ["HERMES_VAULT_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"]
             if self.allow_legacy_env_vars:
                 env_names.append("APPSTATE_KEY")
             for var_name in env_names:
@@ -192,7 +197,7 @@ class AdaptiveKeyProvider(KeyProvider):
                 # Install the "macos" extra to enable Keychain custody.
                 self.keychain_unavailable_reason = (
                     "pyobjc-framework-Security is not installed; "
-                    "install floorvault[macos] to enable the macOS Keychain tier"
+                    "install hermes_vault[macos] to enable the macOS Keychain tier"
                 )
                 return None
             try:
@@ -277,7 +282,7 @@ class AdaptiveKeyProvider(KeyProvider):
     def _resolve_machine_bound_file_key(self, *, allow_create: bool) -> HardenedMemoryKey:
         """Resolve an explicitly enabled 0600 local file key without GUI prompts.
 
-        WARNING: ``~/.floorvault/master.key`` is Tier 3 custody only. It does
+        WARNING: ``~/.hermes/vault/master.key`` is Tier 3 custody only. It does
         not establish a hardware-backed or OS confidentiality boundary; anyone
         able to copy the file can recover the master key.
 
@@ -307,7 +312,7 @@ class AdaptiveKeyProvider(KeyProvider):
 
         warnings.warn(
             "FloorVault is using Tier-3 file-based key custody "
-            "(~/.floorvault/master.key); this is not a hardware or OS "
+            "(~/.hermes/vault/master.key); this is not a hardware or OS "
             "confidentiality boundary.",
             UserWarning,
             stacklevel=2,

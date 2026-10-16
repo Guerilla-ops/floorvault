@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from floorvault.memory import HardenedMemoryKey, disable_core_dumps
+from hermes_vault.memory import HardenedMemoryKey, disable_core_dumps
 
 
 def test_memory_probe_reports_platform_status():
@@ -19,7 +19,7 @@ def test_memory_probe_reports_platform_status():
 
 
 def test_disable_core_dumps_safe_without_resource(monkeypatch):
-    import floorvault.memory as mem
+    import hermes_vault.memory as mem
 
     monkeypatch.setattr(mem, "resource", None)
     # Should safely no-op without raising AttributeError

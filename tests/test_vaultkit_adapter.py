@@ -1,18 +1,18 @@
-"""Tests for floorvault storage adapters (vaultkit)."""
+"""Tests for hermes_vault storage adapters (vaultkit)."""
 
 import sqlite3
 
 import pytest
 
-from floorvault.core import DecryptionVerificationError, FloorVault
-from floorvault.vaultkit import (
+from hermes_vault.core import DecryptionVerificationError, FloorVault
+from hermes_vault.vaultkit import (
     SessionCrypto,
     VaultStore,
     normalize_otp_secret,
     scrub_secret_from_text,
     totp_now,
 )
-from floorvault.vaultkit.vault import VaultError
+from hermes_vault.vaultkit.vault import VaultError
 
 
 def test_vault_store_lifecycle(tmp_path):

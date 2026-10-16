@@ -6,15 +6,18 @@ requires = ["hatchling==1.32.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "floorvault"
+name = "hermes-vault"
 version = "0.1.0"
-description = "Contextual, misuse-resistant, searchable database encryption for SQLite and beyond — zero C compilation."
+description = "Hardened, contextual, misuse-resistant credential vault for Hermes Agent."
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 authors = [
     { name = "Scott Lee", email = "floorbond@pm.me" },
 ]
 keywords = [
+    "hermes",
+    "agent",
+    "vault",
     "sqlite",
     "encryption",
     "aead",
@@ -23,9 +26,7 @@ keywords = [
     "blind-index",
     "searchable-encryption",
     "crypto",
-    "database",
-    "floor",
-    "floorvault",
+    "credentials",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -50,8 +51,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/Guerilla-ops/floorvault"
-Issues = "https://github.com/Guerilla-ops/floorvault/issues"
+Repository = "https://github.com/vaultfloor/floorvault"
+Issues = "https://github.com/vaultfloor/floorvault/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -82,18 +83,18 @@ dev = [
     # without it still run the whole fake-seam suite.
     "libsql>=0.1.0; python_version < '3.14'",
 ]
-# ORM adapter (src/floorvault/sqlalchemy_adapter.py). Not a hard dependency:
+# ORM adapter (src/hermes_vault/sqlalchemy_adapter.py). Not a hard dependency:
 # the core library stays SQLAlchemy-free.
 sqlalchemy = [
     "sqlalchemy>=2.0.40",
 ]
-# libSQL adapter (src/floorvault/libsql_adapter.py). Optional: the module
+# libSQL adapter (src/hermes_vault/libsql_adapter.py). Optional: the module
 # duck-types the connection and never imports the client, so this extra only
 # supplies the driver used to create one.
 libsql = [
     "libsql>=0.1.0",
 ]
-# DB-API adapters (src/floorvault/dbapi_adapter.py). The adapters never import
+# DB-API adapters (src/hermes_vault/dbapi_adapter.py). The adapters never import
 # the driver - they take any PEP 249 connection - so these extras only pin the
 # driver the caller would otherwise have to choose themselves. psycopg 3.1 is
 # the floor where %s placeholders, rowcount and cursor() semantics stabilized.
@@ -120,10 +121,10 @@ linux = [
 ]
 
 [project.scripts]
-floorvault = "floorvault.inspector:main"
+hermes-vault = "hermes_vault.inspector:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/floorvault"]
+packages = ["src/hermes_vault"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

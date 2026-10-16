@@ -24,8 +24,8 @@ import hypothesis.strategies as st
 import pytest
 from hypothesis import given, settings
 
-from floorvault import FloorVault
-from floorvault.core import DecryptionVerificationError, associated_data
+from hermes_vault import FloorVault
+from hermes_vault.core import DecryptionVerificationError, associated_data
 
 # Surrogates (category Cs) cannot be UTF-8 encoded; everything else is a legal
 # coordinate per SPEC.md - including NFC/NFD variants, which MUST stay distinct.

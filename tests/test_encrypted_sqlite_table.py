@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from floorvault import DecryptionVerificationError, EncryptedSQLiteTable, FloorVault
+from hermes_vault import DecryptionVerificationError, EncryptedSQLiteTable, FloorVault
 
 
 @pytest.fixture
