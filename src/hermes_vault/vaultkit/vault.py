@@ -28,6 +28,8 @@ from ..providers.adaptive import AdaptiveKeyProvider
 from ..providers.platform_custody import _mkdir_owner_only
 
 VAULT_KINDS = ("login", "payment", "address", "generic")
+#: Width every sealed ``kind`` is space-padded to, so envelope lengths are equal.
+_SEALED_KIND_WIDTH = max(len(kind) for kind in VAULT_KINDS)
 LOGIN_IDENTIFIER_TYPES = ("email", "phone", "username")
 
 # Generic kind: no required fields, arbitrary free-form secret. Used by lazy
@@ -217,9 +219,17 @@ class VaultStore:
     ``decommissioned_at`` stay cleartext columns so item listings, OTP status
     and tombstoning stay queryable without decrypting every row - an observer
     of the file therefore learns item count, ids and kinds, but nothing that
-    identifies or reconstructs a secret. Callers for whom even item kinds are
-    sensitive should encrypt them into the metadata JSON instead (at the cost
-    of losing indexed listings), not widen this schema.
+    identifies or reconstructs a secret.
+
+    ``seal_listing_metadata=True`` seals ``kind`` and ``has_otp`` too (as
+    ``meta:kind`` / ``meta:has_otp``, SPEC.md §12.2), so the file reveals only
+    item count and random ids, and neither field can be flipped undetected.
+    Listings already decrypt five metadata fields per row, so the cost is two
+    more decrypts per item. The flag is the caller's assertion, the same way
+    ``strict=True`` is for custody: a sealed-mode store refuses any cleartext
+    row, because whatever the database says about its own mode is exactly
+    what a database writer controls. Converting an existing store is explicit
+    (``migrate_listing_metadata=True``, once), never a side effect of opening.
     """
 
     _SCHEMA_VERSION = 3
@@ -230,6 +240,8 @@ class VaultStore:
         *,
         crypto: Optional[FloorVault] = None,
         migrate_legacy_metadata: bool = False,
+        seal_listing_metadata: bool = False,
+        migrate_listing_metadata: bool = False,
     ):
         self._base = Path(base_dir)
         _mkdir_owner_only(self._base)
@@ -237,6 +249,17 @@ class VaultStore:
         self._legacy_vault_path = self._base / "vault.json.enc"
         self._legacy_key_path = self._base / "vault.key"
         self._allow_plaintext_migration = migrate_legacy_metadata
+        if migrate_listing_metadata and not seal_listing_metadata:
+            raise ValueError("migrate_listing_metadata=True requires seal_listing_metadata=True")
+        self._seal_listing = seal_listing_metadata
+        self._migrate_listing = migrate_listing_metadata
+        if seal_listing_metadata:
+            # Rotation re-seals every column named here, so sealed listing
+            # fields are rotated with the rest instead of being left behind.
+            self._SEALED_META_COLUMNS = (
+                *VaultStore._SEALED_META_COLUMNS,
+                *self._SEALED_LISTING_COLUMNS,
+            )
         # Serializes in-process DB access. Each operation opens its own
         # connection and begins a transaction immediately, so concurrent
         # callers queue on SQLite's write lock inside a finite busy timeout —
@@ -327,6 +350,7 @@ class VaultStore:
             self._migrate_plaintext_metadata(conn)
             self._remove_origin_index(conn)
             self._ensure_rotation_commitment_column(conn)
+            self._check_listing_metadata(conn)
             conn.execute(f"PRAGMA user_version = {self._SCHEMA_VERSION}")
 
     @contextmanager
@@ -389,6 +413,86 @@ class VaultStore:
                     item_id,
                 ),
             )
+
+    def _check_listing_metadata(self, conn: sqlite3.Connection) -> None:
+        """Enforce the caller's listing-metadata mode on every row.
+
+        Sealed mode refuses any cleartext ``kind``/``has_otp`` unless the caller
+        explicitly asked to migrate; cleartext mode refuses sealed rows rather
+        than mis-reading envelopes as kinds. During migration ``has_otp`` is
+        re-derived from the authenticated payload instead of being trusted from
+        the cleartext column, and ``kind`` must be a known kind.
+        """
+        rows = conn.execute("SELECT id, kind, has_otp, payload_cipher FROM vault_items").fetchall()
+        for item_id, kind, has_otp, payload_cipher in rows:
+            kind_sealed = isinstance(kind, bytes)
+            otp_sealed = isinstance(has_otp, bytes)
+            if not self._seal_listing:
+                if kind_sealed or otp_sealed:
+                    raise VaultError(
+                        "vault listing metadata is sealed; open with seal_listing_metadata=True"
+                    )
+                continue
+            if kind_sealed and otp_sealed:
+                continue
+            if not self._migrate_listing:
+                raise VaultError(
+                    "cleartext listing metadata in a sealed-metadata vault; refusing to open. "
+                    "To convert a verified store, construct VaultStore with "
+                    "seal_listing_metadata=True, migrate_listing_metadata=True once"
+                )
+            if kind_sealed or otp_sealed:
+                raise VaultError("mixed sealed/cleartext listing metadata; refusing migration")
+            if kind not in VAULT_KINDS:
+                raise VaultError(f"unknown vault kind during migration: {kind!r}")
+            payload = json.loads(
+                self._crypto.decrypt(
+                    payload_cipher, table="vault_items", record_id=item_id, column="payload"
+                )
+            )
+            derived_otp = kind == "login" and bool(payload.get("otp_secret"))
+            conn.execute(
+                "UPDATE vault_items SET kind = ?, has_otp = ? WHERE id = ?",
+                (
+                    self._seal_kind(item_id, kind),
+                    self._encrypt_metadata(item_id, "has_otp", "1" if derived_otp else "0"),
+                    item_id,
+                ),
+            )
+
+    def _seal_kind(self, item_id: str, kind: str) -> Optional[bytes]:
+        # Pad to one width so the envelope length does not reveal the kind
+        # ("login" is shorter than "generic"/"payment"/"address").
+        return self._encrypt_metadata(item_id, "kind", kind.ljust(_SEALED_KIND_WIDTH))
+
+    def _listing_kind(self, item_id: str, value: Any) -> str:
+        if self._seal_listing:
+            if not isinstance(value, bytes):
+                raise VaultError("cleartext kind in a sealed-metadata vault")
+            padded = self._decrypt_metadata(item_id, "kind", value) or ""
+            kind = padded.rstrip(" ")
+            if len(padded) != _SEALED_KIND_WIDTH or kind not in VAULT_KINDS:
+                raise VaultError(f"unknown vault kind {kind!r}")
+            return kind
+        if isinstance(value, bytes):
+            raise VaultError(
+                "vault listing metadata is sealed; open with seal_listing_metadata=True"
+            )
+        return value
+
+    def _listing_has_otp(self, item_id: str, value: Any) -> bool:
+        if self._seal_listing:
+            if not isinstance(value, bytes):
+                raise VaultError("cleartext has_otp in a sealed-metadata vault")
+            flag = self._decrypt_metadata(item_id, "has_otp", value)
+            if flag not in ("0", "1"):
+                raise VaultError("sealed has_otp is not 0 or 1")
+            return flag == "1"
+        if isinstance(value, bytes):
+            raise VaultError(
+                "vault listing metadata is sealed; open with seal_listing_metadata=True"
+            )
+        return bool(value)
 
     def _remove_origin_index(self, conn: sqlite3.Connection) -> None:
         """Drop the legacy origin index column without losing records."""
@@ -642,12 +746,16 @@ class VaultStore:
                 """,
                 (
                     item_id,
-                    kind,
+                    self._seal_kind(item_id, kind) if self._seal_listing else kind,
                     self._encrypt_metadata(item_id, "label", label),
                     self._encrypt_metadata(item_id, "origin", norm_origin),
                     self._encrypt_metadata(item_id, "identifier_type", identifier_type),
                     self._encrypt_metadata(item_id, "identifier", identifier),
-                    1 if has_otp else 0,
+                    (
+                        self._encrypt_metadata(item_id, "has_otp", "1" if has_otp else "0")
+                        if self._seal_listing
+                        else (1 if has_otp else 0)
+                    ),
                     self._encrypt_metadata(item_id, "created_at", created_at),
                     payload_cipher,
                 ),
@@ -703,13 +811,13 @@ class VaultStore:
                 return None
             return VaultItemMeta(
                 id=row[0],
-                kind=row[1],
+                kind=self._listing_kind(row[0], row[1]),
                 label=self._decrypt_metadata(row[0], "label", row[2]) or "",
                 origin=self._decrypt_metadata(row[0], "origin", row[3]),
                 created_at=self._decrypt_metadata(row[0], "created_at", row[4]) or "",
                 identifier_type=self._decrypt_metadata(row[0], "identifier_type", row[5]),
                 identifier=self._decrypt_metadata(row[0], "identifier", row[6]),
-                has_otp=bool(row[7]),
+                has_otp=self._listing_has_otp(row[0], row[7]),
             )
 
     def has_items(self) -> bool:
@@ -727,13 +835,13 @@ class VaultStore:
             return [
                 VaultItemMeta(
                     id=row[0],
-                    kind=row[1],
+                    kind=self._listing_kind(row[0], row[1]),
                     label=self._decrypt_metadata(row[0], "label", row[2]) or "",
                     origin=self._decrypt_metadata(row[0], "origin", row[3]),
                     created_at=self._decrypt_metadata(row[0], "created_at", row[4]) or "",
                     identifier_type=self._decrypt_metadata(row[0], "identifier_type", row[5]),
                     identifier=self._decrypt_metadata(row[0], "identifier", row[6]),
-                    has_otp=bool(row[7]),
+                    has_otp=self._listing_has_otp(row[0], row[7]),
                 )
                 for row in cursor.fetchall()
             ]
@@ -813,9 +921,10 @@ class VaultStore:
         Rotation's read half: the caller does not have to know which generation
         the record is under, only that the ring holds it.
         """
+        columns = self._SEALED_META_COLUMNS
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT label, origin, identifier_type, identifier, created_at, payload_cipher "
+                f"SELECT {', '.join(columns)}, payload_cipher "  # nosec B608 - fixed internal column names
                 "FROM vault_items WHERE id = ?",
                 (item_id,),
             ).fetchone()
@@ -823,7 +932,7 @@ class VaultStore:
             raise VaultError(f"Vault item not found: {item_id}")
 
         sealed_meta: dict[str, Optional[str]] = {}
-        for column, value in zip(self._SEALED_META_COLUMNS, row[:5]):
+        for column, value in zip(columns, row[: len(columns)]):
             sealed_meta[column] = (
                 None
                 if value is None
@@ -833,7 +942,7 @@ class VaultStore:
             )
         return {
             "payload": ring.decrypt(
-                row[5], table="vault_items", record_id=item_id, column="payload"
+                row[len(columns)], table="vault_items", record_id=item_id, column="payload"
             ),
             "meta": sealed_meta,
         }
@@ -874,21 +983,13 @@ class VaultStore:
                     column=f"meta:{column}",
                 )
             )
+        assignments = ", ".join(f"{column} = ?" for column in self._SEALED_META_COLUMNS)
         with self._connect() as conn:
             cursor = conn.execute(
-                """
-                UPDATE vault_items
-                SET payload_cipher = ?, label = ?, origin = ?, identifier_type = ?,
-                    identifier = ?, created_at = ?
-                WHERE id = ?
-                """,
+                f"UPDATE vault_items SET payload_cipher = ?, {assignments} WHERE id = ?",  # nosec B608 - fixed internal column names
                 (
                     payload_cipher,
-                    encrypted["label"],
-                    encrypted["origin"],
-                    encrypted["identifier_type"],
-                    encrypted["identifier"],
-                    encrypted["created_at"],
+                    *(encrypted[column] for column in self._SEALED_META_COLUMNS),
                     item_id,
                 ),
             )
@@ -953,7 +1054,17 @@ class VaultStore:
     #: Columns sealed under their own ``meta:<column>`` AAD. Rotation must cover
     #: every one of them; keeping the list here means adding a column later
     #: cannot leave rotation silently behind.
-    _SEALED_META_COLUMNS = ("label", "origin", "identifier_type", "identifier", "created_at")
+    _SEALED_META_COLUMNS: tuple[str, ...] = (
+        "label",
+        "origin",
+        "identifier_type",
+        "identifier",
+        "created_at",
+    )
+
+    #: Listing columns that are cleartext by default and sealed (and rotated)
+    #: only in ``seal_listing_metadata`` mode.
+    _SEALED_LISTING_COLUMNS: tuple[str, ...] = ("kind", "has_otp")
 
     #: Rotation-resume commitment: a canary sealed under the target vault and
     #: stored in ``vault_rotation_state.target_commitment`` when a rotation

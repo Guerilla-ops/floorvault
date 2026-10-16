@@ -83,7 +83,7 @@ the plaintext is UTF-8 (§4.4).
 All keys derive from a 32-byte **master key**. A master key MUST be exactly
 32 bytes; other lengths MUST be rejected before derivation.
 
-Three HKDF-SHA256 subkeys are defined, domain-separated by their `info`
+The HKDF-SHA256 subkeys below are defined, domain-separated by their `info`
 strings. The `info` strings are normative bytes (ASCII, no NUL terminator):
 
 | Subkey | `info` | `length` |
@@ -91,6 +91,7 @@ strings. The `info` strings are normative bytes (ASCII, no NUL terminator):
 | AEAD (SIV) key | `floorvault-v1-aes-siv` | 64 |
 | Beacon index key | `floorvault-v1-beacon-index` | 32 |
 | libSQL file key (opt-in, §14.2) | `floorvault-v1-libsql-file` | 32 |
+| Freshness anchor MAC key (opt-in, §14.3) | `floorvault-v1-freshness` | 32 |
 
 `salt` is absent in every derivation (RFC 5869 default of `HashLen` zero
 octets). All derive directly from the 32-byte master key — no subkey is
@@ -392,6 +393,7 @@ store = scheme_header || payload      (max read: 4096 bytes)
 | tier-3 raw | `master.key` | *(empty)* | 32 raw key bytes | also accepts a 64-byte ASCII-hex encoding on read (decoded to 32 bytes) |
 | Secret Service | `master.key.ss` | `FLOORLV1` (8 B) | masked key, exactly 32 B | mask is deterministic — see §10.2 |
 | DPAPI | `master.key.dpapi` | `FLOORWV1` (8 B) | OS DPAPI blob, variable length | non-Windows fallback: XOR mask — see §10.3 |
+| tier-3 passphrase | `master.key.fvpw` | `FVPW1` (5 B) | exactly 67 B — see §10.8 | written only when the provider is given `passphrase=` |
 
 Scheme paths are disjoint by construction (`master.key.<scheme>`); a file is
 only *this* scheme's store if it parses under this scheme's header. A reader
@@ -581,6 +583,38 @@ g-<n>.gen      = "FVGW1" || ASCII "vault:v<kek_version>:<base64>" blob
   `wipe()`. The cache bounds Transit latency; it is NOT a revocation
   mechanism — Vault-side revocation takes effect no later than the TTL.
 
+### 10.8 Passphrase-wrapped tier-3 store (`FVPW1`)
+
+The plain tier-3 store *is* the key. The passphrase scheme wraps it so a copy
+of the file alone does not yield the key:
+
+```
+file    = "FVPW1" || params || siv
+params  = log2_n (1 B) || r (1 B) || p (1 B) || salt (16 B)
+kek     = scrypt(P, salt, N = 2**log2_n, r, p, dkLen = 64)
+siv     = AES-SIV(kek).encrypt(master_key, AD = ["FVPW1" || params])   # 48 B
+```
+
+`P` is the passphrase: text is NFC-normalised then UTF-8 encoded; bytes are
+used verbatim; an empty passphrase MUST be refused. Writers use `log2_n = 17`,
+`r = 8`, `p = 1` and a fresh random salt. Readers MUST refuse, **before
+deriving**, any file whose `log2_n` is outside `[15, 20]` or whose `(r, p)` is
+not `(8, 1)` — a planted file must not be able to lower the work factor or
+demand unbounded memory. A failed unwrap (wrong passphrase or any altered
+byte) is one error; it never falls back to another tier.
+
+Resolution with a passphrase (normative):
+
+- `master.key.fvpw` present, `master.key` absent → unwrap.
+- `master.key` present (with or without `.fvpw`) → refuse: a raw copy beside
+  the wrapped store defeats it. Conversion is explicit
+  (`protect_key_file()`: write `.fvpw` no-clobber, prove it round-trips, zero
+  and unlink the raw file; filesystem residue of the raw key may remain).
+- neither present → create `.fvpw` only (when `allow_create`).
+
+Resolution **without** a passphrase MUST refuse when `master.key.fvpw`
+exists, rather than creating a fresh raw `master.key` beside it.
+
 ---
 
 ## 11. Recovery bundle (`FVRB1`)
@@ -668,6 +702,25 @@ CREATE TABLE IF NOT EXISTS vault_rotation_state (
 This is the documented leakage contract: an observer learns item count, ids,
 kinds, and OTP flags; nothing that identifies or reconstructs a secret.
 
+**Sealed-listing mode** (`VaultStore(..., seal_listing_metadata=True)`): `kind`
+and `has_otp` are sealed too, as `meta:kind` and `meta:has_otp` (§12.3), and
+stored as BLOBs in their existing columns. The `kind` plaintext is the kind
+right-padded with spaces to 7 characters (the longest kind), so every `kind`
+envelope has the same length; `has_otp` is `"0"` or `"1"`. A reader MUST
+refuse an unpadded or unknown sealed kind and any `has_otp` other than
+`"0"`/`"1"`. The mode is the caller's assertion, not a stored marker:
+
+- Sealed mode MUST refuse a store holding any cleartext `kind`/`has_otp`,
+  unless the caller also passes `migrate_listing_metadata=True`; migration
+  refuses mixed rows and unknown kinds, and re-derives `has_otp` from the
+  authenticated payload (`kind == "login"` and a non-empty `otp_secret`)
+  rather than trusting the cleartext column.
+- Cleartext mode MUST refuse a store holding any sealed `kind`/`has_otp`.
+- Rotation re-seals `meta:kind` and `meta:has_otp` with the other metadata.
+
+Sealed mode leaves item count and ids visible. Sealed metadata envelopes still
+reveal each field's plaintext length.
+
 ### 12.3 Sealing coordinates (exact)
 
 All vault records use `schema_id="floor.vault.v1"`, `schema_version=1`, no
@@ -677,6 +730,7 @@ All vault records use `schema_id="floor.vault.v1"`, `schema_version=1`, no
 |---|---|---|---|
 | item payload | `vault_items` | `<item id>` | `payload` |
 | item metadata field `<f>` in {label, origin, identifier_type, identifier, created_at} | `vault_items` | `<item id>` | `meta:<f>` |
+| sealed-listing mode only: `<f>` in {kind, has_otp} | `vault_items` | `<item id>` | `meta:<f>` |
 | retirement tombstone | `vault_legacy_retirements` | `<legacy_id>` | `tombstone` |
 
 The tombstone plaintext is `json.dumps({"legacy_id": ..., "modern_id": ...},
@@ -863,6 +917,82 @@ layer. `PRAGMA cipher` reports a cipher on plaintext connections as well, so it
 is not evidence that a connection is encrypted — which is why the factory, not
 the caller, owns the `connect()` call. `secure_delete`, WAL checkpoints and
 `VACUUM` operate normally on an encrypted file.
+
+### 14.3 Freshness anchor (opt-in rollback detection)
+
+`floorvault.freshness.FreshnessAnchor(master_key, store, name=, tables=)`
+keeps a keyed digest of the named tables — their rows and the schema that
+governs them — in an `AnchorStore` outside the database, and refuses a
+database that does not match. It detects what §4–§5 cannot: a whole-database
+rollback; a row replayed into its own coordinates, deleted, or added; and a
+planted trigger, index or column definition.
+
+Digest (HMAC-SHA256 under the §3 freshness key; `frame(x) = u64be(len(x)) || x`):
+
+```
+"FVFA1" || "digest" || frame(name)
+for each sqlite_master row of type 'index', 'table' or 'trigger',
+        ordered by (type, name), that is a trigger (on ANY table) or whose
+        ASCII-folded tbl_name is an anchored table:
+    "S" || frame(type) || frame(name) || frame(tbl_name) || value(sql)
+for each anchored table, in ascending order of its ASCII-folded name:
+    "T" || frame(table)
+    for each column of PRAGMA table_xinfo, in ascending order of its
+        ASCII-folded name: "C" || frame(column)
+    for each row, ordered by the table's order column:
+        "R" || concat(value(v) for v in row, columns in the order above)
+    "E" || u64be(row count)
+
+value(NULL)  = "n"
+value(int)   = "i" || u64be(len(s)) || s      where s = ASCII decimal
+value(float) = "f" || u64be(8) || IEEE-754 binary64 big-endian
+value(text)  = "t" || u64be(len(u)) || u      where u = UTF-8
+value(blob)  = "b" || u64be(len(b)) || b
+```
+
+Every trigger is covered, not only those on anchored tables, because a trigger
+on any table can write an anchored one.
+
+Anchor record (JSON, sorted keys, compact separators):
+`{"format":"FVFA1","committed":hex,"pending":hex|null,"mac":hex}` with
+`mac = HMAC(k, "FVFA1" || "record" || frame(name) || frame(committed) || frame(pending or ""))`.
+
+`AnchorStore` is `load(name) -> bytes | None` and
+`compare_and_swap(name, expected, new) -> bool`, which replaces the record only
+if it is still byte-for-byte `expected` (`None` = absent) and is durable before
+returning. Every record transition below is such a swap against the exact
+record it was computed from.
+
+Behavioral contract:
+
+- `verify` accepts the database iff its digest equals `pending` (then
+  promotes it), or equals `committed` **and `pending` is null**. A database at
+  `committed` while `pending` is set MUST be refused: "the commit never
+  landed" and "it landed and the database was rolled back" are
+  indistinguishable from outside. Only `discard_interrupted_commit` (an
+  operator assertion, requiring the database to match `committed`) clears
+  that state. A missing or unauthenticated record is refused, never treated
+  as a fresh start. Any failure revokes the instance's write authorization.
+- Writes go through `transaction(connection)`: `BEGIN IMMEDIATE`, `verify`
+  inside the write lock, the caller's writes, then swap `{committed: old,
+  pending: new}`, commit the database, swap `{committed: new, pending: null}`.
+  On an exception before the database commit it rolls back and leaves the
+  record untouched. It refuses a connection with an open transaction. If the
+  final swap loses to another holder of the key (who already promoted this
+  commit), the write stands and the instance must re-verify before writing
+  again.
+- `accept_external_write(connection)` records the current state after a write
+  the caller committed itself. It requires a prior `verify` on the same
+  instance and connection, with the record unchanged since, and is weaker:
+  it cannot see another writer between that verify and the call.
+- `initialize` refuses when a record exists.
+- `FileAnchorStore` performs the swap under a cross-process lock
+  (`<name>.fvanchor.lock`), writes a temporary file, fsyncs it, renames it
+  over the record, and fsyncs the directory (and any directory it created).
+
+The guarantee holds only against an attacker who cannot roll the anchor store
+back together with the database. Every `transaction`/`verify` reads every
+anchored row.
 
 ---
 
