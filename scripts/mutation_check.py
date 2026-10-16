@@ -1108,6 +1108,44 @@ MUTATIONS: tuple[Mutation, ...] = (
         "File-layer key derived under the beacon label: the page cipher and "
         "the beacon index share one key",
     ),
+    Mutation(
+        "LQ-7",
+        "src/floorvault/libsql_adapter.py",
+        "        if len(source) != _KEY_BYTES:",
+        "        if False:  # MUTANT",
+        "File-key derivation accepts a master key of any length, so a truncated "
+        "or foreign-domain key silently keys the page cipher",
+    ),
+    Mutation(
+        "LQ-8",
+        "src/floorvault/libsql_adapter.py",
+        '    if not path or path == ":memory:":',
+        "    if False:  # MUTANT",
+        "In-memory and empty databases accepted: the caller is told the data is "
+        "encrypted at rest when there is no file to encrypt",
+    ),
+    Mutation(
+        "LQ-9",
+        "src/floorvault/libsql_adapter.py",
+        '        connection.execute("SELECT count(*) FROM sqlite_master").fetchone()',
+        "        pass  # MUTANT",
+        "Connection probe removed: a wrong key is returned as a live connection "
+        "and fails on the first query instead of at the boundary",
+    ),
+    Mutation(
+        "LQ-10",
+        "src/floorvault/libsql_adapter.py",
+        "        connection = libsql.connect(path, encryption_key=file_key, **options)",
+        "        connection = libsql.connect(path, **options)  # MUTANT",
+        "Derived key never reaches the client: the file is written in plaintext",
+    ),
+    Mutation(
+        "LQ-11",
+        "src/floorvault/libsql_adapter.py",
+        "        connection.close()\n        raise ValueError(",
+        "        raise ValueError(  # MUTANT",
+        "Connection refused on a failed probe is leaked open instead of closed",
+    ),
 )
 
 # --------------------------------------------------------------------------

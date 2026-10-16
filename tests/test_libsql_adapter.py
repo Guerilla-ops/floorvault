@@ -388,6 +388,84 @@ def test_connect_encrypted_reports_a_missing_client(tmp_path, monkeypatch):
         connect_encrypted(tmp_path / "t.db", b"k" * 32)
 
 
+class _FakeLibSqlModule:
+    """Driver-free stand-in for the ``libsql`` module behind ``connect_encrypted``.
+
+    Records each ``connect()`` call and hands back a connection whose probe
+    either succeeds or raises, so the factory's key hand-off, probe, and
+    close-on-failure are pinned on every leg - including interpreters with no
+    libsql wheel, where the live wrong-key test is skipped.
+    """
+
+    def __init__(self, *, probe_error: Exception | None = None) -> None:
+        self.calls: list[tuple[str, dict]] = []
+        self.connections: list[_FakeEncryptedConnection] = []
+        self._probe_error = probe_error
+
+    def connect(self, database, **kwargs):
+        self.calls.append((database, kwargs))
+        connection = _FakeEncryptedConnection(self._probe_error)
+        self.connections.append(connection)
+        return connection
+
+
+class _FakeEncryptedConnection:
+    def __init__(self, probe_error: Exception | None) -> None:
+        self._probe_error = probe_error
+        self.executed: list[str] = []
+        self.closed = False
+
+    def execute(self, sql, params=()):
+        self.executed.append(sql)
+        if self._probe_error is not None:
+            raise self._probe_error
+        return sqlite3.connect(":memory:").execute("SELECT 0")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_connect_encrypted_hands_the_derived_key_to_the_client(tmp_path, monkeypatch):
+    fake = _FakeLibSqlModule()
+    monkeypatch.setitem(sys.modules, "libsql", fake)
+    master = b"k" * 32
+
+    connection = connect_encrypted(tmp_path / "t.db", master, timeout=1.5)
+
+    assert connection is fake.connections[0]
+    assert fake.calls == [
+        (
+            str(tmp_path / "t.db"),
+            {"encryption_key": derive_libsql_file_key(master), "timeout": 1.5},
+        )
+    ]
+    assert connection.executed == ["SELECT count(*) FROM sqlite_master"]
+    assert not connection.closed
+
+
+def test_connect_encrypted_closes_and_refuses_when_the_probe_fails(tmp_path, monkeypatch):
+    """A connection that cannot read the schema (wrong key) is closed and never
+    returned - the driver-free twin of the live wrong-key test."""
+    fake = _FakeLibSqlModule(probe_error=ValueError("file is not a database"))
+    monkeypatch.setitem(sys.modules, "libsql", fake)
+
+    with pytest.raises(ValueError, match="derived file key"):
+        connect_encrypted(tmp_path / "t.db", b"k" * 32)
+
+    assert len(fake.connections) == 1
+    assert fake.connections[0].executed == ["SELECT count(*) FROM sqlite_master"]
+    assert fake.connections[0].closed
+
+
+def test_connect_encrypted_refuses_a_bad_master_key_before_connecting(tmp_path, monkeypatch):
+    fake = _FakeLibSqlModule()
+    monkeypatch.setitem(sys.modules, "libsql", fake)
+
+    with pytest.raises(ValueError, match="exactly 32 bytes"):
+        connect_encrypted(tmp_path / "t.db", b"k" * 31)
+    assert fake.calls == []
+
+
 def _populate(conn) -> None:
     conn.execute(
         "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT, "
