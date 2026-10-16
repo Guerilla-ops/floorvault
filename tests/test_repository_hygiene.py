@@ -24,9 +24,9 @@ import ast
 import sqlite3
 from pathlib import Path
 
-import floorvault
-from floorvault.core import FloorVault
-from floorvault.vaultkit.vault import VaultStore
+import hermes_vault
+from hermes_vault.core import FloorVault
+from hermes_vault.vaultkit.vault import VaultStore
 
 ROOT = Path(__file__).resolve().parent.parent
 SHIPPED_ROOTS = ("src", "tests", "scripts", "fuzz")
@@ -84,8 +84,8 @@ def test_the_benchmark_uses_a_temp_directory_that_cleans_up():
 
 
 def test_search_surface_is_removed_from_public_and_vault_store_apis(tmp_path):
-    assert not hasattr(floorvault, "compute_blind_index")
-    assert not hasattr(floorvault, "BlindIndexer")
+    assert not hasattr(hermes_vault, "compute_blind_index")
+    assert not hasattr(hermes_vault, "BlindIndexer")
     assert not hasattr(FloorVault, "blind_index")
     assert not hasattr(FloorVault, "beacon")
     assert not hasattr(VaultStore, "find_by_origin")
@@ -108,16 +108,16 @@ def test_search_surface_is_removed_from_public_and_vault_store_apis(tmp_path):
 
 
 def test_every_exported_name_is_actually_importable():
-    missing = [name for name in floorvault.__all__ if not hasattr(floorvault, name)]
+    missing = [name for name in hermes_vault.__all__ if not hasattr(hermes_vault, name)]
     assert not missing, f"__all__ lists names that are not exported: {missing}"
 
 
 def test_documented_read_failure_types_are_exported():
     """The errors SECURITY.md tells callers to handle must be importable."""
     for name in ("LegacyVaultError", "LegacyRetiredError"):
-        assert name in floorvault.__all__, f"{name} is missing from __all__"
+        assert name in hermes_vault.__all__, f"{name} is missing from __all__"
 
-    from floorvault import LegacyRetiredError
-    from floorvault.migration import LegacyRetiredError as private_path
+    from hermes_vault import LegacyRetiredError
+    from hermes_vault.migration import LegacyRetiredError as private_path
 
     assert LegacyRetiredError is private_path

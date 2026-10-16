@@ -2,14 +2,14 @@
 
 import pytest
 
-from floorvault.core import (
+from hermes_vault.core import (
     DecryptionVerificationError,
     FloorVault,
 )
-from floorvault.memory import HardenedMemoryKey
+from hermes_vault.memory import HardenedMemoryKey
 
 
-def test_floorvault_round_trip():
+def test_hermes_vault_round_trip():
     master_key = b"\x01" * 32
     crypto = FloorVault(master_key, app_instance_id="inst-test-1", memory_mode="disabled")
 
@@ -175,7 +175,7 @@ def test_bytearray_plaintext_matches_bytes_ciphertext_contract(tmp_path):
     verify the bytearray path produces a standard envelope.
     """
     crypto = FloorVault(b"\x0c" * 32, memory_mode="disabled")
-    from floorvault.core import RECORD_MAGIC_V2
+    from hermes_vault.core import RECORD_MAGIC_V2
 
     ct = crypto.encrypt(bytearray(b"same"), table="t", record_id="r", column="c")
     assert ct[: len(RECORD_MAGIC_V2)] == RECORD_MAGIC_V2

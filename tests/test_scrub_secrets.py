@@ -14,7 +14,7 @@ values.
 
 from __future__ import annotations
 
-from floorvault.vaultkit.session_crypto import scrub_secrets_for_fts
+from hermes_vault.vaultkit.session_crypto import scrub_secrets_for_fts
 
 
 def _aws_access_key() -> str:

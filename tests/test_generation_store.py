@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from floorvault.providers.generation_store import (
+from hermes_vault.providers.generation_store import (
     GENERATION_HEADER,
     HIGHWATER_HEADER,
     MAX_PAYLOAD_BYTES,
@@ -25,7 +25,7 @@ from floorvault.providers.generation_store import (
     GenerationStore,
     StoreLockError,
 )
-from floorvault.providers.platform_custody import (
+from hermes_vault.providers.platform_custody import (
     ProtectedStoreError,
     ProtectedStoreInvalidLength,
     ProtectedStoreMissing,
@@ -269,7 +269,7 @@ def test_payload_one_byte_over_the_reader_boundary_is_rejected(tmp_path):
 
 def test_pointer_identity_race_is_retried(tmp_path, monkeypatch):
     """An atomic pointer replace straddling the read is a race, not corruption."""
-    import floorvault.providers.generation_store as gs_mod
+    import hermes_vault.providers.generation_store as gs_mod
 
     store = GenerationStore(tmp_path / "gens")
     store.provision(PAYLOAD_A)
@@ -291,7 +291,7 @@ def test_pointer_identity_race_is_retried(tmp_path, monkeypatch):
 
 def test_a_pointer_that_never_settles_still_fails_closed(tmp_path, monkeypatch):
     """Unbounded churn must not mean unbounded retries."""
-    import floorvault.providers.generation_store as gs_mod
+    import hermes_vault.providers.generation_store as gs_mod
 
     store = GenerationStore(tmp_path / "gens")
     store.provision(PAYLOAD_A)
@@ -314,7 +314,7 @@ def test_a_pointer_that_never_settles_still_fails_closed(tmp_path, monkeypatch):
 def test_lock_metadata_write_failure_leaves_no_stranded_lock(tmp_path, monkeypatch):
     """A failed lockfile write must close the fd and unlink the lockfile -
     a stranded lock blocks every writer until an operator intervenes."""
-    import floorvault.providers.generation_store as gs_mod
+    import hermes_vault.providers.generation_store as gs_mod
 
     store = GenerationStore(tmp_path / "gens")
 

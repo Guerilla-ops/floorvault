@@ -15,7 +15,7 @@ from __future__ import annotations
 import struct
 import sys
 
-from floorvault.beacons import (
+from hermes_vault.beacons import (
     _canonical_payload,
     beacon_bucket_bytes,
     beacon_matches,

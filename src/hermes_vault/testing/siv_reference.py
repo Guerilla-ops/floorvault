@@ -29,8 +29,8 @@ can run the same independent code path.
 
 Not exported
 ------------
-This module is NOT re-exported from ``floorvault.__init__``. Import it
-explicitly: ``from floorvault.testing.siv_reference import siv_encrypt``.
+This module is NOT re-exported from ``hermes_vault.__init__``. Import it
+explicitly: ``from hermes_vault.testing.siv_reference import siv_encrypt``.
 """
 
 from __future__ import annotations

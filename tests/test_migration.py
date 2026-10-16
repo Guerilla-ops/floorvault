@@ -1,7 +1,7 @@
 """TDD RED/GREEN tests for Slice 3: lazy non-destructive migration.
 
 The MigratingVaultStore facade must:
-- read from the MODERN (floorvault) store first;
+- read from the MODERN (hermes_vault) store first;
 - transparently fall back to a legacy Fernet vault (vault.json.enc + vault.key);
 - upgrade a legacy item into the modern store LAZILY (only when touched);
 - NEVER delete/overwrite the legacy file (non-destructive) — keep it until an
@@ -21,10 +21,10 @@ from pathlib import Path
 import pytest
 from cryptography.fernet import Fernet
 
-from floorvault.core import FloorVault
-from floorvault.memory import HardenedMemoryKey
-from floorvault.migration import LegacyVaultError, MigratingVaultStore
-from floorvault.vaultkit.vault import VaultError, VaultStore
+from hermes_vault.core import FloorVault
+from hermes_vault.memory import HardenedMemoryKey
+from hermes_vault.migration import LegacyVaultError, MigratingVaultStore
+from hermes_vault.vaultkit.vault import VaultError, VaultStore
 
 
 def _make_crypto() -> FloorVault:
@@ -331,7 +331,7 @@ def test_legacy_json_recursion_error_surfaces_as_vault_error(tmp_path, monkeypat
     _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
     facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
 
-    import floorvault.migration as migration_module
+    import hermes_vault.migration as migration_module
 
     monkeypatch.setattr(
         migration_module.json,

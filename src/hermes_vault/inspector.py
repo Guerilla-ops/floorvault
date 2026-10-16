@@ -1,4 +1,4 @@
-"""Command-line inspection and query debugging tool for floorvault."""
+"""Command-line inspection and query debugging tool for hermes_vault."""
 
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ def safe_identifier(name: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for floorvault CLI."""
+    """Entry point for hermes_vault CLI."""
     parser = argparse.ArgumentParser(
-        prog="floorvault",
+        prog="hermes_vault",
         description="Inspect and debug encrypted SQLite databases.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     inspect_parser.add_argument("column", type=str, help="Encrypted column name")
     inspect_parser.add_argument(
         "--service-name",
-        help="Key custody service name the record was written under (default: floorvault)",
+        help="Key custody service name the record was written under (default: hermes-vault)",
     )
     inspect_parser.add_argument(
         "--app-instance",

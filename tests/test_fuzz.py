@@ -26,9 +26,9 @@ import string
 
 import pytest
 
-from floorvault import FloorVault
-from floorvault.core import DecryptionVerificationError
-from floorvault.memory import HardenedMemoryKey
+from hermes_vault import FloorVault
+from hermes_vault.core import DecryptionVerificationError
+from hermes_vault.memory import HardenedMemoryKey
 
 SEED = 0x5EED
 ITERATIONS = 3000

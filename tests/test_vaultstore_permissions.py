@@ -14,9 +14,9 @@ import sys
 
 import pytest
 
-from floorvault.core import FloorVault
-from floorvault.memory import HardenedMemoryKey
-from floorvault.vaultkit.vault import VaultStore
+from hermes_vault.core import FloorVault
+from hermes_vault.memory import HardenedMemoryKey
+from hermes_vault.vaultkit.vault import VaultStore
 
 MASTER = bytes.fromhex("5a" * 32)
 

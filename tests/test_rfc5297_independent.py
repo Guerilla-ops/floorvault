@@ -35,14 +35,14 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from floorvault import FloorVault, associated_data
-from floorvault.core import (  # noqa: E402
+from hermes_vault import FloorVault, associated_data
+from hermes_vault.core import (  # noqa: E402
     CRYPTO_VERSION,
     RECORD_MAGIC,
     RECORD_MAGIC_V2,
     envelope_header,
 )
-from floorvault.memory import HardenedMemoryKey
+from hermes_vault.memory import HardenedMemoryKey
 
 # --------------------------------------------------------------------------
 # Reference RFC 5297 implementation (from spec; AES-ECB is the only primitive)
@@ -275,17 +275,17 @@ def test_random_aes256_siv_matches_pycryptodome():
 # --------------------------------------------------------------------------
 
 
-def _floorvault() -> FloorVault:
+def _hermes_vault() -> FloorVault:
     return FloorVault(HardenedMemoryKey(bytes.fromhex("ab" * 32)))
 
 
-def test_floorvault_key_schedule_matches_independent_hkdf():
+def test_hermes_vault_key_schedule_matches_independent_hkdf():
     """FloorVault's derived SIV key equals an independent HKDF derivation."""
     master = bytes.fromhex("ab" * 32)
     expected = HKDF(
-        algorithm=hashes.SHA256(), length=64, salt=None, info=b"floorvault-v1-aes-siv"
+        algorithm=hashes.SHA256(), length=64, salt=None, info=b"hermes-v1-aes-siv"
     ).derive(master)
-    fv = _floorvault()
+    fv = _hermes_vault()
     assert fv._siv_key.get_bytes() == expected
     assert len(expected) == 64  # AES-256-SIV
 
@@ -299,15 +299,15 @@ def test_v1_records_remain_conformant_siv_and_readable():
     """
     master = bytes.fromhex("ab" * 32)
     siv_key = HKDF(
-        algorithm=hashes.SHA256(), length=64, salt=None, info=b"floorvault-v1-aes-siv"
+        algorithm=hashes.SHA256(), length=64, salt=None, info=b"hermes-v1-aes-siv"
     ).derive(master)
-    fv = _floorvault()
+    fv = _hermes_vault()
 
     aad = associated_data(
         table="users",
         record_id="u-1",
         column="email",
-        schema_id="floor.vault.v1",
+        schema_id="hermes.vault.v1",
         schema_version=1,
         app_instance_id=fv.app_instance_id,
     )
@@ -320,7 +320,7 @@ def test_v1_records_remain_conformant_siv_and_readable():
     assert siv_decrypt(siv_key, z, [aad, env[:7], nonce]) is None
 
 
-def test_floorvault_ciphertext_recovers_with_independent_rfc5297():
+def test_hermes_vault_ciphertext_recovers_with_independent_rfc5297():
     """FloorVault's real ciphertext must be openable by the from-spec impl.
 
     This is the load-bearing assertion: an implementation written only from the
@@ -330,9 +330,9 @@ def test_floorvault_ciphertext_recovers_with_independent_rfc5297():
     """
     master = bytes.fromhex("ab" * 32)
     siv_key = HKDF(
-        algorithm=hashes.SHA256(), length=64, salt=None, info=b"floorvault-v1-aes-siv"
+        algorithm=hashes.SHA256(), length=64, salt=None, info=b"hermes-v1-aes-siv"
     ).derive(master)
-    fv = _floorvault()
+    fv = _hermes_vault()
 
     cases = [
         ("users", "u-1", "email", "alice@example.com"),
@@ -353,7 +353,7 @@ def test_floorvault_ciphertext_recovers_with_independent_rfc5297():
             table=table,
             record_id=rec,
             column=col,
-            schema_id="floor.vault.v1",
+            schema_id="hermes.vault.v1",
             schema_version=1,
             app_instance_id=fv.app_instance_id,
         )
@@ -366,9 +366,9 @@ def test_independent_impl_rejects_spliced_context_and_tamper():
     """Wrong AAD coordinates or a flipped ciphertext bit must FAIL closed."""
     master = bytes.fromhex("ab" * 32)
     siv_key = HKDF(
-        algorithm=hashes.SHA256(), length=64, salt=None, info=b"floorvault-v1-aes-siv"
+        algorithm=hashes.SHA256(), length=64, salt=None, info=b"hermes-v1-aes-siv"
     ).derive(master)
-    fv = _floorvault()
+    fv = _hermes_vault()
 
     env = fv.encrypt("sensitive", table="users", record_id="u-1", column="email")
     hlen = envelope_header(env)["header_len"]
@@ -377,7 +377,7 @@ def test_independent_impl_rejects_spliced_context_and_tamper():
         table="users",
         record_id="u-1",
         column="email",
-        schema_id="floor.vault.v1",
+        schema_id="hermes.vault.v1",
         schema_version=1,
         app_instance_id=fv.app_instance_id,
     )
@@ -391,7 +391,7 @@ def test_independent_impl_rejects_spliced_context_and_tamper():
         table="users",
         record_id="u-1",
         column="other",
-        schema_id="floor.vault.v1",
+        schema_id="hermes.vault.v1",
         schema_version=1,
         app_instance_id=fv.app_instance_id,
     )
@@ -403,7 +403,7 @@ def test_independent_impl_rejects_spliced_context_and_tamper():
     flipped[-1] ^= 0x01
     assert siv_decrypt(siv_key, bytes(flipped), [aad, nonce]) is None
     # And FloorVault's own decrypt fails closed on the same splice.
-    from floorvault.core import DecryptionVerificationError
+    from hermes_vault.core import DecryptionVerificationError
 
     with pytest.raises(DecryptionVerificationError):
         fv.decrypt(env, table="users", record_id="u-1", column="other")

@@ -133,7 +133,7 @@ class KeyRing:
         table: str,
         record_id: str,
         column: str,
-        schema_id: str = "floor.vault.v1",
+        schema_id: str = "hermes.vault.v1",
         schema_version: int = 1,
         revision: Optional[int] = None,
     ) -> str:
@@ -155,7 +155,7 @@ class KeyRing:
         table: str,
         record_id: str,
         column: str,
-        schema_id: str = "floor.vault.v1",
+        schema_id: str = "hermes.vault.v1",
         schema_version: int = 1,
         revision: Optional[int] = None,
     ) -> bytes:

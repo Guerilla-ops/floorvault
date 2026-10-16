@@ -19,7 +19,7 @@ import sqlite3
 
 import pytest
 
-from floorvault import (
+from hermes_vault import (
     DecryptionVerificationError,
     EncryptedLibSqlTable,
     EncryptedSQLiteTable,
@@ -241,7 +241,7 @@ def test_async_clients_are_refused_at_construction():
         EncryptedLibSqlTable(_AsyncClient(), crypto, "users")
 
 
-def test_crypto_must_be_floorvault(encrypted_users):
+def test_crypto_must_be_hermes_vault(encrypted_users):
     connection, _table, _real = encrypted_users
     with pytest.raises(TypeError, match="must be a FloorVault"):
         EncryptedLibSqlTable(connection, object(), "users")

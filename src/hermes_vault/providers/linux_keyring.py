@@ -36,7 +36,7 @@ from .platform_custody import (
     write_protected,
 )
 
-_HEADER = b"FLOORLV1"  # floorvault protected key store, linux/secret-service boundary
+_HEADER = b"FLOORLV1"  # hermes_vault protected key store, linux/secret-service boundary
 
 #: ``secretstorage`` module-level callables this client calls by name.
 #:
@@ -57,8 +57,8 @@ _SECRET_SERVICE_UNAVAILABLE_EXCEPTION = "SecretServiceNotAvailableException"  # 
 #: ``secretstorage`` attribute key naming the application boundary.
 _ATTRIBUTE_APPLICATION = "application"
 
-#: Attribute key binding an entry to a floorvault account within the service.
-_ATTRIBUTE_KEY = "floorvault"
+#: Attribute key binding an entry to a hermes_vault account within the service.
+_ATTRIBUTE_KEY = "hermes_vault"
 
 
 def _random(n: int) -> bytes:
@@ -109,7 +109,7 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
         self,
         *,
         store_path: str | Path,
-        service: str = "floorvault",
+        service: str = "hermes_vault",
         attribute: str = "master-key",
         random_bytes: Callable[[int], bytes] = _random,
         allow_file_fallback: bool = True,

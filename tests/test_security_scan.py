@@ -34,12 +34,12 @@ from pathlib import Path
 
 import pytest
 
-from floorvault.core import FloorVault, associated_data
-from floorvault.keyring import KeyRing
-from floorvault.memory import HardenedMemoryKey
-from floorvault.migration import MigratingVaultStore
-from floorvault.vault_rotation import rotate_vault_store
-from floorvault.vaultkit.vault import VaultError, VaultStore
+from hermes_vault.core import FloorVault, associated_data
+from hermes_vault.keyring import KeyRing
+from hermes_vault.memory import HardenedMemoryKey
+from hermes_vault.migration import MigratingVaultStore
+from hermes_vault.vault_rotation import rotate_vault_store
+from hermes_vault.vaultkit.vault import VaultError, VaultStore
 
 OLD = bytes.fromhex("31" * 32)
 NEW = bytes.fromhex("42" * 32)
@@ -179,7 +179,7 @@ def test_f4_invalid_mode_rejected_in_hardened_memory_key():
         HardenedMemoryKey(bytes.fromhex("ab" * 32), mode="require")
 
 
-def test_f4_invalid_mode_rejected_in_floorvault():
+def test_f4_invalid_mode_rejected_in_hermes_vault():
     with pytest.raises(ValueError):
         FloorVault(bytes.fromhex("cd" * 32), memory_mode="require")
 

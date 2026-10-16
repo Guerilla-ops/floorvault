@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import sys
 
-from floorvault.core import associated_data, canonical_json_bytes
+from hermes_vault.core import associated_data, canonical_json_bytes
 
 _FIELDS = ("table", "record_id", "column", "schema_id", "app_instance_id")
 

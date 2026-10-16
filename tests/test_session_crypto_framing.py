@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import pytest
 
-from floorvault import FloorVault
-from floorvault.vaultkit import SessionCrypto, VaultError
+from hermes_vault import FloorVault
+from hermes_vault.vaultkit import SessionCrypto, VaultError
 
 
 @pytest.fixture

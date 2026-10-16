@@ -37,9 +37,9 @@ def test_keychain_live_round_trip():
             "importable; install the macos extra (uv sync --extra macos)"
         ) from exc
 
-    from floorvault.providers.adaptive import AdaptiveKeyProvider
+    from hermes_vault.providers.adaptive import AdaptiveKeyProvider
 
-    service = "floorvault-selftest-live"
+    service = "hermes_vault-selftest-live"
     account = "selftest-v1"
 
     def delete_item() -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
@@ -208,7 +209,7 @@ class VaultItemMeta:
 
 
 class VaultStore:
-    """floorvault-backed vault store backed by FloorVault.
+    """hermes_vault-backed vault store backed by FloorVault.
 
     Storage leakage contract: every secret payload and all descriptive
     metadata (label, origin, identifier_login/url, created_at) is sealed
@@ -249,11 +250,12 @@ class VaultStore:
             self._crypto = crypto
         else:
             provider = AdaptiveKeyProvider(
-                service_name="floor-vault",
+                service_name="hermes-agent-vault",
                 fallback_dir=self._base,
+                allow_legacy_env_vars=True,
             )
             master_key = provider.resolve_key()
-            self._crypto = FloorVault(master_key, app_instance_id="floor-agent")
+            self._crypto = FloorVault(master_key, app_instance_id="hermes-agent")
 
         self._init_db()
 
@@ -966,7 +968,7 @@ class VaultStore:
     _ROTATION_COMMITMENT_TABLE = "vault_rotation_state"
     _ROTATION_COMMITMENT_RECORD_ID = "target"
     _ROTATION_COMMITMENT_COLUMN = "commitment"
-    _ROTATION_COMMITMENT_CANARY = b"floorvault-rotation-target-v1"
+    _ROTATION_COMMITMENT_CANARY = b"hermes_vault-rotation-target-v1"
 
     def _write_tombstone(
         self,
@@ -1057,17 +1059,15 @@ class VaultStore:
 
 # Drop-in compatibility aliases
 VaultStore = VaultStore
+HermesVaultStore = VaultStore
 
 
 def get_vault_store(base_dir: Optional[Path | str] = None) -> VaultStore:
     """Default vault store factory matching the reference agent vault_store.py."""
     if base_dir is None:
-        try:
-            from floor_constants import (
-                get_floor_home,  # type: ignore[import-not-found,import-untyped]
-            )
-
-            base_dir = Path(get_floor_home()) / "vault"
-        except ImportError:
-            base_dir = Path.home() / ".floor" / "vault"
+        hermes_home = os.environ.get("HERMES_HOME")
+        if hermes_home:
+            base_dir = Path(hermes_home) / "vault"
+        else:
+            base_dir = Path.home() / ".hermes" / "vault"
     return VaultStore(base_dir)

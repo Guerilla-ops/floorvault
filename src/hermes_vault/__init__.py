@@ -1,4 +1,4 @@
-"""floorvault: Contextual, misuse-resistant database encryption for SQLite."""
+"""hermes-vault: Hardened, contextual, misuse-resistant credential vault for Hermes Agent."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from .core import (
     DecryptionVerificationError,
     FloorVault,
     FloorVaultError,
+    HermesVault,
+    HermesVaultError,
     NonceReuseError,
     associated_data,
 )
@@ -30,12 +32,19 @@ from .sqlite_migration import (
     migrate_plaintext_column,
     verify_encrypted_column,
 )
+from .store import (
+    HermesVaultStore,
+    VaultError,
+    VaultItemMeta,
+    VaultStore,
+    get_vault_store,
+)
 from .vault_rotation import rotate_vault_store
 
 __version__ = "0.1.0"
 
 # SQLAlchemy is an optional extra; the adapter classes that import it resolve
-# lazily so that `import floorvault` never hard-requires SQLAlchemy. The error
+# lazily so that `import hermes_vault` never hard-requires SQLAlchemy. The error
 # types live in the driver-free records layer and are eager exports.
 _LAZY = {
     "SqlAlchemyEncryption",
@@ -52,6 +61,14 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    # Hermes Vault First-Class Surface
+    "HermesVault",
+    "HermesVaultError",
+    "HermesVaultStore",
+    "VaultStore",
+    "VaultItemMeta",
+    "VaultError",
+    "get_vault_store",
     # Core Cryptography
     "FloorVault",
     "FloorVaultError",
@@ -89,7 +106,7 @@ __all__ = [
     "LegacyVaultError",
     # Raised when a migrated legacy id is asked for and its modern record is
     # gone. Named in SECURITY.md as the read-failure type callers should handle,
-    # so it belongs in the public surface rather than only in floorvault.migration.
+    # so it belongs in the public surface rather than only in hermes_vault.migration.
     "LegacyRetiredError",
     # Multi-generation reads (rotation)
     "KeyRing",

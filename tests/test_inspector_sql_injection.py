@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-INSPECTOR = REPO_ROOT / "src" / "floorvault" / "inspector.py"
+INSPECTOR = REPO_ROOT / "src" / "hermes_vault" / "inspector.py"
 
 
 def _write_sample_db(path: Path) -> dict[str, str]:
@@ -47,7 +47,7 @@ def _run(argv: list[str]) -> subprocess.CompletedProcess:
         "PYTHONPATH": str(REPO_ROOT / "src"),
     }
     return subprocess.run(
-        [sys.executable, "-m", "floorvault.inspector", *argv],
+        [sys.executable, "-m", "hermes_vault.inspector", *argv],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
@@ -56,8 +56,8 @@ def _run(argv: list[str]) -> subprocess.CompletedProcess:
 
 
 def test_good_identifier_inspected(tmp_path):
-    from floorvault.core import FloorVault
-    from floorvault.memory import HardenedMemoryKey
+    from hermes_vault.core import FloorVault
+    from hermes_vault.memory import HardenedMemoryKey
 
     db = tmp_path / "v.db"
     coords = _write_sample_db(db)
@@ -87,8 +87,8 @@ def test_decrypted_value_is_redacted_by_default(tmp_path):
     recovered secrets the tool exists to protect. The default output must
     confirm decryption without disclosing the value.
     """
-    from floorvault.core import FloorVault
-    from floorvault.memory import HardenedMemoryKey
+    from hermes_vault.core import FloorVault
+    from hermes_vault.memory import HardenedMemoryKey
 
     db = tmp_path / "v.db"
     coords = _write_sample_db(db)
@@ -197,7 +197,7 @@ def test_inspect_never_creates_a_key_for_unknown_service(tmp_path):
         [
             sys.executable,
             "-m",
-            "floorvault.inspector",
+            "hermes_vault.inspector",
             "inspect",
             str(db),
             coords["table"],
@@ -256,8 +256,8 @@ def test_inspect_handles_cyclic_symlink(tmp_path):
 
 def test_redacted_output_hides_plaintext_length(tmp_path):
     """The default redacted line must not reveal the exact secret length."""
-    from floorvault.core import FloorVault
-    from floorvault.memory import HardenedMemoryKey
+    from hermes_vault.core import FloorVault
+    from hermes_vault.memory import HardenedMemoryKey
 
     db = tmp_path / "v.db"
     coords = _write_sample_db(db)

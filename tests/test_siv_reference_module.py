@@ -1,11 +1,11 @@
-"""Test for the floorvault.testing.siv_reference module.
+"""Test for the hermes_vault.testing.siv_reference module.
 
 This module exists so external consumers (e.g. the Floor lecompound backend's
 AppState envelope) can cross-check their own AES-SIV usage against the same
 from-spec RFC 5297 implementation that anchors FloorVault's internal envelope.
 
-The module is opt-in: it is NOT exported from ``floorvault.__init__`` and is
-only reachable by an explicit ``from floorvault.testing.siv_reference import ...``.
+The module is opt-in: it is NOT exported from ``hermes_vault.__init__`` and is
+only reachable by an explicit ``from hermes_vault.testing.siv_reference import ...``.
 A test that pulls it in is opting in; the import error below is the failure
 this test was written to surface until the module exists.
 """
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from floorvault.testing.siv_reference import s2v, siv_decrypt, siv_encrypt
+from hermes_vault.testing.siv_reference import s2v, siv_decrypt, siv_encrypt
 
 
 def test_module_imports_public_functions():
@@ -27,7 +27,7 @@ def test_module_imports_public_functions():
 def test_round_trip_with_known_aes256_siv_inputs():
     """siv_decrypt(siv_encrypt(key, pt, ad), ad) == pt for arbitrary AES-256-SIV inputs."""
     key = bytes(range(64))  # 512-bit key
-    plaintext = b"floorvault.testing.siv_reference round-trip payload"
+    plaintext = b"hermes_vault.testing.siv_reference round-trip payload"
     ad = [b"first-component", b"second-component", b"third"]
     ciphertext = siv_encrypt(key, plaintext, ad)
     assert ciphertext != plaintext  # not the identity
