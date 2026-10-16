@@ -1159,6 +1159,50 @@ MUTATIONS: tuple[Mutation, ...] = (
         "commit() skips the pending phase: a crash after the database commit "
         "raises a false rollback alarm",
     ),
+    Mutation(
+        "VM-1",
+        "src/floorvault/vaultkit/vault.py",
+        "            if not self._migrate_listing:",
+        "            if False:  # MUTANT",
+        "Sealed-metadata vault reseals planted cleartext kind/has_otp on an "
+        "ordinary open instead of refusing it",
+    ),
+    Mutation(
+        "VM-2",
+        "src/floorvault/vaultkit/vault.py",
+        "                if kind_sealed or otp_sealed:",
+        "                if False:  # MUTANT",
+        "A sealed-metadata vault opens without the flag and envelopes are served as kinds",
+    ),
+    Mutation(
+        "VM-3",
+        "src/floorvault/vaultkit/vault.py",
+        '            derived_otp = kind == "login" and bool(payload.get("otp_secret"))',
+        "            derived_otp = bool(has_otp)  # MUTANT",
+        "Migration trusts the tampered cleartext has_otp instead of re-deriving "
+        "it from the authenticated payload",
+    ),
+    Mutation(
+        "VM-4",
+        "src/floorvault/vaultkit/vault.py",
+        '        return self._encrypt_metadata(item_id, "kind", kind.ljust(_SEALED_KIND_WIDTH))',
+        '        return self._encrypt_metadata(item_id, "kind", kind)  # MUTANT',
+        "Sealed kind is unpadded: envelope length tells logins from other kinds",
+    ),
+    Mutation(
+        "VM-5",
+        "src/floorvault/vaultkit/vault.py",
+        "            if len(padded) != _SEALED_KIND_WIDTH or kind not in VAULT_KINDS:",
+        "            if kind not in VAULT_KINDS:  # MUTANT",
+        "Non-canonical (length-revealing) sealed kinds are accepted on read",
+    ),
+    Mutation(
+        "VM-6",
+        "src/floorvault/vaultkit/vault.py",
+        "                *self._SEALED_LISTING_COLUMNS,",
+        "                # MUTANT",
+        "Rotation leaves sealed kind/has_otp under the retired key",
+    ),
 )
 
 # --------------------------------------------------------------------------

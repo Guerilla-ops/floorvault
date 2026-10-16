@@ -701,6 +701,25 @@ CREATE TABLE IF NOT EXISTS vault_rotation_state (
 This is the documented leakage contract: an observer learns item count, ids,
 kinds, and OTP flags; nothing that identifies or reconstructs a secret.
 
+**Sealed-listing mode** (`VaultStore(..., seal_listing_metadata=True)`): `kind`
+and `has_otp` are sealed too, as `meta:kind` and `meta:has_otp` (§12.3), and
+stored as BLOBs in their existing columns. The `kind` plaintext is the kind
+right-padded with spaces to 7 characters (the longest kind), so every `kind`
+envelope has the same length; `has_otp` is `"0"` or `"1"`. A reader MUST
+refuse an unpadded or unknown sealed kind and any `has_otp` other than
+`"0"`/`"1"`. The mode is the caller's assertion, not a stored marker:
+
+- Sealed mode MUST refuse a store holding any cleartext `kind`/`has_otp`,
+  unless the caller also passes `migrate_listing_metadata=True`; migration
+  refuses mixed rows and unknown kinds, and re-derives `has_otp` from the
+  authenticated payload (`kind == "login"` and a non-empty `otp_secret`)
+  rather than trusting the cleartext column.
+- Cleartext mode MUST refuse a store holding any sealed `kind`/`has_otp`.
+- Rotation re-seals `meta:kind` and `meta:has_otp` with the other metadata.
+
+Sealed mode leaves item count and ids visible. Sealed metadata envelopes still
+reveal each field's plaintext length.
+
 ### 12.3 Sealing coordinates (exact)
 
 All vault records use `schema_id="floor.vault.v1"`, `schema_version=1`, no
@@ -710,6 +729,7 @@ All vault records use `schema_id="floor.vault.v1"`, `schema_version=1`, no
 |---|---|---|---|
 | item payload | `vault_items` | `<item id>` | `payload` |
 | item metadata field `<f>` in {label, origin, identifier_type, identifier, created_at} | `vault_items` | `<item id>` | `meta:<f>` |
+| sealed-listing mode only: `<f>` in {kind, has_otp} | `vault_items` | `<item id>` | `meta:<f>` |
 | retirement tombstone | `vault_legacy_retirements` | `<legacy_id>` | `tombstone` |
 
 The tombstone plaintext is `json.dumps({"legacy_id": ..., "modern_id": ...},

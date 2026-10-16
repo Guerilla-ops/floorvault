@@ -210,12 +210,14 @@ material.
   AES-SIV (`master.key.fvpw`, SPEC §10.8), so a copied file also needs the
   passphrase; the protection is the passphrase's strength, and it does not
   help against anyone who can observe the passphrase or run as the user.
-- **Schema metadata leakage is an accepted design residual.** To preserve fast
-  listing and filtering without decrypting every item, stored metadata such as
-  item cardinality, item kind, and whether an item contains an OTP is visible
-  to an attacker who can read the database. These fields do not reveal secret
-  values, but their presence, absence, and distribution are intentionally not
-  hidden by the design.
+- **Schema metadata leakage is a default residual, closable per vault.** By
+  default, item cardinality, item kind, and whether an item contains an OTP
+  are visible to an attacker who can read the database, and `kind`/`has_otp`
+  are not authenticated, so a database writer can flip them. These fields do
+  not reveal secret values. `VaultStore(..., seal_listing_metadata=True)`
+  seals both (equal-length envelopes, bound to their item), leaving only item
+  count, random ids and per-field ciphertext lengths visible; existing vaults
+  convert once with `migrate_listing_metadata=True` (SPEC §12.2).
 - **Searchable beacons are opt-in and are the one feature that deliberately
   re-introduces query leakage.** The default library stores no derived search
   index, so nothing below applies unless an application calls
