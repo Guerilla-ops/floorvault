@@ -130,12 +130,13 @@ harmless: repetition of the same key, nonce, context, and plaintext can reveal e
 ## Databases
 
 FloorVault encrypts individual values before the adapter writes them. It does not
-encrypt the entire database, create your application schema, or own your commits.
+create your application schema or own your commits, and it encrypts the entire
+database only for local libSQL files opened with `connect_encrypted` (below).
 
 | Integration | Surface | Application responsibility |
 | --- | --- | --- |
 | SQLite | `EncryptedSQLiteTable` | Create rows and encrypted `BLOB` columns; commit writes |
-| libSQL | `EncryptedLibSqlTable` | Supply a synchronous connection; configure any replica or remote service |
+| libSQL | `EncryptedLibSqlTable`, `connect_encrypted` | Supply a synchronous connection; configure any replica or remote service |
 | PostgreSQL | `EncryptedPostgresTable` on `main` | Supply a synchronous DB-API connection and a `BYTEA` column |
 | MySQL | `EncryptedMySQLTable` on `main` | Supply a synchronous DB-API connection and a binary column |
 | SQLAlchemy | `SqlAlchemyEncryption` | Configure mapped identity and ciphertext fields; use its guarded session factory |
@@ -168,6 +169,31 @@ when reading as when writing. See the [adapter contracts](https://github.com/Gue
 [SQLite](https://github.com/Guerilla-ops/floorvault/blob/main/src/floorvault/sqlite_adapter.py), [libSQL](https://github.com/Guerilla-ops/floorvault/blob/main/src/floorvault/libsql_adapter.py),
 [PostgreSQL/MySQL](https://github.com/Guerilla-ops/floorvault/blob/main/src/floorvault/dbapi_adapter.py), and
 [SQLAlchemy](https://github.com/Guerilla-ops/floorvault/blob/main/src/floorvault/sqlalchemy_adapter.py) implementations.
+
+### Whole-file encryption for local libSQL
+
+Field encryption leaves the schema, indexes, WAL, and unprotected columns readable to
+anyone holding the file. For a local libSQL file, `connect_encrypted` adds libSQL's
+native page cipher underneath, keyed by a subkey derived from the same master key:
+
+```python
+from floorvault import AdaptiveKeyProvider, EncryptedLibSqlTable, FloorVault, connect_encrypted
+
+master_key = AdaptiveKeyProvider(service_name="my-app").resolve_key()
+connection = connect_encrypted("app.db", master_key)  # local files only; creates app.db encrypted
+connection.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, api_token_cipher BLOB)")
+connection.execute("INSERT OR IGNORE INTO users (id) VALUES (?)", ("u1",))
+
+fields = EncryptedLibSqlTable(connection, FloorVault(master_key, app_instance_id="my-app"), "users")
+fields.store("u1", "api_token_cipher", "secret-token")
+connection.commit()
+assert fields.load("u1", "api_token_cipher") == "secret-token"
+```
+
+It refuses remote URLs (a remote server ignores the key), replica options, `:memory:`,
+and existing unencrypted files (libSQL cannot encrypt in place). The page cipher hides
+the file but does not authenticate it; integrity still comes from FloorVault's field
+envelopes. See [SPEC §14.2](https://github.com/Guerilla-ops/floorvault/blob/main/docs/SPEC.md).
 
 ## Key custody
 

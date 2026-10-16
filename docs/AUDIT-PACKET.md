@@ -94,6 +94,9 @@ repository; when in doubt, the code and the mutation suite win.
 - **libSQL remote-residue:** `PRAGMA secure_delete`/checkpoint semantics cannot be
   verified through a remote libSQL connection; residue guarantees apply to local
   files only (stated in `libsql_adapter.py` docs).
+- **libSQL file-layer encryption is libSQL's cipher, not ours:** `connect_encrypted`
+  only derives and supplies the key (SPEC §3, §14.2). The native `aes256cbc` page cipher
+  is unauthenticated, and its format and KDF are outside this audit surface.
 - **Generation replay:** generation files are content-bound to their pointer, but an
   older *valid* generation can be replayed if the pointer is rolled back — freshness
   needs a trusted monotonic anchor (corrected wording in `docs/HARDWARE-CUSTODY.md`).

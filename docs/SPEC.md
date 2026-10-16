@@ -90,6 +90,7 @@ strings. The `info` strings are normative bytes (ASCII, no NUL terminator):
 |---|---|---|
 | AEAD (SIV) key | `floorvault-v1-aes-siv` | 64 |
 | Beacon index key | `floorvault-v1-beacon-index` | 32 |
+| libSQL file key (opt-in, §14.2) | `floorvault-v1-libsql-file` | 32 |
 | Freshness anchor MAC key (opt-in, §14.3) | `floorvault-v1-freshness` | 32 |
 
 `salt` is absent in every derivation (RFC 5869 default of `HashLen` zero
@@ -884,6 +885,39 @@ connection the ORM session does not govern. Those bypass ORM events by
 construction; applications mixing raw SQL with these tables must produce
 ciphertext through the same binding.
 
+### 14.2 libSQL file-layer encryption (opt-in)
+
+`connect_encrypted(database, master_key)` opens a local libSQL file with
+`encryption_key` set to the lowercase hex of the §3 libSQL file key (64 ASCII
+characters; the client accepts only `str`). It is a layer *beneath* the field
+envelopes, never a substitute: every §4 envelope is unchanged and still
+verified against its coordinates. Behavioral contract:
+
+- Only local file paths are accepted. URL/URI forms (`scheme:` or
+  `scheme://`, except a Windows drive letter), the empty path and `:memory:`
+  are refused with `ValueError`. A remote connection silently ignores the
+  key (observed against `sqld` 0.24.30: reads succeed with no key or a wrong
+  key, and the server stores rows in plaintext), and libsql 0.1.11 refuses a
+  key on a synced database outright.
+- Only `timeout`, `isolation_level` and `autocommit` pass through to
+  `libsql.connect`; every other option (including `encryption_key`,
+  `sync_url`, `sync_interval`, `offline`, `auth_token`) is refused with
+  `TypeError` before any file is touched.
+- An existing file whose first 16 bytes are the plaintext SQLite header is
+  refused with `ValueError`: libSQL cannot encrypt in place. This also refuses
+  a file written with `encryption_key=""`, which libsql 0.1.x silently writes
+  as plaintext.
+- The connection is probed (`SELECT count(*) FROM sqlite_master`) before it is
+  returned; a wrong key surfaces as `ValueError` at the boundary.
+
+Observed native-cipher properties (libsql 0.1.11, not normative): the cipher
+reports as `aes256cbc` with `kdf_iter` 4001; pages are encrypted but **not
+authenticated**, so tampering with the file is not detected below the field
+layer. `PRAGMA cipher` reports a cipher on plaintext connections as well, so it
+is not evidence that a connection is encrypted — which is why the factory, not
+the caller, owns the `connect()` call. `secure_delete`, WAL checkpoints and
+`VACUUM` operate normally on an encrypted file.
+
 ### 14.3 Freshness anchor (opt-in rollback detection)
 
 `floorvault.freshness.FreshnessAnchor(master_key, store, name=, tables=)`
@@ -971,7 +1005,10 @@ The following are **not part of this format** and are deliberately excluded:
 - **Cloud KMS tiers** — no AWS/GCP/Azure KMS custody exists in this build;
   HashiCorp Vault Transit (§10.7) is the only remote-custody backend.
 - **SQLCipher / page-level encryption** — FloorVault encrypts values, not
-  pages.
+  pages. The one exception is opt-in and delegated: `connect_encrypted`
+  (§14.2) keys libSQL's *native* page cipher with a derived subkey. The page
+  format is libSQL's, not FloorVault's, and is not specified here; stdlib
+  `sqlite3` page encryption remains out of scope.
 - **The legacy Fernet store** (`vault.json.enc` + `vault.key`) — a foreign
   format the migration facade reads but never writes; specified by the
   `cryptography` Fernet spec, not here. The facade reads `vault.key` through
