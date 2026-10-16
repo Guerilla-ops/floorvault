@@ -83,20 +83,21 @@ the plaintext is UTF-8 (§4.4).
 All keys derive from a 32-byte **master key**. A master key MUST be exactly
 32 bytes; other lengths MUST be rejected before derivation.
 
-Two HKDF-SHA256 subkeys are defined, domain-separated by their `info`
+Three HKDF-SHA256 subkeys are defined, domain-separated by their `info`
 strings. The `info` strings are normative bytes (ASCII, no NUL terminator):
 
 | Subkey | `info` | `length` |
 |---|---|---|
 | AEAD (SIV) key | `floorvault-v1-aes-siv` | 64 |
 | Beacon index key | `floorvault-v1-beacon-index` | 32 |
+| libSQL file key (opt-in, §14.2) | `floorvault-v1-libsql-file` | 32 |
 
-`salt` is absent in both derivations (RFC 5869 default of `HashLen` zero
-octets). Both derive directly from the 32-byte master key — the beacon key is
-not derived from the SIV key or vice versa.
+`salt` is absent in every derivation (RFC 5869 default of `HashLen` zero
+octets). All derive directly from the 32-byte master key — no subkey is
+derived from another.
 
-Implementations deriving additional subkeys MUST NOT reuse either `info`
-string for a different purpose (collision between purposes is the defect the
+Implementations deriving additional subkeys MUST NOT reuse any of these `info`
+strings for a different purpose (collision between purposes is the defect the
 separation exists to prevent).
 
 ---
@@ -830,6 +831,37 @@ connection the ORM session does not govern. Those bypass ORM events by
 construction; applications mixing raw SQL with these tables must produce
 ciphertext through the same binding.
 
+### 14.2 libSQL file-layer encryption (opt-in)
+
+`connect_encrypted(database, master_key)` opens a local libSQL file with
+`encryption_key` set to the lowercase hex of the §3 libSQL file key (64 ASCII
+characters; the client accepts only `str`). It is a layer *beneath* the field
+envelopes, never a substitute: every §4 envelope is unchanged and still
+verified against its coordinates. Behavioral contract:
+
+- Only local file paths are accepted. URL/URI forms (`scheme:` or
+  `scheme://`, except a Windows drive letter), the empty path and `:memory:`
+  are refused with `ValueError` — whether a remote server or replica sync
+  honours the key cannot be observed by the client.
+- Only `timeout`, `isolation_level` and `autocommit` pass through to
+  `libsql.connect`; every other option (including `encryption_key`,
+  `sync_url`, `sync_interval`, `offline`, `auth_token`) is refused with
+  `TypeError` before any file is touched.
+- An existing file whose first 16 bytes are the plaintext SQLite header is
+  refused with `ValueError`: libSQL cannot encrypt in place. This also refuses
+  a file written with `encryption_key=""`, which libsql 0.1.x silently writes
+  as plaintext.
+- The connection is probed (`SELECT count(*) FROM sqlite_master`) before it is
+  returned; a wrong key surfaces as `ValueError` at the boundary.
+
+Observed native-cipher properties (libsql 0.1.11, not normative): the cipher
+reports as `aes256cbc` with `kdf_iter` 4001; pages are encrypted but **not
+authenticated**, so tampering with the file is not detected below the field
+layer. `PRAGMA cipher` reports a cipher on plaintext connections as well, so it
+is not evidence that a connection is encrypted — which is why the factory, not
+the caller, owns the `connect()` call. `secure_delete`, WAL checkpoints and
+`VACUUM` operate normally on an encrypted file.
+
 ---
 
 ## 15. Explicit non-goals
@@ -841,7 +873,10 @@ The following are **not part of this format** and are deliberately excluded:
 - **Cloud KMS tiers** — no AWS/GCP/Azure KMS custody exists in this build;
   HashiCorp Vault Transit (§10.7) is the only remote-custody backend.
 - **SQLCipher / page-level encryption** — FloorVault encrypts values, not
-  pages.
+  pages. The one exception is opt-in and delegated: `connect_encrypted`
+  (§14.2) keys libSQL's *native* page cipher with a derived subkey. The page
+  format is libSQL's, not FloorVault's, and is not specified here; stdlib
+  `sqlite3` page encryption remains out of scope.
 - **The legacy Fernet store** (`vault.json.enc` + `vault.key`) — a foreign
   format the migration facade reads but never writes; specified by the
   `cryptography` Fernet spec, not here. The facade reads `vault.key` through

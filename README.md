@@ -42,7 +42,7 @@ Add extras as needed — `floorvault[macos]`, `floorvault[macos,sqlalchemy]`, �
 | `macos` | macOS Keychain custody tier |
 | `linux` | Linux Secret Service custody tier |
 | `sqlalchemy` | `SqlAlchemyEncryption` ORM adapter |
-| `libsql` | `EncryptedLibSqlTable` — same contract over libSQL (local files, embedded replicas, Turso) |
+| `libsql` | `EncryptedLibSqlTable` — same contract over libSQL (local files, embedded replicas, Turso); `connect_encrypted` adds libSQL's native file encryption for local files |
 | `postgres` | `psycopg` driver for `EncryptedPostgresTable` (on `main`; install `.[postgres]` from source) |
 | `mysql` | `mysql-connector-python` driver for `EncryptedMySQLTable` (on `main`; install `.[mysql]` from source) |
 | `dev` | Test, lint, and security-gate toolchain |
@@ -211,6 +211,20 @@ assert fields.load("u1", "api_token_cipher") == "secret-token"
 
 For embedded replicas or Turso, pass your configured synchronous `libsql.connect(...)` connection instead.
 Async clients are refused. Envelope portability requires the same key and authenticated coordinates.
+
+To also encrypt the whole local file — schema, indexes, WAL, and unprotected columns — open it with
+`connect_encrypted`, which keys libSQL's native page cipher with a subkey derived from the same master key:
+
+```python
+from floorvault import connect_encrypted
+
+connection = connect_encrypted("app.db", master_key)  # local files only
+fields = EncryptedLibSqlTable(connection, FloorVault(master_key), "users")
+```
+
+It refuses remote URLs, replica options, `:memory:`, and existing unencrypted files (libSQL cannot encrypt in
+place). The native cipher hides the file but does not authenticate it; field-level integrity still comes from
+FloorVault's envelopes. See `docs/SPEC.md` §14.2.
 
 </details>
 

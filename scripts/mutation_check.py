@@ -1075,6 +1075,39 @@ MUTATIONS: tuple[Mutation, ...] = (
         "Async execute accepted: a coroutine reaches the DBAPI path and fails "
         "mid-operation instead of at the boundary",
     ),
+    Mutation(
+        "LQ-3",
+        "src/floorvault/libsql_adapter.py",
+        "    if unsupported:",
+        "    if False:  # MUTANT",
+        "connect_encrypted forwards any libsql.connect option: sync_url / "
+        "auth_token reach a remote or replica mode whose key handling is "
+        "unverifiable, and a caller encryption_key='' writes plaintext",
+    ),
+    Mutation(
+        "LQ-4",
+        "src/floorvault/libsql_adapter.py",
+        "    if _URL_SCHEME.match(path) and not re.match(",
+        "    if False and _URL_SCHEME.match(path) and not re.match(",
+        "connect_encrypted accepts remote URLs: the key is passed to a server "
+        "that may silently ignore it",
+    ),
+    Mutation(
+        "LQ-5",
+        "src/floorvault/libsql_adapter.py",
+        "    if header == _PLAINTEXT_SQLITE_HEADER:",
+        "    if False:  # MUTANT",
+        "Existing plaintext SQLite file no longer refused up front: the caller "
+        "is told the key is wrong instead of that the file was never encrypted",
+    ),
+    Mutation(
+        "LQ-6",
+        "src/floorvault/libsql_adapter.py",
+        '_FILE_KEY_INFO = b"floorvault-v1-libsql-file"',
+        '_FILE_KEY_INFO = b"floorvault-v1-beacon-index"  # MUTANT',
+        "File-layer key derived under the beacon label: the page cipher and "
+        "the beacon index share one key",
+    ),
 )
 
 # --------------------------------------------------------------------------
