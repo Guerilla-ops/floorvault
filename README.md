@@ -216,10 +216,17 @@ To also encrypt the whole local file — schema, indexes, WAL, and unprotected c
 `connect_encrypted`, which keys libSQL's native page cipher with a subkey derived from the same master key:
 
 ```python
-from floorvault import connect_encrypted
+from floorvault import AdaptiveKeyProvider, EncryptedLibSqlTable, FloorVault, connect_encrypted
 
-connection = connect_encrypted("app.db", master_key)  # local files only
-fields = EncryptedLibSqlTable(connection, FloorVault(master_key), "users")
+master_key = AdaptiveKeyProvider(service_name="my-app").resolve_key()
+connection = connect_encrypted("app.db", master_key)  # local files only; creates app.db encrypted
+connection.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, api_token_cipher BLOB)")
+connection.execute("INSERT OR IGNORE INTO users (id) VALUES (?)", ("u1",))
+
+fields = EncryptedLibSqlTable(connection, FloorVault(master_key, app_instance_id="my-app"), "users")
+fields.store("u1", "api_token_cipher", "secret-token")
+connection.commit()
+assert fields.load("u1", "api_token_cipher") == "secret-token"
 ```
 
 It refuses remote URLs, replica options, `:memory:`, and existing unencrypted files (libSQL cannot encrypt in
