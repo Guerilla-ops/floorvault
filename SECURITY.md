@@ -270,7 +270,7 @@ cannot be mistaken for one that is covered.
 
 | Attacker | Can read store | Can modify store | Can read the process | Controls the account | Expected protection |
 |---|:---:|:---:|:---:|:---:|---|
-| A1 — stolen database file | ✅ | ❌ | ❌ | ❌ | **Strong**: no plaintext in protected fields |
+| A1 — stolen database file | ✅ | ❌ | ❌ | ❌ | **Strong**: no plaintext in protected fields. Schema, indexes and unprotected columns stay readable unless a local libSQL file is opened with `connect_encrypted` (page encryption, not authenticated) |
 | A2 — stolen disk / backup files | ✅ | ❌ | ❌ | ❌ | **Strong**, minus what the key store itself gives up (see the fallback limit above) |
 | A3 — malicious store writer | ✅ | ✅ | ❌ | ❌ | **Partial**: values cannot be forged or spliced; rows can be deleted, duplicated or replayed (see freshness above) |
 | A4 — malicious same-UID process | ✅ | ✅ | Possibly | ✅ | **Weak**: it can use the same custody the application uses |
