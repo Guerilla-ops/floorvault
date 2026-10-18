@@ -1330,6 +1330,41 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        pass  # MUTANT\n        for _attempt in range(_CAS_RETRIES):",
         "A failed verify keeps the earlier write authorization: a later write blesses the tampered state",
     ),
+    Mutation(
+        "FA-15",
+        "src/floorvault/freshness.py",
+        '        connection.execute("COMMIT")',
+        "        connection.commit()  # MUTANT",
+        "transaction() commits via connection.commit(): a no-op under autocommit=True, so the write is lost while the anchor advances",
+    ),
+    Mutation(
+        "FA-16",
+        "src/floorvault/freshness.py",
+        '                connection.execute("ROLLBACK")',
+        "                connection.rollback()  # MUTANT",
+        "transaction() rolls back via connection.rollback(): a no-op under autocommit=True, leaving the failed write's transaction open",
+    ),
+    Mutation(
+        "FA-17",
+        "src/floorvault/freshness.py",
+        '        if getattr(connection, "autocommit", None) is False:',
+        "        if False:  # MUTANT",
+        "autocommit=False connections reach BEGIN IMMEDIATE and get a misleading open-transaction refusal",
+    ),
+    Mutation(
+        "FA-18",
+        "src/floorvault/freshness.py",
+        "            if total != distinct + min(nulls, 1) or nulls > 1:",
+        "            if False:  # MUTANT",
+        "A non-unique order column is hashed in physical order: a VACUUM or rebuild raises a false rollback alarm",
+    ),
+    Mutation(
+        "FA-19",
+        "src/floorvault/freshness.py",
+        '        return self.directory / f"{_validate_name(name)}.fvanchor"',
+        '        return self.directory / f"{name}.fvanchor"  # MUTANT',
+        "FileAnchorStore accepts path-traversal names and writes outside its directory",
+    ),
 )
 
 # --------------------------------------------------------------------------
