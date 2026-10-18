@@ -400,6 +400,14 @@ For a full description see the README and the design notes in `docs/`.
   formats are mutually unreadable, so sharing one path would let whichever tier
   ran first lock the others out of the user's own data.
 
+  Because the tiers do not share a store, a host that has been using the
+  local-file tier and later gains a usable OS key store (the `macos` extra
+  installed, a Secret Service session appearing) must not mint a fresh OS key:
+  that would silently fork the master key. While `master.key` or
+  `master.key.fvpw` exists, the OS tier is therefore only read; if it is usable
+  but empty, resolution refuses (`KeyProviderError`) and tells the operator to
+  migrate the file key deliberately (SPEC §10.5).
+
   **Verification status by tier.** Windows DPAPI is exercised unmocked on the
   `windows-latest` CI legs. macOS Keychain and Linux Secret Service are not:
   the Keychain live test is opt-in and no workflow sets its flag, and no CI leg
