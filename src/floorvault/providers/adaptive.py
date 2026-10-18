@@ -173,7 +173,8 @@ class AdaptiveKeyProvider(KeyProvider):
         key = self._resolve_os_tier(allow_create=False, missing_ok=True)
         if key is _OS_KEY_MISSING:
             raise KeyProviderError(
-                f"a local key file exists in {self.fallback_dir} but the OS key store "
+                f"a local key file exists (or cannot be ruled out) in {self.fallback_dir} "
+                "but the OS key store "
                 "has no FloorVault key: creating one would silently replace the key "
                 "your data is encrypted under. Refusing. To keep using the file key, "
                 "resolve without the OS tier (for example FLOOR_VAULT_KEY set from it) "
@@ -185,13 +186,21 @@ class AdaptiveKeyProvider(KeyProvider):
     def _tier3_store_present(self) -> bool:
         """Whether a Tier-3 store (raw or passphrase-wrapped) exists in ``fallback_dir``.
 
-        ``lexists``, not ``exists``: a dangling or planted symlink still means
+        ``lstat``, not ``stat``: a dangling or planted symlink still means
         "something claims to be the file key here" and must block key creation.
+        Only "not found" counts as absent. Any other lookup failure (an
+        unsearchable directory, for example) cannot rule a key file out, so it
+        counts as present: the OS tier is then only read, never created into.
         """
-        return any(
-            os.path.lexists(self.fallback_dir / name)
-            for name in ("master.key", WRAPPED_KEY_FILENAME)
-        )
+        for name in ("master.key", WRAPPED_KEY_FILENAME):
+            try:
+                os.lstat(self.fallback_dir / name)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True  # cannot rule a store out
+            return True
+        return False
 
     def _resolve_os_tier(self, *, allow_create: bool, missing_ok: bool = False):
         """Resolve from the native provider for the current platform.

@@ -102,6 +102,41 @@ def test_dangling_symlink_at_the_file_path_also_blocks(tmp_path, monkeypatch, ke
     assert keychain.calls["add"] == 0
 
 
+def _deny_key_file_lookups(monkeypatch, tmp_path):
+    """Make lstat of the Tier-3 store paths fail as in an unsearchable directory.
+
+    Simulated rather than chmod-ed: permission bits do not stop root, and the
+    behaviour must be pinned on every runner.
+    """
+    real_lstat = adaptive_module.os.lstat
+    targets = {str(tmp_path / "master.key"), str(tmp_path / adaptive_module.WRAPPED_KEY_FILENAME)}
+
+    def lstat(path, *args, **kwargs):
+        if str(path) in targets:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(adaptive_module.os, "lstat", lstat)
+
+
+def test_unsearchable_key_directory_blocks_the_fork(tmp_path, monkeypatch, keychain):
+    """A lookup failure is not absence: it cannot rule the file key out."""
+    _deny_key_file_lookups(monkeypatch, tmp_path)
+    _keychain_appears(monkeypatch)
+    with pytest.raises(KeyProviderError, match="would silently replace"):
+        _provider(tmp_path).resolve_key()
+    assert keychain.calls["add"] == 0
+
+
+def test_unsearchable_key_directory_still_reads_an_existing_keychain_key(
+    tmp_path, monkeypatch, keychain
+):
+    keychain.store["k"] = b"\x06" * 32
+    _deny_key_file_lookups(monkeypatch, tmp_path)
+    _keychain_appears(monkeypatch)
+    assert _key(_provider(tmp_path).resolve_key()) == b"\x06" * 32
+
+
 def test_existing_keychain_key_still_wins(tmp_path, monkeypatch, keychain):
     """Unchanged: an OS key that already exists is used even beside a file."""
     _provider(tmp_path).resolve_key()

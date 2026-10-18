@@ -1354,9 +1354,16 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AD-7",
         "src/floorvault/providers/adaptive.py",
-        "            os.path.lexists(self.fallback_dir / name)",
-        "            (self.fallback_dir / name).exists()  # MUTANT",
+        "                os.lstat(self.fallback_dir / name)\n            except FileNotFoundError:",
+        "                os.stat(self.fallback_dir / name)  # MUTANT\n            except FileNotFoundError:",
         "A dangling or planted master.key symlink stops counting as a file store, so the OS tier creates a new key",
+    ),
+    Mutation(
+        "AD-8",
+        "src/floorvault/providers/adaptive.py",
+        "                os.lstat(self.fallback_dir / name)\n            except FileNotFoundError:",
+        "                os.lstat(self.fallback_dir / name)\n            except OSError:  # MUTANT",
+        "An unsearchable key directory reads as 'no file store': the OS tier creates a key that replaces the unreadable file key",
     ),
 )
 
