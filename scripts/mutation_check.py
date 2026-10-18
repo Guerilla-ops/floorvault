@@ -1456,6 +1456,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "            except KeyError:  # MUTANT\n                # fallback_dir fails",
         "A fallback_dir refused by the owner-only policy (a symlink) breaks OS-tier resolution of a working key",
     ),
+    Mutation(
+        "AD-17",
+        "src/floorvault/providers/adaptive.py",
+        "        except FileExistsError:\n            stack.enter_context(self._tier3_creation_lock())",
+        "        except KeyError:  # MUTANT\n            stack.enter_context(self._tier3_creation_lock())",
+        "A fallback_dir creation race skips the Tier-3 lock: the OS key is created unrecorded beside the winner's file key",
+    ),
 )
 
 # --------------------------------------------------------------------------

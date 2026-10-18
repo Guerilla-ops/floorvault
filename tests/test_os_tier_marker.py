@@ -310,6 +310,32 @@ def test_marker_published_before_the_file_side_takes_the_lock(tmp_path, monkeypa
     assert not (tmp_path / "master.key").exists()
 
 
+def test_fallback_dir_creation_race_retries_the_lock(tmp_path, monkeypatch, keychain):
+    """Two first-time resolvers both see fallback_dir missing; a headless one
+    wins the mkdir and publishes master.key. The loser's FileExistsError must
+    lead to a retried lock and the re-check (read-only, refused), not to an
+    unlocked OS-key creation."""
+    home = tmp_path / "home"
+    provider = _provider(home)
+    real = provider._tier3_creation_lock
+    calls = {"n": 0}
+
+    def lock():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            home.mkdir(mode=0o700)  # the winner created the directory...
+            (home / "master.key").write_bytes(b"\x09" * 32)  # ...and its file key
+            raise FileExistsError(17, "File exists", str(home))
+        return real()
+
+    monkeypatch.setattr(provider, "_tier3_creation_lock", lock)
+    _gui_session(monkeypatch)
+    with pytest.raises(KeyProviderError, match="would silently replace"):
+        provider.resolve_key()
+    assert keychain.calls["add"] == 0
+    assert calls["n"] == 2
+
+
 # -- best effort when the marker cannot be written ----------------------------
 
 

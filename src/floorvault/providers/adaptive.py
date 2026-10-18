@@ -201,7 +201,7 @@ class AdaptiveKeyProvider(KeyProvider):
         # marker and refuses (#63). An existing OS key is recorded the same way.
         with contextlib.ExitStack() as stack:
             try:
-                stack.enter_context(self._tier3_creation_lock())
+                self._enter_tier3_creation_lock(stack)
             except TimeoutError:
                 raise
             except ValueError:
@@ -219,6 +219,19 @@ class AdaptiveKeyProvider(KeyProvider):
                 self._publish_os_tier_marker()
             return key
         raise AssertionError("unreachable")  # pragma: no cover
+
+    def _enter_tier3_creation_lock(self, stack: contextlib.ExitStack) -> None:
+        """Take the Tier-3 lock, retrying once after a fallback_dir creation race.
+
+        Two first-time resolvers can both see ``fallback_dir`` missing; the
+        loser's owner-only ``mkdir`` then raises ``FileExistsError``. The
+        directory exists by then, so the retry validates it and serializes on
+        the lock instead of skipping it (and with it the re-check and marker).
+        """
+        try:
+            stack.enter_context(self._tier3_creation_lock())
+        except FileExistsError:
+            stack.enter_context(self._tier3_creation_lock())
 
     def _read_os_tier_beside_file_key(self) -> Optional[HardenedMemoryKey]:
         """With a Tier-3 store present the OS tier is only read (#57)."""
