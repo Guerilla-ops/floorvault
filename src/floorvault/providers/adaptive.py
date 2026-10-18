@@ -23,7 +23,7 @@ from ..platform_support import (
     is_windows,
 )
 from . import passphrase_store
-from .base import CustodyDowngradeError, KeyProvider, KeyProviderError
+from .base import CustodyDowngradeError, KeyProvider, KeyProviderError, MissingKeyError
 from .linux_keyring import LinuxSecretServiceKeyProvider
 from .platform_custody import (
     ProtectedStoreError,
@@ -157,7 +157,68 @@ class AdaptiveKeyProvider(KeyProvider):
         return self._resolve_machine_bound_file_key(allow_create=allow_create)
 
     def _resolve_from_system_keyring(self, *, allow_create: bool) -> Optional[HardenedMemoryKey]:
-        """Resolve from the native provider for the current platform."""
+        """Resolve from the native provider, never forking an existing file key.
+
+        The OS tier is tried before the Tier-3 file, so a host that has been
+        running on ``master.key`` / ``master.key.fvpw`` and later gains a usable
+        OS key store (the ``macos`` extra installed, a Secret Service session
+        bus appearing) would otherwise get a brand-new OS key here: data under
+        the file key stops decrypting and new writes land under the new key.
+        So while a Tier-3 store exists, the OS tier is only *read*; if it is
+        usable but holds no key, resolution refuses instead of creating one.
+        An unavailable OS tier still returns ``None`` (the file tier follows).
+        """
+        if not allow_create or not self._tier3_store_present():
+            return self._resolve_os_tier(allow_create=allow_create)
+        key = self._resolve_os_tier(allow_create=False, missing_ok=True)
+        if key is _OS_KEY_MISSING:
+            raise KeyProviderError(
+                f"a local key file exists (or cannot be ruled out) in {self.fallback_dir} "
+                "but the OS key store "
+                "has no FloorVault key: creating one would silently replace the key "
+                "your data is encrypted under. Refusing. To keep using the file key, "
+                "resolve without the OS tier (for example FLOOR_VAULT_KEY set from it) "
+                "or move it into the OS store yourself; if the file is stale and "
+                "holds no data you need, remove it deliberately"
+            )
+        return key
+
+    def _tier3_store_present(self) -> bool:
+        """Whether a Tier-3 store (raw or passphrase-wrapped) exists in ``fallback_dir``.
+
+        ``lstat``, not ``stat``: a dangling or planted symlink still means
+        "something claims to be the file key here" and must block key creation.
+        Only "not found" counts as absent. Any other lookup failure (an
+        unsearchable directory, for example) cannot rule a key file out, so it
+        counts as present: the OS tier is then only read, never created into.
+        """
+        for name in ("master.key", WRAPPED_KEY_FILENAME):
+            try:
+                os.lstat(self.fallback_dir / name)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True  # cannot rule a store out
+            return True
+        return False
+
+    def _resolve_os_tier(self, *, allow_create: bool, missing_ok: bool = False):
+        """Resolve from the native provider for the current platform.
+
+        Returns the key, ``None`` when no OS tier is usable here, or - only with
+        ``missing_ok`` (and ``allow_create=False``) - ``_OS_KEY_MISSING`` when
+        the tier is usable but holds no key.
+        """
+        if missing_ok:
+            if allow_create:  # pragma: no cover - internal contract
+                raise ValueError("missing_ok probes never create")
+            try:
+                return self._resolve_os_tier_for_platform(allow_create=False, missing_ok=True)
+            except MissingKeyError:
+                return _OS_KEY_MISSING
+        return self._resolve_os_tier_for_platform(allow_create=allow_create, missing_ok=False)
+
+    def _resolve_os_tier_for_platform(self, *, allow_create: bool, missing_ok: bool):
         if is_windows():
             return WindowsDPAPIKeyProvider(
                 store_path=WindowsDPAPIKeyProvider.default_store_path(self.fallback_dir),
@@ -226,7 +287,9 @@ class AdaptiveKeyProvider(KeyProvider):
                         raise KeyProviderError(f"Keychain duplicate could not be read: {status}")
                     return HardenedMemoryKey(bytes(data))
                 if status == -25300:  # errSecItemNotFound, creation disallowed
-                    return None
+                    # Usable Keychain, no key: the no-fork probe must tell this
+                    # apart from "no Keychain tier" (both are None otherwise).
+                    return _OS_KEY_MISSING if missing_ok else None
                 raise CustodyDowngradeError(
                     "macOS Keychain returned an unusable status "
                     f"({status}); refusing to fall back to a weaker custody tier"
@@ -441,6 +504,9 @@ class AdaptiveKeyProvider(KeyProvider):
 
 #: File name of the passphrase-wrapped Tier-3 store, beside ``master.key``.
 WRAPPED_KEY_FILENAME = "master.key.fvpw"
+
+#: Sentinel from the no-fork probe: the OS tier is usable but holds no key.
+_OS_KEY_MISSING = object()
 
 #: Lock file serializing Tier-3 creation and conversion across both store names.
 TIER3_LOCK_FILENAME = "master.key.lock"

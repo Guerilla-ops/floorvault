@@ -1330,6 +1330,41 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        pass  # MUTANT\n        for _attempt in range(_CAS_RETRIES):",
         "A failed verify keeps the earlier write authorization: a later write blesses the tampered state",
     ),
+    Mutation(
+        "AD-4",
+        "src/floorvault/providers/adaptive.py",
+        "        if not allow_create or not self._tier3_store_present():",
+        "        if True:  # MUTANT",
+        "OS tier gains a key store after Tier-3 file custody: a fresh OS key is created and the file key is silently forked",
+    ),
+    Mutation(
+        "AD-5",
+        "src/floorvault/providers/adaptive.py",
+        "        if key is _OS_KEY_MISSING:",
+        "        if False:  # MUTANT",
+        "Usable-but-empty OS tier with a file key present is treated as a key: resolution returns a sentinel instead of refusing",
+    ),
+    Mutation(
+        "AD-6",
+        "src/floorvault/providers/adaptive.py",
+        "                    return _OS_KEY_MISSING if missing_ok else None",
+        "                    return None  # MUTANT",
+        "Empty Keychain reads as 'no OS tier': resolution falls through and the fork is hidden, not refused",
+    ),
+    Mutation(
+        "AD-7",
+        "src/floorvault/providers/adaptive.py",
+        "                os.lstat(self.fallback_dir / name)\n            except FileNotFoundError:",
+        "                os.stat(self.fallback_dir / name)  # MUTANT\n            except FileNotFoundError:",
+        "A dangling or planted master.key symlink stops counting as a file store, so the OS tier creates a new key",
+    ),
+    Mutation(
+        "AD-8",
+        "src/floorvault/providers/adaptive.py",
+        "                os.lstat(self.fallback_dir / name)\n            except FileNotFoundError:",
+        "                os.lstat(self.fallback_dir / name)\n            except OSError:  # MUTANT",
+        "An unsearchable key directory reads as 'no file store': the OS tier creates a key that replaces the unreadable file key",
+    ),
 )
 
 # --------------------------------------------------------------------------
