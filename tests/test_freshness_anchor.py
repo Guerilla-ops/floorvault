@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+import sys
 import threading
 
 import pytest
@@ -58,7 +59,7 @@ class CrashingStore(FileAnchorStore):
 
 
 class _CommitCrashes:
-    """Connection proxy whose commit() crashes before reaching SQLite."""
+    """Connection proxy whose COMMIT crashes before reaching SQLite."""
 
     def __init__(self, inner):
         self._inner = inner
@@ -67,14 +68,10 @@ class _CommitCrashes:
     def in_transaction(self):
         return self._inner.in_transaction
 
-    def execute(self, *args):
-        return self._inner.execute(*args)
-
-    def commit(self):
-        raise KeyboardInterrupt("crash before the database commit")
-
-    def rollback(self):
-        self._inner.rollback()
+    def execute(self, sql, *args):
+        if sql.strip().upper() == "COMMIT":
+            raise KeyboardInterrupt("crash before the database commit")
+        return self._inner.execute(sql, *args)
 
 
 def _table(connection):
@@ -601,3 +598,195 @@ def test_missing_table_and_order_column():
         FreshnessAnchor(KEY, MemoryStore(), name="x", tables={"gone": "id"}).digest(connection)
     with pytest.raises(ValueError, match="order column"):
         FreshnessAnchor(KEY, MemoryStore(), name="x", tables={"t": "nope"}).digest(connection)
+
+
+# -- connection modes (issue #58) ---------------------------------------------
+
+
+def _modes():
+    modes = [("default", {}), ("isolation_level=None", {"isolation_level": None})]
+    if sys.version_info >= (3, 12):
+        modes.append(("autocommit=True", {"autocommit": True}))
+    return modes
+
+
+@pytest.mark.parametrize(("label", "kwargs"), _modes(), ids=[m[0] for m in _modes()])
+def test_transaction_commits_in_every_supported_connection_mode(tmp_path, label, kwargs):
+    """autocommit=True made connection.commit() a no-op: the write was lost
+    while the anchor advanced, bricking every later verify."""
+    path = tmp_path / "m.db"
+    connection = sqlite3.connect(path, **kwargs)
+    connection.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+    if connection.in_transaction:
+        connection.execute("COMMIT")
+    store = FileAnchorStore(tmp_path / "anchors")
+    anchor = FreshnessAnchor(KEY, store, name="m", tables={"t": "id"})
+    anchor.initialize(connection)
+    with anchor.transaction(connection):
+        connection.execute("INSERT INTO t VALUES (1, 'a')")
+    assert not connection.in_transaction
+    connection.close()
+
+    fresh = sqlite3.connect(path, **kwargs)
+    assert fresh.execute("SELECT * FROM t").fetchall() == [(1, "a")]
+    FreshnessAnchor(KEY, store, name="m", tables={"t": "id"}).verify(fresh)
+    fresh.close()
+
+
+@pytest.mark.parametrize(("label", "kwargs"), _modes(), ids=[m[0] for m in _modes()])
+def test_transaction_rolls_back_in_every_supported_connection_mode(tmp_path, label, kwargs):
+    path = tmp_path / "m.db"
+    connection = sqlite3.connect(path, **kwargs)
+    connection.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+    if connection.in_transaction:
+        connection.execute("COMMIT")
+    store = FileAnchorStore(tmp_path / "anchors")
+    anchor = FreshnessAnchor(KEY, store, name="m", tables={"t": "id"})
+    anchor.initialize(connection)
+    before = store.load("m")
+    with pytest.raises(RuntimeError):
+        with anchor.transaction(connection):
+            connection.execute("INSERT INTO t VALUES (1, 'a')")
+            raise RuntimeError("boom")
+    assert not connection.in_transaction
+    assert connection.execute("SELECT * FROM t").fetchall() == []
+    assert store.load("m") == before
+    connection.close()
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="autocommit= is Python 3.12+")
+def test_transaction_refuses_autocommit_false_accurately(tmp_path):
+    connection = sqlite3.connect(tmp_path / "m.db", autocommit=False)
+    connection.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    anchor = FreshnessAnchor(KEY, MemoryStore(), name="m", tables={"t": "id"})
+    anchor.initialize(connection)
+    with pytest.raises(FloorVaultError, match="autocommit=False"):
+        with anchor.transaction(connection):
+            raise AssertionError("must not run")
+    connection.close()
+
+
+class _NoOpCommitConnection:
+    """Models autocommit=True on every Python version: commit()/rollback()
+    do nothing, so only explicit COMMIT/ROLLBACK statements take effect."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    @property
+    def in_transaction(self):
+        return self._inner.in_transaction
+
+    def execute(self, *args):
+        return self._inner.execute(*args)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+def test_transaction_does_not_rely_on_driver_commit(tmp_path):
+    path = tmp_path / "m.db"
+    raw = sqlite3.connect(path, isolation_level=None)
+    raw.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+    store = FileAnchorStore(tmp_path / "anchors")
+    connection = _NoOpCommitConnection(raw)
+    anchor = FreshnessAnchor(KEY, store, name="m", tables={"t": "id"})
+    anchor.initialize(connection)
+    with anchor.transaction(connection):
+        connection.execute("INSERT INTO t VALUES (1, 'a')")
+    with pytest.raises(RuntimeError):
+        with anchor.transaction(connection):
+            connection.execute("INSERT INTO t VALUES (2, 'b')")
+            raise RuntimeError("boom")
+    assert not raw.in_transaction
+    raw.close()
+    fresh = sqlite3.connect(path)
+    assert fresh.execute("SELECT * FROM t").fetchall() == [(1, "a")]
+    FreshnessAnchor(KEY, store, name="m", tables={"t": "id"}).verify(fresh)
+    fresh.close()
+
+
+def test_transaction_refuses_an_autocommit_false_connection_object():
+    class _AutocommitFalse:
+        autocommit = False
+        in_transaction = True
+
+        def execute(self, *args):
+            raise AssertionError("must not reach the database")
+
+    anchor = FreshnessAnchor(KEY, MemoryStore(), name="m", tables={"t": "id"})
+    with pytest.raises(FloorVaultError, match="autocommit=False"):
+        with anchor.transaction(_AutocommitFalse()):
+            raise AssertionError("must not run")
+
+
+# -- order column uniqueness (issue #59) --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [("g", "1"), ("g", "2")],  # duplicate values
+        [(None, "1"), (None, "2")],  # two NULLs tie as well
+    ],
+)
+def test_non_unique_order_column_is_refused(rows):
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE t (grp TEXT, v TEXT)")
+    connection.executemany("INSERT INTO t VALUES (?, ?)", rows)
+    anchor = FreshnessAnchor(KEY, MemoryStore(), name="x", tables={"t": "grp"})
+    with pytest.raises(ValueError, match="uniquely"):
+        anchor.digest(connection)
+
+
+def test_unique_order_column_with_one_null_is_accepted():
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE t (k TEXT, v TEXT)")
+    connection.executemany("INSERT INTO t VALUES (?, ?)", [(None, "1"), ("a", "2")])
+    FreshnessAnchor(KEY, MemoryStore(), name="x", tables={"t": "k"}).digest(connection)
+
+
+def test_digest_does_not_depend_on_physical_row_order():
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE t (id TEXT PRIMARY KEY, v TEXT)")
+    anchor = FreshnessAnchor(KEY, MemoryStore(), name="x", tables={"t": "id"})
+    rows = [("a", "1"), ("b", "2"), ("c", "3")]
+    connection.executemany("INSERT INTO t VALUES (?, ?)", rows)
+    first = anchor.digest(connection)
+    connection.execute("DELETE FROM t")
+    connection.executemany("INSERT INTO t VALUES (?, ?)", list(reversed(rows)))
+    connection.commit()
+    connection.execute("VACUUM")
+    assert anchor.digest(connection) == first
+
+
+def test_duplicated_row_on_a_non_pk_order_column_is_refused(app):
+    """An attacker duplicating a row on a unique-but-unconstrained order
+    column hits the uniqueness check rather than slipping through."""
+    path, store, connection, _anchor, _table_ = app
+    connection.execute("CREATE TABLE loose (k TEXT, v TEXT)")
+    connection.execute("INSERT INTO loose VALUES ('a', '1')")
+    connection.commit()
+    anchor = FreshnessAnchor(KEY, MemoryStore(), name="loose", tables={"loose": "k"})
+    anchor.initialize(connection)
+    connection.execute("INSERT INTO loose VALUES ('a', '1')")
+    connection.commit()
+    with pytest.raises(ValueError, match="uniquely"):
+        anchor.verify(connection)
+
+
+# -- store name validation (issue #60) ----------------------------------------
+
+
+@pytest.mark.parametrize("name", ["../escaped", "a/b", "..", ".hidden", "", "a\\b"])
+def test_file_store_refuses_unsafe_names(tmp_path, name):
+    store = FileAnchorStore(tmp_path / "store")
+    with pytest.raises(ValueError, match="name"):
+        store.compare_and_swap(name, None, b"x")
+    with pytest.raises(ValueError, match="name"):
+        store.load(name)
+    assert not any(p.name.startswith("escaped") for p in tmp_path.iterdir())
