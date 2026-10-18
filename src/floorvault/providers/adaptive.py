@@ -173,9 +173,27 @@ class AdaptiveKeyProvider(KeyProvider):
             return self._resolve_os_tier(allow_create=False)
         if self._tier3_store_present():
             return self._read_os_tier_beside_file_key()
-        if self._os_tier_marker_present() or not self._os_tier_usable():
-            # Already recorded (Tier-3 creation refuses while it exists), or no
-            # OS tier here at all: nothing to serialize against.
+        if not self._os_tier_usable():
+            # No OS tier here at all: nothing to create or record.
+            return self._resolve_os_tier(allow_create=True)
+        if self._marker_records_this_identity():
+            # A key was recorded for this service/account: a missing one was
+            # deleted or reset, so it is never silently replaced.
+            key = self._resolve_os_tier(allow_create=False, missing_ok=True)
+            if key is _OS_KEY_MISSING:
+                raise KeyProviderError(
+                    f"{self.fallback_dir / OS_TIER_MARKER_FILENAME} records that the OS key "
+                    f"store held this home's master key (service {self.service_name!r}, "
+                    f"account {self.account_name!r}), but it is missing now: it may have "
+                    "been deleted or the store reset. Refusing to create a replacement, "
+                    "which would leave data under the original unreadable. Restore it "
+                    "(for example from a recovery backup); if it is lost and no data "
+                    "depends on it, remove the marker deliberately"
+                )
+            return key
+        if self._os_tier_marker_present():
+            # Recorded for another service/account (or unreadable): Tier-3
+            # creation already refuses, so there is nothing to serialize against.
             return self._resolve_os_tier(allow_create=True)
         # First resolution here: hold the lock Tier-3 creation takes, so a
         # concurrent resolver that cannot see the OS tier either finishes its
@@ -186,6 +204,11 @@ class AdaptiveKeyProvider(KeyProvider):
                 stack.enter_context(self._tier3_creation_lock())
             except TimeoutError:
                 raise
+            except ValueError:
+                # fallback_dir fails the owner-only directory policy (a symlink,
+                # another owner): Tier-3 creation there fails the same way, so
+                # there is no file-key fork to guard against.
+                return self._resolve_os_tier(allow_create=True)
             except OSError as exc:
                 self._warn_marker_unrecorded(exc)
                 return self._resolve_os_tier(allow_create=True)
@@ -231,13 +254,29 @@ class AdaptiveKeyProvider(KeyProvider):
         )
         try:
             write_protected(
-                tier.encode("ascii"),
+                "\0".join((tier, self.service_name, self.account_name)).encode("utf-8"),
                 self.fallback_dir / OS_TIER_MARKER_FILENAME,
                 header=OS_TIER_MARKER_MAGIC,
                 expected_length=None,
             )
-        except (ProtectedStoreError, OSError) as exc:
+        except (ProtectedStoreError, OSError, ValueError) as exc:
             self._warn_marker_unrecorded(exc)
+
+    def _marker_records_this_identity(self) -> bool:
+        """Whether a readable marker names this provider's service and account."""
+        try:
+            payload = read_protected(
+                self.fallback_dir / OS_TIER_MARKER_FILENAME,
+                header=OS_TIER_MARKER_MAGIC,
+                expected_length=None,
+            )
+        except (ProtectedStoreError, OSError, ValueError):
+            return False
+        try:
+            fields = payload.decode("utf-8").split("\0")
+        except UnicodeDecodeError:
+            return False
+        return len(fields) == 3 and fields[1:] == [self.service_name, self.account_name]
 
     def _warn_marker_unrecorded(self, exc: BaseException) -> None:
         warnings.warn(
@@ -618,7 +657,7 @@ _OS_KEY_MISSING = object()
 TIER3_LOCK_FILENAME = "master.key.lock"
 
 #: Marker recording that this home's master key lives in the OS tier (#63).
-#: Not key material: ``FVOT1`` followed by the tier name.
+#: Not key material: ``FVOT1`` then ``tier NUL service NUL account`` (UTF-8).
 OS_TIER_MARKER_FILENAME = "master.key.ostier"
 OS_TIER_MARKER_MAGIC = b"FVOT1"
 

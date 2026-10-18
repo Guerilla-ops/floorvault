@@ -100,7 +100,10 @@ def test_headless_resolver_refuses_to_fork_a_keychain_key(tmp_path, monkeypatch,
     _gui_session(monkeypatch)
     os_key = _key(_provider(tmp_path).resolve_key())
     assert keychain.calls["add"] == 1
-    assert _marker(tmp_path).read_bytes() == OS_TIER_MARKER_MAGIC + b"macos-keychain"
+    assert (
+        _marker(tmp_path).read_bytes()
+        == OS_TIER_MARKER_MAGIC + b"macos-keychain\0floorvault\0default-v1"
+    )
 
     _headless_session(monkeypatch)
     with pytest.raises(KeyProviderError, match="lives in the OS key store"):
@@ -176,6 +179,71 @@ def test_reset_keychain_beside_a_file_key_and_marker_still_refuses(tmp_path, mon
         _provider(tmp_path).resolve_key()
     assert keychain.calls["add"] == 0
     assert (tmp_path / "master.key").read_bytes() == file_key
+
+
+def test_deleted_keychain_item_is_not_silently_replaced(tmp_path, monkeypatch, keychain):
+    """The marker proves a key was created here: a missing one was deleted or
+    the store reset, and minting a replacement would orphan the data."""
+    _gui_session(monkeypatch)
+    _provider(tmp_path).resolve_key()
+    keychain.store.clear()  # the Keychain item is deleted
+    with pytest.raises(KeyProviderError, match="missing now"):
+        _provider(tmp_path).resolve_key()
+    assert keychain.calls["add"] == 1  # only the original creation
+
+
+def test_a_marker_for_another_service_does_not_refuse_this_one(tmp_path, monkeypatch, keychain):
+    """Markers are per service/account: another identity's marker neither
+    blocks nor falsely flags a first-time key for this one."""
+    _gui_session(monkeypatch)
+    _provider(tmp_path, service_name="other-app").resolve_key()
+    other_marker = _marker(tmp_path).read_bytes()
+    keychain.store.clear()  # a different Keychain item would be looked up
+    _provider(tmp_path).resolve_key()  # creates this service's key
+    assert keychain.calls["add"] == 2
+    assert _marker(tmp_path).read_bytes() == other_marker
+    # Tier-3 creation is still refused for every identity in this directory.
+    _headless_session(monkeypatch)
+    with pytest.raises(KeyProviderError, match="lives in the OS key store"):
+        _provider(tmp_path).resolve_key()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows symlink creation in pytest tmp dirs is unreliable",
+)
+def test_symlinked_fallback_dir_still_resolves_the_keychain_key(tmp_path, monkeypatch, keychain):
+    """The owner-only directory policy refuses a symlinked fallback_dir; that
+    must not break OS-tier resolution (Tier-3 creation there fails the same way,
+    so there is no file-key fork to guard)."""
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    keychain.store["k"] = b"\x05" * 32
+    _gui_session(monkeypatch)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert _key(_provider(link).resolve_key()) == b"\x05" * 32
+    assert not any("OS-tier marker" in str(w.message) for w in caught)
+    assert not (real / OS_TIER_MARKER_FILENAME).exists()
+
+
+def test_directory_policy_refusal_still_resolves_the_keychain_key(tmp_path, monkeypatch, keychain):
+    """Platform-independent form of the symlink case: _mkdir_owner_only raises
+    ValueError for a fallback_dir that fails the owner-only policy."""
+    provider = _provider(tmp_path)
+
+    def policy_refuses():
+        raise ValueError(f"vault directory must not be a symlink: {tmp_path}")
+
+    monkeypatch.setattr(provider, "_tier3_creation_lock", policy_refuses)
+    keychain.store["k"] = b"\x05" * 32
+    _gui_session(monkeypatch)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert _key(provider.resolve_key()) == b"\x05" * 32
+    assert not any("OS-tier marker" in str(w.message) for w in caught)
 
 
 def test_unreadable_marker_cannot_be_ruled_out(tmp_path, monkeypatch):
@@ -319,7 +387,9 @@ def test_linux_and_windows_os_keys_are_recorded_and_protected(
         monkeypatch.setattr(adaptive_module, "WindowsDPAPIKeyProvider", _FakeNativeProvider)
         monkeypatch.setattr(adaptive_module, "is_windows", lambda: True)
     assert _key(_provider(tmp_path).resolve_key()) == b"\x07" * 32
-    assert _marker(tmp_path).read_bytes() == OS_TIER_MARKER_MAGIC + tier
+    assert (
+        _marker(tmp_path).read_bytes() == OS_TIER_MARKER_MAGIC + tier + b"\0floorvault\0default-v1"
+    )
 
     # The OS tier disappears for this session (no session bus, a container).
     monkeypatch.setattr(adaptive_module, "is_linux", lambda: False)

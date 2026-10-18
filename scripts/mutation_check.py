@@ -1368,15 +1368,15 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AD-4",
         "src/floorvault/providers/adaptive.py",
-        "        if self._tier3_store_present():\n            return self._read_os_tier_beside_file_key()\n        if self._os_tier_marker_present() or not self._os_tier_usable():",
-        "        if False:  # MUTANT\n            return self._read_os_tier_beside_file_key()\n        if self._os_tier_marker_present() or not self._os_tier_usable():",
+        "        if self._tier3_store_present():\n            return self._read_os_tier_beside_file_key()\n        if not self._os_tier_usable():",
+        "        if False:  # MUTANT\n            return self._read_os_tier_beside_file_key()\n        if not self._os_tier_usable():",
         "OS tier gains a key store after Tier-3 file custody: a fresh OS key is created and the file key is silently forked",
     ),
     Mutation(
         "AD-5",
         "src/floorvault/providers/adaptive.py",
-        "        if key is _OS_KEY_MISSING:",
-        "        if False:  # MUTANT",
+        '        if key is _OS_KEY_MISSING:\n            raise KeyProviderError(\n                f"a local key file exists',
+        '        if False:  # MUTANT\n            raise KeyProviderError(\n                f"a local key file exists',
         "Usable-but-empty OS tier with a file key present is treated as a key: resolution returns a sentinel instead of refusing",
     ),
     Mutation(
@@ -1434,6 +1434,27 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        except OSError:\n            return True\n        return True\n\n    def _os_tier_marker_refusal",
         "        except OSError:\n            return False  # MUTANT\n        return True\n\n    def _os_tier_marker_refusal",
         "An unreadable OS-tier marker reads as absent, so Tier-3 creation forks the OS-held key",
+    ),
+    Mutation(
+        "AD-14",
+        "src/floorvault/providers/adaptive.py",
+        '            if key is _OS_KEY_MISSING:\n                raise KeyProviderError(\n                    f"{self.fallback_dir / OS_TIER_MARKER_FILENAME} records',
+        '            if False:  # MUTANT\n                raise KeyProviderError(\n                    f"{self.fallback_dir / OS_TIER_MARKER_FILENAME} records',
+        "A deleted or reset OS key recorded by the marker is silently replaced: data under the original no longer decrypts",
+    ),
+    Mutation(
+        "AD-15",
+        "src/floorvault/providers/adaptive.py",
+        "        return len(fields) == 3 and fields[1:] == [self.service_name, self.account_name]",
+        "        return len(fields) == 3  # MUTANT",
+        "Another service's marker is taken as this one's: a first-time key for this service is refused",
+    ),
+    Mutation(
+        "AD-16",
+        "src/floorvault/providers/adaptive.py",
+        "            except ValueError:\n                # fallback_dir fails",
+        "            except KeyError:  # MUTANT\n                # fallback_dir fails",
+        "A fallback_dir refused by the owner-only policy (a symlink) breaks OS-tier resolution of a working key",
     ),
 )
 
