@@ -490,6 +490,25 @@ one. An existing OS key still wins; an unavailable OS tier still falls
 through to step 3; a usable OS tier with no key MUST raise `KeyProviderError`
 rather than create one or fall through. `allow_create=False` is unchanged.
 
+**No key fork in the other direction (OS-tier marker).** A resolver that
+cannot reach the OS tier (an SSH, cron or container session) never sees an OS
+key, so it would create a Tier-3 key beside one. To prevent that, the OS tier
+records itself in the fallback directory:
+
+- `master.key.ostier` = `"FVOT1"` (5 B) `||` ASCII tier name (`macos-keychain`,
+  `linux-secret-service`, `windows-dpapi`). It holds no key material and is
+  published with the §10.4 create-never-replace writer (owner-only).
+- With `allow_create=True`, no Tier-3 store and no marker, step 2 MUST take the
+  Tier-3 creation lock, re-check for a Tier-3 store (if one appeared, apply the
+  rule above), resolve, and publish the marker when the OS tier returned a key
+  (created or existing). A Tier-3 store takes precedence over the marker.
+- Tier-3 creation (raw and passphrase-wrapped) MUST, under the same lock, refuse
+  with `KeyProviderError` while the marker exists. A lookup failure other than
+  "not found" counts as present. Reading an existing Tier-3 store is unchanged.
+- `allow_create=False` never writes the marker. If the lock or the marker cannot
+  be written, step 2 still returns the key and emits a `UserWarning` that the
+  guard is absent.
+
 ### 10.6 Governed generation store (`FVGW*`)
 
 `GenerationStore` holds a *wrapped* master key that must be updatable (KEK
