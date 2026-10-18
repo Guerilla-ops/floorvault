@@ -81,6 +81,20 @@ _NAME_MAX = 128
 _CAS_RETRIES = 5
 
 
+def _validate_name(name: object) -> str:
+    """Return ``name`` if it is a safe anchor name, else raise ``ValueError``.
+
+    Shared by :class:`FreshnessAnchor` and :class:`FileAnchorStore`: the name
+    becomes a file name, so path separators, ``..`` and a leading dot are
+    refused wherever a name enters, not only on the anchor's own path.
+    """
+    if not isinstance(name, str) or not name or len(name) > _NAME_MAX:
+        raise ValueError(f"name must be a non-empty string of at most {_NAME_MAX} characters")
+    if not all(ch.isalnum() or ch in "-_." for ch in name) or name.startswith("."):
+        raise ValueError("name may contain only letters, digits, '-', '_' and '.'")
+    return name
+
+
 class RollbackDetectedError(FloorVaultError):
     """The database does not match the state the freshness anchor recorded.
 
@@ -122,7 +136,7 @@ class FileAnchorStore:
         self.directory = Path(directory)
 
     def _path(self, name: str) -> Path:
-        return self.directory / f"{name}.fvanchor"
+        return self.directory / f"{_validate_name(name)}.fvanchor"
 
     def load(self, name: str) -> Optional[bytes]:
         try:
@@ -230,10 +244,7 @@ class FreshnessAnchor:
         name: str,
         tables: Mapping[str, str],
     ) -> None:
-        if not isinstance(name, str) or not name or len(name) > _NAME_MAX:
-            raise ValueError(f"name must be a non-empty string of at most {_NAME_MAX} characters")
-        if not all(ch.isalnum() or ch in "-_." for ch in name) or name.startswith("."):
-            raise ValueError("name may contain only letters, digits, '-', '_' and '.'")
+        _validate_name(name)
         if not callable(getattr(store, "load", None)) or not callable(
             getattr(store, "compare_and_swap", None)
         ):
@@ -313,13 +324,29 @@ class FreshnessAnchor:
                 raise RollbackDetectedError(f"anchored table {table!r} does not exist")
             if order_column not in columns:
                 raise ValueError(f"order column {order_column!r} is not a column of {table!r}")
+            order_sql = _quoted_identifier(order_column)
+            # Ties in the order column are returned in physical order, which a
+            # legitimate VACUUM or rebuild can change - the digest would then
+            # move while the contents did not. Refuse rather than hash an
+            # order SQLite does not define. NULLs count as ties (COUNT(DISTINCT)
+            # skips them), so a nullable order column must hold at most one.
+            total, distinct, nulls = connection.execute(
+                f"SELECT COUNT(*), COUNT(DISTINCT {order_sql}), "  # nosec B608 - identifiers allow-listed and bracket-quoted
+                f"COUNT(*) - COUNT({order_sql}) FROM {table_sql}"
+            ).fetchone()
+            if total != distinct + min(nulls, 1) or nulls > 1:
+                raise ValueError(
+                    f"order column {order_column!r} does not order {table!r} uniquely "
+                    "(duplicate values or more than one NULL): the anchor is misconfigured, "
+                    "or rows were duplicated"
+                )
             mac.update(b"T" + _frame(table.encode("utf-8")))
             for column in columns:
                 mac.update(b"C" + _frame(column.encode("utf-8")))
             select_list = ", ".join(_quoted_identifier(column) for column in columns)
             cursor = connection.execute(
                 f"SELECT {select_list} FROM {table_sql} "  # nosec B608 - identifiers allow-listed and bracket-quoted
-                f"ORDER BY {_quoted_identifier(order_column)}"
+                f"ORDER BY {order_sql}"
             )
             count = 0
             for row in cursor.fetchall():
@@ -470,7 +497,10 @@ class FreshnessAnchor:
             raise RollbackDetectedError(
                 "freshness anchor moved since verify(); refusing to commit over it"
             )
-        connection.commit()
+        # An explicit COMMIT statement, not connection.commit(): under Python
+        # 3.12's sqlite3 autocommit=True, commit() is a no-op, so the write
+        # would be dropped while the anchor advanced past it.
+        connection.execute("COMMIT")
         if not self.store.compare_and_swap(
             self.name, pending_blob, self._encode_record(new_state, None)
         ):
@@ -496,6 +526,12 @@ class FreshnessAnchor:
             with anchor.transaction(connection):
                 table.store("u1", "token_cipher", new_token)
         """
+        if getattr(connection, "autocommit", None) is False:
+            raise FloorVaultError(
+                "a connection opened with autocommit=False always holds an open "
+                "transaction, so FreshnessAnchor.transaction() cannot take the write "
+                "lock before verifying; use autocommit=True or the default mode"
+            )
         if getattr(connection, "in_transaction", False):
             raise FloorVaultError(
                 "connection already has an open transaction; commit or roll it back "
@@ -507,8 +543,10 @@ class FreshnessAnchor:
             yield connection
             self._commit(connection)
         except BaseException:
+            # Explicit ROLLBACK for the same reason as COMMIT above:
+            # connection.rollback() does nothing under autocommit=True.
             if getattr(connection, "in_transaction", True):
-                connection.rollback()
+                connection.execute("ROLLBACK")
             raise
 
     def accept_external_write(self, connection: Any) -> None:

@@ -954,6 +954,11 @@ for each anchored table, in ascending order of its ASCII-folded name:
         "R" || concat(value(v) for v in row, columns in the order above)
     "E" || u64be(row count)
 
+The order column MUST order the table's rows uniquely: a digest MUST be
+refused (`ValueError`) when it holds duplicate values or more than one NULL,
+because SQLite returns ties in physical order and the digest would then change
+with a VACUUM or rebuild while the contents did not.
+
 value(NULL)  = "n"
 value(int)   = "i" || u64be(len(s)) || s      where s = ASCII decimal
 value(float) = "f" || u64be(8) || IEEE-754 binary64 big-endian
@@ -987,6 +992,10 @@ Behavioral contract:
 - Writes go through `transaction(connection)`: `BEGIN IMMEDIATE`, `verify`
   inside the write lock, the caller's writes, then swap `{committed: old,
   pending: new}`, commit the database, swap `{committed: new, pending: null}`.
+  The commit and rollback are explicit `COMMIT` / `ROLLBACK` statements, not
+  driver calls (Python 3.12's `autocommit=True` makes `commit()` a no-op); a
+  connection opened with `autocommit=False` is refused, since it always holds
+  an open transaction.
   On an exception before the database commit it rolls back and leaves the
   record untouched. It refuses a connection with an open transaction. If the
   final swap loses to another holder of the key (who already promoted this
@@ -997,6 +1006,8 @@ Behavioral contract:
   instance and connection, with the record unchanged since, and is weaker:
   it cannot see another writer between that verify and the call.
 - `initialize` refuses when a record exists.
+- Anchor names, wherever they enter (the anchor or `FileAnchorStore`), are
+  1–128 letters, digits, `-`, `_` or `.`, not starting with `.`.
 - `FileAnchorStore` performs the swap under a cross-process lock
   (`<name>.fvanchor.lock`), writes a temporary file, fsyncs it, renames it
   over the record, and fsyncs the directory (and any directory it created).
