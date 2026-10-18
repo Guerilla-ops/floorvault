@@ -479,6 +479,17 @@ else.
    silently downgrading.
 3. Tier-3 raw file (gated as in §10.4).
 
+**No key fork across tiers.** Tiers keep separate stores, so creating an OS
+key on a host whose data is under a Tier-3 key would silently replace the
+master key. When `allow_create=True` and a Tier-3 store (`master.key` or
+`master.key.fvpw`, checked with `lstat` so a dangling symlink counts; a
+lookup failure other than "not found" counts as present, since it cannot
+rule a store out)
+exists in the fallback directory, step 2 MUST NOT create a key: it only reads
+one. An existing OS key still wins; an unavailable OS tier still falls
+through to step 3; a usable OS tier with no key MUST raise `KeyProviderError`
+rather than create one or fall through. `allow_create=False` is unchanged.
+
 ### 10.6 Governed generation store (`FVGW*`)
 
 `GenerationStore` holds a *wrapped* master key that must be updatable (KEK
