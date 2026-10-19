@@ -171,8 +171,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AD-3",
         "src/floorvault/providers/adaptive.py",
-        "        if is_linux():\n            provider = LinuxSecretServiceKeyProvider(",
-        "        if False:  # MUTANT\n            provider = LinuxSecretServiceKeyProvider(",
+        "        if is_linux():\n            provider = self._linux_provider()",
+        "        if False:  # MUTANT\n            provider = self._linux_provider()",
         "Adaptive provider stops dispatching Linux Secret Service custody",
     ),
     Mutation(
@@ -1221,8 +1221,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PW-5",
         "src/floorvault/providers/adaptive.py",
-        "                allow_file_fallback=self.allow_disk_fallback and self._passphrase is None,",
-        "                allow_file_fallback=self.allow_disk_fallback,  # MUTANT",
+        "            allow_file_fallback=self.allow_disk_fallback and self._passphrase is None,",
+        "            allow_file_fallback=self.allow_disk_fallback,  # MUTANT",
         "With passphrase= the Linux tier still falls back to the publicly masked master.key.ss",
     ),
     Mutation(
@@ -1368,15 +1368,15 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AD-4",
         "src/floorvault/providers/adaptive.py",
-        "        if not allow_create or not self._tier3_store_present():",
-        "        if True:  # MUTANT",
+        "        if self._tier3_store_present():\n            return self._read_os_tier_beside_file_key()\n        if not self._os_tier_usable():",
+        "        if False:  # MUTANT\n            return self._read_os_tier_beside_file_key()\n        if not self._os_tier_usable():",
         "OS tier gains a key store after Tier-3 file custody: a fresh OS key is created and the file key is silently forked",
     ),
     Mutation(
         "AD-5",
         "src/floorvault/providers/adaptive.py",
-        "        if key is _OS_KEY_MISSING:",
-        "        if False:  # MUTANT",
+        '        if key is _OS_KEY_MISSING:\n            raise KeyProviderError(\n                f"a local key file exists',
+        '        if False:  # MUTANT\n            raise KeyProviderError(\n                f"a local key file exists',
         "Usable-but-empty OS tier with a file key present is treated as a key: resolution returns a sentinel instead of refusing",
     ),
     Mutation(
@@ -1399,6 +1399,69 @@ MUTATIONS: tuple[Mutation, ...] = (
         "                os.lstat(self.fallback_dir / name)\n            except FileNotFoundError:",
         "                os.lstat(self.fallback_dir / name)\n            except OSError:  # MUTANT",
         "An unsearchable key directory reads as 'no file store': the OS tier creates a key that replaces the unreadable file key",
+    ),
+    Mutation(
+        "AD-9",
+        "src/floorvault/providers/adaptive.py",
+        "            if self._os_tier_marker_present():\n                raise self._os_tier_marker_refusal()\n            # Re-check",
+        "            if False:  # MUTANT\n                raise self._os_tier_marker_refusal()\n            # Re-check",
+        "A resolver without the OS tier ignores the OS-tier marker and mints master.key beside an OS-held key (#63 fork)",
+    ),
+    Mutation(
+        "AD-10",
+        "src/floorvault/providers/adaptive.py",
+        "                if self._os_tier_marker_present():\n                    raise self._os_tier_marker_refusal()",
+        "                if False:  # MUTANT\n                    raise self._os_tier_marker_refusal()",
+        "Passphrase Tier-3 creation ignores the OS-tier marker: a wrapped file key forks an OS-held key",
+    ),
+    Mutation(
+        "AD-11",
+        "src/floorvault/providers/adaptive.py",
+        "            if key is not None:\n                self._publish_os_tier_marker()",
+        "            if False:  # MUTANT\n                self._publish_os_tier_marker()",
+        "OS-tier key created or adopted without recording the marker: a later headless resolver forks it",
+    ),
+    Mutation(
+        "AD-12",
+        "src/floorvault/providers/adaptive.py",
+        "            if self._tier3_store_present():\n                return self._read_os_tier_beside_file_key()\n            key = self._resolve_os_tier(allow_create=True)",
+        "            if False:  # MUTANT\n                return self._read_os_tier_beside_file_key()\n            key = self._resolve_os_tier(allow_create=True)",
+        "No re-check under the lock: a file key published since the unlocked check is forked by a new OS key",
+    ),
+    Mutation(
+        "AD-13",
+        "src/floorvault/providers/adaptive.py",
+        "        except OSError:\n            return True\n        return True\n\n    def _os_tier_marker_refusal",
+        "        except OSError:\n            return False  # MUTANT\n        return True\n\n    def _os_tier_marker_refusal",
+        "An unreadable OS-tier marker reads as absent, so Tier-3 creation forks the OS-held key",
+    ),
+    Mutation(
+        "AD-14",
+        "src/floorvault/providers/adaptive.py",
+        '            if key is _OS_KEY_MISSING:\n                raise KeyProviderError(\n                    f"{self.fallback_dir / OS_TIER_MARKER_FILENAME} records',
+        '            if False:  # MUTANT\n                raise KeyProviderError(\n                    f"{self.fallback_dir / OS_TIER_MARKER_FILENAME} records',
+        "A deleted or reset OS key recorded by the marker is silently replaced: data under the original no longer decrypts",
+    ),
+    Mutation(
+        "AD-15",
+        "src/floorvault/providers/adaptive.py",
+        "        return len(fields) == 3 and fields[1:] == [self.service_name, self.account_name]",
+        "        return len(fields) == 3  # MUTANT",
+        "Another service's marker is taken as this one's: a first-time key for this service is refused",
+    ),
+    Mutation(
+        "AD-16",
+        "src/floorvault/providers/adaptive.py",
+        "            except ValueError:\n                # fallback_dir fails",
+        "            except KeyError:  # MUTANT\n                # fallback_dir fails",
+        "A fallback_dir refused by the owner-only policy (a symlink) breaks OS-tier resolution of a working key",
+    ),
+    Mutation(
+        "AD-17",
+        "src/floorvault/providers/adaptive.py",
+        "        except FileExistsError:\n            stack.enter_context(self._tier3_creation_lock())",
+        "        except KeyError:  # MUTANT\n            stack.enter_context(self._tier3_creation_lock())",
+        "A fallback_dir creation race skips the Tier-3 lock: the OS key is created unrecorded beside the winner's file key",
     ),
 )
 

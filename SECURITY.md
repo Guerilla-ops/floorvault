@@ -408,6 +408,16 @@ For a full description see the README and the design notes in `docs/`.
   but empty, resolution refuses (`KeyProviderError`) and tells the operator to
   migrate the file key deliberately (SPEC §10.5).
 
+  The reverse fork is closed too: a session that cannot reach the OS key store
+  (SSH, cron, a container) would otherwise create `master.key` beside a key
+  that lives in the Keychain / Secret Service / DPAPI. Once the OS tier holds
+  the key, it records `master.key.ostier` (tier, service and account names; no
+  key material) in the fallback directory, and local-file creation refuses
+  while it exists. The same marker stops a deleted or reset OS key from being
+  silently replaced: resolution refuses instead of minting a new key. If the
+  marker cannot be written (an unwritable fallback directory), the OS key is
+  still used and a warning says the guard is absent (SPEC §10.5).
+
   **Verification status by tier.** Windows DPAPI is exercised unmocked on the
   `windows-latest` CI legs. macOS Keychain and Linux Secret Service are not:
   the Keychain live test is opt-in and no workflow sets its flag, and no CI leg

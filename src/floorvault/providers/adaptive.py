@@ -9,6 +9,7 @@ Scales from interactive desktop storage to headless cloud/Docker environments:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import stat
 import warnings
@@ -168,8 +169,72 @@ class AdaptiveKeyProvider(KeyProvider):
         usable but holds no key, resolution refuses instead of creating one.
         An unavailable OS tier still returns ``None`` (the file tier follows).
         """
-        if not allow_create or not self._tier3_store_present():
-            return self._resolve_os_tier(allow_create=allow_create)
+        if not allow_create:
+            return self._resolve_os_tier(allow_create=False)
+        if self._tier3_store_present():
+            return self._read_os_tier_beside_file_key()
+        if not self._os_tier_usable():
+            # No OS tier here at all: nothing to create or record.
+            return self._resolve_os_tier(allow_create=True)
+        if self._marker_records_this_identity():
+            # A key was recorded for this service/account: a missing one was
+            # deleted or reset, so it is never silently replaced.
+            key = self._resolve_os_tier(allow_create=False, missing_ok=True)
+            if key is _OS_KEY_MISSING:
+                raise KeyProviderError(
+                    f"{self.fallback_dir / OS_TIER_MARKER_FILENAME} records that the OS key "
+                    f"store held this home's master key (service {self.service_name!r}, "
+                    f"account {self.account_name!r}), but it is missing now: it may have "
+                    "been deleted or the store reset. Refusing to create a replacement, "
+                    "which would leave data under the original unreadable. Restore it "
+                    "(for example from a recovery backup); if it is lost and no data "
+                    "depends on it, remove the marker deliberately"
+                )
+            return key
+        if self._os_tier_marker_present():
+            # Recorded for another service/account (or unreadable): Tier-3
+            # creation already refuses, so there is nothing to serialize against.
+            return self._resolve_os_tier(allow_create=True)
+        # First resolution here: hold the lock Tier-3 creation takes, so a
+        # concurrent resolver that cannot see the OS tier either finishes its
+        # file key first (we then only read, per the #57 rule) or finds the
+        # marker and refuses (#63). An existing OS key is recorded the same way.
+        with contextlib.ExitStack() as stack:
+            try:
+                self._enter_tier3_creation_lock(stack)
+            except TimeoutError:
+                raise
+            except ValueError:
+                # fallback_dir fails the owner-only directory policy (a symlink,
+                # another owner): Tier-3 creation there fails the same way, so
+                # there is no file-key fork to guard against.
+                return self._resolve_os_tier(allow_create=True)
+            except OSError as exc:
+                self._warn_marker_unrecorded(exc)
+                return self._resolve_os_tier(allow_create=True)
+            if self._tier3_store_present():
+                return self._read_os_tier_beside_file_key()
+            key = self._resolve_os_tier(allow_create=True)
+            if key is not None:
+                self._publish_os_tier_marker()
+            return key
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def _enter_tier3_creation_lock(self, stack: contextlib.ExitStack) -> None:
+        """Take the Tier-3 lock, retrying once after a fallback_dir creation race.
+
+        Two first-time resolvers can both see ``fallback_dir`` missing; the
+        loser's owner-only ``mkdir`` then raises ``FileExistsError``. The
+        directory exists by then, so the retry validates it and serializes on
+        the lock instead of skipping it (and with it the re-check and marker).
+        """
+        try:
+            stack.enter_context(self._tier3_creation_lock())
+        except FileExistsError:
+            stack.enter_context(self._tier3_creation_lock())
+
+    def _read_os_tier_beside_file_key(self) -> Optional[HardenedMemoryKey]:
+        """With a Tier-3 store present the OS tier is only read (#57)."""
         key = self._resolve_os_tier(allow_create=False, missing_ok=True)
         if key is _OS_KEY_MISSING:
             raise KeyProviderError(
@@ -182,6 +247,78 @@ class AdaptiveKeyProvider(KeyProvider):
                 "holds no data you need, remove it deliberately"
             )
         return key
+
+    def _publish_os_tier_marker(self) -> None:
+        """Record that this home's key lives in the OS tier (caller holds the lock).
+
+        Best-effort: if it cannot be written the key is still returned, with a
+        warning that the guard against a later file-key fork is absent.
+        """
+        if self._os_tier_marker_present():
+            return
+        tier = (
+            "windows-dpapi"
+            if is_windows()
+            else "linux-secret-service"
+            if is_linux()
+            else "macos-keychain"
+            if is_macos()
+            else "os"
+        )
+        try:
+            write_protected(
+                "\0".join((tier, self.service_name, self.account_name)).encode("utf-8"),
+                self.fallback_dir / OS_TIER_MARKER_FILENAME,
+                header=OS_TIER_MARKER_MAGIC,
+                expected_length=None,
+            )
+        except (ProtectedStoreError, OSError, ValueError) as exc:
+            self._warn_marker_unrecorded(exc)
+
+    def _marker_records_this_identity(self) -> bool:
+        """Whether a readable marker names this provider's service and account."""
+        try:
+            payload = read_protected(
+                self.fallback_dir / OS_TIER_MARKER_FILENAME,
+                header=OS_TIER_MARKER_MAGIC,
+                expected_length=None,
+            )
+        except (ProtectedStoreError, OSError, ValueError):
+            return False
+        try:
+            fields = payload.decode("utf-8").split("\0")
+        except UnicodeDecodeError:
+            return False
+        return len(fields) == 3 and fields[1:] == [self.service_name, self.account_name]
+
+    def _warn_marker_unrecorded(self, exc: BaseException) -> None:
+        warnings.warn(
+            f"could not record the OS-tier marker in {self.fallback_dir} "
+            f"({type(exc).__name__}); a resolver that cannot reach the OS key store "
+            "and has disk fallback enabled could create a separate local key file",
+            UserWarning,
+            stacklevel=4,
+        )
+
+    def _os_tier_marker_present(self) -> bool:
+        """Whether the OS-tier marker exists; a lookup failure cannot rule it out."""
+        try:
+            os.lstat(self.fallback_dir / OS_TIER_MARKER_FILENAME)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        return True
+
+    def _os_tier_marker_refusal(self) -> KeyProviderError:
+        marker = self.fallback_dir / OS_TIER_MARKER_FILENAME
+        return KeyProviderError(
+            f"{marker} records that this home's master key lives in the OS key store; "
+            "creating a local key file here would silently fork it. Refusing. "
+            "Resolve from a session that can reach the OS key store, or export the "
+            "key and set FLOOR_VAULT_KEY. If the OS key is gone and no data depends "
+            "on it, remove the marker deliberately"
+        )
 
     def _tier3_store_present(self) -> bool:
         """Whether a Tier-3 store (raw or passphrase-wrapped) exists in ``fallback_dir``.
@@ -218,6 +355,34 @@ class AdaptiveKeyProvider(KeyProvider):
                 return _OS_KEY_MISSING
         return self._resolve_os_tier_for_platform(allow_create=allow_create, missing_ok=False)
 
+    def _linux_provider(self) -> LinuxSecretServiceKeyProvider:
+        return LinuxSecretServiceKeyProvider(
+            store_path=LinuxSecretServiceKeyProvider.default_store_path(self.fallback_dir),
+            service=self.service_name,
+            attribute=self.account_name,
+            # The provider's masked-file tier is disk custody too, so it is
+            # gated on the same opt-in as Tier 3: strict mode, or a caller
+            # that never enabled disk fallback, must not read master.key.ss.
+            # With a passphrase the caller asked for wrapped disk custody;
+            # the masked master.key.ss is unwrapped and must not be used.
+            allow_file_fallback=self.allow_disk_fallback and self._passphrase is None,
+            allow_legacy_adoption=self.allow_legacy_adoption,
+        )
+
+    def _os_tier_usable(self) -> bool:
+        """Whether an OS tier can run here at all (no key lookup, no creation)."""
+        if is_windows():
+            return True
+        if is_linux():
+            return self._linux_provider()._secret_service_available()
+        if is_macos():
+            try:
+                import Security  # type: ignore[import-not-found]  # noqa: F401
+            except ImportError:
+                return False
+            return True
+        return False
+
     def _resolve_os_tier_for_platform(self, *, allow_create: bool, missing_ok: bool):
         if is_windows():
             return WindowsDPAPIKeyProvider(
@@ -227,18 +392,7 @@ class AdaptiveKeyProvider(KeyProvider):
             ).resolve_key(allow_create=allow_create)
 
         if is_linux():
-            provider = LinuxSecretServiceKeyProvider(
-                store_path=LinuxSecretServiceKeyProvider.default_store_path(self.fallback_dir),
-                service=self.service_name,
-                attribute=self.account_name,
-                # The provider's masked-file tier is disk custody too, so it is
-                # gated on the same opt-in as Tier 3: strict mode, or a caller
-                # that never enabled disk fallback, must not read master.key.ss.
-                # With a passphrase the caller asked for wrapped disk custody;
-                # the masked master.key.ss is unwrapped and must not be used.
-                allow_file_fallback=self.allow_disk_fallback and self._passphrase is None,
-                allow_legacy_adoption=self.allow_legacy_adoption,
-            )
+            provider = self._linux_provider()
             # A headless Linux session has no Secret Service capability. Preserve
             # AdaptiveKeyProvider's explicit local-file policy in that case.
             if provider._secret_service_available():
@@ -395,6 +549,8 @@ class AdaptiveKeyProvider(KeyProvider):
         # Generate new 32-byte key and publish it with the hardened writer.
         new_key = os.urandom(32)
         with self._tier3_creation_lock():
+            if self._os_tier_marker_present():
+                raise self._os_tier_marker_refusal()
             # Re-check the *other* store under the lock: a concurrent resolver
             # with a passphrase may have just created the wrapped one, and
             # no-clobber cannot catch that because the file names differ.
@@ -454,6 +610,8 @@ class AdaptiveKeyProvider(KeyProvider):
         try:
             payload = passphrase_store.wrap(new_key, passphrase)
             with self._tier3_creation_lock():
+                if self._os_tier_marker_present():
+                    raise self._os_tier_marker_refusal()
                 if self._read_raw_key_file(key_file) is not None:
                     raise KeyProviderError(
                         f"an unwrapped key file exists at {key_file}; convert it with "
@@ -510,6 +668,11 @@ _OS_KEY_MISSING = object()
 
 #: Lock file serializing Tier-3 creation and conversion across both store names.
 TIER3_LOCK_FILENAME = "master.key.lock"
+
+#: Marker recording that this home's master key lives in the OS tier (#63).
+#: Not key material: ``FVOT1`` then ``tier NUL service NUL account`` (UTF-8).
+OS_TIER_MARKER_FILENAME = "master.key.ostier"
+OS_TIER_MARKER_MAGIC = b"FVOT1"
 
 
 def protect_key_file(
