@@ -163,3 +163,32 @@ def test_posix_default_is_unchanged_for_every_other_mutant():
     module = _load()
     for mutant in module.MUTATIONS:
         assert module.expected_result(mutant, on_windows=False) == mutant.expect
+
+
+def test_platform_scope_keeps_custody_memory_and_harness_controls():
+    module = _load()
+    selected = module.curated_mutations("platform")
+    ids = {mutation.id for mutation in selected}
+    assert {"PC-1", "PC-16", "WD-1", "WD-2", "WACL-1", "AD-2", "AD-6", "DS-4", "CANARY"} <= ids
+    assert "CR-1" not in ids
+    assert "FA-1" not in ids
+    assert 0 < len(selected) < len(module.MUTATIONS)
+    assert all(m in selected for m in module.MUTATIONS if m.expect_on_windows is not None)
+    assert module.curated_mutations("all") == module.MUTATIONS
+    for mutation in selected:
+        assert module.expected_result(mutation, on_windows=True) == module.expected_result(
+            next(m for m in module.MUTATIONS if m.id == mutation.id), on_windows=True
+        )
+
+
+def test_curated_scope_can_be_listed_without_running_mutations():
+    result = subprocess.run(
+        [sys.executable, str(MODULE_PATH), "--mode", "curated", "--scope", "platform", "--list"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "CANARY" in result.stdout
+    assert "WD-1" in result.stdout
+    assert "CR-1 " not in result.stdout
+    assert "BASELINE" not in result.stdout

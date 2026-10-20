@@ -1,8 +1,8 @@
 """Property tests for the local security gate script.
 
-CI runs ``scripts/security-check.sh`` unchanged, so the properties CI depends on
-are pinned here. The script itself is not executed (it shells out to gitleaks,
-uv and friends); we assert its shape so a refactor cannot silently break CI.
+The standalone script remains a complete local gate. CI distributes its checks
+between shared jobs and a platform test matrix, whose coverage is checked in
+test_ci_workflow.py. This file pins the local gate's fail-closed behavior.
 """
 
 from __future__ import annotations

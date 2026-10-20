@@ -1774,7 +1774,38 @@ def _run_auto(mutants: list[AutoMutant], jobs: int, report_path: Path | None = N
     return 0
 
 
-def _run_curated(verbose: bool) -> int:
+def curated_mutations(scope: str = "all") -> tuple[Mutation, ...]:
+    """Keep native custody, filesystem and memory mutants on the platform legs.
+
+    Linux still runs every mutant. macOS/Windows repeat the controls whose runtime
+    behavior can differ, including every declared platform override and the canary.
+    Selecting by module also covers future mutants added to these surfaces.
+    """
+    if scope == "all":
+        return MUTATIONS
+    if scope != "platform":
+        raise ValueError(f"unknown curated scope: {scope}")
+    platform_modules = {
+        "platform_support.py",
+        "memory.py",
+        "_filelock.py",
+        "adaptive.py",
+        "platform_custody.py",
+        "windows_dpapi.py",
+        "linux_keyring.py",
+        "generation_store.py",
+    }
+    return tuple(
+        mutation
+        for mutation in MUTATIONS
+        if Path(mutation.path).name in platform_modules
+        or mutation.expect_on_windows is not None
+        or mutation.id == "CANARY"
+    )
+
+
+def _run_curated(verbose: bool, *, scope: str = "all") -> int:
+    mutations = curated_mutations(scope)
     curated_tests = _curated_tests()
     with tempfile.TemporaryDirectory(prefix="fv-mut-curated-") as tmp:
         workdir = Path(tmp) / "repo"
@@ -1786,7 +1817,7 @@ def _run_curated(verbose: bool) -> int:
         failures = 0
         print(f"{'id':8} {'result':9} {'expected':9} mutation")
         print("-" * 92)
-        for mutation in MUTATIONS:
+        for mutation in mutations:
             target = workdir / mutation.path
             original = target.read_text(encoding="utf-8")
             matches = original.count(mutation.find)
@@ -1799,7 +1830,9 @@ def _run_curated(verbose: bool) -> int:
                 original.replace(mutation.find, mutation.replace, 1), encoding="utf-8"
             )
             try:
-                result = _classify(_run_tests(workdir, curated_tests, False))
+                # One failing test establishes a kill; survivors still run the
+                # complete suite, including the equivalent canary.
+                result = _classify(_run_tests(workdir, curated_tests, True))
             finally:
                 target.write_text(original, encoding="utf-8")
             expected = expected_result(mutation)
@@ -1812,8 +1845,8 @@ def _run_curated(verbose: bool) -> int:
         if failures:
             print(f"[FAIL] {failures} mutation(s) did not behave as expected")
             return 1
-        killed = sum(1 for m in MUTATIONS if expected_result(m) == "killed")
-        survived = sum(1 for m in MUTATIONS if expected_result(m) == "survived")
+        killed = sum(1 for m in mutations if expected_result(m) == "killed")
+        survived = sum(1 for m in mutations if expected_result(m) == "survived")
         print(
             f"[PASS] {killed} behavioural mutants killed; "
             f"{survived} declared equivalent mutant(s) survived"
@@ -1824,6 +1857,9 @@ def _run_curated(verbose: bool) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("curated", "auto"), default="curated")
+    parser.add_argument(
+        "--scope", choices=("all", "platform"), default="all", help="curated mutation scope"
+    )
     parser.add_argument("--paths", nargs="*", default=list(DEFAULT_PATHS))
     parser.add_argument("--list", action="store_true", help="count mutants and exit")
     parser.add_argument("--limit", type=int, default=0, help="cap the number of mutants")
@@ -1833,7 +1869,16 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.mode == "curated":
-        return _run_curated(args.verbose)
+        if args.list:
+            mutations = curated_mutations(args.scope)
+            for mutation in mutations:
+                print(f"{mutation.id} {mutation.path}")
+            print(f"TOTAL {len(mutations)} mutants ({args.scope})")
+            return 0
+        return _run_curated(args.verbose, scope=args.scope)
+
+    if args.scope != "all":
+        parser.error("--scope applies only to curated mode")
 
     mutants = _collect_auto_mutants(tuple(args.paths))
     if args.list:

@@ -22,9 +22,13 @@ FloorVault follows Semantic Versioning.
 
 ## Release process
 
-1. Land all intended changes on `main` with the full gate green.
+1. Land all intended changes on `main` with CI green. Ordinary PR CI uses four
+   compatibility cells; the expanded nine-cell matrix runs weekly, on version
+   tags, and via the CI workflow's manual `expanded` option (default true).
 2. Update `version` in `pyproject.toml` (release PR, reviewed normally).
-3. Create a GitHub release with tag `vX.Y.Z`. Publishing the release triggers
+3. Push the `vX.Y.Z` tag and wait for its expanded CI run to pass before publishing
+   the GitHub release. An expanded manual run at the exact release commit can also
+   be used as a pre-tag rehearsal. Publishing the release triggers
    `release.yml`, which:
    - builds the wheel and sdist **twice** and requires byte-identical digests
      (same-runner reproducibility check);

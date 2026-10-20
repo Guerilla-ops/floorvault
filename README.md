@@ -261,8 +261,11 @@ create a missing key. See the [CLI](https://github.com/Guerilla-ops/floorvault/b
 
 ## Evidence and releases
 
-The [CI configuration](https://github.com/Guerilla-ops/floorvault/blob/main/.github/workflows/ci.yml) defines Linux Python 3.10–3.14 jobs
-and macOS/Windows Python 3.10 and 3.13 jobs. A workflow configuration is not evidence
+The [CI configuration](https://github.com/Guerilla-ops/floorvault/blob/main/.github/workflows/ci.yml) tests each PR on Ubuntu Python 3.10 and 3.14,
+plus macOS and Windows Python 3.13. Weekly, version-tag and expanded manual runs
+add Ubuntu Python 3.11–3.13 and macOS/Windows Python 3.10. Lint, builds and the full
+mutation sweep run once; macOS/Windows also check platform mutations. Dependency
+audits cover each OS's optional dependencies. A workflow configuration is not evidence
 that every platform's native custody path was exercised successfully; consult the
 individual run results and [platform findings](https://github.com/Guerilla-ops/floorvault/blob/main/docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md).
 
