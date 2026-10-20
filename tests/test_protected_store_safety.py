@@ -978,6 +978,10 @@ def test_mkdir_owner_only_rejects_direct_symlink(tmp_path):
     sys.platform == "win32",
     reason="Windows symlink creation in pytest tmp dirs is unreliable",
 )
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="as root every temp-dir symlink is root-owned, so the user-owned-symlink refusal cannot trigger",
+)
 def test_mkdir_owner_only_rejects_a_symlinked_ancestor(tmp_path):
     """A user-controlled symlink in a *parent* must not redirect the vault.
 
