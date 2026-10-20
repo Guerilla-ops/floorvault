@@ -5,7 +5,7 @@ CryptUnprotectData calls (via ctypes) with a secondary entropy parameter.
 When the caller supplies ``entropy``, an automated infostealer that can call
 CryptUnprotectData but does not know the entropy still cannot decrypt the
 master key. When it is omitted the provider uses a public constant
-(``b"hermes_vault-dpapi"``): the blob is still bound to the Windows user account
+(``b"floorvault-dpapi"``): the blob is still bound to the Windows user account
 by DPAPI, but the constant adds no secrecy - it is a label, not a key.
 
 On non-Windows hosts (CI, test bundles, macOS) there is no OS boundary to
@@ -38,7 +38,7 @@ from .platform_custody import (
     write_protected,
 )
 
-_HEADER = b"FLOORWV1"  # hermes_vault protected key store, dpapi boundary
+_HEADER = b"FLOORWV1"  # floorvault protected key store, dpapi boundary
 
 
 def _random(n: int) -> bytes:
@@ -92,7 +92,7 @@ class WindowsDPAPIKeyProvider(KeyProvider):
         # NOTE: the default is a public constant - a label that keeps the blob
         # domain-separated, not a secret. Only caller-supplied entropy adds the
         # "infostealer cannot unprotect" property described in the docstring.
-        self._entropy = bytes(entropy or b"hermes_vault-dpapi")
+        self._entropy = bytes(entropy or b"floorvault-dpapi")
         self._random_bytes = random_bytes
         self._allow_outside_user_profile = allow_outside_user_profile
         self._allow_nonwindows_stub = allow_nonwindows_stub

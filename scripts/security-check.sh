@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/security-check.sh for hermes_vault
+# scripts/security-check.sh for floorvault
 #
 # Single source of truth for the security gates: run locally before pushing,
 # and by CI on every supported OS and Python version.

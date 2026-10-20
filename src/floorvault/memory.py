@@ -210,7 +210,7 @@ class HardenedMemoryKey:
                     )
                 # Required mode only demands advice the platform actually
                 # implements. Darwin has neither MADV_DONTDUMP nor MADV_DONTFORK
-                # (src/hermes_vault/memory.py:19-20), so requiring them there
+                # (src/floorvault/memory.py:19-20), so requiring them there
                 # could never succeed; page locking plus RLIMIT_CORE=0 is the
                 # real Darwin guarantee.
                 if self._mode == "required" and is_linux():

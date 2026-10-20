@@ -1,8 +1,7 @@
-"""Hermes Vault Store: First-class vault persistence for Hermes Agent."""
+"""FloorVault credential store and migration-aware factory."""
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -12,7 +11,6 @@ from .vaultkit.vault import (
     PAYMENT_FIELDS,
     REQUIRED_FIELDS,
     VAULT_KINDS,
-    HermesVaultStore,
     VaultError,
     VaultItemMeta,
     VaultStore,
@@ -20,18 +18,15 @@ from .vaultkit.vault import (
     normalize_otp_secret,
     scrub_secret_from_text,
 )
+from .vaultkit.vault import (
+    get_vault_store as _get_vault_store,
+)
 
 
 def get_vault_store(base_dir: Optional[Path | str] = None, *, auto_migrate: bool = True):
-    """Return a Hermes vault store, with transparent legacy migration if present."""
-    if base_dir is None:
-        hermes_home = os.environ.get("HERMES_HOME")
-        if hermes_home:
-            base_dir = Path(hermes_home) / "vault"
-        else:
-            base_dir = Path.home() / ".hermes" / "vault"
-    base = Path(base_dir)
-    modern = VaultStore(base)
+    """Open the existing FloorVault location; optionally expose legacy migration."""
+    modern = _get_vault_store(base_dir)
+    base = modern._base
     if auto_migrate and (base / "vault.json.enc").is_file() and (base / "vault.key").is_file():
         from .migration import MigratingVaultStore
 
@@ -40,7 +35,6 @@ def get_vault_store(base_dir: Optional[Path | str] = None, *, auto_migrate: bool
 
 
 __all__ = [
-    "HermesVaultStore",
     "VaultStore",
     "VaultItemMeta",
     "VaultError",

@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from hermes_vault import ContextualSQLite, DecryptionVerificationError, FloorVault
+from floorvault import ContextualSQLite, DecryptionVerificationError, FloorVault
 
 
 @pytest.fixture

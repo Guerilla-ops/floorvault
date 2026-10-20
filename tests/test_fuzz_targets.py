@@ -27,7 +27,7 @@ RANDOM_INPUTS = 500
 
 
 def _load(path: Path) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(f"hermes_vault_fuzz_{path.stem}", path)
+    spec = importlib.util.spec_from_file_location(f"floorvault_fuzz_{path.stem}", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -73,7 +73,7 @@ def test_target_exposes_the_atheris_contract(path: Path):
 @pytest.mark.parametrize("path", TARGETS, ids=lambda path: path.stem)
 def test_target_properties_hold_over_seeds_and_mutations(path: Path):
     module = _load(path)
-    rng = random.Random(f"hermes_vault-fuzz-replay:{path.stem}")
+    rng = random.Random(f"floorvault-fuzz-replay:{path.stem}")
     inputs = list(module.seed_inputs())
     inputs += [
         _mutate(rng, seed) for seed in module.seed_inputs() for _ in range(MUTATIONS_PER_SEED)

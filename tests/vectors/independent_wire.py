@@ -1,6 +1,6 @@
 """Independent implementation of the FloorVault wire format (docs/SPEC.md).
 
-It must never import hermes_vault; a test enforces that.
+It must never import floorvault; a test enforces that.
 
 Dependencies are the Python standard library plus ``cryptography``'s AES-ECB
 block primitive. Two deliberate independence choices:
@@ -47,7 +47,7 @@ class TooShortError(EnvelopeRejectionError):
 
 
 class BadMagicError(EnvelopeRejectionError):
-    """magic not in {HRMV, HV02, FLRV, FLV2}."""
+    """magic not in {FLRV, FLV2}."""
 
 
 class UnsupportedCryptoVersionError(EnvelopeRejectionError):
@@ -74,10 +74,8 @@ class KeyIdMismatchError(AuthenticationError):
 # Constants (SPEC §3, §4, §9, §11)
 # --------------------------------------------------------------------------
 
-MAGIC_V1 = b"FLRV"  # legacy v1 write magic — used only for the pos-v1-legacy vector
-MAGIC_V1_CURRENT = b"HRMV"  # hermes v1 read magic; no v1 writer ships in this build
-MAGIC_V2 = b"HV02"
-LEGACY_MAGIC_V2 = b"FLV2"
+MAGIC_V1 = b"FLRV"
+MAGIC_V2 = b"FLV2"
 CRYPTO_VERSION_V2 = 0x02
 HEADER_LEN_V1 = 5
 HEADER_LEN_V2 = 7
@@ -85,9 +83,9 @@ NONCE_LEN = 16
 MIN_ENVELOPE_LEN = HEADER_LEN_V1 + NONCE_LEN  # 21 — §4.3 rule 2
 
 MASTER_KEY_LEN = 32
-SIV_KEY_INFO = b"hermes-v1-aes-siv"  # §3, normative bytes
+SIV_KEY_INFO = b"floorvault-v1-aes-siv"  # §3, normative bytes
 SIV_KEY_LEN = 64
-BEACON_KEY_INFO = b"hermes-v1-beacon-index"  # §3, normative bytes
+BEACON_KEY_INFO = b"floorvault-v1-beacon-index"  # §3, normative bytes
 BEACON_KEY_LEN = 32
 
 MIN_BEACON_BITS = 4
@@ -95,13 +93,13 @@ MAX_BEACON_BITS = 64
 
 RECOVERY_MAGIC = b"FVRB1"
 RECOVERY_BUNDLE_ID_LEN = 16
-RECOVERY_APP_INSTANCE_ID = "hermes-vault-recovery"
+RECOVERY_APP_INSTANCE_ID = "floorvault-recovery"
 RECOVERY_TABLE = "recovery"
 RECOVERY_COLUMN = "master_key"
 
-DEFAULT_SCHEMA_ID = "hermes.vault.v1"
+DEFAULT_SCHEMA_ID = "floor.vault.v1"
 DEFAULT_SCHEMA_VERSION = 1
-DEFAULT_APP_INSTANCE_ID = "hermes-agent"
+DEFAULT_APP_INSTANCE_ID = "default"
 
 BytesLike = Union[bytes, bytearray]
 
@@ -371,7 +369,7 @@ def parse_envelope(data: BytesLike) -> Envelope:
     if len(data) < MIN_ENVELOPE_LEN:
         raise TooShortError("Malformed ciphertext envelope: too short")
     magic = data[:4]
-    if magic in (MAGIC_V2, LEGACY_MAGIC_V2):
+    if magic == MAGIC_V2:
         crypto_version = data[4]
         if crypto_version != CRYPTO_VERSION_V2:
             raise UnsupportedCryptoVersionError(
@@ -381,7 +379,7 @@ def parse_envelope(data: BytesLike) -> Envelope:
         header: Optional[bytes] = data[:HEADER_LEN_V2]
         key_id: Optional[int] = data[5]
         offset = HEADER_LEN_V2
-    elif magic in (MAGIC_V1, MAGIC_V1_CURRENT):
+    elif magic == MAGIC_V1:
         version = 1
         crypto_version = key_id = None
         header = None

@@ -14,12 +14,12 @@ import urllib.error
 
 import pytest
 
-from hermes_vault.providers.base import CustodyDowngradeError, MissingKeyError
-from hermes_vault.providers.generation_store import (
+from floorvault.providers.base import CustodyDowngradeError, MissingKeyError
+from floorvault.providers.generation_store import (
     GenerationMismatchError,
     GenerationStore,
 )
-from hermes_vault.providers.vault_transit import (
+from floorvault.providers.vault_transit import (
     UrllibTransport,
     VaultTransitProvider,
 )
@@ -75,7 +75,7 @@ def make_provider(tmp_path, **kw) -> tuple[VaultTransitProvider, FakeVault]:
     fake = FakeVault()
     provider = VaultTransitProvider(
         vault_addr=ADDR,
-        key_name="hermes_vault",
+        key_name="floorvault",
         store_dir=tmp_path / "vt",
         token=TOKEN,
         transport=fake,
@@ -111,7 +111,7 @@ def test_provision_mints_and_wraps(tmp_path, monkeypatch):
     provider, fake = make_provider(tmp_path)
     key = provider.resolve_key()
     assert key.get_bytes() == bytes(32)
-    assert fake.calls[0][0] == "/v1/transit/datakey/plaintext/hermes_vault"
+    assert fake.calls[0][0] == "/v1/transit/datakey/plaintext/floorvault"
     # The store holds only the wrapped blob, never the plaintext.
     generation, blob = GenerationStore(tmp_path / "vt").read_active()
     assert generation == 1
@@ -123,14 +123,14 @@ def test_resolve_decrypts_existing_blob(tmp_path):
     provider.resolve_key()
     provider2 = VaultTransitProvider(
         vault_addr=ADDR,
-        key_name="hermes_vault",
+        key_name="floorvault",
         store_dir=tmp_path / "vt",
         token=TOKEN,
         transport=fake,
     )
     key = provider2.resolve_key()
     assert key.get_bytes() == bytes(32)
-    assert fake.calls[-1][0].endswith("/decrypt/hermes_vault")
+    assert fake.calls[-1][0].endswith("/decrypt/floorvault")
 
 
 def test_allow_create_false_on_empty_store_is_missing(tmp_path):
@@ -146,7 +146,7 @@ def test_context_is_versioned_and_constant_across_ops(tmp_path):
     provider.wipe()
     provider2 = VaultTransitProvider(
         vault_addr=ADDR,
-        key_name="hermes_vault",
+        key_name="floorvault",
         store_dir=tmp_path / "vt",
         token=TOKEN,
         transport=fake,
@@ -156,7 +156,7 @@ def test_context_is_versioned_and_constant_across_ops(tmp_path):
     assert len(contexts) == 3
     assert len({json.dumps(c, sort_keys=True) for c in contexts}) == 1
     ctx = contexts[0]
-    assert ctx["purpose"] == "hermes_vault-master-wrap"
+    assert ctx["purpose"] == "floorvault-master-wrap"
     assert ctx["custody"] == "vault-transit"
     assert ctx["v"] == 1
     assert set(ctx) == {"v", "app", "store", "purpose", "custody"}
@@ -255,7 +255,7 @@ def test_cache_ttl_bounds_vault_calls(tmp_path):
 
     provider2 = VaultTransitProvider(
         vault_addr=ADDR,
-        key_name="hermes_vault",
+        key_name="floorvault",
         store_dir=tmp_path / "vt",
         token=TOKEN,
         transport=fake,
@@ -263,7 +263,7 @@ def test_cache_ttl_bounds_vault_calls(tmp_path):
     )
     provider2.resolve_key()
     provider2.resolve_key()
-    assert fake.calls[-1][0].endswith("/decrypt/hermes_vault")
+    assert fake.calls[-1][0].endswith("/decrypt/floorvault")
     assert sum(1 for p, _ in fake.calls if "decrypt" in p) == 2
 
 
@@ -598,4 +598,4 @@ def test_context_is_canonical_utf8_for_non_ascii_app_ids(tmp_path):
     decoded = json.loads(raw)
     assert decoded["app"] == "héllo-世界"
     assert decoded["v"] == 1
-    assert decoded["purpose"] == "hermes_vault-master-wrap"
+    assert decoded["purpose"] == "floorvault-master-wrap"

@@ -2,11 +2,11 @@
 
 Mapped-shape source: ``secrets.hermesvault.env`` binds env-var names to
 ``hv:<item_id>`` or ``hv:<item_id>:<field>`` references. The store is the
-agent-secret vault — a hermes_vault store at ``<home>/agent-vault`` (or
+agent-secret vault — a floorvault store at ``<home>/agent-vault`` (or
 ``secrets.hermesvault.dir``), kept deliberately separate from the browser-fill
 login vault at ``<home>/vault`` so no legacy migration ever conflates the two.
 
-The store's own key custody is hermes_vault's AdaptiveKeyProvider (OS keyring,
+The store's own key custody is floorvault's AdaptiveKeyProvider (OS keyring,
 then the HERMES_VAULT_KEY-style env tier). The bootstrap key name is declared
 via ``token_env`` so the orchestrator never lets a vault-resolved secret
 overwrite the credential that unlocks the vault.
@@ -15,10 +15,9 @@ overwrite the credential that unlocks the vault.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Optional, Tuple
-
-import sys
 
 from agent.secret_sources.base import (
     ErrorKind,
@@ -29,18 +28,19 @@ from agent.secret_sources.base import (
 )
 
 
-def _import_hermes_vault():
-    """Import hermes_vault, falling back to the vendored ``vendor/`` sibling.
+def _import_floorvault():
+    """Import floorvault, falling back to the vendored ``vendor/`` sibling.
 
     ``vendor`` is a symlink to the package's own ``src/`` so the plugin always
     runs the checkout it ships with — no site-packages dependency is required."""
     try:
-        return __import__("hermes_vault")
+        return __import__("floorvault")
     except ImportError:
         vendor = Path(__file__).resolve().with_name("vendor")
         if vendor.is_dir() and str(vendor) not in sys.path:
             sys.path.insert(0, str(vendor))
-        return __import__("hermes_vault")
+        return __import__("floorvault")
+
 
 DEFAULT_DIR_NAME = "agent-vault"
 DEFAULT_TOKEN_ENV = "HERMES_VAULT_KEY"
@@ -75,27 +75,27 @@ def _open_store(cfg: dict, home_path: Path):
 
     When the configured bootstrap key var is present in the fetch-scoped
     environment, it is used directly (keeping per-profile override semantics
-    under multiplex); otherwise hermes_vault's AdaptiveKeyProvider resolves OS
+    under multiplex); otherwise floorvault's AdaptiveKeyProvider resolves OS
     custody itself. ``auto_migrate=False`` is deliberate: this store never
     adopts the legacy browser vault files.
     """
-    hermes_vault = _import_hermes_vault()
+    floorvault = _import_floorvault()
 
     base = resolve_base_dir(cfg, home_path)
     token_env = str(cfg.get("token_env") or DEFAULT_TOKEN_ENV)
     key_hex = get_source_environment().get(token_env)
     if key_hex:
-        from hermes_vault import FloorVault
-        from hermes_vault.vaultkit import VaultStore
+        from floorvault import FloorVault
+        from floorvault.vaultkit import VaultStore
 
-        crypto = FloorVault(bytes.fromhex(key_hex.strip()), app_instance_id="hermes-agent")
+        crypto = FloorVault(bytes.fromhex(key_hex.strip()), app_instance_id="floor-agent")
         return VaultStore(base, crypto=crypto)
-    return hermes_vault.get_vault_store(base, auto_migrate=False)
+    return floorvault.get_vault_store(base, auto_migrate=False)
 
 
 class HermesVaultSource(SecretSource):
     name = "hermesvault"
-    label = "hermes-vault"
+    label = "FloorVault"
     shape = "mapped"
     scheme = "hv"
     token_env_key = "token_env"
@@ -111,10 +111,14 @@ class HermesVaultSource(SecretSource):
             "enabled": {"description": "Enable the hermes-vault secret source", "default": False},
             "env": {"description": "Map of ENV_VAR to hv:<item_id>[:<field>] refs", "default": {}},
             "dir": {"description": "Vault directory (default <home>/agent-vault)", "default": ""},
-            "token_env": {"description": "Env var holding the vault master key (64 hex)",
-                          "default": DEFAULT_TOKEN_ENV},
-            "override_existing": {"description": "May overwrite vars already set by .env/shell",
-                                  "default": False},
+            "token_env": {
+                "description": "Env var holding the vault master key (64 hex)",
+                "default": DEFAULT_TOKEN_ENV,
+            },
+            "override_existing": {
+                "description": "May overwrite vars already set by .env/shell",
+                "default": False,
+            },
             "timeout_seconds": {"description": "Fetch wall-clock budget", "default": 120},
         }
 
@@ -126,18 +130,22 @@ class HermesVaultSource(SecretSource):
         if not isinstance(env_map, dict):
             if env_map is None:
                 return result
-            return result.fail("secrets.hermesvault.env must be a map of ENV_VAR to hv: refs",
-                               ErrorKind.NOT_CONFIGURED)
+            return result.fail(
+                "secrets.hermesvault.env must be a map of ENV_VAR to hv: refs",
+                ErrorKind.NOT_CONFIGURED,
+            )
         if not env_map:
             return result
         try:
             store = _open_store(cfg, home_path)
         except ImportError:
-            return result.fail("hermes_vault package is not installed in this environment",
-                               ErrorKind.INTERNAL)
+            return result.fail(
+                "floorvault package is not installed in this environment", ErrorKind.INTERNAL
+            )
         except Exception as error:
-            return result.fail(f"Could not open the hermes-vault store: {error}",
-                               ErrorKind.AUTH_FAILED)
+            return result.fail(
+                f"Could not open the hermes-vault store: {error}", ErrorKind.AUTH_FAILED
+            )
         for name, ref in env_map.items():
             if not is_valid_env_name(name):
                 result.warnings.append(f"Skipped invalid env-var name {name!r}")
@@ -154,8 +162,7 @@ class HermesVaultSource(SecretSource):
             if field is not None:
                 value = secret.get(field)
                 if not isinstance(value, str) or not value:
-                    result.warnings.append(
-                        f"Skipped {name}: item {item_id} has no field {field!r}")
+                    result.warnings.append(f"Skipped {name}: item {item_id} has no field {field!r}")
                     continue
             elif isinstance(secret.get("value"), str) and secret["value"]:
                 value = secret["value"]
@@ -167,7 +174,8 @@ class HermesVaultSource(SecretSource):
             else:
                 result.warnings.append(
                     f"Skipped {name}: item {item_id} holds {len(secret)} fields — "
-                    "name one with hv:<item_id>:<field>")
+                    "name one with hv:<item_id>:<field>"
+                )
                 continue
             result.secrets[name] = value
         return result

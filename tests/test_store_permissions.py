@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_vault import platform_support
-from hermes_vault.platform_support import (
+from floorvault import platform_support
+from floorvault.platform_support import (
     acl_sids_granting_others_access,
     store_permission_problem,
 )

@@ -26,9 +26,9 @@ import types
 
 import pytest
 
-from hermes_vault.providers import linux_keyring as lk_module
-from hermes_vault.providers.base import CustodyDowngradeError, KeyProviderError, MissingKeyError
-from hermes_vault.providers.linux_keyring import LinuxSecretServiceKeyProvider
+from floorvault.providers import linux_keyring as lk_module
+from floorvault.providers.base import CustodyDowngradeError, KeyProviderError, MissingKeyError
+from floorvault.providers.linux_keyring import LinuxSecretServiceKeyProvider
 
 # --------------------------------------------------------------------------
 # Faithful fake secretstorage
@@ -192,7 +192,7 @@ def _secret_service_provider(monkeypatch, tmp_path, *, allow_disk_fallback: bool
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     return LinuxSecretServiceKeyProvider(
         store_path=tmp_path / "master.key",
-        service="hermes_vault",
+        service="floorvault",
         attribute="master-key",
     )
 
@@ -337,7 +337,7 @@ def test_client_does_not_reference_nonexistent_secretstorage_names():
 def test_secret_service_returns_the_stored_key(monkeypatch, tmp_path):
     """An item already in the collection is returned without contacting a file."""
     stored = b"\xa5" * 32
-    item = _FakeItem({"application": "hermes_vault", "hermes_vault": "master-key"}, stored)
+    item = _FakeItem({"application": "floorvault", "floorvault": "master-key"}, stored)
     collection = _FakeCollection(items=(item,))
     _install_fake_secretstorage(monkeypatch, collection=collection)
     provider = _secret_service_provider(monkeypatch, tmp_path)
@@ -363,7 +363,7 @@ def test_secret_service_creates_a_key_when_absent(monkeypatch, tmp_path):
     assert len(collection.created) == 1
     created = collection.created[0]
     assert created["secret"] == key.get_bytes()
-    assert created["attributes"] == {"application": "hermes_vault", "hermes_vault": "master-key"}
+    assert created["attributes"] == {"application": "floorvault", "floorvault": "master-key"}
     assert created["replace"] is False
     assert not (tmp_path / "master.key").exists(), "fell back to file custody"
     key.wipe()
@@ -372,7 +372,7 @@ def test_secret_service_creates_a_key_when_absent(monkeypatch, tmp_path):
 def test_secret_service_unlocks_a_locked_collection(monkeypatch, tmp_path):
     """A locked collection must be unlocked before searching, not skipped."""
     stored = b"\x5a" * 32
-    item = _FakeItem({"application": "hermes_vault", "hermes_vault": "master-key"}, stored)
+    item = _FakeItem({"application": "floorvault", "floorvault": "master-key"}, stored)
     collection = _FakeCollection(items=(item,), locked=True)
     _install_fake_secretstorage(monkeypatch, collection=collection)
     provider = _secret_service_provider(monkeypatch, tmp_path)
@@ -389,7 +389,7 @@ def test_secret_service_unlocks_a_locked_collection(monkeypatch, tmp_path):
 
 def test_secret_service_ignores_items_for_other_services(monkeypatch, tmp_path):
     """Attribute matching is exact: another application's entry is not the key."""
-    other = _FakeItem({"application": "someone-else", "hermes_vault": "master-key"}, b"\x01" * 32)
+    other = _FakeItem({"application": "someone-else", "floorvault": "master-key"}, b"\x01" * 32)
     collection = _FakeCollection(items=(other,))
     _install_fake_secretstorage(monkeypatch, collection=collection)
     provider = _secret_service_provider(monkeypatch, tmp_path)
@@ -409,7 +409,7 @@ def test_secret_service_does_not_trust_backend_query_filtering(monkeypatch, tmp_
     key of another - so the match is verified on the item's own attributes
     rather than on the backend having honoured the query.
     """
-    foreign = _FakeItem({"application": "someone-else", "hermes_vault": "master-key"}, b"\x01" * 32)
+    foreign = _FakeItem({"application": "someone-else", "floorvault": "master-key"}, b"\x01" * 32)
     collection = _FakeCollection(items=(foreign,), ignore_query_filters=True)
     _install_fake_secretstorage(monkeypatch, collection=collection)
     provider = _secret_service_provider(monkeypatch, tmp_path)
@@ -423,7 +423,7 @@ def test_secret_service_does_not_trust_backend_query_filtering(monkeypatch, tmp_
 
 def test_secret_service_rejects_an_entry_with_the_wrong_key_length(monkeypatch, tmp_path):
     """A short/oversized entry is a hard failure, never silently accepted."""
-    item = _FakeItem({"application": "hermes_vault", "hermes_vault": "master-key"}, b"\x07" * 16)
+    item = _FakeItem({"application": "floorvault", "floorvault": "master-key"}, b"\x07" * 16)
     collection = _FakeCollection(items=(item,))
     _install_fake_secretstorage(monkeypatch, collection=collection)
     provider = _secret_service_provider(monkeypatch, tmp_path)
@@ -541,7 +541,7 @@ def _seed_ss_store(tmp_path, key: bytes) -> "LinuxSecretServiceKeyProvider":
     """Write a valid master.key.ss via the provider's own headless fallback."""
     seed = LinuxSecretServiceKeyProvider(
         store_path=tmp_path / "master.key.ss",
-        service="hermes_vault",
+        service="floorvault",
         attribute="master-key",
         random_bytes=lambda n: key[:n],
     )
@@ -574,7 +574,7 @@ def test_existing_ss_store_is_not_read_when_file_fallback_is_forbidden(monkeypat
 
     provider = LinuxSecretServiceKeyProvider(
         store_path=tmp_path / "master.key.ss",
-        service="hermes_vault",
+        service="floorvault",
         attribute="master-key",
         allow_file_fallback=False,
     )
@@ -598,7 +598,7 @@ def test_existing_ss_store_is_read_when_file_fallback_is_allowed(monkeypatch, tm
 
     provider = LinuxSecretServiceKeyProvider(
         store_path=tmp_path / "master.key.ss",
-        service="hermes_vault",
+        service="floorvault",
         attribute="master-key",
         allow_file_fallback=True,
     )

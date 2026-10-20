@@ -1,8 +1,8 @@
 """Testing helpers — opt-in submodules for cross-checking FloorVault's primitives.
 
-Modules under ``hermes_vault.testing`` are NOT exported from
-``hermes_vault.__init__``. They are reachable only by an explicit import, e.g.
-``from hermes_vault.testing.siv_reference import siv_encrypt``.
+Modules under ``floorvault.testing`` are NOT exported from
+``floorvault.__init__``. They are reachable only by an explicit import, e.g.
+``from floorvault.testing.siv_reference import siv_encrypt``.
 
 Why opt-in
 ----------

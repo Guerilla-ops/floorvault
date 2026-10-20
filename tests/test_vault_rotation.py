@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_vault import FloorVault, KeyRing
-from hermes_vault.vault_rotation import rotate_vault_store
-from hermes_vault.vaultkit.vault import VaultError, VaultStore
+from floorvault import FloorVault, KeyRing
+from floorvault.vault_rotation import rotate_vault_store
+from floorvault.vaultkit.vault import VaultError, VaultStore
 
 OLD = bytes.fromhex("31" * 32)
 NEW = bytes.fromhex("42" * 32)
@@ -298,7 +298,7 @@ def test_an_id_only_rotation_under_the_same_master_stays_readable(tmp_path):
     assert result == {"migrated": 1, "verified": 1, "retirements": 0}
     assert store.resolve_secret(item.id) == {"note": "one"}
 
-    from hermes_vault.core import envelope_header
+    from floorvault.core import envelope_header
 
     with sqlite3.connect(tmp_path / "vault" / "vault.db") as conn:
         (payload,) = conn.execute(
@@ -387,7 +387,7 @@ def test_a_bare_canary_commitment_is_refused(tmp_path):
     store = _store(tmp_path)
     store.add_item("generic", "First", {"note": "one"})
     bare = _crypto(NEW).encrypt(
-        b"hermes_vault-rotation-target-v1",
+        b"floorvault-rotation-target-v1",
         key_id=1,
         table="vault_rotation_state",
         record_id="target",

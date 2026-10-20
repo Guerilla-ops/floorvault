@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-DEFAULT_PATHS = ("src/hermes_vault",)
+DEFAULT_PATHS = ("src/floorvault",)
 
 #: Platform flag for platform-conditional mutant expectations (see ``Mutation``).
 IS_WINDOWS = os.name == "nt"
@@ -107,77 +107,77 @@ def anchor_status(matches: int) -> str | None:
 MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PC-1",
-        "src/hermes_vault/platform_support.py",
+        "src/floorvault/platform_support.py",
         "    if is_windows():\n        return False",
         "    if False:  # MUTANT\n        return False",
         "Windows exemption disabled: a synthesised 0o666 treated as insecure",
     ),
     Mutation(
         "PC-2",
-        "src/hermes_vault/platform_support.py",
+        "src/floorvault/platform_support.py",
         "    return bool(mode & 0o077)",
         "    return False  # MUTANT",
         "POSIX group/other gate disabled entirely",
     ),
     Mutation(
         "PC-3",
-        "src/hermes_vault/platform_support.py",
+        "src/floorvault/platform_support.py",
         "    return bool(mode & 0o077)",
         "    return mode != 0o600  # MUTANT",
         "Exact-equality bug: any non-0600 owner-only mode refused",
     ),
     Mutation(
         "PC-4",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         'raise ProtectedStoreMissing("protected store not present") from exc',
         'raise ProtectedStoreError("protected store not present") from exc',
         "Loses the absent/unreadable distinction",
     ),
     Mutation(
         "PC-5",
-        "src/hermes_vault/providers/windows_dpapi.py",
+        "src/floorvault/providers/windows_dpapi.py",
         "        except ProtectedStoreMissing:",
         "        except ProtectedStoreError:  # MUTANT",
         "Reintroduces the data-loss bug: corrupt store treated as absent",
     ),
     Mutation(
         "PC-6",
-        "src/hermes_vault/providers/linux_keyring.py",
+        "src/floorvault/providers/linux_keyring.py",
         "        except ProtectedStoreMissing:",
         "        except ProtectedStoreError:  # MUTANT",
         "Same regression on the Linux provider",
     ),
     Mutation(
         "PC-7",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "        os.link(temporary, path)",
         "        os.replace(temporary, path)  # MUTANT",
         "Atomic no-clobber replaced by os.replace, which always clobbers",
     ),
     Mutation(
         "PC-8",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "                # custody. This clause is why they are no longer dead code.\n                raise",
         "                # custody. This clause is why they are no longer dead code.\n                return None  # MUTANT",
         "Reinstates swallowing a deliberate provider error (silent custody downgrade)",
     ),
     Mutation(
         "AD-2",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "        if is_windows():\n            return WindowsDPAPIKeyProvider(",
         "        if False:  # MUTANT\n            return WindowsDPAPIKeyProvider(",
         "Adaptive provider stops dispatching Windows native custody",
     ),
     Mutation(
         "AD-3",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "        if is_linux():\n            provider = self._linux_provider()",
         "        if False:  # MUTANT\n            provider = self._linux_provider()",
         "Adaptive provider stops dispatching Linux Secret Service custody",
     ),
     Mutation(
         "AD-1",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         '            return read_protected(key_file, header=b"", expected_length=None)\n'
         "        except ProtectedStoreMissing:\n"
         "            return None",
@@ -190,42 +190,42 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "WACL-1",
-        "src/hermes_vault/platform_support.py",
+        "src/floorvault/platform_support.py",
         '        except OSError as exc:\n            return (\n                f"key store permissions could not be determined for {path} "',
         '        except OSError as exc:\n            return None  # MUTANT\n            return (\n                f"key store permissions could not be determined for {path} "',
         "Windows ACL query failure fails OPEN: an unverifiable store is trusted",
     ),
     Mutation(
         "WACL-2",
-        "src/hermes_vault/platform_support.py",
+        "src/floorvault/platform_support.py",
         "        offenders = acl_sids_granting_others_access(sids, owner_sid=owner_sid)\n        if offenders:",
         "        offenders = acl_sids_granting_others_access(sids, owner_sid=owner_sid)\n        if False:  # MUTANT",
         "A world-accessible key store ACL is no longer refused on Windows",
     ),
     Mutation(
         "WACL-3",
-        "src/hermes_vault/platform_support.py",
+        "src/floorvault/platform_support.py",
         "    if has_posix_group_or_other_access(mode):",
         "    if False:  # MUTANT",
         "POSIX branch of the store-permission gate disabled",
     ),
     Mutation(
         "MIG-1",
-        "src/hermes_vault/migration.py",
+        "src/floorvault/migration.py",
         "            if modern_id is not None:\n                raise LegacyRetiredError(",
         "            if False:  # MUTANT\n                raise LegacyRetiredError(",
         "Retired-fallback refusal disabled: a deleted modern row resurrects the legacy value",
     ),
     Mutation(
         "MIG-2",
-        "src/hermes_vault/migration.py",
+        "src/floorvault/migration.py",
         "            self.modern.retire_legacy_id(item_id, meta.id)",
         "            pass  # MUTANT",
         "Migration stops recording the retirement tombstone at all",
     ),
     Mutation(
         "MIG-3",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         "                self._crypto.decrypt(\n"
         "                    cipher,\n"
         "                    table=self._TOMBSTONE_TABLE,\n"
@@ -242,7 +242,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "MIG-4",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         '        except FloorVaultError as exc:\n            raise VaultError(\n                f"legacy retirement record failed authentication for {legacy_id!r}; "',
         '        except FloorVaultError as exc:\n            return {"legacy_id": legacy_id, "modern_id": ""}  # MUTANT\n            raise VaultError(\n                f"legacy retirement record failed authentication for {legacy_id!r}; "',
         "A tampered tombstone read as 'present but unmapped' instead of failing closed",
@@ -250,42 +250,42 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "MIG-5",
-        "src/hermes_vault/migration.py",
+        "src/floorvault/migration.py",
         "            if retired_modern_id is not None:\n                if self.modern.get_meta(retired_modern_id) is None:",
         "            if False:  # MUTANT\n                if self.modern.get_meta(retired_modern_id) is None:",
         "Migration loses its persisted idempotency guard and duplicates legacy records",
     ),
     Mutation(
         "MIG-6",
-        "src/hermes_vault/migration.py",
+        "src/floorvault/migration.py",
         '            "item_id": self._stable_modern_id(item_id),',
         '            "item_id": None,  # MUTANT',
         "Interrupted migration retries lose the stable modern identity",
     ),
     Mutation(
         "KR-1",
-        "src/hermes_vault/keyring.py",
+        "src/floorvault/keyring.py",
         "        except KeyError:\n            raise UnknownKeyIdError(",
         "        except KeyError:\n            return next(iter(self._keys.values()))  # MUTANT\n            raise UnknownKeyIdError(",
         "Ring silently falls back to an arbitrary held key instead of refusing an unknown id",
     ),
     Mutation(
         "KR-2",
-        "src/hermes_vault/keyring.py",
+        "src/floorvault/keyring.py",
         "            if self._default_key_id is None:\n                raise UnknownKeyIdError(",
         "            if False:  # MUTANT\n                raise UnknownKeyIdError(",
         "Ring guesses a key for a v1 record instead of demanding a declared default",
     ),
     Mutation(
         "KR-3",
-        "src/hermes_vault/keyring.py",
+        "src/floorvault/keyring.py",
         "            if default_key_id not in checked:",
         "            if False:  # MUTANT",
         "Ring accepts a default_key_id it does not hold, deferring the failure to read time",
     ),
     Mutation(
         "ROT-2",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         "            if cursor.rowcount != 1:\n"
         '                raise VaultError(f"Vault item not found during rotation: {item_id}")\n'
         "            self._write_journal_rows(conn, journal_rows, target_key_id=key_id)",
@@ -298,14 +298,14 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "ROT-3",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         '                payload["modern_id"],\n                vault=new_vault,',
         '                payload["modern_id"],\n                vault=self._crypto,  # MUTANT',
         "Retirement tombstones left under the old key, so F-1 protection stops authenticating",
     ),
     Mutation(
         "ROT-4",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         "            if cursor.rowcount != 1:\n                raise VaultError(",
         "            if False:  # MUTANT\n                raise VaultError(",
         "Rotation journal records missing items as completed",
@@ -313,14 +313,14 @@ MUTATIONS: tuple[Mutation, ...] = (
     # --- Deep-dive security regression scan (2026-09-18) ----------------------
     Mutation(
         "DS-1",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         '            self._assert_writes_allowed(conn)\n            conn.execute(\n                """\n                INSERT INTO vault_items (',
         '            pass  # MUTANT: writer barrier disabled\n            conn.execute(\n                """\n                INSERT INTO vault_items (',
         "Rotation barrier removed: a late old-key writer is accepted",
     ),
     Mutation(
         "DS-2",
-        "src/hermes_vault/core.py",
+        "src/floorvault/core.py",
         # The \n pins the anchor to line start: the same schema_version check
         # also exists inside _validate_aad_mid at method indent, and a
         # substring anchor would match inside that deeper-indented line.
@@ -330,21 +330,21 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "DS-3",
-        "src/hermes_vault/migration.py",
+        "src/floorvault/migration.py",
         "            if (\n                existing.kind != kind",
         "            if False and (  # MUTANT: collision equivalence check disabled\n                existing.kind != kind",
         "Migration retires a legacy id onto unrelated pre-existing data",
     ),
     Mutation(
         "DS-4",
-        "src/hermes_vault/memory.py",
+        "src/floorvault/memory.py",
         '        if mode not in {"disabled", "opportunistic", "required"}:',
         "        if False:  # MUTANT: invalid modes accepted",
         "Invalid memory mode silently downgrades from required enforcement",
     ),
     Mutation(
         "DS-5",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "    os.chmod(directory, 0o700)",
         "    pass  # MUTANT: existing directory is not hardened",
         "Existing permissive vault base bypasses owner-only policy (POSIX-only: "
@@ -354,7 +354,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "CANARY",
-        "src/hermes_vault/platform_support.py",
+        "src/floorvault/platform_support.py",
         '"""Whether POSIX permission bits grant group or other access.',
         '"""Whether POSIX permission bits grant group or other access. (mutated)',
         "Equivalent docstring mutant: must survive (harness validity check)",
@@ -362,63 +362,63 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "PC-9",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "    for item in reversed(missing):\n        item.mkdir(mode=0o700, exist_ok=False)",
         "    for item in reversed(missing):\n        item.mkdir(mode=0o777, exist_ok=False)",
         "Ancestor custody directory created world-searchable (0o777)",
     ),
     Mutation(
         "PC-10",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "    _mkdir_owner_only(path.parent)",
         "    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)",
         "Ancestors revert to Path.mkdir(parents=True) default of 0o777",
     ),
     Mutation(
         "PC-11",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         '    temporary = path.parent / f".{path.name}.{os.urandom(6).hex()}.tmp"',
         '    temporary = Path(os.environ.get("TMPDIR", "/tmp")) / f".{path.name}.{os.urandom(6).hex()}.tmp"',
         "Temp file moved to TMPDIR: cross-device publish (EXDEV) breaks atomicity",
     ),
     Mutation(
         "PC-12",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         '        raise ProtectedStoreInvalidLength("protected store key has an unexpected length")',
         '        raise ProtectedStoreError("protected store key has an unexpected length")',
         "Length failure loses its distinct type and can be masked by another check",
     ),
     Mutation(
         "WD-1",
-        "src/hermes_vault/providers/windows_dpapi.py",
+        "src/floorvault/providers/windows_dpapi.py",
         "        self._assert_store_location_is_private()",
         "        pass  # MUTANT",
         "Windows store-location policy silently disabled (no ACL verification)",
     ),
     Mutation(
         "CR-1",
-        "src/hermes_vault/core.py",
+        "src/floorvault/core.py",
         "encrypt(data_bytes, [aad, header, nonce])",
         "encrypt(data_bytes, [aad, header])  # MUTANT",
         "Static AD vector: SIV becomes deterministic and leaks plaintext equality",
     ),
     Mutation(
         "CR-3",
-        "src/hermes_vault/core.py",
+        "src/floorvault/core.py",
         "encrypt(data_bytes, [aad, header, nonce])",
         "encrypt(data_bytes, [aad, nonce])  # MUTANT",
         "Cleartext header stops being authenticated: a rewritten key id is accepted",
     ),
     Mutation(
         "CR-4",
-        "src/hermes_vault/core.py",
+        "src/floorvault/core.py",
         "        return [aad, header, nonce] if header is not None else [aad, nonce]",
         "        return [aad, header, nonce]  # MUTANT",
         "v1 records read with the v2 AD vector: the compatibility path breaks",
     ),
     Mutation(
         "CR-5",
-        "src/hermes_vault/core.py",
+        "src/floorvault/core.py",
         "        if crypto_version != CRYPTO_VERSION:",
         "        if False:  # MUTANT",
         "Version check removed - refusal moves to the header AD binding, but "
@@ -428,28 +428,28 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "CR-6",
-        "src/hermes_vault/core.py",
+        "src/floorvault/core.py",
         "out[column] = header + nonce + aead.encrypt(data, [aad, header, nonce])",
         "out[column] = header + nonce + aead.encrypt(data, [aad, header])  # MUTANT",
         "Batch path: static AD vector makes SIV deterministic and leaks plaintext equality",
     ),
     Mutation(
         "CR-7",
-        "src/hermes_vault/core.py",
+        "src/floorvault/core.py",
         "out[column] = header + nonce + aead.encrypt(data, [aad, header, nonce])",
         "out[column] = header + nonce + aead.encrypt(data, [aad, nonce])  # MUTANT",
         "Batch path: cleartext header stops being authenticated",
     ),
     Mutation(
         "PC-13",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         '        raise ProtectedStoreHeaderError("protected store has an unknown or missing header")',
         "        pass  # MUTANT",
         "Header raise deleted; the length check below would mask it for a base-class assertion",
     ),
     Mutation(
         "PC-14",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "    except OSError as exc:\n"
         "        raise ProtectedStoreError(\n"
         '            f"atomic no-clobber publication is unavailable on the filesystem "\n'
@@ -466,7 +466,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "PC-15",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "    for item in reversed(missing):\n        item.mkdir(mode=0o700, exist_ok=False)",
         "    for item in reversed(missing):\n        item.mkdir(mode=0o700, exist_ok=True)",
         "Directory creation loses tolerance for a directory created by another writer; "
@@ -476,14 +476,14 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "PC-16",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "        os.O_RDONLY\n        | binary_mode_flag()",
         "        os.O_RDONLY",
         "Store read loses binary mode: Windows text mode truncates at 0x1A (found by CI)",
     ),
     Mutation(
         "PC-17",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "        if not stat.S_ISREG(path_stat.st_mode):\n"
         '            raise ProtectedStoreError("protected store is not a regular file")\n'
         "        if (path_stat.st_dev, path_stat.st_ino) != (file_stat.st_dev, file_stat.st_ino):",
@@ -497,7 +497,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "PC-18",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         '        if hasattr(os, "getuid") and file_stat.st_uid != os.getuid():\n            raise ProtectedStoreError(',
         "        if False:  # MUTANT\n            raise ProtectedStoreError(",
         "Protected-store reader accepts a key file owned by another POSIX user "
@@ -507,7 +507,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "PC-19",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "            raise ProtectedStoreRaceError(\n"
         '                "protected store changed identity between the path check and the open"',
         "            raise ProtectedStoreError(  # MUTANT\n"
@@ -518,7 +518,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "WD-2",
-        "src/hermes_vault/providers/windows_dpapi.py",
+        "src/floorvault/providers/windows_dpapi.py",
         "                expected_length=None,\n"
         "                legacy_path=self._legacy_store_path(),",
         "                legacy_path=self._legacy_store_path(),",
@@ -526,7 +526,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "CR-2",
-        "src/hermes_vault/core.py",
+        "src/floorvault/core.py",
         'payload["revision"] = revision',
         "pass  # MUTANT",
         "Revision dropped from the AAD: same-coordinate replay becomes undetectable",
@@ -538,7 +538,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     # docs promised native Secret Service custody.
     Mutation(
         "SS-1",
-        "src/hermes_vault/providers/linux_keyring.py",
+        "src/floorvault/providers/linux_keyring.py",
         "        gap = _secretstorage_api_gap(secretstorage, secretstorage_exceptions)\n"
         "        if gap is not None:\n",
         "        gap = _secretstorage_api_gap(secretstorage, secretstorage_exceptions)\n"
@@ -549,7 +549,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "SS-2",
-        "src/hermes_vault/providers/linux_keyring.py",
+        "src/floorvault/providers/linux_keyring.py",
         "                if collection.is_locked():\n"
         "                    raise CustodyDowngradeError(",
         "                if False:  # MUTANT\n                    raise CustodyDowngradeError(",
@@ -558,7 +558,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "SS-3",
-        "src/hermes_vault/providers/linux_keyring.py",
+        "src/floorvault/providers/linux_keyring.py",
         "                    if all(\n"
         "                        candidate.get_attributes().get(key) == value for key, value "
         "in query.items()\n"
@@ -572,14 +572,14 @@ MUTATIONS: tuple[Mutation, ...] = (
     # ran first locked the others out of the user's data.
     Mutation(
         "KP-1",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         '    return base / f"{LEGACY_STORE_NAME}.{scheme}"',
         "    return base / LEGACY_STORE_NAME  # MUTANT",
         "Schemes share one key-store path again, so one format's file blocks another",
     ),
     Mutation(
         "KP-2",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "    except (ProtectedStoreMissing, ProtectedStoreHeaderError):\n"
         "        # Absent, or another scheme's file: neither is this scheme's store.",
         "    except ProtectedStoreMissing:  # MUTANT\n"
@@ -589,7 +589,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "KP-3",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "    if legacy_path is None or legacy_path == path:\n"
         '        raise ProtectedStoreMissing("protected store not present")',
         "    if True:  # MUTANT\n"
@@ -599,7 +599,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "IQ-1",
-        "src/hermes_vault/sqlite_adapter.py",
+        "src/floorvault/sqlite_adapter.py",
         '    return ".".join(f"[{part}]" for part in _safe_identifier(name).split("."))',
         "    return _safe_identifier(name)  # MUTANT",
         "SQL boundary loses bracket quoting: allow-listed names like TRUE or "
@@ -607,7 +607,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "ROT-5",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         "                self._verify_rotation_target(conn, row[2], target_vault, target_key_id)",
         "                pass  # MUTANT: resume binds to the 1-byte key id again",
         "Resume stops authenticating the committed target master: the same key id "
@@ -615,14 +615,14 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "REC-1",
-        "src/hermes_vault/key_recovery.py",
+        "src/floorvault/key_recovery.py",
         "    if hmac.compare_digest(master, recovery):",
         "    if False:  # MUTANT: self-wrapped bundle accepted",
         "Self-wrap guard disabled: the recovery key can be the master key itself",
     ),
     Mutation(
         "DUR-1",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "        _link_no_clobber(temporary, path)\n        _fsync_directory(path.parent)",
         "        _link_no_clobber(temporary, path)\n        pass",
         "Published key-store name loses its directory durability barrier",
@@ -630,7 +630,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "DUR-2",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "        _fsync_directory(item.parent)",
         "        pass",
         "Newly created custody directory loses its parent durability barrier",
@@ -638,7 +638,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "DUR-3",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "    try:\n        os.fsync(descriptor)\n    finally:\n        os.close(descriptor)",
         "    try:\n        pass\n    finally:\n        os.close(descriptor)",
         "Directory durability helper opens and closes without flushing metadata",
@@ -646,7 +646,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "DUR-4",
-        "src/hermes_vault/providers/platform_custody.py",
+        "src/floorvault/providers/platform_custody.py",
         "        else:\n            _fsync_directory(path.parent)",
         "        else:\n            pass",
         "Temporary key-store alias cleanup loses its directory durability barrier",
@@ -654,42 +654,42 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "BC-1",
-        "src/hermes_vault/beacons.py",
+        "src/floorvault/beacons.py",
         "    if isinstance(key, HardenedMemoryKey):\n        return key.get_buffer()",
         "    if isinstance(key, HardenedMemoryKey):\n        return key.get_bytes()",
         "Hardened beacon key is flattened into an immutable heap copy",
     ),
     Mutation(
         "BC-2",
-        "src/hermes_vault/beacons.py",
+        "src/floorvault/beacons.py",
         "    if owner is not None and owner.is_wiped:",
         "    if False:",
         "Beacon snapshot accepts a key whose owner began wiping during the copy",
     ),
     Mutation(
         "BC-3",
-        "src/hermes_vault/beacons.py",
+        "src/floorvault/beacons.py",
         "        for index in range(len(source)):\n            source[index] = 0",
         "        pass",
         "Beacon derivation leaves its mutable master snapshot unwiped on failure",
     ),
     Mutation(
         "ROT-6",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         "        if stored is None:",
         "        if False:",
         "Legacy active rotation without a commitment loses its explicit fail-closed refusal",
     ),
     Mutation(
         "VS-1",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         "            if user_version > self._SCHEMA_VERSION:",
         "            if False:",
         "An unsupported future vault schema is opened and downgraded instead of refused",
     ),
     Mutation(
         "VS-2",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         '            conn.execute(f"PRAGMA user_version = {self._SCHEMA_VERSION}")',
         '            conn.execute("PRAGMA user_version = 2")',
         "The target-commitment schema loses its distinct version marker",
@@ -697,7 +697,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     # --- Wrapped-master generation store (R1, roadmap issue #11) -------------
     Mutation(
         "GS-1",
-        "src/hermes_vault/providers/generation_store.py",
+        "src/floorvault/providers/generation_store.py",
         "            if current != expected_generation:",
         "            if False:  # MUTANT",
         "Expected-generation CAS removed: a writer acting on a stale read "
@@ -705,14 +705,14 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "GS-2",
-        "src/hermes_vault/providers/generation_store.py",
+        "src/floorvault/providers/generation_store.py",
         "        if not hmac.compare_digest(hashlib.sha256(payload).digest(), digest):",
         "        if False:  # MUTANT",
         "Pointer stops binding to generation content: a swapped payload is trusted",
     ),
     Mutation(
         "GS-3",
-        "src/hermes_vault/providers/generation_store.py",
+        "src/floorvault/providers/generation_store.py",
         "            descriptor = os.open(\n"
         "                self._lock_path,\n"
         "                os.O_WRONLY\n"
@@ -726,7 +726,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "GS-4",
-        "src/hermes_vault/providers/generation_store.py",
+        "src/floorvault/providers/generation_store.py",
         "            raise ProtectedStoreError(\n"
         '                f"pointer references generation {generation} but its file is missing"',
         "            raise ProtectedStoreMissing(  # MUTANT\n"
@@ -735,7 +735,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "GS-5",
-        "src/hermes_vault/providers/generation_store.py",
+        "src/floorvault/providers/generation_store.py",
         "            elif orphan != payload:\n"
         "                raise ProtectedStoreError(\n"
         '                    "an unpublished generation 1 exists with different content; "',
@@ -746,7 +746,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "GS-6",
-        "src/hermes_vault/providers/generation_store.py",
+        "src/floorvault/providers/generation_store.py",
         "            elif orphan != payload:\n"
         "                raise ProtectedStoreError(\n"
         '                    f"an unpublished generation {target} exists with different "',
@@ -757,7 +757,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "GS-7",
-        "src/hermes_vault/providers/generation_store.py",
+        "src/floorvault/providers/generation_store.py",
         "            except ProtectedStoreRaceError as exc:",
         "            except ProtectedStoreInvalidLength as exc:  # MUTANT",
         "Pointer reads stop retrying the legitimate atomic-replace race: a "
@@ -765,7 +765,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "GS-8",
-        "src/hermes_vault/providers/generation_store.py",
+        "src/floorvault/providers/generation_store.py",
         "        if len(payload) > MAX_PAYLOAD_BYTES:\n"
         "            raise ProtectedStoreInvalidLength(\n"
         '                f"generation payload is {len(payload)} bytes; the reader caps "\n'
@@ -785,7 +785,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "GS-9",
-        "src/hermes_vault/providers/generation_store.py",
+        "src/floorvault/providers/generation_store.py",
         "        if len(payload) > MAX_PAYLOAD_BYTES:\n"
         "            raise ProtectedStoreInvalidLength(\n"
         '                f"generation payload is {len(payload)} bytes; the reader caps "\n'
@@ -805,7 +805,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "GS-10",
-        "src/hermes_vault/providers/generation_store.py",
+        "src/floorvault/providers/generation_store.py",
         "            os.close(descriptor)\n"
         "            try:\n"
         "                os.unlink(self._lock_path)\n"
@@ -828,28 +828,28 @@ MUTATIONS: tuple[Mutation, ...] = (
     # --- Vault Transit provider (R2/R4, roadmap issue #11) -------------------
     Mutation(
         "VT-1",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         "                elif 400 <= code < 500:",
         "                elif False:  # MUTANT",
         "4xx policy answers retried like transient faults instead of refusing",
     ),
     Mutation(
         "VT-2",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         '                    "purpose": PURPOSE,',
         '                    "purpose": "generic-blob-wrap",  # MUTANT',
         "Transit context loses its fixed purpose binding",
     ),
     Mutation(
         "VT-3",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         "        if time.monotonic() - self._cached_at > self._cache_ttl:",
         "        if False:  # MUTANT",
         "Master-key cache never expires: the TTL bound is removed",
     ),
     Mutation(
         "VT-4",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         "        if len(plaintext) != 32:\n"
         "            raise CustodyDowngradeError(\n"
         '                f"Vault decrypt returned',
@@ -860,7 +860,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "VT-5",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         "    if not _BLOB_PATTERN.fullmatch(raw):",
         "    if False:  # MUTANT",
         "Wrapped-blob validation accepts blobs Vault did not version: rewrap "
@@ -868,7 +868,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "VT-6",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         "        if len(plaintext) != 32:\n"
         "            raise CustodyDowngradeError(\n"
         '                f"Vault datakey returned',
@@ -879,21 +879,21 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "VT-7",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         "                        and target.hostname in self._allowed_redirect_hosts",
         "                        and True  # MUTANT",
         "Redirect vetting stops checking the standby-host allowlist",
     ),
     Mutation(
         "VT-8",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         '                        and target.scheme == "https"',
         '                        and target.scheme in ("https", "http")  # MUTANT',
         "Redirect vetting accepts a plaintext downgrade target",
     ),
     Mutation(
         "VT-9",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         "                ensure_ascii=False,",
         "                ensure_ascii=True,  # MUTANT",
         "Context serialization escapes non-ASCII app ids, diverging from the "
@@ -901,7 +901,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "VT-10",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         '        blob = _require_wrapped_blob(data.get("ciphertext"))',
         '        blob = str(data.get("ciphertext")).encode("utf-8")  # MUTANT',
         "Provisioning publishes a datakey ciphertext without validating its "
@@ -909,7 +909,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "VT-11",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         '    try:\n        encoded = text.encode("ascii")\n    except UnicodeEncodeError:\n        encoded = None',
         '    try:\n        encoded = text.encode("ascii")\n    except UnicodeEncodeError as exc:  # MUTANT\n        raise ValueError("field is not ASCII") from exc',
         "Non-ASCII field sanitization keeps a chain object whose .object "
@@ -917,7 +917,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "VT-12",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         '    try:\n        raw = value.encode("ascii")\n    except UnicodeEncodeError:\n        raw = None',
         '    try:\n        raw = value.encode("ascii")\n    except UnicodeEncodeError as exc:  # MUTANT\n        raise CustodyDowngradeError("Vault wrapped blob is not ASCII") from exc',
         "Wrapped-blob ASCII failure keeps a chain object whose .object holds "
@@ -925,7 +925,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "VT-13",
-        "src/hermes_vault/providers/vault_transit.py",
+        "src/floorvault/providers/vault_transit.py",
         "            decode_error: str | None = None\n"
         "            try:\n"
         "                decoded = json.loads(raw)\n"
@@ -943,7 +943,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     # --- SQLAlchemy adapter guards (Phase 2, roadmap issue #11) --------------
     Mutation(
         "SA-1",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         "        try:\n"
         '            return require_envelope(value, where=f"{model.__name__}.{column_key}")',
         "        try:\n            return value  # MUTANT",
@@ -951,14 +951,14 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "SA-2",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         "        if not (state.is_insert or state.is_update):",
         "        if True:  # MUTANT",
         "Bulk-write guard ignores insert/update statements entirely",
     ),
     Mutation(
         "SA-3",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         "        return bound_record_id(str(pk), None if tenant is None else str(tenant))",
         "        return bound_record_id(str(pk))  # MUTANT",
         "Tenant dropped from the record coordinate: ciphertext becomes "
@@ -966,7 +966,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "SA-4",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         "        if pk is None:\n"
         "            raise EncryptedWriteError(\n"
         '                f"{type(obj).__name__}.{self.id_attr} must be set before "',
@@ -977,7 +977,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "SA-5",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         "            try:\n"
         '                require_envelope(value, where=f"{model.__name__}.{key}")',
         "            try:\n                pass  # MUTANT",
@@ -986,7 +986,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "SA-6",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         "    if binding is None:\n"
         "        raise EncryptedWriteError(\n"
         '            f"{type(obj).__name__} has no FloorVault binding; call "',
@@ -997,7 +997,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "SA-7",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         "        if isinstance(model, type) and model in self._fv_bindings:",
         "        if False:  # MUTANT",
         "Legacy bulk APIs no longer refuse protected classes: "
@@ -1006,28 +1006,28 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "SA-8",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         '    for group in getattr(statement, "_multi_values", None) or ():',
         "    for group in ():  # MUTANT",
         "Executemany insert rows in _multi_values are no longer scanned",
     ),
     Mutation(
         "SA-9",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         '    collect(getattr(statement, "_select_names", None))',
         "    collect(())  # MUTANT",
         "insert().from_select target names are no longer scanned",
     ),
     Mutation(
         "SA-10",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         '    for pair in getattr(statement, "_ordered_values", None) or ():',
         "    for pair in ():  # MUTANT",
         "update().ordered_values pairs are no longer scanned",
     ),
     Mutation(
         "SA-11",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         '                for opt in ("default", "server_default", "onupdate", "server_onupdate", "computed"):',
         "                for opt in ():  # MUTANT",
         "Column-level default/server producers on encrypted columns are "
@@ -1035,7 +1035,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "SA-12",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         "                for alias in (column.key, column.name):\n"
         "                    if isinstance(alias, str):\n"
         "                        ct_names.add(alias)",
@@ -1045,7 +1045,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "SA-13",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         "            mapper.local_table.fullname,",
         "            mapper.local_table.name,  # MUTANT",
         "Table coordinate loses schema qualification: ciphertext replays "
@@ -1053,7 +1053,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "SA-14",
-        "src/hermes_vault/sqlalchemy_adapter.py",
+        "src/floorvault/sqlalchemy_adapter.py",
         "                    for key in row:\n"
         "                        named.update(_key_names(key) & binding.ct_names)",
         "                    pass  # MUTANT",
@@ -1061,7 +1061,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "LQ-1",
-        "src/hermes_vault/libsql_adapter.py",
+        "src/floorvault/libsql_adapter.py",
         "        _check_connection(connection)",
         "        pass  # MUTANT",
         "libsql connection contract check removed: a non-connection is accepted "
@@ -1069,7 +1069,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "LQ-2",
-        "src/hermes_vault/libsql_adapter.py",
+        "src/floorvault/libsql_adapter.py",
         "    if inspect.iscoroutinefunction(execute):",
         "    if False:  # MUTANT",
         "Async execute accepted: a coroutine reaches the DBAPI path and fails "
@@ -1077,7 +1077,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "LQ-3",
-        "src/hermes_vault/libsql_adapter.py",
+        "src/floorvault/libsql_adapter.py",
         "    if unsupported:",
         "    if False:  # MUTANT",
         "connect_encrypted forwards any libsql.connect option: sync_url / "
@@ -1086,7 +1086,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "LQ-4",
-        "src/hermes_vault/libsql_adapter.py",
+        "src/floorvault/libsql_adapter.py",
         "    if _URL_SCHEME.match(path) and not re.match(",
         "    if False and _URL_SCHEME.match(path) and not re.match(",
         "connect_encrypted accepts remote URLs: the key is passed to a server "
@@ -1094,7 +1094,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "LQ-5",
-        "src/hermes_vault/libsql_adapter.py",
+        "src/floorvault/libsql_adapter.py",
         "    if header == _PLAINTEXT_SQLITE_HEADER:",
         "    if False:  # MUTANT",
         "Existing plaintext SQLite file no longer refused up front: the caller "
@@ -1102,7 +1102,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "LQ-6",
-        "src/hermes_vault/libsql_adapter.py",
+        "src/floorvault/libsql_adapter.py",
         '_FILE_KEY_INFO = b"floorvault-v1-libsql-file"',
         '_FILE_KEY_INFO = b"floorvault-v1-beacon-index"  # MUTANT',
         "File-layer key derived under the beacon label: the page cipher and "
@@ -1110,7 +1110,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "LQ-7",
-        "src/hermes_vault/libsql_adapter.py",
+        "src/floorvault/libsql_adapter.py",
         "        if len(source) != _KEY_BYTES:",
         "        if False:  # MUTANT",
         "File-key derivation accepts a master key of any length, so a truncated "
@@ -1118,7 +1118,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "LQ-8",
-        "src/hermes_vault/libsql_adapter.py",
+        "src/floorvault/libsql_adapter.py",
         '    if not path or path == ":memory:":',
         "    if False:  # MUTANT",
         "In-memory and empty databases accepted: the caller is told the data is "
@@ -1126,7 +1126,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "LQ-9",
-        "src/hermes_vault/libsql_adapter.py",
+        "src/floorvault/libsql_adapter.py",
         '        connection.execute("SELECT count(*) FROM sqlite_master").fetchone()',
         "        pass  # MUTANT",
         "Connection probe removed: a wrong key is returned as a live connection "
@@ -1134,21 +1134,21 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "LQ-10",
-        "src/hermes_vault/libsql_adapter.py",
+        "src/floorvault/libsql_adapter.py",
         "        connection = libsql.connect(path, encryption_key=file_key, **options)",
         "        connection = libsql.connect(path, **options)  # MUTANT",
         "Derived key never reaches the client: the file is written in plaintext",
     ),
     Mutation(
         "LQ-11",
-        "src/hermes_vault/libsql_adapter.py",
+        "src/floorvault/libsql_adapter.py",
         "        connection.close()\n        raise ValueError(",
         "        raise ValueError(  # MUTANT",
         "Connection refused on a failed probe is leaked open instead of closed",
     ),
     Mutation(
         "VM-1",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         "            if not self._migrate_listing:",
         "            if False:  # MUTANT",
         "Sealed-metadata vault reseals planted cleartext kind/has_otp on an "
@@ -1156,14 +1156,14 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "VM-2",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         "                if kind_sealed or otp_sealed:",
         "                if False:  # MUTANT",
         "A sealed-metadata vault opens without the flag and envelopes are served as kinds",
     ),
     Mutation(
         "VM-3",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         '            derived_otp = kind == "login" and bool(payload.get("otp_secret"))',
         "            derived_otp = bool(has_otp)  # MUTANT",
         "Migration trusts the tampered cleartext has_otp instead of re-deriving "
@@ -1171,297 +1171,304 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "VM-4",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         '        return self._encrypt_metadata(item_id, "kind", kind.ljust(_SEALED_KIND_WIDTH))',
         '        return self._encrypt_metadata(item_id, "kind", kind)  # MUTANT',
         "Sealed kind is unpadded: envelope length tells logins from other kinds",
     ),
     Mutation(
         "VM-5",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         "            if len(padded) != _SEALED_KIND_WIDTH or kind not in VAULT_KINDS:",
         "            if kind not in VAULT_KINDS:  # MUTANT",
         "Non-canonical (length-revealing) sealed kinds are accepted on read",
     ),
     Mutation(
         "VM-6",
-        "src/hermes_vault/vaultkit/vault.py",
+        "src/floorvault/vaultkit/vault.py",
         "                *self._SEALED_LISTING_COLUMNS,",
         "                # MUTANT",
         "Rotation leaves sealed kind/has_otp under the retired key",
     ),
     Mutation(
         "PW-1",
-        "src/hermes_vault/providers/passphrase_store.py",
+        "src/floorvault/providers/passphrase_store.py",
         "    if not MIN_LOG2_N <= log2_n <= MAX_LOG2_N or (r, p) != (_R, _P):",
         "    if False:  # MUTANT",
         "Passphrase key file cost parameters trusted from the file: a planted store downgrades the work factor or demands unbounded memory",
     ),
     Mutation(
         "PW-2",
-        "src/hermes_vault/providers/passphrase_store.py",
+        "src/floorvault/providers/passphrase_store.py",
         "    if not encoded:",
         "    if False:  # MUTANT",
         "Empty passphrase accepted: the wrapped key file is unlockable by anyone",
     ),
     Mutation(
         "PW-3",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "        # it - that would silently fork the master key.\n        if self._read_wrapped_key_file(wrapped_file) is not None:",
         "        # it - that would silently fork the master key.\n        if False:  # MUTANT",
         "Resolving without the passphrase beside a wrapped store silently forks a fresh raw master key",
     ),
     Mutation(
         "PW-4",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "        if raw_present:",
         "        if False:  # MUTANT",
         "A raw master.key beside the wrapped store is ignored: a copy of the directory still yields the key without the passphrase",
     ),
     Mutation(
         "PW-5",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "            allow_file_fallback=self.allow_disk_fallback and self._passphrase is None,",
         "            allow_file_fallback=self.allow_disk_fallback,  # MUTANT",
         "With passphrase= the Linux tier still falls back to the publicly masked master.key.ss",
     ),
     Mutation(
         "PW-6",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "            if self._read_wrapped_key_file(wrapped_file) is not None:\n                raise KeyProviderError(",
         "            if False:  # MUTANT\n                raise KeyProviderError(",
         "Raw key creation does not re-check the wrapped store under the lock: a concurrent passphrase resolver forks the key",
     ),
     Mutation(
         "PW-7",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "                if self._read_raw_key_file(key_file) is not None:",
         "                if False:  # MUTANT",
         "Wrapped key creation does not re-check the raw store under the lock: a concurrent raw resolver forks the key",
     ),
     Mutation(
         "FA-1",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         "            if hmac.compare_digest(current, committed):",
         "            if True:  # MUTANT",
         "Freshness verify accepts any database state: rollback and replay pass",
     ),
     Mutation(
         "FA-2",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         "            if pending is not None and hmac.compare_digest(current, pending):",
         "            if pending is not None:  # MUTANT",
         "A pending anchor state accepts any database, not just the pending digest",
     ),
     Mutation(
         "FA-3",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         "        if not hmac.compare_digest(mac, self._record_mac(committed, pending)):",
         "        if False:  # MUTANT",
         "Anchor record no longer authenticated: whoever can write the store can re-baseline it to a rolled-back database",
     ),
     Mutation(
         "FA-4",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         "            self._trusted is None\n",
         "            False  # MUTANT\n",
         "Writes advance from an unverified state, blessing a rolled-back database as the new baseline",
     ),
     Mutation(
         "FA-5",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         "        if not self.store.compare_and_swap(self.name, None, self._encode_record(baseline, None)):",
         "        if False:  # MUTANT",
         "initialize() reports success over an existing anchor instead of refusing to re-baseline",
     ),
     Mutation(
         "FA-6",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         '        tag = b"t"',
         '        tag = b"b"  # MUTANT',
         "Digest encoding conflates TEXT and BLOB: a type change is not a content change",
     ),
     Mutation(
         "FA-7",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         "        if not self.store.compare_and_swap(self.name, blob, pending_blob):",
         "        if not self.store.compare_and_swap(self.name, blob, self._encode_record(new_state, None)):  # MUTANT",
         "Commit skips the pending phase: a crash after the database commit raises a false rollback alarm",
     ),
     Mutation(
         "FA-8",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         "                if pending is not None:\n                    raise RollbackDetectedError(",
         "                if False:  # MUTANT\n                    raise RollbackDetectedError(",
         "An interrupted commit lets the pre-commit state verify: a database-only attacker rolls back the commit that crashed before promotion",
     ),
     Mutation(
         "FA-9",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         "        if connection is not self._trusted_connection:",
         "        if False:  # MUTANT",
         "Writes accept a connection other than the verified one, so an unverified (rolled-back) database becomes the baseline",
     ),
     Mutation(
         "FA-10",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         '        connection.execute("BEGIN IMMEDIATE")',
         "        pass  # MUTANT",
         "transaction() verifies without the write lock: a concurrent writer's change lands between the check and the commit",
     ),
     Mutation(
         "FA-11",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         "                _fsync_directory(self.directory)",
         "                pass  # MUTANT",
         "Anchor rename not flushed: power loss can revert the anchor to an earlier record a restored database matches",
     ),
     Mutation(
         "FA-12",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         '            if object_type != "trigger" and _fold_sqlite(str(table_name)) not in self._tables:',
         "            if True:  # MUTANT",
         "Schema left out of the digest: a planted trigger silently undoes later writes and is then blessed",
     ),
     Mutation(
         "FA-14",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         "        self._trust(None, None)\n        for _attempt in range(_CAS_RETRIES):",
         "        pass  # MUTANT\n        for _attempt in range(_CAS_RETRIES):",
         "A failed verify keeps the earlier write authorization: a later write blesses the tampered state",
     ),
     Mutation(
         "FA-15",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         '        connection.execute("COMMIT")',
         "        connection.commit()  # MUTANT",
         "transaction() commits via connection.commit(): a no-op under autocommit=True, so the write is lost while the anchor advances",
     ),
     Mutation(
         "FA-16",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         '                connection.execute("ROLLBACK")',
         "                connection.rollback()  # MUTANT",
         "transaction() rolls back via connection.rollback(): a no-op under autocommit=True, leaving the failed write's transaction open",
     ),
     Mutation(
         "FA-17",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         '        if getattr(connection, "autocommit", None) is False:',
         "        if False:  # MUTANT",
         "autocommit=False connections reach BEGIN IMMEDIATE and get a misleading open-transaction refusal",
     ),
     Mutation(
         "FA-18",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         "            if total != distinct + min(nulls, 1) or nulls > 1:",
         "            if False:  # MUTANT",
         "A non-unique order column is hashed in physical order: a VACUUM or rebuild raises a false rollback alarm",
     ),
     Mutation(
         "FA-19",
-        "src/hermes_vault/freshness.py",
+        "src/floorvault/freshness.py",
         '        return self.directory / f"{_validate_name(name)}.fvanchor"',
         '        return self.directory / f"{name}.fvanchor"  # MUTANT',
         "FileAnchorStore accepts path-traversal names and writes outside its directory",
     ),
     Mutation(
         "AD-4",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "        if self._tier3_store_present():\n            return self._read_os_tier_beside_file_key()\n        if not self._os_tier_usable():",
         "        if False:  # MUTANT\n            return self._read_os_tier_beside_file_key()\n        if not self._os_tier_usable():",
         "OS tier gains a key store after Tier-3 file custody: a fresh OS key is created and the file key is silently forked",
     ),
     Mutation(
         "AD-5",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         '        if key is _OS_KEY_MISSING:\n            raise KeyProviderError(\n                f"a local key file exists',
         '        if False:  # MUTANT\n            raise KeyProviderError(\n                f"a local key file exists',
         "Usable-but-empty OS tier with a file key present is treated as a key: resolution returns a sentinel instead of refusing",
     ),
     Mutation(
         "AD-6",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "                    return _OS_KEY_MISSING if missing_ok else None",
         "                    return None  # MUTANT",
         "Empty Keychain reads as 'no OS tier': resolution falls through and the fork is hidden, not refused",
     ),
     Mutation(
         "AD-7",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "                os.lstat(self.fallback_dir / name)\n            except FileNotFoundError:",
         "                os.stat(self.fallback_dir / name)  # MUTANT\n            except FileNotFoundError:",
         "A dangling or planted master.key symlink stops counting as a file store, so the OS tier creates a new key",
     ),
     Mutation(
         "AD-8",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "                os.lstat(self.fallback_dir / name)\n            except FileNotFoundError:",
         "                os.lstat(self.fallback_dir / name)\n            except OSError:  # MUTANT",
         "An unsearchable key directory reads as 'no file store': the OS tier creates a key that replaces the unreadable file key",
     ),
     Mutation(
         "AD-9",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "            if self._os_tier_marker_present():\n                raise self._os_tier_marker_refusal()\n            # Re-check",
         "            if False:  # MUTANT\n                raise self._os_tier_marker_refusal()\n            # Re-check",
         "A resolver without the OS tier ignores the OS-tier marker and mints master.key beside an OS-held key (#63 fork)",
     ),
     Mutation(
         "AD-10",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "                if self._os_tier_marker_present():\n                    raise self._os_tier_marker_refusal()",
         "                if False:  # MUTANT\n                    raise self._os_tier_marker_refusal()",
         "Passphrase Tier-3 creation ignores the OS-tier marker: a wrapped file key forks an OS-held key",
     ),
     Mutation(
         "AD-11",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "            if key is not None:\n                self._publish_os_tier_marker()",
         "            if False:  # MUTANT\n                self._publish_os_tier_marker()",
         "OS-tier key created or adopted without recording the marker: a later headless resolver forks it",
     ),
     Mutation(
         "AD-12",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "            if self._tier3_store_present():\n                return self._read_os_tier_beside_file_key()\n            key = self._resolve_os_tier(allow_create=True)",
         "            if False:  # MUTANT\n                return self._read_os_tier_beside_file_key()\n            key = self._resolve_os_tier(allow_create=True)",
         "No re-check under the lock: a file key published since the unlocked check is forked by a new OS key",
     ),
     Mutation(
         "AD-13",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "        except OSError:\n            return True\n        return True\n\n    def _os_tier_marker_refusal",
         "        except OSError:\n            return False  # MUTANT\n        return True\n\n    def _os_tier_marker_refusal",
         "An unreadable OS-tier marker reads as absent, so Tier-3 creation forks the OS-held key",
     ),
     Mutation(
         "AD-14",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         '            if key is _OS_KEY_MISSING:\n                raise KeyProviderError(\n                    f"{self.fallback_dir / OS_TIER_MARKER_FILENAME} records',
         '            if False:  # MUTANT\n                raise KeyProviderError(\n                    f"{self.fallback_dir / OS_TIER_MARKER_FILENAME} records',
         "A deleted or reset OS key recorded by the marker is silently replaced: data under the original no longer decrypts",
     ),
     Mutation(
         "AD-15",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "        return len(fields) == 3 and fields[1:] == [self.service_name, self.account_name]",
         "        return len(fields) == 3  # MUTANT",
         "Another service's marker is taken as this one's: a first-time key for this service is refused",
     ),
     Mutation(
         "AD-16",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "            except ValueError:\n                # fallback_dir fails",
         "            except KeyError:  # MUTANT\n                # fallback_dir fails",
         "A fallback_dir refused by the owner-only policy (a symlink) breaks OS-tier resolution of a working key",
     ),
     Mutation(
         "AD-17",
-        "src/hermes_vault/providers/adaptive.py",
+        "src/floorvault/providers/adaptive.py",
         "        except FileExistsError:\n            stack.enter_context(self._tier3_creation_lock())",
         "        except KeyError:  # MUTANT\n            stack.enter_context(self._tier3_creation_lock())",
         "A fallback_dir creation race skips the Tier-3 lock: the OS key is created unrecorded beside the winner's file key",
+    ),
+    Mutation(
+        "PKG-1",
+        "scripts/verify_wheel.py",
+        "        if missing:",
+        "        if False:  # MUTANT",
+        "Wheel verification accepts a metadata-only archive without the package or CLI modules",
     ),
 )
 

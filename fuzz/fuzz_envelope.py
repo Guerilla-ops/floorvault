@@ -21,9 +21,9 @@ from __future__ import annotations
 import sys
 from unittest import mock
 
-from hermes_vault import FloorVault
-from hermes_vault.core import RECORD_MAGIC, RECORD_MAGIC_V2, DecryptionVerificationError
-from hermes_vault.core import envelope_header as parse_header
+from floorvault import FloorVault
+from floorvault.core import RECORD_MAGIC, RECORD_MAGIC_V2, DecryptionVerificationError
+from floorvault.core import envelope_header as parse_header
 
 _VAULT = FloorVault(bytes(range(32)), memory_mode="disabled")
 _COORDS = {"table": "t", "record_id": "r", "column": "c"}
@@ -33,7 +33,7 @@ _PLAINTEXTS = (b"seed", b"", "h\u00e9llo-\U0001f9ca".encode())
 def _genuine_envelopes() -> dict[bytes, bytes]:
     """Encrypt each plaintext under a fixed, distinct nonce (deterministic output)."""
     nonces = iter(bytes([index + 1]) * 16 for index in range(len(_PLAINTEXTS)))
-    with mock.patch("hermes_vault.core.os.urandom", side_effect=lambda size: next(nonces)):
+    with mock.patch("floorvault.core.os.urandom", side_effect=lambda size: next(nonces)):
         return {_VAULT.encrypt(plaintext, **_COORDS): plaintext for plaintext in _PLAINTEXTS}
 
 

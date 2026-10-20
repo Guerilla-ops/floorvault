@@ -14,12 +14,12 @@ import sqlite3
 
 import pytest
 
-from hermes_vault import (
+from floorvault import (
     DecryptionVerificationError,
     EncryptedSQLiteTable,
     FloorVault,
 )
-from hermes_vault.core import associated_data
+from floorvault.core import associated_data
 
 
 @pytest.fixture
@@ -33,20 +33,20 @@ def crypto() -> FloorVault:
 
 _CORPUS = [
     # (table, record_id, column, schema_id, schema_version, revision)
-    ("users", "r1", "email", "hermes.vault.v1", 1, None),
-    ("users", "rec-日本語", 'na"me', "hermes.vault.v1", 1, None),
-    ("t\\t", "r\n2", "c", "hermes.vault.v1", 1, None),
+    ("users", "r1", "email", "floor.vault.v1", 1, None),
+    ("users", "rec-日本語", 'na"me', "floor.vault.v1", 1, None),
+    ("t\\t", "r\n2", "c", "floor.vault.v1", 1, None),
     ("t", "r", "c", "custom.v9", 42, 0),
-    ("t", "r", "c", "hermes.vault.v1", 1, 7),
-    ("t", "r\x01\xff\x7f", "c", "hermes.vault.v1", 1, None),
-    ("x" * 300, "r", "c", "hermes.vault.v1", 1, None),
+    ("t", "r", "c", "floor.vault.v1", 1, 7),
+    ("t", "r\x01\xff\x7f", "c", "floor.vault.v1", 1, None),
+    ("x" * 300, "r", "c", "floor.vault.v1", 1, None),
     # Boundary and escape edge cases: DEL, U+2028/U+2029 separators, BOM,
     # C0 controls, and mixed quote+backslash - each lands in a different field.
-    ("t", "r", "\x7f", "hermes.vault.v1", 1, None),
-    ("t", "r\u2028\u2029", "c", "hermes.vault.v1", 1, None),
+    ("t", "r", "\x7f", "floor.vault.v1", 1, None),
+    ("t", "r\u2028\u2029", "c", "floor.vault.v1", 1, None),
     ("t", "r", "c", "\ufeff.schema", 1, None),
-    ("t\x1f\x00", "r", "c", "hermes.vault.v1", 1, None),
-    ('a"b\\c', "r", "c", "hermes.vault.v1", 1, None),
+    ("t\x1f\x00", "r", "c", "floor.vault.v1", 1, None),
+    ('a"b\\c', "r", "c", "floor.vault.v1", 1, None),
 ]
 
 
@@ -63,7 +63,7 @@ def test_aad_matches_associated_data(
         column=column,
         schema_id=schema_id,
         schema_version=schema_version,
-        app_instance_id="hermes-agent",
+        app_instance_id="default",
         revision=revision,
     )
     got = crypto._aad(
@@ -82,7 +82,7 @@ def test_aad_rejects_same_inputs_as_associated_data(crypto):
         table="t",
         record_id="r",
         column="c",
-        schema_id="hermes.vault.v1",
+        schema_id="floor.vault.v1",
         schema_version=1,
         revision=None,
     )
@@ -102,7 +102,7 @@ def test_aad_lone_surrogate_raises_same_error_as_associated_data(crypto):
         table="t",
         record_id="r",
         column="\ud800",
-        schema_id="hermes.vault.v1",
+        schema_id="floor.vault.v1",
         schema_version=1,
         revision=None,
     )
@@ -152,7 +152,7 @@ def test_aad_int_subclass_cannot_inject_bytes(crypto):
             table="t",
             record_id="r",
             column="c",
-            schema_id="hermes.vault.v1",
+            schema_id="floor.vault.v1",
             schema_version=1,
             revision=None,
         )

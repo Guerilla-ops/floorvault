@@ -93,7 +93,7 @@ def test_every_declared_vector_is_executed(name: str):
     assert len(_cases(name)) == data["numberOfTests"]
 
 
-def test_hermes_vaults_exact_instantiation_is_covered():
+def test_floorvaults_exact_instantiation_is_covered():
     """AES-256-SIV (512-bit key) with a 16-byte nonce as the last component."""
     covered = [
         test
@@ -148,15 +148,18 @@ def test_the_secret_scan_allowlist_covers_exactly_the_pinned_vector_files():
     root = VECTOR_DIR.parent.parent.parent
     config = (root / ".gitleaks.toml").read_text(encoding="utf-8")
     patterns = re.findall(r"'''(.+?)'''", config)
-    assert len(patterns) == 2, f"unexpected gitleaks allowlist entries: {patterns}"
+    assert len(patterns) == 3, f"unexpected gitleaks allowlist entries: {patterns}"
     allow = re.compile("|".join(f"(?:{pattern})" for pattern in patterns))
     pinned = {f"tests/vectors/wycheproof/{name}" for name in PINNED_SHA256}
-    # hermes_vault_wire_vectors.json is pinned by the drift check in
+    # floorvault_wire_vectors.json is pinned by the drift check in
     # test_wire_vectors.py (committed bytes MUST equal generate() output), so
     # its allowlist entry is safe for the same reason as the SHA-pinned ones.
     # It only counts toward the expected set on branches where it exists.
-    if (root / "tests" / "vectors" / "hermes_vault_wire_vectors.json").is_file():
-        pinned.add("tests/vectors/hermes_vault_wire_vectors.json")
+    if (root / "tests" / "vectors" / "floorvault_wire_vectors.json").is_file():
+        pinned.add("tests/vectors/floorvault_wire_vectors.json")
+    # This original-main fixture has an independent SHA-256 pin and public
+    # range-based keys in test_floorvault_compatibility.py.
+    pinned.add("tests/vectors/main_f3760fe_compat.json")
     matched = {
         path.relative_to(root).as_posix()
         for path in root.rglob("*")

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_vault.beacons import BeaconIndexer
+from floorvault.beacons import BeaconIndexer
 
 ROOT = Path(__file__).resolve().parents[1]
 KEY = b"\x2b" * 32

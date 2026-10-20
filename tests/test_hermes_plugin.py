@@ -2,7 +2,7 @@
 
 The plugin modules are imported from ``plugins/hermesvault`` and the Hermes
 ``agent.secret_sources`` contract from a Hermes checkout (HERMES_AGENT_SRC,
-default ~/hermes-agent). ``hermes_vault`` itself is resolved through the
+default ~/hermes-agent). ``floorvault`` itself is resolved through the
 installed/editable package or this repo's ``src`` via pytest pythonpath.
 """
 
@@ -18,13 +18,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "plugins" / "hermesvault"))
 sys.path.insert(0, os.environ.get("HERMES_AGENT_SRC", str(Path.home() / "hermes-agent")))
 
-pytest.importorskip("hermes_vault")
+pytest.importorskip("floorvault")
 secret_base = pytest.importorskip("agent.secret_sources.base")
 
 from agent.secret_sources.base import ErrorKind, FetchResult, is_valid_env_name  # noqa: E402
 from source import HermesVaultSource, parse_ref, resolve_base_dir  # noqa: E402
 
-import hermes_vault  # noqa: E402
+import floorvault  # noqa: E402
 
 KEY = "00" * 32
 
@@ -33,8 +33,9 @@ KEY = "00" * 32
 def vault_home(tmp_path, monkeypatch):
     """A hermes home with a populated agent-vault store (env-var key custody)."""
     monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    monkeypatch.setenv("FLOOR_VAULT_KEY", KEY)
     store_dir = tmp_path / "agent-vault"
-    store = hermes_vault.get_vault_store(store_dir, auto_migrate=False)
+    store = floorvault.get_vault_store(store_dir, auto_migrate=False)
     store.add_item(
         kind="generic",
         label="openai key",
@@ -147,7 +148,8 @@ def test_register_wires_source_and_cli():
 def test_wrong_key_fails_closed_not_silent(tmp_path, monkeypatch):
     """A vault sealed under one key must not open under another."""
     monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
-    store = hermes_vault.get_vault_store(tmp_path / "agent-vault", auto_migrate=False)
+    monkeypatch.setenv("FLOOR_VAULT_KEY", KEY)
+    store = floorvault.get_vault_store(tmp_path / "agent-vault", auto_migrate=False)
     store.add_item(kind="generic", label="k", secret={"value": "v"}, item_id="vault_a")
     monkeypatch.setenv("HERMES_VAULT_KEY", "ff" * 32)
     result = HermesVaultSource().fetch({"enabled": True, "env": {"X": "hv:vault_a"}}, tmp_path)

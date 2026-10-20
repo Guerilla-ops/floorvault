@@ -1,7 +1,7 @@
 """Opt-in searchable beacons: truncated, keyed equality narrowing for SQLite.
 
 These tests pin the SEARCHABILITY-vs-LEAKAGE contract of the opt-in beacon
-module. The module is deliberately NOT part of the default ``hermes_vault``
+module. The module is deliberately NOT part of the default ``floorvault``
 surface: a beacon is a deterministic function of the plaintext, so its presence
 is a measured confidentiality trade the caller makes explicitly. Nothing here
 changes the default ``FloorVault``/``VaultStore`` behaviour.
@@ -33,7 +33,7 @@ import warnings
 
 import pytest
 
-from hermes_vault.beacons import (
+from floorvault.beacons import (
     MAX_BEACON_BITS,
     MIN_BEACON_BITS,
     BeaconIndexer,
@@ -258,7 +258,7 @@ def test_beacon_width_is_a_required_argument():
 
 
 def test_hardened_memory_key_is_accepted():
-    from hermes_vault import HardenedMemoryKey
+    from floorvault import HardenedMemoryKey
 
     with HardenedMemoryKey(KEY, mode="disabled") as handle:
         assert compute_beacon("v", scope="s", key=handle, bits=8) == compute_beacon(
@@ -285,7 +285,7 @@ def test_derive_beacon_key_is_separate_from_the_siv_subkey():
         algorithm=hashes.SHA256(),
         length=64,
         salt=None,
-        info=b"hermes-v1-aes-siv",
+        info=b"floorvault-v1-aes-siv",
     ).derive(master)
     assert not hmac.compare_digest(beacon_key, siv_key[:32])
     assert not hmac.compare_digest(beacon_key, siv_key[32:])
@@ -400,7 +400,7 @@ def test_beacon_is_not_the_module_hmac_of_the_scope_only():
 def test_documented_beacon_workflow_round_trips_in_sqlite(tmp_path):
     import sqlite3
 
-    from hermes_vault import FloorVault
+    from floorvault import FloorVault
 
     master_key = bytes(range(32))
     crypto = FloorVault(master_key, memory_mode="disabled")
@@ -457,7 +457,7 @@ def test_documented_workflow_finds_nothing_for_an_absent_value(tmp_path):
     """A lookup for a value that was never stored must confirm nothing."""
     import sqlite3
 
-    from hermes_vault import FloorVault
+    from floorvault import FloorVault
 
     master_key = bytes(range(32))
     crypto = FloorVault(master_key, memory_mode="disabled")
@@ -534,7 +534,7 @@ def test_indexer_rejects_bad_expected_rows():
 # compute_beacon must not call HardenedMemoryKey.get_bytes(). That returns an
 # immutable ``bytes`` object, which is an un-wipeable ghost of the beacon key on
 # the Python heap - one per call, since a beacon is computed once per indexed
-# row. hermes_vault's own core.py refuses this exact pattern for the AEAD subkey
+# row. floorvault's own core.py refuses this exact pattern for the AEAD subkey
 # ("a get_bytes() copy would leave an un-wipeable immutable ghost on the Python
 # heap", core.py:250-256); the beacon path must hold the same contract.
 #
@@ -543,8 +543,8 @@ def test_indexer_rejects_bad_expected_rows():
 
 
 def test_coerce_does_not_materialize_hardened_key_as_bytes(monkeypatch):
-    from hermes_vault import beacons as beacons_module
-    from hermes_vault.memory import HardenedMemoryKey
+    from floorvault import beacons as beacons_module
+    from floorvault.memory import HardenedMemoryKey
 
     hardened = HardenedMemoryKey(bytes(range(32)))
     calls = {"n": 0}
@@ -569,8 +569,8 @@ def test_coerce_does_not_materialize_hardened_key_as_bytes(monkeypatch):
 
 def test_coerce_accepts_hardened_key_and_still_computes():
     """The custody fix must not change the beacon value."""
-    from hermes_vault import beacons as beacons_module
-    from hermes_vault.memory import HardenedMemoryKey
+    from floorvault import beacons as beacons_module
+    from floorvault.memory import HardenedMemoryKey
 
     raw = bytes(range(32))
     expected = beacons_module.compute_beacon(
@@ -600,8 +600,8 @@ def test_coerce_accepts_hardened_key_and_still_computes():
 
 def test_beacon_refuses_a_key_wiped_between_view_and_copy():
     """A wipe landing in the copy window must raise, not yield a zero-keyed HMAC."""
-    from hermes_vault import beacons as beacons_module
-    from hermes_vault.memory import HardenedMemoryKey
+    from floorvault import beacons as beacons_module
+    from floorvault.memory import HardenedMemoryKey
 
     correct = beacons_module.compute_beacon(
         "alice@example.com", scope="users.email", key=bytes(range(32)), bits=8
@@ -632,8 +632,8 @@ def test_beacon_refuses_a_key_wiped_between_view_and_copy():
 
 def test_derive_beacon_key_refuses_a_key_wiped_mid_derivation():
     """Same window on the derivation path: refuse rather than derive from zeroes."""
-    from hermes_vault import beacons as beacons_module
-    from hermes_vault.memory import HardenedMemoryKey
+    from floorvault import beacons as beacons_module
+    from floorvault.memory import HardenedMemoryKey
 
     hardened = HardenedMemoryKey(bytes(range(32)))
     view = beacons_module._coerce_key_material(hardened, what="master key")
@@ -653,7 +653,7 @@ def test_an_all_zero_key_is_valid_input_and_computes_the_real_beacon():
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-    from hermes_vault import beacons as beacons_module
+    from floorvault import beacons as beacons_module
 
     zero = bytes(32)
     expected_beacon = hmac.new(
@@ -669,7 +669,7 @@ def test_an_all_zero_key_is_valid_input_and_computes_the_real_beacon():
         algorithm=hashes.SHA256(),
         length=32,
         salt=None,
-        info=b"hermes-v1-beacon-index",
+        info=b"floorvault-v1-beacon-index",
     ).derive(zero)
 
 
@@ -684,8 +684,8 @@ def test_a_wiped_owner_refuses_while_the_buffer_is_still_nonzero(monkeypatch, op
     Here ``is_wiped`` reports True while ``_closed`` is False and the buffer is
     still nonzero, modelling exactly that window.
     """
-    from hermes_vault import beacons as beacons_module
-    from hermes_vault.memory import HardenedMemoryKey
+    from floorvault import beacons as beacons_module
+    from floorvault.memory import HardenedMemoryKey
 
     hardened = HardenedMemoryKey(KEY)
     assert hardened._closed is False
@@ -706,7 +706,7 @@ def test_a_wiped_owner_refuses_while_the_buffer_is_still_nonzero(monkeypatch, op
 
 def test_derive_wipes_the_master_snapshot_even_for_an_invalid_length(monkeypatch):
     """The length refusal must not skip wiping the copy it already took."""
-    from hermes_vault import beacons as beacons_module
+    from floorvault import beacons as beacons_module
 
     captured: list[bytearray] = []
     original = beacons_module._snapshot_key

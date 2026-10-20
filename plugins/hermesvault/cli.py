@@ -13,11 +13,10 @@ from __future__ import annotations
 import getpass
 import sys
 from pathlib import Path
-from typing import Optional
 
 from hermes_constants import get_hermes_home
 
-from .source import DEFAULT_TOKEN_ENV, parse_ref, resolve_base_dir
+from .source import parse_ref
 
 
 def _secrets_cfg() -> dict:
@@ -54,12 +53,18 @@ def register_cli(subparser) -> None:
 
     add = sub.add_parser("add", help="Create a generic secret item")
     add.add_argument("label", help="Human label for the item")
-    add.add_argument("fields", nargs="*", metavar="field=value",
-                     help="Secret fields (argv-visible; prefer --stdin or `put`)")
-    add.add_argument("--stdin", action="store_true",
-                     help="Read field=value lines from stdin instead of argv")
-    add.add_argument("--id", dest="item_id", default=None,
-                     help="Explicit item id (default: vault_<random>)")
+    add.add_argument(
+        "fields",
+        nargs="*",
+        metavar="field=value",
+        help="Secret fields (argv-visible; prefer --stdin or `put`)",
+    )
+    add.add_argument(
+        "--stdin", action="store_true", help="Read field=value lines from stdin instead of argv"
+    )
+    add.add_argument(
+        "--id", dest="item_id", default=None, help="Explicit item id (default: vault_<random>)"
+    )
 
     put = sub.add_parser("put", help="Set one field on an item (prompted, never argv)")
     put.add_argument("item_id")
@@ -67,15 +72,20 @@ def register_cli(subparser) -> None:
 
     show = sub.add_parser("show", help="Show one item's fields")
     show.add_argument("ref", help="hv:<item_id>[:field] or a bare item id")
-    show.add_argument("--reveal", action="store_true",
-                     help="Print values; default lists field names only")
+    show.add_argument(
+        "--reveal",
+        action="store_true",
+        help="Display masked value status; plaintext is not printed",
+    )
 
     rm = sub.add_parser("rm", help="Delete an item")
     rm.add_argument("item_id")
 
     sub.add_parser("list", help="List items (metadata only)")
 
-    env = sub.add_parser("env", help="Print the secrets.hermesvault.env mapping to paste into config.yaml")
+    env = sub.add_parser(
+        "env", help="Print the secrets.hermesvault.env mapping to paste into config.yaml"
+    )
     env.add_argument("item_id")
     env.add_argument("env_name", help="Env var name to bind")
     env.add_argument("--field", default=None)
@@ -92,8 +102,7 @@ def _cmd_add(args) -> int:
     if not fields:
         print("hvault add: give at least one field=value (argv, or --stdin)", file=sys.stderr)
         return 2
-    meta = _store().add_item(kind="generic", label=args.label, secret=fields,
-                             item_id=args.item_id)
+    meta = _store().add_item(kind="generic", label=args.label, secret=fields, item_id=args.item_id)
     print(f"created {meta.id}")
     return 0
 
@@ -112,8 +121,12 @@ def _cmd_put(args) -> int:
     secret[args.field] = value
     meta = store.get_meta(args.item_id)
     store.remove_item(args.item_id)
-    store.add_item(kind="generic", label=meta.label if meta else args.item_id,
-                   secret=secret, item_id=args.item_id)
+    store.add_item(
+        kind="generic",
+        label=meta.label if meta else args.item_id,
+        secret=secret,
+        item_id=args.item_id,
+    )
     print(f"updated {args.item_id}.{args.field}")
     return 0
 
@@ -140,7 +153,7 @@ def _cmd_show(args) -> int:
             set_count = sum(1 for v in secret.values() if v)
             empty_count = total - set_count
             print(f"{total} field(s): {set_count} set, {empty_count} empty")
-        print("use --reveal to print values", file=sys.stderr)
+        print("use --reveal to show masked value status", file=sys.stderr)
     return 0
 
 

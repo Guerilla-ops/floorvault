@@ -14,15 +14,15 @@ import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-from hermes_vault.providers import adaptive as adaptive_module
-from hermes_vault.providers import passphrase_store
-from hermes_vault.providers.adaptive import (
+from floorvault.providers import adaptive as adaptive_module
+from floorvault.providers import passphrase_store
+from floorvault.providers.adaptive import (
     TIER3_LOCK_FILENAME,
     WRAPPED_KEY_FILENAME,
     AdaptiveKeyProvider,
     protect_key_file,
 )
-from hermes_vault.providers.base import KeyProviderError
+from floorvault.providers.base import KeyProviderError
 
 PASSPHRASE = "correct horse battery staple"
 _MODULE_DEFAULT_LOG2_N = passphrase_store.DEFAULT_LOG2_N

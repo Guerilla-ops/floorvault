@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_vault.memory import HardenedMemoryKey
+from floorvault.memory import HardenedMemoryKey
 
 
 def test_hardened_memory_key_lifecycle():
@@ -63,7 +63,7 @@ def test_key_buffer_is_page_aligned():
     can never receive MADV_DONTDUMP/MADV_DONTFORK."""
     import ctypes
 
-    from hermes_vault.memory import PAGE_SIZE
+    from floorvault.memory import PAGE_SIZE
 
     key = HardenedMemoryKey(b"\x77" * 32, mode="disabled")
     try:
@@ -82,7 +82,7 @@ def test_required_mode_uses_only_platform_available_advice():
     Darwin implements neither MADV_DONTDUMP nor MADV_DONTFORK, so required
     mode there means mlock + RLIMIT_CORE=0, not unavailable advice.
     """
-    from hermes_vault.memory import MADV_DONTDUMP, MADV_DONTFORK
+    from floorvault.memory import MADV_DONTDUMP, MADV_DONTFORK
 
     if sys.platform == "darwin":
         assert MADV_DONTDUMP is None and MADV_DONTFORK is None
@@ -130,7 +130,7 @@ def test_retained_buffer_view_reads_zeroed_pages_after_wipe():
 
 def test_required_mode_fails_closed_without_a_lock_backend(monkeypatch):
     """mode='required' must not silently run on an unsupported platform."""
-    import hermes_vault.memory as mem
+    import floorvault.memory as mem
 
     monkeypatch.setattr(mem, "is_macos", lambda: False)
     monkeypatch.setattr(mem, "is_linux", lambda: False)
@@ -156,7 +156,7 @@ def test_required_mode_refuses_a_plain_heap_fallback(monkeypatch):
     mode means the page-aligned protected allocation exists; when it cannot
     be established, construction must refuse.
     """
-    import hermes_vault.memory as mem
+    import floorvault.memory as mem
 
     def no_mmap(*_args, **_kwargs):
         raise OSError("mmap unavailable")
@@ -199,7 +199,7 @@ def test_wipe_runs_after_module_globals_are_torn_down(monkeypatch):
     AttributeError and the buffer survived unwiped. The teardown path binds
     everything it needs at construction.
     """
-    import hermes_vault.memory as mem
+    import floorvault.memory as mem
 
     key = HardenedMemoryKey(b"\x83" * 32, mode="disabled")
     view = key.get_buffer()
@@ -220,7 +220,7 @@ def test_required_mode_fails_when_core_dumps_cannot_be_disabled(monkeypatch):
     Simulate the POSIX resource API so this failure path is exercised on every
     platform, including Windows where Python does not provide ``resource``.
     """
-    import hermes_vault.memory as mem
+    import floorvault.memory as mem
 
     monkeypatch.setattr(mem, "is_macos", lambda: True)
     monkeypatch.setattr(mem, "is_linux", lambda: False)

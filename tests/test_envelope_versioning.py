@@ -16,14 +16,14 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_vault.core import (
+from floorvault.core import (
     CRYPTO_VERSION,
     RECORD_MAGIC_V2,
     DecryptionVerificationError,
     FloorVault,
     envelope_header,
 )
-from hermes_vault.memory import HardenedMemoryKey
+from floorvault.memory import HardenedMemoryKey
 
 MASTER = bytes.fromhex("5a" * 32)
 
@@ -149,18 +149,18 @@ def _write_v1_envelope(plaintext: str, *, table: str, record_id: str, column: st
     from cryptography.hazmat.primitives.ciphers.aead import AESSIV
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-    from hermes_vault.core import LEGACY_RECORD_MAGICS, associated_data
+    from floorvault.core import RECORD_MAGIC, associated_data
 
     siv_key = HKDF(
         algorithm=hashes.SHA256(),
         length=64,
         salt=None,
-        info=b"hermes-v1-aes-siv",
+        info=b"floorvault-v1-aes-siv",
     ).derive(MASTER)
     aad = associated_data(table=table, record_id=record_id, column=column)
     nonce = os.urandom(16)
     ciphertext = AESSIV(siv_key).encrypt(plaintext.encode("utf-8"), [aad, nonce])
-    return LEGACY_RECORD_MAGICS[0] + bytes([len(nonce)]) + nonce + ciphertext
+    return RECORD_MAGIC + bytes([len(nonce)]) + nonce + ciphertext
 
 
 def test_v1_envelope_is_still_readable():

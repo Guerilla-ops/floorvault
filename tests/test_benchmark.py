@@ -2,7 +2,7 @@
 
 Ensures scripts/benchmark_compare.py runs end-to-end and produces sane,
 self-consistent numbers: all operations measured, positive, and the surfaced
-hermes_vault-vs-Fernet ratios within an expected band. This is a harness smoke
+floorvault-vs-Fernet ratios within an expected band. This is a harness smoke
 test, not a latency claim — it protects compatibility, not absolute timings.
 """
 
@@ -40,13 +40,13 @@ def test_benchmark_harness_runs_smoke(tmp_path):
         "sqlite_read",
         "fernet_encrypt",
         "fernet_decrypt",
-        "hermes_vault_encrypt",
-        "hermes_vault_decrypt",
+        "floorvault_encrypt",
+        "floorvault_decrypt",
     ):
         assert key in data and data[key] > 0, key
-    # Sane ratios: hermes_vault should be in the same order as Fernet (not 100x).
-    assert 0.0 < data["hermes_vault_vs_fernet_encrypt"] < 10.0
-    assert 0.0 < data["hermes_vault_vs_fernet_decrypt"] < 10.0
+    # Sane ratios: floorvault should be in the same order as Fernet (not 100x).
+    assert 0.0 < data["floorvault_vs_fernet_encrypt"] < 10.0
+    assert 0.0 < data["floorvault_vs_fernet_decrypt"] < 10.0
 
 
 def test_benchmark_script_is_importable_executable():

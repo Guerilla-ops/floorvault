@@ -30,11 +30,11 @@ from pathlib import Path
 
 import pytest
 
-from hermes_vault import platform_support
-from hermes_vault.providers import linux_keyring as linux_module
-from hermes_vault.providers import platform_custody as custody
-from hermes_vault.providers.base import MissingKeyError
-from hermes_vault.providers.platform_custody import (
+from floorvault import platform_support
+from floorvault.providers import linux_keyring as linux_module
+from floorvault.providers import platform_custody as custody
+from floorvault.providers.base import MissingKeyError
+from floorvault.providers.platform_custody import (
     ProtectedStoreError,
     ProtectedStoreHeaderError,
     ProtectedStoreInvalidLength,
@@ -43,7 +43,7 @@ from hermes_vault.providers.platform_custody import (
     read_protected,
     write_protected,
 )
-from hermes_vault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
 _HEADER = b"FLOORWV1"
 _KEY = bytes(range(32))
@@ -93,7 +93,7 @@ def test_read_protected_refuses_a_fifo_without_blocking(tmp_path):
 def test_adaptive_tier3_does_not_block_on_a_fifo(tmp_path, monkeypatch):
     """End-to-end: a FIFO planted at ``master.key`` cannot wedge
     ``AdaptiveKeyProvider.resolve_key``; it surfaces as a store error."""
-    from hermes_vault.providers.adaptive import AdaptiveKeyProvider
+    from floorvault.providers.adaptive import AdaptiveKeyProvider
 
     for name in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "APPSTATE_KEY"):
         monkeypatch.delenv(name, raising=False)
@@ -515,7 +515,7 @@ def test_concurrent_first_run_has_exactly_one_winner(tmp_path):
         f"""
         import sys
         from pathlib import Path
-        from hermes_vault.providers.platform_custody import (
+        from floorvault.providers.platform_custody import (
             ProtectedStoreError, write_protected,
         )
 
@@ -583,7 +583,7 @@ def test_windows_dpapi_still_creates_when_genuinely_absent(tmp_path):
 
 
 def test_windows_dpapi_fails_closed_when_absent_and_create_disallowed(tmp_path):
-    from hermes_vault.providers.base import MissingKeyError
+    from floorvault.providers.base import MissingKeyError
 
     store = tmp_path / "winstore"
     with pytest.raises(MissingKeyError):
@@ -951,7 +951,7 @@ def test_mkdir_owner_only_under_symlinked_parent_dir():
     parent ancestors so system symlinks do not cause false-positive rejections,
     while still rejecting a direct symlink to the vault base itself.
     """
-    test_dir = Path("/tmp") / f".test_hermes_vault_syslink_{os.urandom(4).hex()}"
+    test_dir = Path("/tmp") / f".test_floorvault_syslink_{os.urandom(4).hex()}"
     try:
         custody._mkdir_owner_only(test_dir)
         assert test_dir.exists()

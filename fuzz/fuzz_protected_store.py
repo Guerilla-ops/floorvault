@@ -20,8 +20,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from hermes_vault.platform_support import binary_mode_flag
-from hermes_vault.providers.platform_custody import (
+from floorvault.platform_support import binary_mode_flag
+from floorvault.providers.platform_custody import (
     ProtectedStoreError,
     ProtectedStoreMissing,
     read_protected,
@@ -29,7 +29,7 @@ from hermes_vault.providers.platform_custody import (
 
 _HEADER = b"FVFUZZ1\x00"
 _MAX_STORE_BYTES = 4096
-_DIR = Path(tempfile.mkdtemp(prefix="hermes_vault-fuzz-store-"))
+_DIR = Path(tempfile.mkdtemp(prefix="floorvault-fuzz-store-"))
 atexit.register(shutil.rmtree, _DIR, ignore_errors=True)
 _STORE = _DIR / "master.key.fuzz"
 

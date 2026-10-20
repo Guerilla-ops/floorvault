@@ -65,10 +65,10 @@ MIN_BEACON_BITS = 4
 MAX_BEACON_BITS = 64
 
 #: HKDF domain-separation label for the beacon subkey. Distinct from the
-#: ``hermes-v1-aes-siv`` label so the index key and the AEAD key are
+#: ``floorvault-v1-aes-siv`` label so the index key and the AEAD key are
 #: independent: reusing one key across two cryptographic purposes is exactly
 #: the class of defect the subkey separation exists to prevent.
-_BEACON_KEY_INFO = b"hermes-v1-beacon-index"
+_BEACON_KEY_INFO = b"floorvault-v1-beacon-index"
 
 _KEY_BYTES = 32
 
@@ -268,8 +268,8 @@ def beacon_matches(
 def derive_beacon_key(master_key: Union[bytes, bytearray, HardenedMemoryKey]) -> bytes:
     """Derive the 32-byte beacon subkey from a 32-byte master key.
 
-    HKDF-SHA256 with the domain-separating label ``hermes-v1-beacon-index``,
-    which is distinct from the ``hermes-v1-aes-siv`` label used for the AEAD
+    HKDF-SHA256 with the domain-separating label ``floorvault-v1-beacon-index``,
+    which is distinct from the ``floorvault-v1-aes-siv`` label used for the AEAD
     subkey. There is no structural collision resistance between the two HFDF
     outputs in general, so the two must not be derived with the same label; this
     function exists so callers do not invent one.

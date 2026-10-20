@@ -22,7 +22,8 @@ FloorVault follows Semantic Versioning.
 
 ## Release process
 
-1. Land all intended changes on `main` with CI green. Ordinary PR CI uses four
+1. Land all intended changes on `main` with CI green. Keep the
+   [required check names](CI.md) aligned with the current workflow. Ordinary PR CI uses four
    compatibility cells; the expanded nine-cell matrix runs weekly, on version
    tags, and via the CI workflow's manual `expanded` option (default true).
 2. Update `version` in `pyproject.toml` (release PR, reviewed normally).

@@ -1,7 +1,7 @@
 """PEP 249 (DB-API 2.0) adapters: contextual encryption beyond SQLite.
 
 These classes carry the exact contract of
-:class:`hermes_vault.sqlite_adapter.EncryptedSQLiteTable` to PostgreSQL and
+:class:`floorvault.sqlite_adapter.EncryptedSQLiteTable` to PostgreSQL and
 MySQL drivers: the caller owns schema creation and transaction commits,
 ciphertext columns are binary (``BYTEA`` on PostgreSQL, ``VARBINARY`` or
 ``BLOB`` on MySQL), and storing to a missing record raises rather than
@@ -98,7 +98,7 @@ class _EncryptedDBAPITable:
         table_name: str,
         *,
         id_column: str = "id",
-        schema_id: str = "hermes.vault.v1",
+        schema_id: str = "floor.vault.v1",
     ) -> None:
         if not isinstance(connection, DBAPIConnection):
             raise TypeError("connection must be a DB-API 2.0 connection offering cursor()")

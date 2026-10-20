@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_vault.core import (
+from floorvault.core import (
     DecryptionVerificationError,
     FloorVault,
     associated_data,
@@ -81,21 +81,21 @@ def test_revision_is_not_stored_in_the_envelope():
     assert len(first) == len(second)  # same envelope shape: no revision field
     # Header is static (magic, crypto_version, key_id, nonce_len); the nonce
     # that follows it is what changes between two encryptions here.
-    assert first[:7] == second[:7] == b"HV02\x02\x00\x10"
+    assert first[:7] == second[:7] == b"FLV2\x02\x00\x10"
     assert first[7:23] != second[7:23]
 
 
 def test_associated_data_includes_revision_only_when_provided():
     base = associated_data(table="t", record_id="r", column="c")
     assert base == (
-        b'{"app_instance_id":"hermes-agent","column":"c","record_id":"r",'
-        b'"schema_id":"hermes.vault.v1","schema_version":1,"table":"t"}'
+        b'{"app_instance_id":"default","column":"c","record_id":"r",'
+        b'"schema_id":"floor.vault.v1","schema_version":1,"table":"t"}'
     )
 
     bound = associated_data(table="t", record_id="r", column="c", revision=2)
     assert bound == (
-        b'{"app_instance_id":"hermes-agent","column":"c","record_id":"r","revision":2,'
-        b'"schema_id":"hermes.vault.v1","schema_version":1,"table":"t"}'
+        b'{"app_instance_id":"default","column":"c","record_id":"r","revision":2,'
+        b'"schema_id":"floor.vault.v1","schema_version":1,"table":"t"}'
     )
 
 

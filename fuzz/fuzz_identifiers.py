@@ -3,7 +3,7 @@
 Identifiers cannot be bound as SQL parameters, so the library and the inspector
 CLI interpolate them into query text after an allow-list check. Properties:
 
-* the CLI's ``hermes_vault.inspector.safe_identifier`` and the adapters'
+* the CLI's ``floorvault.inspector.safe_identifier`` and the adapters'
   ``_safe_identifier`` are the same implementation - this check keeps it that
   way if anyone re-forks the CLI validator;
 * an accepted identifier is plain ASCII ``[A-Za-z0-9_$]`` with at most one dot,
@@ -19,8 +19,8 @@ from __future__ import annotations
 import re
 import sys
 
-from hermes_vault.inspector import safe_identifier
-from hermes_vault.sqlite_adapter import _quoted_identifier, _safe_identifier
+from floorvault.inspector import safe_identifier
+from floorvault.sqlite_adapter import _quoted_identifier, _safe_identifier
 
 _SAFE = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?", re.ASCII)
 _QUOTED = re.compile(r"\[[A-Za-z_][A-Za-z0-9_$]*\](?:\.\[[A-Za-z_][A-Za-z0-9_$]*\])?", re.ASCII)

@@ -6,8 +6,8 @@ import sqlite3
 
 import pytest
 
-from hermes_vault import FloorVault
-from hermes_vault.sqlite_migration import (
+from floorvault import FloorVault
+from floorvault.sqlite_migration import (
     drop_plaintext_column,
     migrate_plaintext_column,
     verify_encrypted_column,

@@ -7,9 +7,9 @@ import pytest
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows DPAPI")
 def test_native_dpapi_round_trip(tmp_path) -> None:
-    from hermes_vault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+    from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
 
-    store = tmp_path / "AppData" / "Local" / "hermes_vault" / "master.key"
+    store = tmp_path / "AppData" / "Local" / "floorvault" / "master.key"
     first = WindowsDPAPIKeyProvider(store_path=store, entropy=b"live-ci-entropy")
     second = WindowsDPAPIKeyProvider(store_path=store, entropy=b"live-ci-entropy")
 

@@ -1,6 +1,6 @@
 """Driver-free record operations shared by the storage adapters.
 
-The cryptographic core (:class:`hermes_vault.core.FloorVault`) already takes
+The cryptographic core (:class:`floorvault.core.FloorVault`) already takes
 plain coordinates and never touches a driver; what the SQLite and SQLAlchemy
 adapters both need is a single definition of *which* coordinates a record
 gets and how its field-level invariants behave. This module is that shared
@@ -54,7 +54,7 @@ class RecordBinding:
 
     crypto: FloorVault
     table: str
-    schema_id: str = "hermes.vault.v1"
+    schema_id: str = "floor.vault.v1"
     schema_version: int = 1
 
     def encrypt_field(

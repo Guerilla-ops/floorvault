@@ -1,6 +1,6 @@
 """Lazy, non-destructive migration from legacy Fernet / plaintext stores.
 
-A facade that serves the MODERN hermes_vault-backed store first and, for records
+A facade that serves the MODERN floorvault-backed store first and, for records
 that only exist in a legacy store, transparently reads them, lazily upgrades them
 into the modern store, and keeps the legacy source untouched until an explicit
 ``verify()`` confirms every migrated item decrypts.
@@ -91,7 +91,7 @@ class MigratingVaultStore:
     Parameters
     ----------
     modern_store:
-        The hermes_vault-backed VaultStore (the target of migration).
+        The floorvault-backed VaultStore (the target of migration).
     legacy_base_dir:
         Directory that contains the legacy ``vault.json.enc`` + ``vault.key``.
     legacy_vault_name / legacy_key_name:

@@ -15,8 +15,8 @@ import struct
 
 import pytest
 
-from hermes_vault.providers.base import CustodyDowngradeError
-from hermes_vault.providers.vault_transit import VaultTransitProvider
+from floorvault.providers.base import CustodyDowngradeError
+from floorvault.providers.vault_transit import VaultTransitProvider
 
 LIVE = os.environ.get("FLOORVAULT_LIVE_VAULT") == "1"
 pytestmark = pytest.mark.skipif(not LIVE, reason="live Vault leg: set FLOORVAULT_LIVE_VAULT=1")

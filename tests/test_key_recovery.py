@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_vault import (
+from floorvault import (
     DecryptionVerificationError,
     HardenedMemoryKey,
     recover_master_key,

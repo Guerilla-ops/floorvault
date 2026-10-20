@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real-world exercise harness for hermes_vault.
+"""Real-world exercise harness for floorvault.
 
 Runs every public surface end-to-end against real filesystems, real SQLite
 files, real subprocesses and real threads -- no mocks. Each check is recorded;
@@ -91,22 +91,22 @@ def _nonciphertext_diagnostic(result: subprocess.CompletedProcess, stored_plaint
 
 def main() -> int:
     """Run end-to-end checks and print a report; return 1 on failures, otherwise 0."""
-    import hermes_vault as fv
-    from hermes_vault import beacons
-    from hermes_vault.core import RECORD_MAGIC_V2
-    from hermes_vault.migration import MigratingVaultStore
-    from hermes_vault.platform_support import store_permission_problem
-    from hermes_vault.providers import adaptive as adaptive_module
-    from hermes_vault.providers.adaptive import AdaptiveKeyProvider
-    from hermes_vault.providers.base import KeyProviderError
-    from hermes_vault.providers.platform_custody import (
+    import floorvault as fv
+    from floorvault import beacons
+    from floorvault.core import RECORD_MAGIC_V2
+    from floorvault.migration import MigratingVaultStore
+    from floorvault.platform_support import store_permission_problem
+    from floorvault.providers import adaptive as adaptive_module
+    from floorvault.providers.adaptive import AdaptiveKeyProvider
+    from floorvault.providers.base import KeyProviderError
+    from floorvault.providers.platform_custody import (
         read_protected,
         store_path_for,
     )
-    from hermes_vault.sqlite_migration import migrate_plaintext_column, verify_encrypted_column
-    from hermes_vault.vault_rotation import rotate_vault_store
-    from hermes_vault.vaultkit import VaultStore
-    from hermes_vault.vaultkit.session_crypto import SessionCrypto, scrub_secrets_for_fts
+    from floorvault.sqlite_migration import migrate_plaintext_column, verify_encrypted_column
+    from floorvault.vault_rotation import rotate_vault_store
+    from floorvault.vaultkit import VaultStore
+    from floorvault.vaultkit.session_crypto import SessionCrypto, scrub_secrets_for_fts
 
     KEY_A = secrets.token_bytes(32)
     KEY_B = secrets.token_bytes(32)
@@ -364,7 +364,7 @@ def main() -> int:
         adaptive_module.is_linux = real_is_linux
 
     # Read-only probe of the native tier: does not create anything.
-    probe = AdaptiveKeyProvider(service_name="hermes_vault-probe-nonexistent")
+    probe = AdaptiveKeyProvider(service_name="floorvault-probe-nonexistent")
     try:
         k = probe.resolve_key(allow_create=False)
         check("native tier probe", k is not None, "native custody present")
@@ -795,7 +795,7 @@ def main() -> int:
 
     def cli(*args) -> subprocess.CompletedProcess:
         return subprocess.run(  # argv is sys.executable plus fixed arguments  # nosec B603
-            [py, "-m", "hermes_vault.inspector", *args],
+            [py, "-m", "floorvault.inspector", *args],
             capture_output=True,
             text=True,
             env=env,
@@ -824,7 +824,7 @@ def main() -> int:
     check("cli missing db -> exit 1", r.returncode == 1)
     env2 = dict(env, FLOOR_VAULT_KEY=secrets.token_bytes(32).hex())
     r2 = subprocess.run(  # argv is sys.executable plus fixed arguments  # nosec B603
-        [py, "-m", "hermes_vault.inspector", "inspect", str(idb), "secrets", "rec-1", "value"],
+        [py, "-m", "floorvault.inspector", "inspect", str(idb), "secrets", "rec-1", "value"],
         capture_output=True,
         text=True,
         env=env2,

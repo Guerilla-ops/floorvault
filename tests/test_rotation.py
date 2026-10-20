@@ -22,11 +22,11 @@ from pathlib import Path
 import pytest
 from cryptography.fernet import Fernet
 
-from hermes_vault.core import DecryptionVerificationError, FloorVault
-from hermes_vault.keyring import KeyRing, UnknownKeyIdError
-from hermes_vault.memory import HardenedMemoryKey
-from hermes_vault.migration import LegacyRetiredError, MigratingVaultStore
-from hermes_vault.vaultkit.vault import VaultError, VaultStore
+from floorvault.core import DecryptionVerificationError, FloorVault
+from floorvault.keyring import KeyRing, UnknownKeyIdError
+from floorvault.memory import HardenedMemoryKey
+from floorvault.migration import LegacyRetiredError, MigratingVaultStore
+from floorvault.vaultkit.vault import VaultError, VaultStore
 
 KEY_OLD = bytes.fromhex("11" * 32)
 KEY_NEW = bytes.fromhex("22" * 32)

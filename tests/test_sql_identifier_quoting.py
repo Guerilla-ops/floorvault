@@ -24,9 +24,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_vault import EncryptedSQLiteTable, FloorVault
-from hermes_vault.sqlite_adapter import _quoted_identifier, _safe_identifier
-from hermes_vault.sqlite_migration import migrate_plaintext_column, verify_encrypted_column
+from floorvault import EncryptedSQLiteTable, FloorVault
+from floorvault.sqlite_adapter import _quoted_identifier, _safe_identifier
+from floorvault.sqlite_migration import migrate_plaintext_column, verify_encrypted_column
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -72,7 +72,7 @@ class TestEncryptedSQLiteTableQuoting:
         assert table.load("r1", "TRUE") == "secret-value"
 
         raw = connection.execute("SELECT [TRUE] FROM users WHERE id = 'r1'").fetchone()[0]
-        assert isinstance(raw, bytes) and raw.startswith(b"HV0")
+        assert isinstance(raw, bytes) and raw.startswith(b"FLV")
 
     def test_missing_column_fails_closed(self, crypto):
         """A column the schema does not have is a caller error surfaced as a
@@ -174,7 +174,7 @@ class TestInspectorQuoting:
 
         env = {**os.environ, "FLOOR_VAULT_KEY": "a" * 64, "PYTHONPATH": str(REPO_ROOT / "src")}
         return subprocess.run(
-            [sys.executable, "-m", "hermes_vault.inspector", *argv],
+            [sys.executable, "-m", "floorvault.inspector", *argv],
             capture_output=True,
             text=True,
             cwd=REPO_ROOT,
@@ -211,7 +211,7 @@ class TestInspectorQuoting:
         assert "Traceback" not in result.stderr
 
     def test_validators_share_one_implementation(self):
-        from hermes_vault.inspector import safe_identifier
+        from floorvault.inspector import safe_identifier
 
         for name in ("users", "main.users", "TRUE", "x" * 129, "1bad", "a.b.c"):
             try:

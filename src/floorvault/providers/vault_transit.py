@@ -10,7 +10,7 @@ contract (R2/R4/R5):
     307 redirects are refused unless the caller names trusted standby hosts.
   * **Versioned context.** Every ``datakey``/``decrypt``/``rewrap`` call
     carries the same context: app instance + store ID + the fixed purpose
-    ``hermes_vault-master-wrap`` + custody scheme. Context is cryptographic
+    ``floorvault-master-wrap`` + custody scheme. Context is cryptographic
     separation, not tenant authorization - provisioning the transit key
     (``derived=true``, ``aes256-gcm96``, ``exportable=false``,
     ``allow_plaintext_backup=false``) and splitting provisioning from runtime
@@ -55,7 +55,7 @@ from .platform_custody import (
 #: Fixed cryptographic purpose for every Transit call - the context names
 #: *what this ciphertext is*, so a Vault-wrapped blob can never be replayed
 #: into a different purpose by a confused operator.
-PURPOSE = "hermes_vault-master-wrap"
+PURPOSE = "floorvault-master-wrap"
 CUSTODY_SCHEME = "vault-transit"
 _CONTEXT_VERSION = 1
 

@@ -93,7 +93,7 @@ def test_gate_prints_the_artifact_digests():
     cross-platform reproducibility checkable from the logs.
     """
     assert "sha256" in TEXT.lower(), "gate does not report SHA-256 digests"
-    assert "dist/*.whl" in TEXT or "dist/hermes_vault" in TEXT or "DIGEST" in TEXT, (
+    assert "dist/*.whl" in TEXT or "dist/floorvault" in TEXT or "DIGEST" in TEXT, (
         "gate reports no digest for the built artifacts"
     )
     assert "digest" in TEXT.lower(), "digest output is not labelled"

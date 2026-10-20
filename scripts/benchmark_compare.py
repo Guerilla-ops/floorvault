@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Comparative micro-benchmark: hermes_vault vs. Fernet vs. plain SQLite.
+"""Comparative micro-benchmark: floorvault vs. Fernet vs. plain SQLite.
 
 Backs the latency claims in the docs with measured numbers on the CURRENT host.
 Measures median per-op latency (not marketing estimates):
 
   * plain SQLite     — baseline (no encryption)
   * Fernet           — the typical ad-hoc whole-field approach
-  * hermes_vault       — AES-256-SIV contextual AEAD
+  * floorvault       — AES-256-SIV contextual AEAD
 
 Run:  uv run python scripts/benchmark_compare.py  [--iterations N] [--json out.json]
 
 The script uses only what is installed; SQLCipher (custom C build) is not
-required to run — we benchmark the layers that hermes_vault actually replaces
+required to run — we benchmark the layers that floorvault actually replaces
 (Fernet + naive field encryption) plus plain SQLite as the ceiling.
 """
 
@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cryptography.fernet import Fernet
 
-from hermes_vault import FloorVault, HardenedMemoryKey
+from floorvault import FloorVault, HardenedMemoryKey
 
 PAYLOAD = "model tool result: " + "x" * 1000  # ~1 KB message, realistic agent workload
 
@@ -77,14 +77,14 @@ def run(iterations: int = 2000) -> dict[str, float]:
     results["fernet_encrypt"] = _median_ms(lambda: f.encrypt(PAYLOAD.encode()), iterations)
     results["fernet_decrypt"] = _median_ms(lambda: f.decrypt(f_ct), iterations)
 
-    # --- hermes_vault AES-256-SIV contextual AEAD ----------------------------
+    # --- floorvault AES-256-SIV contextual AEAD ----------------------------
     fv = FloorVault(HardenedMemoryKey(bytes.fromhex("ab" * 32)))
     fv_ct = fv.encrypt(PAYLOAD, table="messages", record_id="run-1", column="content")
-    results["hermes_vault_encrypt"] = _median_ms(
+    results["floorvault_encrypt"] = _median_ms(
         lambda: fv.encrypt(PAYLOAD, table="messages", record_id="run-1", column="content"),
         iterations,
     )
-    results["hermes_vault_decrypt"] = _median_ms(
+    results["floorvault_decrypt"] = _median_ms(
         lambda: fv.decrypt(fv_ct, table="messages", record_id="run-1", column="content"),
         iterations,
     )
@@ -93,7 +93,7 @@ def run(iterations: int = 2000) -> dict[str, float]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="hermes_vault comparative micro-benchmark")
+    parser = argparse.ArgumentParser(description="floorvault comparative micro-benchmark")
     parser.add_argument("--iterations", type=int, default=2000)
     parser.add_argument("--json", type=Path, default=None)
     args = parser.parse_args()
@@ -106,12 +106,10 @@ def main() -> int:
         print(f"{name:24} {ms:8.5f}")
 
     rel = {
-        "hermes_vault_encrypt_over_sqlite_write": results["hermes_vault_encrypt"]
+        "floorvault_encrypt_over_sqlite_write": results["floorvault_encrypt"]
         / results["sqlite_write"],
-        "hermes_vault_vs_fernet_encrypt": results["hermes_vault_encrypt"]
-        / results["fernet_encrypt"],
-        "hermes_vault_vs_fernet_decrypt": results["hermes_vault_decrypt"]
-        / results["fernet_decrypt"],
+        "floorvault_vs_fernet_encrypt": results["floorvault_encrypt"] / results["fernet_encrypt"],
+        "floorvault_vs_fernet_decrypt": results["floorvault_decrypt"] / results["fernet_decrypt"],
     }
     print("\nratios (lower is better where compared):")
     for k, v in rel.items():

@@ -1,6 +1,6 @@
 name: hermesvault
 version: 0.1.0
-description: "hermes-vault secret source: resolves secrets.hermesvault.env refs (hv:<item>[:field]) from the local AES-256-SIV vault with OS-custodied keys. Agent credentials only — the browser-fill login vault is untouched."
+description: "FloorVault secret source: resolves secrets.hermesvault.env refs (hv:<item>[:field]) from the local FloorVault AES-256-SIV store with configured key custody. Agent credentials only — the browser-fill login vault is untouched."
 author: "Scott Lee"
 kind: standalone
 platforms:

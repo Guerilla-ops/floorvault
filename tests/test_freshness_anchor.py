@@ -18,9 +18,9 @@ import threading
 
 import pytest
 
-from hermes_vault import EncryptedSQLiteTable, FloorVault, FloorVaultError, HardenedMemoryKey
-from hermes_vault import freshness as freshness_module
-from hermes_vault.freshness import (
+from floorvault import EncryptedSQLiteTable, FloorVault, FloorVaultError, HardenedMemoryKey
+from floorvault import freshness as freshness_module
+from floorvault.freshness import (
     FileAnchorStore,
     FreshnessAnchor,
     RollbackDetectedError,

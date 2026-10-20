@@ -10,7 +10,7 @@ from .memory import HardenedMemoryKey
 
 _MAGIC = b"FVRB1"
 _BUNDLE_ID_LENGTH = 16
-_APP_INSTANCE_ID = "hermes-vault-recovery"
+_APP_INSTANCE_ID = "floorvault-recovery"
 _TABLE = "recovery"
 _COLUMN = "master_key"
 

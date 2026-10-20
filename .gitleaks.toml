@@ -1,4 +1,4 @@
-# Gitleaks configuration: the default ruleset, plus one path allowlist.
+# Gitleaks configuration: the default ruleset plus pinned public-fixture allowlists.
 #
 # The Project Wycheproof AES-SIV-CMAC vectors are public test data published by
 # C2SP: every "key" in them is a test key whose ciphertext is printed beside it.
@@ -35,3 +35,9 @@ description = "FloorVault and Hermes Vault wire vectors, pinned by deterministic
 # Both names: the file was floorvault_wire_vectors.json before the rename, and
 # history scans still walk the old path at old commits.
 paths = ['''^tests/vectors/(hermes_vault|floorvault)_wire_vectors\.json$''']
+
+# Original-main compatibility data uses public range(32)/range(32, 64) keys.
+# test_floorvault_compatibility.py pins the complete file by SHA-256.
+[[allowlists]]
+description = "Original FloorVault main compatibility fixture, pinned by SHA-256"
+paths = ['''^tests/vectors/main_f3760fe_compat\.json$''']

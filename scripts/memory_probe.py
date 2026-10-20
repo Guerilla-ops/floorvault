@@ -13,7 +13,7 @@ _SRC_PATH = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC_PATH) not in sys.path:
     sys.path.insert(0, str(_SRC_PATH))
 
-from hermes_vault.memory import MADV_DONTDUMP, MADV_DONTFORK, HardenedMemoryKey  # noqa: E402
+from floorvault.memory import MADV_DONTDUMP, MADV_DONTFORK, HardenedMemoryKey  # noqa: E402
 
 
 def _actual_rlimit_core() -> list[int] | None:

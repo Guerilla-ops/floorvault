@@ -15,11 +15,11 @@ import warnings
 
 import pytest
 
-from hermes_vault.memory import HardenedMemoryKey
-from hermes_vault.providers import adaptive as adaptive_module
-from hermes_vault.providers import passphrase_store
-from hermes_vault.providers.adaptive import AdaptiveKeyProvider
-from hermes_vault.providers.base import KeyProviderError, MissingKeyError
+from floorvault.memory import HardenedMemoryKey
+from floorvault.providers import adaptive as adaptive_module
+from floorvault.providers import passphrase_store
+from floorvault.providers.adaptive import AdaptiveKeyProvider
+from floorvault.providers.base import KeyProviderError, MissingKeyError
 
 
 @pytest.fixture(autouse=True)

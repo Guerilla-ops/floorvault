@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_vault import (
+from floorvault import (
     DecryptionVerificationError,
     EncryptedMySQLTable,
     EncryptedPostgresTable,
