@@ -479,6 +479,45 @@ else.
    silently downgrading.
 3. Tier-3 raw file (gated as in §10.4).
 
+**No key fork across tiers.** Tiers keep separate stores, so creating an OS
+key on a host whose data is under a Tier-3 key would silently replace the
+master key. When `allow_create=True` and a Tier-3 store (`master.key` or
+`master.key.fvpw`, checked with `lstat` so a dangling symlink counts; a
+lookup failure other than "not found" counts as present, since it cannot
+rule a store out)
+exists in the fallback directory, step 2 MUST NOT create a key: it only reads
+one. An existing OS key still wins; an unavailable OS tier still falls
+through to step 3; a usable OS tier with no key MUST raise `KeyProviderError`
+rather than create one or fall through. `allow_create=False` is unchanged.
+
+**No key fork in the other direction (OS-tier marker).** A resolver that
+cannot reach the OS tier (an SSH, cron or container session) never sees an OS
+key, so it would create a Tier-3 key beside one. To prevent that, the OS tier
+records itself in the fallback directory:
+
+- `master.key.ostier` = `"FVOT1"` (5 B) `||` UTF-8 `tier NUL service NUL
+  account` (tier one of `macos-keychain`, `linux-secret-service`,
+  `windows-dpapi`). It holds no key material and is published with the §10.4
+  create-never-replace writer (owner-only). One marker per directory: the first
+  identity to resolve an OS key there records it.
+- With `allow_create=True`, no Tier-3 store and no marker, step 2 MUST take the
+  Tier-3 creation lock, re-check for a Tier-3 store (if one appeared, apply the
+  rule above), resolve, and publish the marker when the OS tier returned a key
+  (created or existing). A Tier-3 store takes precedence over the marker.
+- Tier-3 creation (raw and passphrase-wrapped) MUST, under the same lock, refuse
+  with `KeyProviderError` while the marker exists. A lookup failure other than
+  "not found" counts as present. Reading an existing Tier-3 store is unchanged.
+- When the marker names this provider's service and account, step 2 MUST NOT
+  create a key: a missing OS key was deleted or the store reset, so it raises
+  `KeyProviderError` instead of minting a replacement. A marker for another
+  identity, or one that cannot be read, does not change this provider's
+  resolution.
+- `allow_create=False` never writes the marker. If the lock or the marker cannot
+  be written, step 2 still returns the key and emits a `UserWarning` that the
+  guard is absent. If `fallback_dir` fails the §10.4 directory policy (a
+  symlink, another owner), step 2 returns the key without a marker or warning:
+  Tier-3 creation there fails the same way, so there is no fork to guard.
+
 ### 10.6 Governed generation store (`FVGW*`)
 
 `GenerationStore` holds a *wrapped* master key that must be updatable (KEK
@@ -943,6 +982,11 @@ for each anchored table, in ascending order of its ASCII-folded name:
         "R" || concat(value(v) for v in row, columns in the order above)
     "E" || u64be(row count)
 
+The order column MUST order the table's rows uniquely: a digest MUST be
+refused (`ValueError`) when it holds duplicate values or more than one NULL,
+because SQLite returns ties in physical order and the digest would then change
+with a VACUUM or rebuild while the contents did not.
+
 value(NULL)  = "n"
 value(int)   = "i" || u64be(len(s)) || s      where s = ASCII decimal
 value(float) = "f" || u64be(8) || IEEE-754 binary64 big-endian
@@ -976,6 +1020,10 @@ Behavioral contract:
 - Writes go through `transaction(connection)`: `BEGIN IMMEDIATE`, `verify`
   inside the write lock, the caller's writes, then swap `{committed: old,
   pending: new}`, commit the database, swap `{committed: new, pending: null}`.
+  The commit and rollback are explicit `COMMIT` / `ROLLBACK` statements, not
+  driver calls (Python 3.12's `autocommit=True` makes `commit()` a no-op); a
+  connection opened with `autocommit=False` is refused, since it always holds
+  an open transaction.
   On an exception before the database commit it rolls back and leaves the
   record untouched. It refuses a connection with an open transaction. If the
   final swap loses to another holder of the key (who already promoted this
@@ -986,6 +1034,8 @@ Behavioral contract:
   instance and connection, with the record unchanged since, and is weaker:
   it cannot see another writer between that verify and the call.
 - `initialize` refuses when a record exists.
+- Anchor names, wherever they enter (the anchor or `FileAnchorStore`), are
+  1–128 letters, digits, `-`, `_` or `.`, not starting with `.`.
 - `FileAnchorStore` performs the swap under a cross-process lock
   (`<name>.fvanchor.lock`), writes a temporary file, fsyncs it, renames it
   over the record, and fsyncs the directory (and any directory it created).

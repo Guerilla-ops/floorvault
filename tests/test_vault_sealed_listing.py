@@ -12,8 +12,8 @@ import sqlite3
 
 import pytest
 
-from floorvault import FloorVault, KeyRing, rotate_vault_store
-from floorvault.vaultkit import VaultError, VaultStore
+from hermes_vault import FloorVault, KeyRing, rotate_vault_store
+from hermes_vault.vaultkit import VaultError, VaultStore
 
 KEY = b"\x07" * 32
 LOGIN = {"identifier_type": "username", "identifier": "alice", "password": "pw"}

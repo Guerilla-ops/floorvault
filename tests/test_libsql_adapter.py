@@ -31,7 +31,7 @@ from hermes_vault import (
     connect_encrypted,
     derive_libsql_file_key,
 )
-from floorvault.beacons import derive_beacon_key
+from hermes_vault.beacons import derive_beacon_key
 
 
 class _FakeLibSqlConnection:
