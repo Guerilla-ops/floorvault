@@ -102,13 +102,23 @@ def test_curated_anchors_are_unique_in_the_pristine_sources():
     harness excludes ``.git`` from its mutant copy and mutates the working tree, so
     reading the working tree here would make this test fail inside other mutants'
     runs (CR-5's mutation deletes CR-5's own anchor) and corrupt the kill counts.
-    Where no pristine revision can be read, this check is skipped - never downgraded
-    to reading the possibly-mutated file.
+    Without Git metadata this check is skipped, never downgraded to reading a
+    possibly-mutated file. With a committed revision, a missing target is a failure:
+    skipping it would hide stale paths until the mutation harness reaches them.
     """
     module = _load()
     repo = Path(__file__).resolve().parent.parent
+    try:
+        subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pytest.skip("no committed revision available")
     ambiguous = []
-    skipped = []
     for mutant in module.MUTATIONS:
         try:
             text = subprocess.run(
@@ -118,14 +128,12 @@ def test_curated_anchors_are_unique_in_the_pristine_sources():
                 text=True,
                 check=True,
             ).stdout
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            skipped.append(mutant.id)
+        except subprocess.CalledProcessError:
+            ambiguous.append(f"{mutant.id}: missing committed target {mutant.path}")
             continue
         matches = text.count(mutant.find)
         if matches != 1:
             ambiguous.append(f"{mutant.id}: {matches} match(es) in {mutant.path}")
-    if skipped and not ambiguous:
-        pytest.skip(f"no committed revision available for: {', '.join(sorted(set(skipped)))}")
     assert not ambiguous, (
         "curated anchors must match their target exactly once, otherwise the harness "
         f"mutates a line it does not describe: {ambiguous}"
