@@ -67,7 +67,7 @@ EXPECTED_ALL = {
 }
 
 FV_INIT = "(master_key: 'Union[bytes, HardenedMemoryKey]', app_instance_id: 'str' = 'hermes-agent', *, maximum_tracked_nonces: 'int' = 10000, memory_mode: 'str' = 'opportunistic', wipe_source_key: 'bool' = False, hkdf_info: 'bytes' = b'hermes-v1-aes-siv') -> 'None'"
-VAULT_STORE_INIT = "(base_dir: 'Path | str', *, crypto: 'Optional[FloorVault]' = None, migrate_legacy_metadata: 'bool' = False)"
+VAULT_STORE_INIT = "(base_dir: 'Path | str', *, crypto: 'Optional[FloorVault]' = None, migrate_legacy_metadata: 'bool' = False, seal_listing_metadata: 'bool' = False, migrate_listing_metadata: 'bool' = False)"
 VAULT_STORE_METHODS = {
     "add_item": "(self, kind: 'str', label: 'str', secret: 'dict[str, Any]', origin: 'Optional[str]' = None, *, item_id: 'Optional[str]' = None) -> 'VaultItemMeta'",
     "begin_rotation": "(self, target_key_id: 'int', *, target_vault: 'FloorVault') -> 'None'",

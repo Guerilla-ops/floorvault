@@ -102,7 +102,7 @@ def test_headless_resolver_refuses_to_fork_a_keychain_key(tmp_path, monkeypatch,
     assert keychain.calls["add"] == 1
     assert (
         _marker(tmp_path).read_bytes()
-        == OS_TIER_MARKER_MAGIC + b"macos-keychain\0floorvault\0default-v1"
+        == OS_TIER_MARKER_MAGIC + b"macos-keychain\0hermes-vault\0default-v1"
     )
 
     _headless_session(monkeypatch)
@@ -414,7 +414,7 @@ def test_linux_and_windows_os_keys_are_recorded_and_protected(
         monkeypatch.setattr(adaptive_module, "is_windows", lambda: True)
     assert _key(_provider(tmp_path).resolve_key()) == b"\x07" * 32
     assert (
-        _marker(tmp_path).read_bytes() == OS_TIER_MARKER_MAGIC + tier + b"\0floorvault\0default-v1"
+        _marker(tmp_path).read_bytes() == OS_TIER_MARKER_MAGIC + tier + b"\0hermes-vault\0default-v1"
     )
 
     # The OS tier disappears for this session (no session bus, a container).
