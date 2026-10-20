@@ -141,8 +141,12 @@ class MigratingVaultStore:
             # are refused rather than silently adopted.
             key = read_protected(self._key_path, header=b"", expected_length=None).strip()
             fernet = Fernet(key)
-            raw = _base64url_decode(self._vault_path.read_text(encoding="utf-8").strip())
-            plaintext = fernet.decrypt(raw)
+            blob = self._vault_path.read_bytes().strip()
+            try:
+                plaintext = fernet.decrypt(blob)
+            except Exception:
+                raw = _base64url_decode(blob.decode("utf-8", errors="ignore"))
+                plaintext = fernet.decrypt(raw)
             document = plaintext.decode("utf-8")
             if _json_nesting_depth(document) > _LEGACY_JSON_MAX_DEPTH:
                 raise LegacyVaultError(
@@ -159,6 +163,14 @@ class MigratingVaultStore:
             raise LegacyVaultError(f"Legacy vault is corrupt: {exc}") from exc
         if not isinstance(value, dict):
             raise LegacyVaultError("Legacy vault is not a JSON object")
+
+        if isinstance(value.get("items"), list):
+            out = {}
+            for item in value["items"]:
+                if isinstance(item, dict) and "id" in item:
+                    out[str(item["id"])] = dict(item)
+            return out
+
         return {str(k): dict(v) for k, v in value.items() if isinstance(v, dict)}
 
     def _upgrade_legacy_item(self, item_id: str, item: dict[str, Any]) -> None:
@@ -309,6 +321,21 @@ class MigratingVaultStore:
 
     def has_items(self) -> bool:
         return self.modern.has_items() or self._has_legacy()
+
+    def list_items(self) -> list[Any]:
+        """List all items across modern and unmigrated legacy items."""
+        items: list[Any] = self.modern.list_items()
+        modern_ids = {m.id for m in items}
+        legacy = self._legacy_items()
+        for leg_id in legacy.keys():
+            modern_id = self._modern_id_for(leg_id)
+            if modern_id in modern_ids:
+                continue
+            meta = self.get_meta(leg_id)
+            if meta and meta.id not in modern_ids:
+                items.append(meta)
+                modern_ids.add(meta.id)
+        return items
 
     def list_item_ids(self) -> list[str]:
         ids = {m.id for m in self.modern.list_items()}

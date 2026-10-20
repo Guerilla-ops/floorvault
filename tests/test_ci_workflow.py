@@ -1,17 +1,15 @@
-"""Invariants for the CI matrix.
+"""Pin PR/expanded compatibility coverage and the shared CI security checks.
 
-The matrix is the only place platform-specific behaviour gets exercised, and
-every defect it has found so far was invisible on macOS and Linux alike (see
-``docs/CROSS-PLATFORM-CI-FINDINGS-2026-09-15.md``). These assertions pin the
-properties that must not silently regress.
-
-The workflow is parsed with a regex rather than a YAML library: PyYAML is neither
-a runtime nor a dev dependency, and the matrix entries have one fixed shape.
+The matrix script emits the same JSON consumed by Actions, so tests can exercise
+both event policies without adding a YAML parser dependency.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -19,12 +17,15 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 
 TEXT = WORKFLOW.read_text(encoding="utf-8")
-CELL = re.compile(r'\{\s*os:\s*([\w.-]+),\s*python:\s*"([\d.]+)"\s*\}')
 CLASSIFIER = re.compile(r"Programming Language :: Python :: (\d+\.\d+)")
 
 
-def _cells() -> list[tuple[str, str]]:
-    return CELL.findall(TEXT)
+def _cells(*, expanded: bool = False) -> list[tuple[str, str]]:
+    command = [sys.executable, str(ROOT / "scripts" / "ci_matrix.py")]
+    if expanded:
+        command.append("--expanded")
+    result = subprocess.run(command, capture_output=True, text=True, check=True)
+    return [(cell["os"], cell["python"]) for cell in json.loads(result.stdout)["include"]]
 
 
 def _declared_versions() -> set[str]:
@@ -40,8 +41,14 @@ def _floor() -> str:
     return match.group(1)
 
 
-def test_the_matrix_parses_and_is_not_empty():
-    assert _cells(), "no matrix cells found in ci.yml - has the matrix been restructured?"
+def test_pr_matrix_has_only_the_four_approved_cells():
+    assert set(_cells()) == {
+        ("ubuntu-latest", "3.10"),
+        ("ubuntu-latest", "3.14"),
+        ("macos-latest", "3.13"),
+        ("windows-latest", "3.13"),
+    }
+    assert len(_cells()) == 4
 
 
 def test_all_supported_operating_systems_are_covered():
@@ -51,7 +58,7 @@ def test_all_supported_operating_systems_are_covered():
 
 
 def test_every_supported_python_version_is_tested_somewhere():
-    tested = {version for _, version in _cells()}
+    tested = {version for _, version in _cells(expanded=True)}
     declared = _declared_versions()
     assert declared, "no Python version classifiers found in pyproject.toml"
     missing = declared - tested
@@ -67,7 +74,7 @@ def test_every_operating_system_tests_the_declared_python_floor():
     deliberate.
     """
     floor = _floor()
-    cells = _cells()
+    cells = _cells(expanded=True)
     for os_name in sorted({os_name for os_name, _ in cells}):
         versions = {version for cell_os, version in cells if cell_os == os_name}
         assert floor in versions, (
@@ -120,17 +127,11 @@ def test_publishing_is_fail_closed_when_no_artifact_was_built():
     )
 
 
-def test_only_one_matrix_leg_publishes_the_artifacts():
-    """Ten legs publishing the same name would collide or overwrite silently.
-
-    One leg is the release identity; the digests printed by the gate on every
-    leg (see test_gate_script.py) are what make the other platforms comparable.
-    """
-    step = _upload_step()
-    assert re.search(r"if:\s*\S", step), (
-        "the upload step has no condition, so every matrix leg would publish"
-    )
-    assert "matrix." in step, "the upload condition does not reference the matrix"
+def test_build_and_upload_run_once_outside_the_test_matrix():
+    build = TEXT.split("\n  build:", 1)[1].split("\n  secrets:", 1)[0]
+    assert "matrix." not in build
+    assert "uv build" in build
+    assert "actions/upload-artifact@" in build
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +208,9 @@ def test_sast_job_runs_the_gates_own_commands():
 def test_semgrep_is_version_pinned_and_skipped_on_the_matrix_legs():
     assert re.search(r"SEMGREP_VERSION=\d+\.\d+\.\d+", TEXT), "Semgrep version is not pinned"
     assert "semgrep==${SEMGREP_VERSION}" in TEXT
-    assert 'FLOORVAULT_SKIP_SEMGREP: "1"' in TEXT, "every matrix leg would rerun Semgrep"
+    tests_job = TEXT.split("\n  gates:", 1)[1].split("\n  build:", 1)[0]
+    assert "semgrep" not in tests_job
+    assert "scripts/security-check.sh" not in tests_job
 
 
 def test_scorecard_runs_read_only_and_publishes_the_public_repo():
@@ -294,3 +297,43 @@ def test_dep_audit_runs_without_resync():
         "the dep-audit leg must run `uv run --no-sync pip-audit` so the "
         "--all-extras sync is still in effect when the scan runs"
     )
+
+
+def test_expanded_matrix_keeps_all_nine_existing_cells():
+    assert len(_cells(expanded=True)) == 9
+    assert set(_cells()) <= set(_cells(expanded=True))
+
+
+def test_expanded_ci_is_scheduled_and_available_before_releases():
+    assert "schedule:" in TEXT
+    assert "tags:" in TEXT and "v*" in TEXT
+    assert "workflow_dispatch:" in TEXT
+    assert "github.event_name == 'schedule'" in TEXT
+    assert "inputs.expanded" in TEXT
+    assert "scripts/ci_matrix.py" in TEXT
+    assert "fromJSON(needs.matrix.outputs.matrix)" in TEXT
+
+
+def test_platform_tests_keep_the_full_suite_and_native_windows_coverage():
+    tests_job = TEXT.split("\n  gates:", 1)[1].split("\n  build:", 1)[0]
+    assert "pytest -q tests/" in tests_job
+    assert "scripts/realworld_exercise.py" in tests_job
+    assert "--scope platform" in tests_job
+    assert "matrix.os != 'ubuntu-latest'" in tests_job
+    assert (ROOT / "tests/test_windows_dpapi_live.py").is_file()
+    assert not (ROOT / ".github/workflows/verify.yml").exists()
+
+
+def test_full_mutations_run_once_on_linux():
+    mutations = TEXT.split("\n  mutations:", 1)[1].split("\n  secrets:", 1)[0]
+    assert "runs-on: ubuntu-latest" in mutations
+    assert "matrix:" not in mutations
+    assert "scripts/mutation_check.py --mode curated" in mutations
+
+
+def test_dependency_audit_covers_platform_marked_extras():
+    audit = TEXT.split("\n  dep-audit:", 1)[1].split("\n  vault-live:", 1)[0]
+    for system in ("ubuntu-latest", "macos-latest", "windows-latest"):
+        assert system in audit
+    assert "uv sync --all-extras" in audit
+    assert "uv run --no-sync pip-audit" in audit

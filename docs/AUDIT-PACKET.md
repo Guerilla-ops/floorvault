@@ -76,8 +76,11 @@ repository; when in doubt, the code and the mutation suite win.
   our code.
 - **Fuzz:** `fuzz/*.py` — ClusterFuzzLite entrypoints (envelope, associated data,
   identifiers, beacons, protected store).
-- **CI matrix:** Ubuntu/macOS/Windows × py3.10–3.14 + Windows DPAPI live custody +
-  live Vault dev-container transit + ClusterFuzzLite + Scorecard.
+- **CI matrix:** PRs use Ubuntu Python 3.10/3.14 and macOS/Windows Python 3.13.
+  Weekly, version-tag and expanded manual runs cover all declared Python versions
+  on Ubuntu plus Python 3.10/3.13 on macOS/Windows. Full mutations run once on
+  Linux; platform subsets run on macOS/Windows. Native Windows DPAPI stays in the
+  ordinary suite. Live Vault transit, ClusterFuzzLite and Scorecard remain separate.
 
 ## 5. Known limitations — stated, not claimed away
 

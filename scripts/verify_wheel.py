@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
 
 # Tags that mean "pure Python, works anywhere".
 UNIVERSAL_TAGS = ("py3-none-any", "py2.py3-none-any")
@@ -56,6 +57,17 @@ def main(dist_dir: str = "dist") -> None:
         print(f"[FAIL] No wheel found in {dist_dir}/", file=sys.stderr)
         raise SystemExit(1)
     assert_universal(*names)
+    required = {"floorvault/__init__.py", "floorvault/core.py", "floorvault/inspector.py"}
+    for name in names:
+        try:
+            with ZipFile(Path(dist_dir) / name) as archive:
+                missing = required - set(archive.namelist())
+        except BadZipFile as exc:
+            raise SystemExit(f"[FAIL] Invalid wheel archive: {name}") from exc
+        if missing:
+            print(f"[FAIL] {name} is missing package files: {sorted(missing)}", file=sys.stderr)
+            raise SystemExit(1)
+    print("[PASS] FloorVault package and CLI modules are present.")
 
 
 if __name__ == "__main__":

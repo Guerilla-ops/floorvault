@@ -1,0 +1,11 @@
+name: hermesvault
+version: 0.1.0
+description: "FloorVault secret source: resolves secrets.hermesvault.env refs (hv:<item>[:field]) from the local FloorVault AES-256-SIV store with configured key custody. Agent credentials only — the browser-fill login vault is untouched."
+author: "Scott Lee"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+python_dependencies:
+  - "pyobjc-framework-Security>=10.0,<13; sys_platform == 'darwin'"

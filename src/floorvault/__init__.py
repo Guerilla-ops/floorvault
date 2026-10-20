@@ -1,4 +1,4 @@
-"""floorvault: Contextual, misuse-resistant database encryption for SQLite."""
+"""FloorVault: contextual, misuse-resistant field encryption and credential stores."""
 
 from __future__ import annotations
 
@@ -30,6 +30,12 @@ from .sqlite_migration import (
     migrate_plaintext_column,
     verify_encrypted_column,
 )
+from .store import (
+    VaultError,
+    VaultItemMeta,
+    VaultStore,
+    get_vault_store,
+)
 from .vault_rotation import rotate_vault_store
 
 __version__ = "0.1.0"
@@ -52,6 +58,11 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    # Credential store surface
+    "VaultStore",
+    "VaultItemMeta",
+    "VaultError",
+    "get_vault_store",
     # Core Cryptography
     "FloorVault",
     "FloorVaultError",
