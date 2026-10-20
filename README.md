@@ -12,7 +12,7 @@ Optional features include equality search and external freshness anchors.
 
 **Beta.** No completed independent code audit or security certification is claimed.
 Read [SECURITY.md](SECURITY.md) before choosing a deployment. Package and
-on-disk format versions are independent; the package currently declares `0.1.0`.
+on-disk format versions are independent; the package currently declares `0.2.0`.
 
 ## Install
 
