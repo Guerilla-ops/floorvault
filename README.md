@@ -22,8 +22,9 @@ Requires Python 3.10 or newer:
 python -m pip install floorvault
 ```
 
-Examples describe the repository source. Some APIs were added after the published
-`0.1.0` release; install a reviewed source checkout when using those features:
+Examples describe the repository source. APIs added after the most recent PyPI
+release need a reviewed source checkout; check the release notes for the version
+you install:
 
 ```bash
 git clone https://github.com/Guerilla-ops/floorvault.git
