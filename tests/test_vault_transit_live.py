@@ -25,9 +25,9 @@ pytestmark = pytest.mark.skipif(not LIVE, reason="live Vault leg: set FLOORVAULT
 def _provider(tmp_path):
     return VaultTransitProvider(
         vault_addr=os.environ["VAULT_ADDR"],
-        key_name="hermes_vault-ci",
+        key_name="floorvault-ci",
         store_dir=tmp_path / "keystore",
-        app_instance_id="hermes_vault-ci",
+        app_instance_id="floorvault-ci",
         cafile=os.environ.get("VAULT_CACERT"),
         cache_ttl=0,  # every resolve exercises the wire in the live leg
     )
@@ -52,9 +52,9 @@ def test_live_provision_resolve_rewrap(tmp_path):
     foreign_dir = tmp_path / "foreign"
     foreign = VaultTransitProvider(
         vault_addr=os.environ["VAULT_ADDR"],
-        key_name="hermes_vault-ci",
+        key_name="floorvault-ci",
         store_dir=foreign_dir,
-        app_instance_id="hermes_vault-ci",
+        app_instance_id="floorvault-ci",
         cafile=os.environ.get("VAULT_CACERT"),
         cache_ttl=0,
     )
