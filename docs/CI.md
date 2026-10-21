@@ -9,7 +9,8 @@ run in shared jobs. macOS/Windows also run platform mutation controls. Dependenc
 audits resolve all extras on each OS so platform-marked dependencies are covered.
 The standalone `scripts/security-check.sh` remains a complete local gate.
 
-Windows test jobs set `TEMP` and `TMP` to a dedicated directory with a protected,
+Windows test jobs set `TEMP` and `TMP` to a unique directory under the user's
+`LOCALAPPDATA\Temp` (inside the DPAPI provider's profile boundary), with a protected,
 inheritable ACL for the owner, SYSTEM and Administrators, matching Python 3.13's
 `mkdir(mode=0o700)` descriptor. Python before
 3.13 ignores `mkdir(mode=0o700)` on Windows, so its temporary directories would
