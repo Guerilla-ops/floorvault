@@ -57,6 +57,21 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python }}
           version: "0.12.5"
+      # Python <3.13 ignores mkdir(mode=0o700) on Windows. Its tempfile
+      # directories otherwise inherit the hosted runner's extra account ACEs,
+      # which the key-store ACL verifier correctly refuses. Restrict the test
+      # parent explicitly; do not relax the production ACL policy.
+      - name: Restrict Windows test temporary directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $testTemp = Join-Path $env:LOCALAPPDATA ("Temp\floorvault-tests-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $testTemp -ErrorAction Stop | Out-Null
+          $acl = Get-Acl -LiteralPath $testTemp
+          $acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)")
+          Set-Acl -LiteralPath $testTemp -AclObject $acl -ErrorAction Stop
+          "TEMP=$testTemp" >> $env:GITHUB_ENV
+          "TMP=$testTemp" >> $env:GITHUB_ENV
       - name: Sync environment
         shell: bash
         run: |
