@@ -9,6 +9,13 @@ run in shared jobs. macOS/Windows also run platform mutation controls. Dependenc
 audits resolve all extras on each OS so platform-marked dependencies are covered.
 The standalone `scripts/security-check.sh` remains a complete local gate.
 
+Windows test jobs set `TEMP` and `TMP` to a dedicated directory with a protected,
+inheritable ACL for the current user, SYSTEM and Administrators. Python before
+3.13 ignores `mkdir(mode=0o700)` on Windows, so its temporary directories would
+otherwise inherit extra account permissions from the hosted runner. Production
+key-store ACL verification remains unchanged and continues to refuse those
+permissions.
+
 ## Required checks on main
 
 The repository's [floorvault branch governance ruleset](https://github.com/Guerilla-ops/floorvault/rules/24341865)
