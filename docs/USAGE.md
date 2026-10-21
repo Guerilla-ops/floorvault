@@ -134,12 +134,16 @@ independent keys or access control.
 The plugin supplies `hermes hvault` management commands. Prefer `add --stdin`
 over passing secret values as command arguments. `show` reports field counts or status; its current
 `--reveal` mode also masks values rather than printing plaintext.
-The current `put` path removes then recreates an item; it needs an atomic update
-before use with critical data. The library wheel alone does not install or
+`put` replaces a field inside one immediate SQLite transaction, preserving the
+existing item if validation or encryption fails. On Linux, install the
+`linux` extra (which provides Secret Service support) when using OS key custody;
+otherwise key resolution fails closed unless you supply an explicit key. The library wheel alone does not install or
 register the plugin. The source accepts a configured bootstrap key through
 `token_env` (default `HERMES_VAULT_KEY`); this integration setting does not change
 the core provider's environment-key defaults. Match the same bootstrap settings
-when provisioning and reading a store. Credentials returned to the host are
+when provisioning and reading a store. The plugin uses the authenticated
+application context `floor-agent`; preserve it and the same custody settings
+when reopening an existing store. Credentials returned to the host are
 plaintext; this integration does not provide a separate authorisation broker.
 
 ## Key custody
@@ -167,6 +171,12 @@ different key when backend availability changes.
 Preserve the original custody service, account, path, key and application context
 when reopening an existing store. Keep recovery material securely backed up.
 Memory-hardening settings are separate from key-custody settings.
+
+On macOS and Linux, constructing `HardenedMemoryKey` attempts to set the
+process-wide `RLIMIT_CORE` soft and hard limits to zero. This setting is
+permanent for the process and prevents the OS from writing process memory to a
+core-dump file after a crash. Applications that depend on core dumps for
+diagnostics should account for this side effect before opening a vault.
 
 ## Additional APIs
 

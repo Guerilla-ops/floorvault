@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,8 +35,7 @@ def vault_home(tmp_path, monkeypatch):
     """A hermes home with a populated agent-vault store (env-var key custody)."""
     monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
     monkeypatch.setenv("FLOOR_VAULT_KEY", KEY)
-    store_dir = tmp_path / "agent-vault"
-    store = floorvault.get_vault_store(store_dir, auto_migrate=False)
+    store = floorvault.get_vault_store(tmp_path / "agent-vault", auto_migrate=False)
     store.add_item(
         kind="generic",
         label="openai key",
@@ -143,6 +143,36 @@ def test_register_wires_source_and_cli():
     )()
     hermesvault.register(ctx)
     assert calls == [("source", "hermesvault"), ("cli", "hvault")]
+
+
+def test_put_uses_atomic_store_update(monkeypatch, capsys):
+    sys.path.insert(0, str(ROOT / "plugins"))
+    from hermesvault import cli as hermesvault_cli
+
+    calls = []
+
+    class Store:
+        def get_meta(self, item_id):
+            return object()
+
+        def update_generic_field(self, item_id, field, value):
+            calls.append((item_id, field, value))
+            return True
+
+        def resolve_secret(self, *_args):
+            raise AssertionError("put must not read-modify-delete-recreate an item")
+
+        def remove_item(self, *_args):
+            raise AssertionError("put must preserve the existing item")
+
+        def add_item(self, **_kwargs):
+            raise AssertionError("put must preserve the existing item")
+
+    monkeypatch.setattr(hermesvault_cli, "_store", lambda: Store())
+    monkeypatch.setattr(hermesvault_cli.getpass, "getpass", lambda _prompt: "new-value")
+    assert hermesvault_cli._cmd_put(SimpleNamespace(item_id="vault_a", field="token")) == 0
+    assert calls == [("vault_a", "token", "new-value")]
+    assert "updated vault_a.token" in capsys.readouterr().out
 
 
 def test_wrong_key_fails_closed_not_silent(tmp_path, monkeypatch):

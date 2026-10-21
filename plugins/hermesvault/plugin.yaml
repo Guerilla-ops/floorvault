@@ -9,3 +9,4 @@ platforms:
   - windows
 python_dependencies:
   - "pyobjc-framework-Security>=10.0,<13; sys_platform == 'darwin'"
+  - "secretstorage>=3.3,<4; sys_platform == 'linux'"
