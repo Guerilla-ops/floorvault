@@ -68,6 +68,44 @@ def test_connect_closes_the_connection_on_normal_exit(tmp_path):
         captured.execute("SELECT 1")
 
 
+def test_update_generic_field_is_atomic_and_preserves_other_fields(tmp_path, monkeypatch):
+    crypto = FloorVault(b"\x31" * 32, memory_mode="disabled")
+    store = VaultStore(tmp_path / "vault", crypto=crypto)
+    store.add_item(
+        kind="generic",
+        label="service token",
+        secret={"token": "old", "region": "west"},
+        item_id="vault_service",
+    )
+
+    def fail_encrypt(*args, **kwargs):
+        raise RuntimeError("simulated seal failure")
+
+    monkeypatch.setattr(crypto, "encrypt", fail_encrypt)
+    with pytest.raises(RuntimeError, match="simulated seal failure"):
+        store.update_generic_field("vault_service", "token", "new")
+    assert store.resolve_secret("vault_service") == {"token": "old", "region": "west"}
+
+    monkeypatch.undo()
+    assert store.update_generic_field("vault_service", "token", "new") is True
+    assert store.resolve_secret("vault_service") == {"token": "new", "region": "west"}
+
+
+def test_update_generic_field_refuses_missing_or_non_generic_items(tmp_path):
+    store = VaultStore(tmp_path / "vault", crypto=FloorVault(b"\x32" * 32, memory_mode="disabled"))
+    with pytest.raises(VaultError, match="not found"):
+        store.update_generic_field("missing", "token", "new")
+    store.add_item(
+        kind="login",
+        label="login",
+        origin="https://example.com",
+        secret={"identifier_type": "username", "identifier": "user", "password": "old"},
+        item_id="vault_login",
+    )
+    with pytest.raises(VaultError, match="generic"):
+        store.update_generic_field("vault_login", "password", "new")
+
+
 def test_connect_closes_the_connection_on_error(tmp_path):
     crypto = FloorVault(b"\x2a" * 32, memory_mode="disabled")
     store = VaultStore(tmp_path / "vault", crypto=crypto)

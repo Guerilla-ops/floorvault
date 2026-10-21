@@ -83,6 +83,7 @@ VAULT_STORE_METHODS = {
     "retire_legacy_id": "(self, legacy_id: 'str', modern_id: 'str') -> 'None'",
     "retired_modern_id": "(self, legacy_id: 'str') -> 'Optional[str]'",
     "rotation_journal": "(self) -> 'dict[tuple[str, str, str], tuple[int, str]]'",
+    "update_generic_field": "(self, item_id: 'str', field: 'str', value: 'str') -> 'bool'",
     "write_sealed_item": "(self, item_id: 'str', sealed: 'Mapping[str, Any]', *, new_vault: 'FloorVault', key_id: 'int' = 0, journal_rows: 'Optional[Iterable[tuple[str, str, str]]]' = None) -> 'None'",
 }
 FV_CRYPTO_METHODS = {

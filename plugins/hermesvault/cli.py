@@ -2,7 +2,8 @@
 
 Adds, lists, shows and removes ``generic`` items in the store backing
 ``secrets.hermesvault.env`` refs. Values are never logged; ``put`` reads the
-value via getpass so it never appears on argv. ``add`` accepts
+value via getpass so it never appears on argv and updates its encrypted payload
+in a single SQLite transaction. ``add`` accepts
 ``field=value`` pairs on argv (visible to ``ps`` while the command runs —
 prefer ``put`` for single values) or ``--stdin`` reading ``field=value``
 lines.
@@ -110,23 +111,24 @@ def _cmd_add(args) -> int:
 def _cmd_put(args) -> int:
     store = _store()
     try:
-        secret = store.resolve_secret(args.item_id)
+        meta = store.get_meta(args.item_id)
     except Exception:
+        print(f"hvault put: item {args.item_id} not found", file=sys.stderr)
+        return 1
+    if meta is None:
         print(f"hvault put: item {args.item_id} not found", file=sys.stderr)
         return 1
     value = getpass.getpass(f"{args.item_id}.{args.field}: ")
     if not value:
         print("hvault put: empty value", file=sys.stderr)
         return 2
-    secret[args.field] = value
-    meta = store.get_meta(args.item_id)
-    store.remove_item(args.item_id)
-    store.add_item(
-        kind="generic",
-        label=meta.label if meta else args.item_id,
-        secret=secret,
-        item_id=args.item_id,
-    )
+    try:
+        if not store.update_generic_field(args.item_id, args.field, value):
+            print(f"hvault put: item {args.item_id} not found", file=sys.stderr)
+            return 1
+    except Exception as exc:
+        print(f"hvault put: update failed: {exc}", file=sys.stderr)
+        return 1
     print(f"updated {args.item_id}.{args.field}")
     return 0
 

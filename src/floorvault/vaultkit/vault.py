@@ -792,6 +792,51 @@ class VaultStore:
         )
         return json.loads(plaintext)
 
+    def update_generic_field(self, item_id: str, field: str, value: str) -> bool:
+        """Atomically replace one field on a generic item.
+
+        The read, authenticated decrypt, re-seal and write share one immediate
+        SQLite transaction. A failed validation or encryption leaves the old
+        payload intact; the method never implements an update as delete+insert.
+        """
+        if not isinstance(item_id, str) or not item_id.strip():
+            raise VaultError("item_id must be a non-empty string")
+        if not isinstance(field, str) or not field.strip():
+            raise VaultError("field must be a non-empty string")
+        if not isinstance(value, str) or not value.strip():
+            raise VaultError("value must be a non-empty string")
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_writes_allowed(conn)
+            row = conn.execute(
+                "SELECT kind, payload_cipher FROM vault_items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                raise VaultError(f"Vault item not found: {item_id}")
+            if self._listing_kind(item_id, row[0]) != "generic":
+                raise VaultError("only generic items support field updates")
+
+            plaintext = self._crypto.decrypt(
+                row[1],
+                table="vault_items",
+                record_id=item_id,
+                column="payload",
+            )
+            secret = json.loads(plaintext)
+            secret[field] = value
+            payload_cipher = self._crypto.encrypt(
+                json.dumps(secret, ensure_ascii=False),
+                table="vault_items",
+                record_id=item_id,
+                column="payload",
+            )
+            cursor = conn.execute(
+                "UPDATE vault_items SET payload_cipher = ? WHERE id = ?",
+                (payload_cipher, item_id),
+            )
+            return cursor.rowcount == 1
+
     # Alias for compatibility
     get_secret = resolve_secret
 
