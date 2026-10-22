@@ -3,7 +3,8 @@
 The plain Tier-3 store (``~/.floorvault/master.key``) *is* the key: a copy of
 the file decrypts everything. This scheme wraps the master key under a key
 derived from a caller-held passphrase, so a stolen disk, backup, or copied
-file (attackers A1/A2 in ``SECURITY.md`` §5) also needs the passphrase.
+file (the storage attacker in ``SECURITY.md``, "Threat model and trust
+boundaries") also needs the passphrase.
 
 What it is not: protection against anyone who can observe the passphrase
 (the process, its environment, a keylogger) or who can run the application
