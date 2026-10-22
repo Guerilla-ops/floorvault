@@ -1,8 +1,10 @@
 # FloorVault on-disk format specification
 
 **Status:** Phase-0 format freeze · normative
-**Applies to:** FloorVault 0.1.x (original freeze: `main` @ `49c00a0`;
-updated for explicit legacy-metadata migration and target-bound rotation)
+**Applies to:** FloorVault 0.1.x and 0.2.x (original freeze: `main` @ `49c00a0`;
+updated for explicit legacy-metadata migration and target-bound rotation, and
+for 0.2.0's passphrase-wrapped Tier-3 store (§10.8), sealed listing metadata
+(§12.2), libSQL file-layer encryption (§14.2) and freshness anchors (§14.3))
 **Audience:** independent implementors, auditors, migration tooling
 **Supersedes:** `docs/RECORD-FORMAT-2026-09-15.md` (which remains as the
 informal design note; where the two disagree, the code — and therefore this
@@ -335,8 +337,8 @@ a single call. Normative equivalence:
 
 Beacons are deterministic keyed indexes stored *beside* ciphertexts by the
 caller; the envelope format does not embed them. They are a deliberate,
-documented confidentiality trade (see `SECURITY.md` §5); nothing here is
-active unless the caller opts in.
+documented confidentiality trade (see `SECURITY.md`, "Design limits and known
+limitations"); nothing here is active unless the caller opts in.
 
 ### 9.1 Key
 
