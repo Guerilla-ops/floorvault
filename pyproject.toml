@@ -126,9 +126,7 @@ floorvault = "floorvault.inspector:main"
 packages = ["src/floorvault"]
 
 [tool.hatch.build.targets.sdist]
-# The checkout-only vendor symlink points back to src/. Exclude it so Hatch
-# visits the canonical source path instead of deduplicating it under the plugin.
-exclude = ["/plugins/hermesvault/vendor", "/docs/drafts"]
+exclude = ["/docs/drafts"]
 skip-excluded-dirs = true
 
 [tool.pytest.ini_options]
