@@ -15,7 +15,6 @@ overwrite the credential that unlocks the vault.
 from __future__ import annotations
 
 import re
-import sys
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -29,17 +28,14 @@ from agent.secret_sources.base import (
 
 
 def _import_floorvault():
-    """Import floorvault, falling back to the vendored ``vendor/`` sibling.
+    """Import floorvault from the Hermes Python environment.
 
-    ``vendor`` is a symlink to the package's own ``src/`` so the plugin always
-    runs the checkout it ships with — no site-packages dependency is required."""
-    try:
-        return __import__("floorvault")
-    except ImportError:
-        vendor = Path(__file__).resolve().with_name("vendor")
-        if vendor.is_dir() and str(vendor) not in sys.path:
-            sys.path.insert(0, str(vendor))
-        return __import__("floorvault")
+    ``plugin.yaml`` declares ``floorvault`` as a Python dependency, so
+    ``hermes plugins install`` / ``enable`` prepares it through Hermes' package
+    manager. The plugin directory carries no copy of the library."""
+    import floorvault
+
+    return floorvault
 
 
 DEFAULT_DIR_NAME = "agent-vault"
@@ -102,7 +98,10 @@ class HermesVaultSource(SecretSource):
     default_token_env = DEFAULT_TOKEN_ENV
     remediation_hints = {
         ErrorKind.NOT_CONFIGURED: "Set secrets.hermesvault.enabled: true and map vars under secrets.hermesvault.env.",
-        ErrorKind.INTERNAL: "Is the hermes-vault package installed in this Python environment?",
+        ErrorKind.INTERNAL: (
+            "Is floorvault installed in the Hermes environment? Re-run "
+            "`hermes plugins enable hermesvault` so Hermes prepares its dependencies."
+        ),
         ErrorKind.AUTH_FAILED: "No usable key custody — set {token_env} or allow the OS keychain tier.",
     }
 

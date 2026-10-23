@@ -106,15 +106,21 @@ The optional plugin in [`plugins/hermesvault`](../plugins/hermesvault) resolves 
 FloorVault items into Hermes Agent environment variables. FloorVault remains the
 library and package name.
 
-Install FloorVault into the Python environment used by the host, then register the
-plugin through that host's plugin mechanism. The library wheel does not include or
-register the plugin. The checkout's `vendor` link depends on the repository layout;
-copying the plugin directory alone is not a self-contained installation. A compatible
-host secret-source API is required; host integration tests are skipped when that
-checkout is absent.
+Install it with Hermes' plugin manager:
 
-Once installed and registered with a compatible Hermes host, the plugin maps
-references to existing items into the host's environment:
+```bash
+hermes plugins install Guerilla-ops/floorvault/plugins/hermesvault
+hermes plugins enable hermesvault
+```
+
+The plugin directory is self-contained. Its `plugin.yaml` declares
+`floorvault>=0.2.1,<0.3` and the platform keyring packages, which Hermes installs
+from PyPI after asking for consent. The library wheel does not include or register
+the plugin. See the [plugin README](../plugins/hermesvault/README.md) for
+configuration, the `hermes hvault` commands and what the plugin reads and writes.
+
+Once enabled, the plugin maps references to existing items into the host's
+environment:
 
 ```yaml
 secrets:
@@ -135,10 +141,11 @@ The plugin supplies `hermes hvault` management commands. Prefer `add --stdin`
 over passing secret values as command arguments. `show` reports field counts or status; its current
 `--reveal` mode also masks values rather than printing plaintext.
 `put` replaces a field inside one immediate SQLite transaction, preserving the
-existing item if validation or encryption fails. On Linux, install the
-`linux` extra (which provides Secret Service support) when using OS key custody;
-otherwise key resolution fails closed unless you supply an explicit key. The library wheel alone does not install or
-register the plugin. The source accepts a configured bootstrap key through
+existing item if validation or encryption fails. Hermes runs `hermes hvault` only
+under the default `plugins.isolation: in_process`; under `host` isolation the
+secret source still works but plugin CLI commands are skipped. On Linux without a
+usable Secret Service, key resolution fails closed unless you supply an explicit
+key. The source accepts a configured bootstrap key through
 `token_env` (default `HERMES_VAULT_KEY`); this integration setting does not change
 the core provider's environment-key defaults. Match the same bootstrap settings
 when provisioning and reading a store. The plugin uses the authenticated
