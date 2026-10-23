@@ -404,8 +404,6 @@ def _cmd_show(args, prog: str) -> int:
         return 0
     filled = sum(1 for value in secret.values() if value)
     print(f"{len(secret)} field(s): {filled} set, {len(secret) - filled} empty")
-    for name in sorted(secret):
-        print(f"  {name}: {'(set)' if secret[name] else '(empty)'}")
     return 0
 
 
