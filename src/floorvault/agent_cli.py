@@ -284,7 +284,7 @@ def add_secrets_parser(subparsers) -> None:
     )
     common = argparse.ArgumentParser(add_help=False)
     _add_store_options(common)
-    sub = secrets.add_subparsers(dest="secrets_command", metavar="<command>", required=True)
+    sub = secrets.add_subparsers(dest="subcommand", metavar="<command>", required=True)
 
     add = sub.add_parser("add", parents=[common], help="Create an item and print its id")
     add.add_argument("label", help="human label for the item")
@@ -448,9 +448,9 @@ _SECRETS_COMMANDS = {
 def secrets_main(args: argparse.Namespace) -> int:
     from .vaultkit.vault import VaultError
 
-    prog = f"floorvault secrets {args.secrets_command}"
+    prog = f"floorvault secrets {args.subcommand}"
     try:
-        return _SECRETS_COMMANDS[args.secrets_command](args, prog)
+        return _SECRETS_COMMANDS[args.subcommand](args, prog)
     except StoreUnavailable as exc:
         _err(prog, str(exc))
         return 1
