@@ -17,7 +17,7 @@ to them is a format change (a new version, with the old one still readable).
 |---|---:|:---:|---|
 | `magic` | 4 B | ✅ | `FLV2` |
 | `crypto_version` | 1 B | ✅ | `2` for this build |
-| `key_id` | 1 B | ✅ | Which key the record was written under; `0` here |
+| `key_id` | 1 B | ✅ | Caller-supplied key identifier (`0` by default) |
 | `nonce_len` | 1 B | ✅ | Always `16`; other values are refused |
 | `nonce` | 16 B | ✅ | Cleartext, fresh per encryption |
 | `ciphertext` | n B | — | AES-256-SIV output (includes the tag) |
@@ -41,7 +41,7 @@ vector (§2). They are not rewritten on read.
 ### Inspecting a header
 
 ```python
-from floorvault import envelope_header, RECORD_MAGIC_V2
+from floorvault.core import envelope_header, RECORD_MAGIC_V2
 
 header = envelope_header(blob)
 # v2: {"magic": b"FLV2", "header_len": 7, "nonce_len": 16,

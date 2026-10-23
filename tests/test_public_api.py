@@ -47,11 +47,15 @@ EXPECTED_ALL = {
     "SqlAlchemyEncryption",
     "UnknownKeyIdError",
     "UnsupportedWriteError",
+    "VaultError",
+    "VaultItemMeta",
+    "VaultStore",
     "associated_data",
     "connect_encrypted",
     "derive_libsql_file_key",
     "disable_core_dumps",
     "drop_plaintext_column",
+    "get_vault_store",
     "migrate_plaintext_column",
     "recover_master_key",
     "rotate_vault_store",
@@ -60,6 +64,28 @@ EXPECTED_ALL = {
 }
 
 FV_INIT = "(master_key: 'Union[bytes, HardenedMemoryKey]', app_instance_id: 'str' = 'default', *, maximum_tracked_nonces: 'int' = 10000, memory_mode: 'str' = 'opportunistic', wipe_source_key: 'bool' = False) -> 'None'"
+VAULT_STORE_INIT = "(base_dir: 'Path | str', *, crypto: 'Optional[FloorVault]' = None, migrate_legacy_metadata: 'bool' = False, seal_listing_metadata: 'bool' = False, migrate_listing_metadata: 'bool' = False)"
+VAULT_STORE_METHODS = {
+    "add_item": "(self, kind: 'str', label: 'str', secret: 'dict[str, Any]', origin: 'Optional[str]' = None, *, item_id: 'Optional[str]' = None) -> 'VaultItemMeta'",
+    "begin_rotation": "(self, target_key_id: 'int', *, target_vault: 'FloorVault') -> 'None'",
+    "clear_rotation_journal": "(self) -> 'None'",
+    "delete_item": "(self, item_id: 'str') -> 'bool'",
+    "get_meta": "(self, item_id: 'str') -> 'Optional[VaultItemMeta]'",
+    "get_secret": "(self, item_id: 'str') -> 'dict[str, Any]'",
+    "has_items": "(self) -> 'bool'",
+    "list_items": "(self) -> 'list[VaultItemMeta]'",
+    "list_legacy_retirements": "(self) -> 'dict[str, str]'",
+    "mark_rotation_done": "(self, rows: 'Iterable[tuple[str, str, str]]', *, target_key_id: 'int') -> 'None'",
+    "read_sealed_item": "(self, item_id: 'str', ring: 'KeyRing') -> 'dict[str, Any]'",
+    "remove_item": "(self, item_id: 'str') -> 'bool'",
+    "reseal_retirements": "(self, ring: 'KeyRing', *, new_vault: 'FloorVault', key_id: 'int' = 0) -> 'int'",
+    "resolve_secret": "(self, item_id: 'str') -> 'dict[str, Any]'",
+    "retire_legacy_id": "(self, legacy_id: 'str', modern_id: 'str') -> 'None'",
+    "retired_modern_id": "(self, legacy_id: 'str') -> 'Optional[str]'",
+    "rotation_journal": "(self) -> 'dict[tuple[str, str, str], tuple[int, str]]'",
+    "update_generic_field": "(self, item_id: 'str', field: 'str', value: 'str') -> 'bool'",
+    "write_sealed_item": "(self, item_id: 'str', sealed: 'Mapping[str, Any]', *, new_vault: 'FloorVault', key_id: 'int' = 0, journal_rows: 'Optional[Iterable[tuple[str, str, str]]]' = None) -> 'None'",
+}
 FV_CRYPTO_METHODS = {
     "decrypt": "(self, ciphertext: 'bytes', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'str'",
     "decrypt_bytes": "(self, ciphertext: 'bytes', *, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, revision: 'int | None' = None, key_id: 'int | None' = None) -> 'bytes'",
@@ -175,6 +201,7 @@ EXPECTED_SIGNATURES = {
             "get_meta": "(self, item_id: 'str') -> 'Optional[Any]'",
             "has_items": "(self) -> 'bool'",
             "list_item_ids": "(self) -> 'list[str]'",
+            "list_items": "(self) -> 'list[Any]'",
             "migrate_all": "(self) -> 'dict[str, Any]'",
             "resolve_secret": "(self, item_id: 'str') -> 'dict[str, Any]'",
             "verify": "(self) -> 'bool'",
@@ -203,6 +230,17 @@ EXPECTED_SIGNATURES = {
     },
     "UnknownKeyIdError": {"signature": None, "methods": {}},
     "UnsupportedWriteError": {"signature": None, "methods": {}},
+    "VaultError": {"signature": None, "methods": {}},
+    "VaultItemMeta": {
+        "signature": "(id: 'str', kind: 'str', label: 'str', origin: 'Optional[str]', created_at: 'str', identifier_type: 'Optional[str]' = None, identifier: 'Optional[str]' = None, has_otp: 'bool' = False) -> None",
+        "methods": {
+            "to_dict": "(self) -> 'dict[str, Any]'",
+        },
+    },
+    "VaultStore": {
+        "signature": VAULT_STORE_INIT,
+        "methods": VAULT_STORE_METHODS,
+    },
     "associated_data": {
         "signature": "(*, table: 'str', record_id: 'str', column: 'str', schema_id: 'str' = 'floor.vault.v1', schema_version: 'int' = 1, app_instance_id: 'str' = 'default', revision: 'int | None' = None) -> 'bytes'"
     },
@@ -215,6 +253,9 @@ EXPECTED_SIGNATURES = {
     "disable_core_dumps": {"signature": "() -> 'bool'"},
     "drop_plaintext_column": {
         "signature": "(connection: 'sqlite3.Connection', *, table: 'str', column: 'str', vacuum: 'bool' = False) -> 'dict[str, Any]'"
+    },
+    "get_vault_store": {
+        "signature": "(base_dir: 'Optional[Path | str]' = None, *, auto_migrate: 'bool' = True)"
     },
     "migrate_plaintext_column": {
         "signature": "(connection: 'sqlite3.Connection', crypto: 'FloorVault', *, table: 'str', id_column: 'str', source_column: 'str', destination_column: 'str') -> 'dict[str, int]'"

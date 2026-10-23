@@ -7,14 +7,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "floorvault"
-version = "0.1.0"
-description = "Contextual, misuse-resistant, searchable database encryption for SQLite and beyond — zero C compilation."
+version = "0.2.0"
+description = "Contextual, misuse-resistant field encryption and credential stores."
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 authors = [
     { name = "Scott Lee", email = "floorbond@pm.me" },
 ]
 keywords = [
+    "floorvault",
+    "database",
+    "vault",
     "sqlite",
     "encryption",
     "aead",
@@ -23,9 +26,7 @@ keywords = [
     "blind-index",
     "searchable-encryption",
     "crypto",
-    "database",
-    "floor",
-    "floorvault",
+    "credentials",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -124,6 +125,12 @@ floorvault = "floorvault.inspector:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/floorvault"]
+
+[tool.hatch.build.targets.sdist]
+# The checkout-only vendor symlink points back to src/. Exclude it so Hatch
+# visits the canonical source path instead of deduplicating it under the plugin.
+exclude = ["/plugins/hermesvault/vendor", "/docs/drafts"]
+skip-excluded-dirs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

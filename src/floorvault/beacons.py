@@ -1,7 +1,8 @@
 """Opt-in truncated search beacons: equality narrowing over encrypted fields.
 
 **This module is a deliberate, measured confidentiality trade. Read this before
-using it, and see ``SECURITY.md`` §5 for the threat model it modifies.**
+using it, and see ``SECURITY.md``, "Design limits and known limitations", for
+the threat model it modifies.**
 
 A beacon is a deterministic, keyed function of a plaintext value. Storing one
 beside a ciphertext therefore discloses information that omitting it would not:
