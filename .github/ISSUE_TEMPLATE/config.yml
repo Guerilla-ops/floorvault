@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Guerilla-ops/floorvault/security/advisories/new
+    about: Please report vulnerabilities privately. Do not open a public issue. See SECURITY.md.
+  - name: Usage documentation
+    url: https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md
+    about: Integration and usage guide.
