@@ -5,6 +5,11 @@ author: "Scott Lee"
 license: MIT
 homepage: https://github.com/Guerilla-ops/floorvault/tree/main/plugins/hermesvault
 kind: standalone
+# Oldest Hermes release the plugin and Hermes' SecretSource conformance kit
+# were tested against. Keep it equal to `requires_hermes` in the catalog
+# entry (plugin-catalog/hermesvault.yaml in NousResearch/hermes-agent):
+# older Hermes enforces only this manifest copy.
+requires_hermes: ">=0.21.2"
 platforms:
   - linux
   - macos
