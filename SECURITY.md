@@ -193,9 +193,14 @@ proof of a plaintext-recovery attack.
   guarantee erasure from pages, WAL, backups, snapshots or storage media.
   Plugin results and revealed CLI output become plaintext in the consuming
   process. CLI secret arguments may appear in process listings; prefer stdin.
-  The optional plugin's current `put` command removes and recreates an item in
-  separate transactions; a failed replacement can lose data or metadata. It
-  requires an atomic update before use for critical credential changes.
+  `put` (in `floorvault secrets` and the optional plugin) replaces one field in
+  a single SQLite transaction through `VaultStore.update_generic_field()`.
+- **`floorvault run` hands plaintext to the child.** Resolved values become
+  ordinary environment variables of the started process and of anything it
+  starts. Code running as the same user can usually read a process's
+  environment. `run` keeps secrets out of files and configs; it is not an
+  access-control boundary. It removes vault key variables from the child
+  environment, refuses references onto them, and only reads existing keys.
 - **Migration can write during listing.** The migration-aware `list_items()` path
   upgrades legacy items through metadata lookup. It can write modern records and
   retirement tombstones without a separate bulk-migration request. Back up legacy
