@@ -59,6 +59,17 @@ def test_every_dependency_has_an_upper_bound():
         )
 
 
+def test_manifest_declares_a_semver_hermes_floor():
+    # Catalog rule 14: requires_hermes is a SemVer floor (never a CalVer date),
+    # declared in plugin.yaml as well as the catalog entry, because older Hermes
+    # versions enforce only the manifest copy.
+    spec = _manifest().get("requires_hermes")
+    assert isinstance(spec, str), "plugin.yaml must declare requires_hermes"
+    match = re.fullmatch(r">=\s*(\d+)\.(\d+)\.(\d+)", spec.strip())
+    assert match, f"requires_hermes must be a '>=X.Y.Z' SemVer floor, got {spec!r}"
+    assert int(match.group(1)) < 2000, "requires_hermes is SemVer, not a CalVer date"
+
+
 def test_manifest_metadata():
     manifest = _manifest()
     assert manifest["name"] == "hermesvault" == PLUGIN.name
