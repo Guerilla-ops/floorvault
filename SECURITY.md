@@ -163,6 +163,27 @@ proof of a plaintext-recovery attack.
   a secure enclave or protection from the account or an administrator. Default
   DPAPI entropy is public, unless the caller supplies a secret. Windows checks
   effective DACLs; POSIX mode checks do not inspect extended ACLs.
+- **Custody tiers do not share a store.** Sessions in one home can see
+  different tiers: a desktop login can reach the Keychain or Secret Service, while
+  SSH, cron or a container cannot. Without a guard, the second session would mint
+  a second master key, and data written under one key cannot be read with the
+  other. `AdaptiveKeyProvider` blocks this in both directions (SPEC §10.5):
+  - While `master.key` or `master.key.fvpw` exists, the OS tier is only read. If
+    it is usable but empty, resolution refuses instead of creating an OS key.
+  - When the OS tier holds the key, it records `master.key.ostier` in the
+    fallback directory. The marker is owner-only and holds the tier, service and
+    account names, with no key material. While it exists, raw and passphrase
+    file-key creation both refuse. A marker that cannot be read counts as
+    present.
+  - If the OS key named by the marker goes missing (deleted, or the store reset),
+    resolution refuses rather than minting a replacement.
+
+  Limits: the marker is written on the first successful OS-tier resolve that is
+  allowed to create a key (read-only resolution writes nothing), so an existing
+  OS-key install has no marker until that happens. If the fallback directory is
+  unwritable, the OS key is still used and a warning says the guard is absent. A key fork from before the guard is not repaired: an
+  existing file key is still read. Whoever can delete files in the fallback
+  directory can remove the marker.
 - **Memory hardening is limited.** Wiping reaches managed buffers, not every
   Python, provider or AEAD-engine copy. Locking and anti-dump advice depend on
   the platform. Key construction attempts to disable core dumps process-wide
