@@ -2,9 +2,9 @@
 
 AES-SIV and the contextual AAD prove a ciphertext is authentic and sits at its
 own coordinates. They cannot prove it is *current*: an attacker who can write
-the database (``SECURITY.md`` §5, A3/A7) can restore an old backup, replay an
-old row into its own coordinates, or delete and duplicate rows, and every
-envelope still verifies.
+the database (``SECURITY.md``, "Threat model and trust boundaries") can
+restore an old backup, replay an old row into its own coordinates, or delete
+and duplicate rows, and every envelope still verifies.
 
 A :class:`FreshnessAnchor` closes that gap for the tables it is told about. At
 every commit it records a keyed digest of those tables - every row, and the
