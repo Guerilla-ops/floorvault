@@ -11,7 +11,7 @@
   <a href="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml"><img src="https://github.com/Guerilla-ops/floorvault/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status on main"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10 and newer"></a>
   <a href="https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md"><img src="https://img.shields.io/badge/status-beta-f0a45d.svg" alt="Project status: beta"></a>
-  <a href="https://github.com/Guerilla-ops/floorvault/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue.svg" alt="MIT or Apache 2.0 license"></a>
+  <a href="https://github.com/Guerilla-ops/floorvault/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
 FloorVault is a Python library for field encryption in existing databases and
@@ -146,4 +146,4 @@ the [development notes](https://github.com/Guerilla-ops/floorvault/blob/main/doc
 Report vulnerabilities through [private GitHub reporting](https://github.com/Guerilla-ops/floorvault/security/advisories/new)
 or **floorbond@pm.me**. Keep security reports and live secrets out of public issues.
 
-Dual-licensed under [MIT](https://github.com/Guerilla-ops/floorvault/blob/main/LICENSE-MIT) or [Apache 2.0](https://github.com/Guerilla-ops/floorvault/blob/main/LICENSE-APACHE), at your option.
+Licensed under the [MIT License](https://github.com/Guerilla-ops/floorvault/blob/main/LICENSE).
