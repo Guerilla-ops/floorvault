@@ -86,8 +86,7 @@ strictly. The full list lives in
 
 ## License
 
-FloorVault is dual-licensed under the [MIT](LICENSE-MIT) and
-[Apache-2.0](LICENSE-APACHE) licenses. Unless you explicitly state otherwise,
-any contribution intentionally submitted for inclusion in the work by you, as
-defined in the Apache-2.0 license, shall be dual-licensed as above, without
-any additional terms or conditions.
+FloorVault is licensed under the [MIT License](LICENSE). Unless you explicitly
+state otherwise, any contribution you intentionally submit for inclusion in
+FloorVault is licensed under the same MIT terms, without any additional terms
+or conditions.
