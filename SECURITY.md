@@ -13,7 +13,7 @@ rotation, recovery, optional integrations, and build and release machinery.
 ## Supported versions
 
 Security fixes cover `main` and the latest release; earlier releases are
-unsupported. Current package metadata is `0.2.0` (Beta). Reports against development
+unsupported. Current package metadata is `0.2.1` (Beta). Reports against development
 commits are welcome; provide the exact revision. Branch names do not define release
 versions. Python 3.10 and newer is the declared interpreter range.
 
