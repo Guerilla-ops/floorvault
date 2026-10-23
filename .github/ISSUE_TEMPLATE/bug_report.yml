@@ -1,0 +1,62 @@
+name: Bug report
+description: Report incorrect behavior in FloorVault (not a security vulnerability).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security vulnerabilities must not be reported here.** Use
+        [private vulnerability reporting](https://github.com/Guerilla-ops/floorvault/security/advisories/new)
+        or follow [SECURITY.md](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md).
+
+        Never paste keys, passphrases, key-store files or production ciphertext.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: A minimal code sample or command sequence that reproduces the problem.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Error output / traceback
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: FloorVault version or commit
+      placeholder: 0.2.0 or a commit SHA
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.13.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: component
+    attributes:
+      label: Component / adapter / key provider
+      placeholder: e.g. core, sqlite3, SQLAlchemy, libSQL, DB-API, AdaptiveKeyProvider tier, Vault transit
