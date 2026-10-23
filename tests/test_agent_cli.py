@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SECRET = "sk-live-0123456789abcdef"
-TOKEN = "tok-fedcba9876543210"
+SECRET = "fixture-secret-value"
+TOKEN = "fixture-token-value"
 CUSTODY = ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "APPSTATE_KEY", "HERMES_VAULT_KEY")
 
 

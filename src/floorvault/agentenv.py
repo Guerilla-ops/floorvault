@@ -120,7 +120,8 @@ def select_field(secret: Mapping[str, Any], field: Optional[str]) -> str:
     elif not secret:
         raise AgentEnvError(["has no fields"])
     else:
-        raise AgentEnvError([f"holds {len(secret)} fields; name one with fv:<item_id>:<field>"])
+        # No count: messages carry nothing derived from the decrypted item.
+        raise AgentEnvError(["holds more than one field; name one with fv:<item_id>:<field>"])
     if not isinstance(value, str):
         raise AgentEnvError(["field is not a string"])
     if not value:
@@ -278,28 +279,31 @@ def resolve(store: Any, refs: Mapping[str, SecretRef]) -> dict[str, str]:
     ``store`` is anything with ``resolve_secret(item_id) -> dict``. Each item
     is decrypted once however many variables point at it.
     """
-    cache: dict[str, Any] = {}
+    # Decrypted items and failures are kept apart so no error message is ever
+    # built from data that came out of the vault.
+    secrets: dict[str, Mapping[str, Any]] = {}
+    failures: dict[str, str] = {}
     values: dict[str, str] = {}
     problems: list[str] = []
     for name, ref in refs.items():
-        if ref.item_id not in cache:
+        item_id = ref.item_id
+        if item_id not in secrets and item_id not in failures:
             try:
-                cache[ref.item_id] = store.resolve_secret(ref.item_id)
+                loaded = store.resolve_secret(item_id)
             except Exception as exc:  # noqa: BLE001 - report the type, never a value
-                cache[ref.item_id] = exc
-        secret = cache[ref.item_id]
-        if isinstance(secret, Exception):
-            problems.append(
-                f"{name}: vault item {ref.item_id} is unavailable ({type(secret).__name__})"
-            )
-            continue
-        if not isinstance(secret, Mapping):
-            problems.append(f"{name}: vault item {ref.item_id} is not a field map")
+                failures[item_id] = f"is unavailable ({type(exc).__name__})"
+            else:
+                if isinstance(loaded, Mapping):
+                    secrets[item_id] = loaded
+                else:
+                    failures[item_id] = "is not a field map"
+        if item_id in failures:
+            problems.append(f"{name}: vault item {item_id} {failures[item_id]}")
             continue
         try:
-            values[name] = select_field(secret, ref.field)
+            values[name] = select_field(secrets[item_id], ref.field)
         except AgentEnvError as exc:
-            problems.extend(f"{name}: vault item {ref.item_id} {p}" for p in exc.problems)
+            problems.extend(f"{name}: vault item {item_id} {p}" for p in exc.problems)
     if problems:
         raise AgentEnvError(problems)
     return values

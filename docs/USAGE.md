@@ -172,7 +172,7 @@ receives `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY` or the `--key-env` variable, and
 no reference may target those names or `APPSTATE_KEY`.
 
 **Managing items.** `floorvault secrets add | put | list | show | rm | ref`.
-`put` prompts for the value. `show` reports which fields are set. `ref` prints
+`put` prompts for the value. `show` reports how many fields are set, or whether one named field is set. `ref` prints
 the reference to paste (`--env NAME` prints `NAME=fv:…`). No command prints a
 secret value.
 
