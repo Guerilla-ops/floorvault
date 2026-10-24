@@ -207,6 +207,24 @@ would be a second plaintext copy.
 - **Old copies:** earlier copies of the plaintext can survive in backups, editor swap files or git history. Rotate any key that was ever committed or shared.
 - **Symlinks:** `--write` refuses a symlinked file.
 
+**What the rewritten file works with.** After `--write` the file holds `fv:`
+references, not values, so it works only for programs started with
+`floorvault run --env-file .env -- <command>`. `run` puts the real values in
+the environment before the program starts. Then:
+- **A loader that keeps existing variables still works.** That covers python-dotenv's `load_dotenv()` and most dotenv libraries by default.
+- **Anything that reads the file and lets it win breaks.** That covers a loader set to override, Docker Compose `env_file`, and Hermes Agent. It gets the `fv:` text and fails to authenticate. Nothing leaks, but it doesn't work.
+- **MCP clients are unaffected.** They take secrets from the `env` block in their own config, not from `.env`.
+
+**Hermes Agent.** Hermes loads `$HERMES_HOME/.env` with override, after its
+environment is set, so fv: references there would replace the real values.
+`secrets import` recognises a Hermes `.env`: `$HERMES_HOME`, `~/.hermes`,
+`%LOCALAPPDATA%\hermes`, a `profiles/<name>` directory, or a directory with
+Hermes' `state.db` and `config.yaml`. It warns on a dry run and refuses
+`--write`. For Hermes, use the [plugin](#hermes-agent-integration):
+1. Store each key with `hermes hvault add`.
+2. Delete its line from `.env`.
+3. Map it under `secrets.hermesvault.env` (`hermes hvault env <item> <NAME>` prints the mapping).
+
 Protection is at rest. The started command, and code running as your user, can
 read the resolved values: `run` keeps secrets out of files, not away from the
 process that uses them.

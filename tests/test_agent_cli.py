@@ -497,3 +497,65 @@ def test_command_is_found_on_runs_own_path_not_the_env_files(tmp_path, base_env)
 
     only = fv(["run", "--env-file", str(env_file), "--", "fvonly"], env)
     assert only.returncode == 127
+
+
+def _hermes_case(tmp_path, base_env, kind):
+    env = dict(base_env)
+    if kind == "HERMES_HOME":
+        home = tmp_path / "custom-hermes"
+        env["HERMES_HOME"] = str(home)
+        target = home / ".env"
+    elif kind == "profile":
+        home = tmp_path / "custom-hermes"
+        env["HERMES_HOME"] = str(home)
+        target = home / "profiles" / "work" / ".env"
+    elif kind == "markers":
+        home = tmp_path / "unregistered-home"
+        home.mkdir(parents=True)
+        (home / "state.db").write_bytes(b"")
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+        target = home / ".env"
+    else:  # default POSIX home
+        target = Path(base_env["HOME"]) / ".hermes" / ".env"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"OPENAI_API_KEY=" + OPENAI.encode() + b"\n")
+    return env, target
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "HERMES_HOME",
+        "profile",
+        "markers",
+        pytest.param(
+            "default",
+            marks=pytest.mark.skipif(os.name == "nt", reason="Windows default is %LOCALAPPDATA%"),
+        ),
+    ],
+)
+def test_import_refuses_to_rewrite_a_hermes_env(tmp_path, base_env, kind):
+    env, target = _hermes_case(tmp_path, base_env, kind)
+    before = target.read_bytes()
+
+    dry = fv(["secrets", "import", str(target)], env)
+    assert dry.returncode == 0, dry.stderr
+    assert "is a Hermes Agent .env" in dry.stderr
+    assert "hermes hvault add" in dry.stderr
+
+    write = fv(["secrets", "import", str(target), "--write"], env)
+    assert write.returncode == 2
+    assert "refusing to rewrite it" in write.stderr
+    assert target.read_bytes() == before
+    assert not Path(env["FLOORVAULT_DIR"]).exists()
+    assert not _leaks(dry.stdout, dry.stderr, write.stdout, write.stderr)
+
+
+def test_import_says_the_rewritten_file_needs_run(tmp_path, base_env):
+    path = _env_file(tmp_path, b"A=fixture\n")
+    dry = fv(["secrets", "import", str(path)], base_env)
+    assert "works only for programs started with `floorvault run --env-file" in dry.stderr
+    assert "Hermes Agent .env" not in dry.stderr
+    write = fv(["secrets", "import", str(path), "--write"], base_env)
+    assert write.returncode == 0, write.stderr
+    assert "works only for programs started with" in write.stderr

@@ -554,6 +554,63 @@ def _import_plan(args, env_file: EnvFile, prog: str):
     return None if problems else (to_store, left)
 
 
+def _hermes_homes(environ: Mapping[str, str]) -> list[Path]:
+    """Directories Hermes Agent treats as its home: $HERMES_HOME and the default."""
+    homes = []
+    raw = (environ.get("HERMES_HOME") or "").strip()
+    if raw:
+        homes.append(Path(os.path.expandvars(raw)).expanduser())
+    suffix = environ.get("HERMES_DATA_DIR_SUFFIX", "")
+    if os.name == "nt":
+        base = (environ.get("LOCALAPPDATA") or "").strip()
+        homes.append(
+            (Path(base) if base else Path.home() / "AppData" / "Local") / f"hermes{suffix}"
+        )
+    else:
+        homes.append(Path.home() / f".hermes{suffix}")
+    return homes
+
+
+def _is_hermes_env_file(path: Path, environ: Mapping[str, str]) -> bool:
+    """Whether ``path`` is the ``.env`` of a Hermes home or profile.
+
+    Hermes reads that file itself and lets it override the environment, so
+    rewriting it to ``fv:`` references would break Hermes.
+    """
+    if path.name != ".env":
+        return False
+    try:
+        directory = path.resolve().parent
+    except (OSError, RuntimeError):
+        return False
+    candidates = {directory}
+    if directory.parent.name == "profiles":
+        candidates.add(directory.parent.parent)
+    for home in _hermes_homes(environ):
+        try:
+            if home.resolve() in candidates:
+                return True
+        except (OSError, RuntimeError):
+            continue
+    return (directory / "state.db").is_file() and (directory / "config.yaml").is_file()
+
+
+_RUN_ONLY_NOTE = (
+    "the rewritten file works only for programs started with "
+    "`floorvault run --env-file {path} -- <command>`. A program that reads the file "
+    "itself (a dotenv loader set to override, Docker Compose env_file, Hermes) gets the "
+    "fv: text instead of the value."
+)
+
+_HERMES_ENV_ADVICE = (
+    "{path} is a Hermes Agent .env. Hermes reads it itself and lets it override the "
+    "environment, so fv: references there would break Hermes. Move these keys with the "
+    "hermesvault plugin instead: store each one with `hermes hvault add`, delete its line "
+    "from .env, and map it under secrets.hermesvault.env (`hermes hvault env` prints the "
+    "mapping). See plugins/hermesvault/README.md."
+)
+
+
 def _cmd_import(args, prog: str) -> int:
     if not re.fullmatch(r"[A-Za-z0-9._-]*", args.prefix):
         _err(prog, "--prefix may contain only A-Z a-z 0-9 . _ -")
@@ -566,6 +623,11 @@ def _cmd_import(args, prog: str) -> int:
                 return 2
         except OSError as exc:
             _err(prog, f"{path}: cannot read env file ({type(exc).__name__})")
+            return 2
+    if _is_hermes_env_file(path, os.environ):
+        _err(prog, _HERMES_ENV_ADVICE.format(path=path))
+        if args.write:
+            _err(prog, "refusing to rewrite it; nothing changed")
             return 2
     try:
         env_file = read_env_file(path)
@@ -616,6 +678,7 @@ def _cmd_import(args, prog: str) -> int:
         if not vault_exists:
             print(f"the vault at {vault_dir} does not exist yet; --write creates it")
         print(f"dry run: nothing changed. Re-run with --write to store and rewrite {path}.")
+        _err(prog, _RUN_ONLY_NOTE.format(path=path))
         return 0
 
     stored = 0
@@ -647,6 +710,7 @@ def _cmd_import(args, prog: str) -> int:
         "no backup was made. Earlier copies of the plaintext may remain in backups, "
         "editor swap files or git history; rotate any key that was ever committed or shared.",
     )
+    _err(prog, _RUN_ONLY_NOTE.format(path=path))
     return 0
 
 
