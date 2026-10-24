@@ -146,11 +146,51 @@ one `run` and `secrets add` refuse rather than fall back to a key file. Install
 same environment whose `floorvault` the client starts. Windows uses DPAPI with
 no extra.
 
-On a Linux machine without a Secret Service (headless, or no desktop session)
-the only way to give `run` the key today is `FLOOR_VAULT_KEY` or `--key-env`.
-In an MCP config that puts the master key in plaintext, which is worse than
-one plaintext API key: it unlocks every item. Prefer a desktop session there,
-or keep that host's secrets out of the vault for now.
+**Headless Linux, servers and containers.** Without a Secret Service (no
+desktop session, a server, a container), give the key in a file with
+`--key-file PATH` or `$FLOOR_VAULT_KEY_FILE`, rather than putting the master
+key itself in `FLOOR_VAULT_KEY` or an MCP config, where it unlocks every item.
+
+```sh
+mkdir -p ~/.config/floorvault
+(umask 077; python3 -c "import secrets; print(secrets.token_hex(32))" \
+  > ~/.config/floorvault/master.key)
+export FLOOR_VAULT_KEY_FILE=~/.config/floorvault/master.key
+# Creates the store under that key; no OS key store is used.
+read -rs KEY && printf 'value=%s\n' "$KEY" | floorvault secrets add "OpenAI" --id openai --stdin; unset KEY
+floorvault run -e OPENAI_API_KEY=fv:openai -- python agent.py
+```
+
+The file holds the 64-hex master key; surrounding whitespace is ignored. It
+must be a regular file. On Linux and macOS it must also be owned by you or root
+and not writable by group or others, since a replaceable key file would let someone choose the key new items
+are sealed under. A file readable by others is used with a warning. Symlinks are
+followed, so a Kubernetes secret volume works. Like `--key-env`, the key is used
+directly and nothing is created elsewhere. `--key-file` and `--key-env` cannot
+be combined, and `$FLOOR_VAULT_KEY_FILE` is ignored when `--key-env` is given.
+
+In a container, mount the key as an orchestrator secret and point
+`FLOOR_VAULT_KEY_FILE` at it. With Docker Compose:
+
+```yaml
+services:
+  agent:
+    environment:
+      FLOOR_VAULT_KEY_FILE: /run/secrets/floorvault_key
+    secrets: [floorvault_key]
+secrets:
+  floorvault_key:
+    file: ./floorvault.key   # mode 600, outside the build context
+```
+
+In Kubernetes, mount a Secret as a volume with `defaultMode: 0440` and an
+`fsGroup` the container runs in, or `0400` if it runs as the file's owner.
+
+The key file is plaintext at rest, protected only by its permissions; it keeps
+the key out of configs, shell history and the command's environment, not away
+from root or from code running as you. The command started by `run` runs as the
+same user and can read the file if it knows the path, so keep the file outside
+the command's working directory.
 
 **References.** `fv:<item_id>[:<field>]`. In `-e` and env files `hv:` is
 accepted too, so a Hermes `secrets.hermesvault.env` mapping can be reused; in
@@ -191,16 +231,17 @@ vault is opened.
 **Store and key.** The store is `--vault DIR`, else `$FLOOR_VAULT_DIR`, else
 `~/.floorvault/agent-vault`. The key uses the same custody as the Hermes plugin
 (service `floor-vault`, application context `floor-agent`), or `--key-env NAME`
-for a 64-hex key in a named variable. `--key-env` uses that key directly, as the
-plugin's `token_env` does; it does not pass through `AdaptiveKeyProvider`, so
-it never creates or looks up a key elsewhere. `--vault "$HERMES_HOME/agent-vault"
+for a 64-hex key in a named variable, or `--key-file PATH` (default
+`$FLOOR_VAULT_KEY_FILE`) for one in a file. `--key-env` and `--key-file` use
+that key directly, as the plugin's `token_env` does. They do not pass through
+`AdaptiveKeyProvider`, so they never create or look up a key elsewhere. `--vault "$HERMES_HOME/agent-vault"
 --key-env HERMES_VAULT_KEY` reads a Hermes store set up with `token_env`. Only
 `floorvault secrets add` and `secrets import --write` create a store or a key;
 `run` and the other commands open an existing store and fail if the key is
 missing. The command never receives `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY`,
-`HERMES_VAULT_KEY` or the `--key-env` variable, nor any other variable holding
-a copy of one of their values, and no reference may target those names or
-`APPSTATE_KEY`. A program that needs one of those variables itself, such as
+`HERMES_VAULT_KEY`, `FLOOR_VAULT_KEY_FILE` or the `--key-env` variable, nor any
+other variable holding a copy of one of their values or of the key file's key,
+and no reference may target those names or `APPSTATE_KEY`. A program that needs one of those variables itself, such as
 Hermes with `token_env`, should be started directly rather than through `run`.
 
 On macOS and Linux the default custody keeps one master key per user and

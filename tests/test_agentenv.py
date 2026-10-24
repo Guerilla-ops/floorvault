@@ -310,3 +310,11 @@ def test_only_fv_references_are_taken_from_the_environment():
     assert env == {"A": "hv:x", "C": "hv:not valid"}
     _, refs = collect({}, [{"D": "hv:z"}], ["E=hv:w"])
     assert refs == {"D": SecretRef("z"), "E": SecretRef("w")}
+
+
+def test_key_file_variable_is_removed_refused_and_not_a_key_value():
+    path = "/run/secrets/" + "x" * 40
+    env, _ = collect({"FLOOR_VAULT_KEY_FILE": path, "SAME": path}, [{"FLOOR_VAULT_KEY_FILE": "/a"}])
+    assert env == {"SAME": path}
+    with pytest.raises(AgentEnvError):
+        collect({}, [], ["FLOOR_VAULT_KEY_FILE=fv:x"])
