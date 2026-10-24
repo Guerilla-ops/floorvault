@@ -922,6 +922,11 @@ def test_code_injection_variable_blocks_bound_items_only(tmp_path, base_env, sto
     assert result.returncode == 125
     assert f"{name} is set" in result.stderr
     assert result.stdout == "" and not marker.exists()
+    if sys.platform == "darwin" and name.startswith("DYLD_"):
+        # An unbound item is not blocked, but this half starts the child with the
+        # variable set, and macOS's dynamic loader honours it: a bogus
+        # DYLD_INSERT_LIBRARIES aborts the child before it runs.
+        return
     result = fvb(["run", "--env-file", str(env_file), "-e", "A=fv:multi:token", "--", *probe], env)
     assert result.returncode == 0, result.stderr
     assert result.stdout == TOKEN
