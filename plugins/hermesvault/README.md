@@ -46,6 +46,19 @@ A reference has the form `hv:<item_id>[:<field>]`. An item with several
 fields needs an explicit field. A reference that can't be resolved is skipped
 with a warning; it never sets an empty value.
 
+**Remove each mapped key from `.env`.** Hermes loads `<profile-home>/.env`
+before secret sources run. With `override_existing: false` (the default), a
+variable that `.env` already sets keeps its `.env` value, and the vault value is
+skipped without an error. Leaving a key in both places therefore keeps using the
+plaintext copy. After mapping a key, delete its line from `.env`; `hermes status`
+then counts it in `FloorVault: applied N secret(s)`. Setting
+`override_existing: true` makes the vault win instead, but the plaintext copy
+stays on disk.
+
+`floorvault secrets import` will not rewrite a Hermes `.env` to references:
+Hermes reads that file itself, so references there would replace the real
+values. Move Hermes keys with `hermes hvault` as above.
+
 ## Manage items
 
 ```bash
