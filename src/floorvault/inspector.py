@@ -25,11 +25,30 @@ def safe_identifier(name: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for floorvault CLI."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["run"]:
+        # `run` splits its own argv at `--`, so the child's arguments never
+        # reach argparse (whose REMAINDER handling of `--` varies by version).
+        from .agent_cli import run_main
+
+        return run_main(argv[1:])
+
     parser = argparse.ArgumentParser(
         prog="floorvault",
-        description="Inspect and debug encrypted SQLite databases.",
+        description=(
+            "Inspect encrypted SQLite databases, and run commands with secrets "
+            "from a local FloorVault store."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser(
+        "run",
+        add_help=False,
+        help="Run a command with fv: references filled in (floorvault run -h)",
+    )
+    from .agent_cli import add_secrets_parser
+
+    add_secrets_parser(subparsers)
 
     # Subcommand: inspect
     inspect_parser = subparsers.add_parser("inspect", help="Inspect a specific encrypted record")
@@ -52,6 +71,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+
+    if args.command == "secrets":
+        from .agent_cli import secrets_main
+
+        return secrets_main(args)
 
     if args.command == "inspect":
         # Containment: the target must resolve to a regular file that is

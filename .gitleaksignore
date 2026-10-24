@@ -36,3 +36,9 @@ dd0da782e2491c6ffff6e56495986023bbbc8fe9:tests/vectors/hermes_vault_wire_vectors
 dd0da782e2491c6ffff6e56495986023bbbc8fe9:tests/vectors/hermes_vault_wire_vectors.json:generic-api-key:303
 dd0da782e2491c6ffff6e56495986023bbbc8fe9:tests/vectors/hermes_vault_wire_vectors.json:generic-api-key:931
 dd0da782e2491c6ffff6e56495986023bbbc8fe9:tests/vectors/hermes_vault_wire_vectors.json:generic-api-key:932
+# floorvault run/secrets CLI tests (#78): placeholder test strings, not secrets.
+# Commit 9d37ddb used high-entropy placeholders that tripped generic-api-key; the
+# next commit replaced them with low-entropy ones, but history keeps the originals.
+# Measured: without these two lines the history scan reports exactly these 2.
+9d37ddb2557b4ae03810084be5e67ceb266eab71:tests/test_agent_cli.py:generic-api-key:19
+9d37ddb2557b4ae03810084be5e67ceb266eab71:tests/test_agent_cli.py:generic-api-key:20

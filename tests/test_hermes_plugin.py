@@ -185,3 +185,34 @@ def test_wrong_key_fails_closed_not_silent(tmp_path, monkeypatch):
     result = HermesVaultSource().fetch({"enabled": True, "env": {"X": "hv:vault_a"}}, tmp_path)
     assert result.ok and result.secrets == {}
     assert result.warnings, "ciphertext under a different key must not resolve"
+
+
+def test_store_written_by_the_plugin_opens_under_floorvault_run(tmp_path, monkeypatch):
+    """Interop: an item added through the plugin's own _open_store is readable by
+    `floorvault run`, from both the token_env key and the core FLOOR_VAULT_KEY."""
+    import subprocess
+
+    from source import _open_store
+
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    store = _open_store({}, tmp_path)
+    store.add_item(kind="generic", label="k", secret={"value": "sk-hermes"}, item_id="vault_i")
+
+    base = {k: v for k, v in os.environ.items() if k not in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY")}
+    base["PYTHONPATH"] = str(ROOT / "src")
+    probe = [sys.executable, "-c", "import os; print(os.environ['A'])"]
+    for extra, flags in (
+        ({"HERMES_VAULT_KEY": KEY}, ["--key-env", "HERMES_VAULT_KEY"]),
+        ({"FLOOR_VAULT_KEY": KEY}, []),
+    ):
+        result = subprocess.run(
+            [sys.executable, "-m", "floorvault.inspector", "run"]
+            + ["--vault", str(tmp_path / "agent-vault"), *flags, "-e", "A=hv:vault_i", "--"]
+            + probe,
+            capture_output=True,
+            text=True,
+            env={**base, **extra},
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "sk-hermes"

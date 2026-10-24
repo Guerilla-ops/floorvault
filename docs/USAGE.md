@@ -100,6 +100,86 @@ writing modern records and retirement tombstones. It is not a read-only operatio
 Back up legacy data first; use `migrate_all()` for backed-up bulk conversion and
 verify migrated items before retiring the source. Original source files remain.
 
+## Run any command with vault secrets
+
+`floorvault run` fills `fv:` references into environment variables and then
+starts a command. Configs and `.env` files hold only references, so the
+plaintext stays in the encrypted store.
+
+```bash
+# Store a secret (read from the terminal, never from argv).
+read -rs KEY && printf 'value=%s\n' "$KEY" | floorvault secrets add "OpenAI" --id openai --stdin; unset KEY
+
+# Reference it. This file holds no secret.
+echo 'OPENAI_API_KEY=fv:openai' > .env
+floorvault run --env-file .env -- python agent.py
+```
+
+MCP clients work the same way. Point the server's command at `floorvault run`
+and put the reference in its `env` block. Claude Desktop, Cursor and Claude
+Code use this shape:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "/absolute/path/to/floorvault",
+      "args": ["run", "--", "npx", "-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "fv:github-pat" }
+    }
+  }
+}
+```
+
+GUI clients often lack your shell's `PATH`; use the absolute path that
+`command -v floorvault` prints.
+
+**References.** `fv:<item_id>[:<field>]`; `hv:` is accepted too, so a Hermes
+`secrets.hermesvault.env` mapping can be reused. Without a field, `run` uses the
+item's `value` field or its only field; other multi-field items need a field. A
+value that starts with `fv:` or `hv:` but is malformed is an error, never
+passed on as text.
+
+**Sources**, lowest precedence first:
+
+1. Inherited variables whose whole value is a reference (turn off with
+   `--no-inherit-refs`).
+2. Each `--env-file`, in order. Lines are `[export ]NAME=value`, blank or
+   `# comment`; one pair of matching quotes is removed; there is no
+   interpolation. Plain values are passed through unchanged.
+3. Each `-e NAME=fv:ref`.
+
+**Failure.** Every reference resolves or the command is not started. Errors go
+to stderr and name the variable and item, never a value. Exit status: `2` for a
+usage, file or reference problem, `1` when the vault or key cannot be opened,
+`127` when the command is not found, `126` when it cannot be started, and
+otherwise the command's own status.
+
+**Behaviour.** `run` writes nothing to stdout, which belongs to the command
+(MCP servers speak JSON-RPC there). On Linux and macOS it replaces itself with
+the command. On Windows it starts the command, waits, and exits with its
+status; the command shares the console, so Ctrl+C reaches it directly. If
+nothing needs resolving, no vault is opened.
+
+**Store and key.** The store is `--vault DIR`, else `$FLOORVAULT_DIR`, else
+`~/.floorvault/agent-vault`. The key uses the same custody as the Hermes plugin
+(service `floor-vault`, application context `floor-agent`), or `--key-env NAME`
+for a 64-hex key in a named variable. `--vault "$HERMES_HOME/agent-vault"
+--key-env HERMES_VAULT_KEY` reads a Hermes store set up with `token_env`. Only
+`floorvault secrets add` creates a store or a key; `run` and the other commands
+open an existing store and fail if the key is missing. The command never
+receives `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY` or the `--key-env` variable, and
+no reference may target those names or `APPSTATE_KEY`.
+
+**Managing items.** `floorvault secrets add | put | list | show | rm | ref`.
+`put` prompts for the value. `show` reports how many fields are set, or whether one named field is set. `ref` prints
+the reference to paste (`--env NAME` prints `NAME=fv:…`). No command prints a
+secret value.
+
+Protection is at rest. The started command, and code running as your user, can
+read the resolved values: `run` keeps secrets out of files, not away from the
+process that uses them.
+
 ## Hermes Agent integration
 
 The optional plugin in [`plugins/hermesvault`](../plugins/hermesvault) resolves local
