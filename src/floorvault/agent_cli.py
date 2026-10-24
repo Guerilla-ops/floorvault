@@ -25,16 +25,22 @@ import shutil
 import sqlite3
 import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 from .agentenv import (
+    CUSTODY_ENV_NAMES,
     AgentEnvError,
+    EnvFile,
     collect,
     default_vault_dir,
+    is_ref_like,
     is_valid_env_name,
     parse_env_file,
     parse_ref,
+    read_env_file,
+    render_env_file,
     resolve,
 )
 
@@ -314,6 +320,32 @@ def add_secrets_parser(subparsers) -> None:
     ref.add_argument("--field", default=None)
     ref.add_argument("--env", dest="env_name", default=None, help="print NAME=fv:... instead")
 
+    imp = sub.add_parser(
+        "import",
+        parents=[common],
+        help="Move a .env file's values into the vault (a dry run unless --write)",
+        description=(
+            "Store each plaintext value of a dotenv-style file as a vault item and "
+            "rewrite the file to fv: references. Without --write this only prints "
+            "the plan. Item ids are the lowercased variable names, after --prefix."
+        ),
+    )
+    imp.add_argument("file", type=Path, help="the .env file")
+    imp.add_argument(
+        "--write",
+        action="store_true",
+        help="store the items, then rewrite the file in place (no backup is made)",
+    )
+    imp.add_argument(
+        "--only", action="append", default=[], metavar="NAME", help="import only NAME (repeatable)"
+    )
+    imp.add_argument(
+        "--skip", action="append", default=[], metavar="NAME", help="leave NAME as is (repeatable)"
+    )
+    imp.add_argument(
+        "--prefix", default="", help="item id prefix, for example myapp. (default: none)"
+    )
+
 
 def _field_values(pairs: Sequence[str]) -> dict[str, str]:
     fields: dict[str, str] = {}
@@ -435,6 +467,181 @@ def _cmd_ref(args, prog: str) -> int:
     return 0
 
 
+class ImportFileChanged(Exception):
+    """The file changed between planning and rewriting; it was left untouched."""
+
+
+def _replace_file(path: Path, expected: bytes, data: bytes) -> None:
+    """Atomically replace regular file ``path`` with ``data``, keeping its mode.
+
+    Refuses when the file no longer holds ``expected``. No backup is made: a
+    backup would be a second plaintext copy.
+    """
+    st = path.lstat()
+    if not stat.S_ISREG(st.st_mode):
+        raise ImportFileChanged(f"{path} is no longer a regular file")
+    with path.open("rb") as handle:
+        if handle.read() != expected:
+            raise ImportFileChanged(f"{path} changed while importing")
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, stat.S_IMODE(st.st_mode))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _import_plan(args, env_file: EnvFile, prog: str):
+    """Split a file's assignments into (to_store, left_as_is), or None on error."""
+    assignments = env_file.assignments()
+    names = {line.name for line in assignments}
+    unknown = sorted((set(args.only) | set(args.skip)) - names)
+    if unknown:
+        _err(prog, f"not set in {env_file.path}: {', '.join(unknown)}")
+        return None
+    refused = {name.upper() for name in (*CUSTODY_ENV_NAMES, "APPSTATE_KEY")}
+    if args.key_env:
+        refused.add(args.key_env.upper())
+
+    to_store: list = []
+    left: list[tuple[str, str]] = []
+    claimed: dict[str, str] = {}
+    problems: list[str] = []
+    for line in assignments:
+        name = line.name
+        if args.only and name not in args.only:
+            left.append((name, "not selected by --only"))
+        elif name in args.skip:
+            left.append((name, "--skip"))
+        elif name.upper() in refused:
+            left.append((name, "a vault key variable cannot be stored in the vault it unlocks"))
+        elif is_ref_like(line.value):
+            try:
+                parse_ref(line.value)
+            except AgentEnvError:
+                problems.append(f"{env_file.path}:{line.number}: {name}: malformed reference")
+                continue
+            left.append((name, "already a reference"))
+        elif not line.value:
+            left.append((name, "empty"))
+        else:
+            item_id = f"{args.prefix}{name.lower()}"
+            if not _ITEM_ID.fullmatch(item_id):
+                problems.append(f"{name}: item id {item_id!r} is invalid; shorten --prefix")
+            elif item_id in claimed:
+                problems.append(f"{claimed[item_id]} and {name} would both be stored as {item_id}")
+            else:
+                claimed[item_id] = name
+                to_store.append((line, item_id))
+    for problem in problems:
+        _err(prog, problem)
+    return None if problems else (to_store, left)
+
+
+def _cmd_import(args, prog: str) -> int:
+    if not re.fullmatch(r"[A-Za-z0-9._-]*", args.prefix):
+        _err(prog, "--prefix may contain only A-Z a-z 0-9 . _ -")
+        return 2
+    path = args.file.expanduser()
+    if args.write:
+        try:
+            if not stat.S_ISREG(path.lstat().st_mode):
+                _err(prog, f"{path} is not a regular file; --write refuses symlinks")
+                return 2
+        except OSError as exc:
+            _err(prog, f"{path}: cannot read env file ({type(exc).__name__})")
+            return 2
+    try:
+        env_file = read_env_file(path)
+    except AgentEnvError as exc:
+        for problem in exc.problems:
+            _err(prog, problem)
+        return 2
+    plan = _import_plan(args, env_file, prog)
+    if plan is None:
+        return 2
+    to_store, left = plan
+    if not to_store:
+        for name, reason in left:
+            print(f"{name}: left as is ({reason})")
+        print(f"nothing to import from {path}")
+        return 0
+
+    vault_dir = _vault_dir(args.vault, os.environ)
+    vault_exists = _is_regular_file(vault_dir / "vault.db")
+    store = _store_for(args, create=args.write) if (args.write or vault_exists) else None
+    already: set[str] = set()
+    problems: list[str] = []
+    for line, item_id in to_store:
+        if store is None or store.get_meta(item_id) is None:
+            continue
+        try:
+            same = store.resolve_secret(item_id) == {"value": line.value}
+        except Exception:  # noqa: BLE001 - an unreadable item is a conflict
+            same = False
+        if same:
+            already.add(item_id)
+        else:
+            problems.append(
+                f"{line.name}: vault item {item_id} already exists with different "
+                "contents; choose another --prefix"
+            )
+    for problem in problems:
+        _err(prog, problem)
+    if problems:
+        return 2
+
+    for line, item_id in to_store:
+        state = "already in the vault" if item_id in already else "new item"
+        print(f"{line.name} -> fv:{item_id} ({state})")
+    for name, reason in left:
+        print(f"{name}: left as is ({reason})")
+    if not args.write:
+        if not vault_exists:
+            print(f"the vault at {vault_dir} does not exist yet; --write creates it")
+        print(f"dry run: nothing changed. Re-run with --write to store and rewrite {path}.")
+        return 0
+
+    stored = 0
+    for line, item_id in to_store:
+        if item_id in already:
+            continue
+        try:
+            store.add_item(
+                kind="generic",
+                label=f"{line.name} (imported from {path.name})",
+                secret={"value": line.value},
+                item_id=item_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - the type is safe; a message may not be
+            _err(prog, f"storing {line.name} failed ({type(exc).__name__}); {path} is unchanged")
+            _err(prog, "items stored so far are kept; re-running the import reuses them")
+            return 1
+        stored += 1
+    data = render_env_file(env_file, {line.number: f"fv:{item_id}" for line, item_id in to_store})
+    try:
+        _replace_file(path, env_file.raw, data)
+    except (ImportFileChanged, OSError) as exc:
+        _err(prog, f"{path} was not rewritten: {exc}")
+        _err(prog, "the items are stored; re-running the import reuses them")
+        return 1
+    print(f"stored {stored} new item(s); rewrote {path} with {len(to_store)} reference(s)")
+    _err(
+        prog,
+        "no backup was made. Earlier copies of the plaintext may remain in backups, "
+        "editor swap files or git history; rotate any key that was ever committed or shared.",
+    )
+    return 0
+
+
 _SECRETS_COMMANDS = {
     "add": _cmd_add,
     "put": _cmd_put,
@@ -442,6 +649,7 @@ _SECRETS_COMMANDS = {
     "show": _cmd_show,
     "rm": _cmd_rm,
     "ref": _cmd_ref,
+    "import": _cmd_import,
 }
 
 
