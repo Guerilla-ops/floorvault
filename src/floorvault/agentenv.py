@@ -44,9 +44,11 @@ __all__ = [
 ]
 
 REF_SCHEMES = ("fv", "hv")
-# The key variables AdaptiveKeyProvider reads by default. They are removed from
-# the child's environment, and a reference may never be resolved onto them.
-CUSTODY_ENV_NAMES = ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY")
+# Master-key variables: the two AdaptiveKeyProvider reads by default, and the
+# hermesvault plugin's default token_env. They are removed from the child's
+# environment, and a reference may never be resolved onto them. Any other
+# variable holding a copy of one of their values is removed too.
+CUSTODY_ENV_NAMES = ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "HERMES_VAULT_KEY")
 # APPSTATE_KEY is read only on explicit opt-in and is a name other tools share,
 # so it is passed through untouched, but a reference may not target it either.
 _REFUSED_TARGETS = (*CUSTODY_ENV_NAMES, "APPSTATE_KEY")
@@ -294,16 +296,26 @@ def collect(
     """
     custody = _custody_names(key_env)
     refused = _custody_names(key_env, _REFUSED_TARGETS)
+    # Values of the key variables, so a copy under another name is caught too.
+    key_values = {
+        value.strip()
+        for name, value in inherited.items()
+        if name.upper() in custody and isinstance(value, str) and len(value.strip()) >= 32
+    }
     env: dict[str, str] = {
         name: value for name, value in inherited.items() if name.upper() not in custody
     }
     pending: dict[str, str] = {}
     if inherit_refs:
-        pending.update({name: value for name, value in env.items() if is_ref_like(value)})
+        # Only fv: is filled in from the environment: an hv: value there may
+        # belong to another tool. -e and env files accept both schemes.
+        pending.update({name: value for name, value in env.items() if value.startswith("fv:")})
     for file_values in env_files:
         for name, value in file_values.items():
             if name.upper() in custody and not is_ref_like(value):
                 # A vault key in an env file never reaches the child either.
+                if len(value.strip()) >= 32:
+                    key_values.add(value.strip())
                 continue
             if is_ref_like(value):
                 pending[name] = value
@@ -330,6 +342,8 @@ def collect(
         env.pop(name, None)
     if problems:
         raise AgentEnvError(problems)
+    if key_values:
+        env = {name: value for name, value in env.items() if value.strip() not in key_values}
     return env, refs
 
 
@@ -370,9 +384,9 @@ def resolve(store: Any, refs: Mapping[str, SecretRef]) -> dict[str, str]:
 
 
 def default_vault_dir(environ: Optional[Mapping[str, str]] = None) -> Path:
-    """``$FLOORVAULT_DIR``, else ``~/.floorvault/agent-vault``."""
+    """``$FLOOR_VAULT_DIR``, else ``~/.floorvault/agent-vault``."""
     environ = os.environ if environ is None else environ
-    raw = (environ.get("FLOORVAULT_DIR") or "").strip()
+    raw = (environ.get("FLOOR_VAULT_DIR") or "").strip()
     if raw:
         return Path(raw).expanduser()
     return Path.home() / ".floorvault" / "agent-vault"

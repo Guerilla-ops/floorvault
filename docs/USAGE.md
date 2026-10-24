@@ -125,24 +125,44 @@ Code use this shape:
     "github": {
       "command": "/absolute/path/to/floorvault",
       "args": ["run", "--", "npx", "-y", "@modelcontextprotocol/server-github"],
-      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "fv:github-pat" }
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "fv:github-pat",
+        "PATH": "/usr/local/bin:/usr/bin:/bin"
+      }
     }
   }
 }
 ```
 
-GUI clients often lack your shell's `PATH`; use the absolute path that
-`command -v floorvault` prints.
+GUI clients often start servers with a minimal `PATH`. Use the absolute path
+that `command -v floorvault` prints, and set `PATH` in the `env` block so `run`
+can find the command (`npx` here); plain values there are passed through
+unchanged. `run` looks the command up on the `PATH` it was started with.
 
-**References.** `fv:<item_id>[:<field>]`; `hv:` is accepted too, so a Hermes
-`secrets.hermesvault.env` mapping can be reused. Without a field, `run` uses the
+**Install the key-store support for your platform.** A plain
+`pip install floorvault` has no OS key store on macOS or Linux, and without
+one `run` and `secrets add` refuse rather than fall back to a key file. Install
+`floorvault[macos]` (Keychain) or `floorvault[linux]` (Secret Service) into the
+same environment whose `floorvault` the client starts. Windows uses DPAPI with
+no extra.
+
+On a Linux machine without a Secret Service (headless, or no desktop session)
+the only way to give `run` the key today is `FLOOR_VAULT_KEY` or `--key-env`.
+In an MCP config that puts the master key in plaintext, which is worse than
+one plaintext API key: it unlocks every item. Prefer a desktop session there,
+or keep that host's secrets out of the vault for now.
+
+**References.** `fv:<item_id>[:<field>]`. In `-e` and env files `hv:` is
+accepted too, so a Hermes `secrets.hermesvault.env` mapping can be reused; in
+the inherited environment only `fv:` is filled in, because an `hv:` value there
+may belong to another tool. Without a field, `run` uses the
 item's `value` field or its only field; other multi-field items need a field. A
 value that starts with `fv:` or `hv:` but is malformed is an error, never
 passed on as text.
 
 **Sources**, lowest precedence first:
 
-1. Inherited variables whose whole value is a reference (turn off with
+1. Inherited variables whose value is an `fv:` reference (turn off with
    `--no-inherit-refs`).
 2. Each `--env-file`, in order. Lines are `[export ]NAME=value`, blank or
    `# comment`; one pair of matching quotes is removed; there is no
@@ -151,28 +171,44 @@ passed on as text.
 3. Each `-e NAME=fv:ref`.
 
 **Failure.** Every reference resolves or the command is not started. Errors go
-to stderr and name the variable and item, never a value. Exit status: `2` for a
-usage, file or reference problem, `1` when the vault or key cannot be opened,
+to stderr and name the variable and item, never a value. Exit status: `125`
+when `run` itself fails (usage, an env file, a reference, the vault or its key),
 `127` when the command is not found, `126` when it cannot be started, and
-otherwise the command's own status.
+otherwise the command's own status. `125` follows GNU `env`, so `run`'s own
+failures never look like the command's `1` or `2`.
 
 **Behaviour.** `run` writes nothing to stdout, which belongs to the command
 (MCP servers speak JSON-RPC there). On Linux and macOS it replaces itself with
 the command. On Windows it starts the command, waits, and exits with its
-status; the command shares the console, so Ctrl+C reaches it directly. If
-nothing needs resolving, no vault is opened.
+status; the command shares the console, so Ctrl+C reaches it directly. Because
+`run` stays alive on Windows, the resolved values remain in its memory until
+the command exits (Python strings cannot be wiped). A bare name such as `npx`
+finds `npx.cmd` through `PATHEXT`; Windows runs `.cmd` and `.bat` files through
+`cmd.exe`, whose quoting rules differ from a normal program's, so pass such
+commands only arguments you wrote yourself. If nothing needs resolving, no
+vault is opened.
 
-**Store and key.** The store is `--vault DIR`, else `$FLOORVAULT_DIR`, else
+**Store and key.** The store is `--vault DIR`, else `$FLOOR_VAULT_DIR`, else
 `~/.floorvault/agent-vault`. The key uses the same custody as the Hermes plugin
 (service `floor-vault`, application context `floor-agent`), or `--key-env NAME`
 for a 64-hex key in a named variable. `--key-env` uses that key directly, as the
 plugin's `token_env` does; it does not pass through `AdaptiveKeyProvider`, so
 it never creates or looks up a key elsewhere. `--vault "$HERMES_HOME/agent-vault"
 --key-env HERMES_VAULT_KEY` reads a Hermes store set up with `token_env`. Only
-`floorvault secrets add` creates a store or a key; `run` and the other commands
-open an existing store and fail if the key is missing. The command never
-receives `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY` or the `--key-env` variable, and
-no reference may target those names or `APPSTATE_KEY`. The command is looked up
+`floorvault secrets add` and `secrets import --write` create a store or a key;
+`run` and the other commands open an existing store and fail if the key is
+missing. The command never receives `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY`,
+`HERMES_VAULT_KEY` or the `--key-env` variable, nor any other variable holding
+a copy of one of their values, and no reference may target those names or
+`APPSTATE_KEY`. A program that needs one of those variables itself, such as
+Hermes with `token_env`, should be started directly rather than through `run`.
+
+On macOS and Linux the default custody keeps one master key per user and
+service: the Keychain or Secret Service entry `floor-vault` / `default-v1`.
+Every store opened with the defaults, including the Hermes plugin's
+`agent-vault` and `run`'s store, uses that one key; the stores are separate
+files, not separate keys. On Windows the DPAPI-protected key file lives in each
+store's directory, so each store has its own key. The command is looked up
 on `run`'s own `PATH`; a `PATH` set in an env file or with `-e` reaches the
 command but does not choose which binary starts.
 
@@ -182,12 +218,15 @@ since 0.2.1), so a store shared with the Hermes plugin stays readable by both.
 **Managing items.** `floorvault secrets add | put | list | show | rm | ref | import`.
 `put` prompts for the value. `show` reports how many fields are set, or whether one named field is set. `ref` prints
 the reference to paste (`--env NAME` prints `NAME=fv:…`). These commands never
-print a value. That is a convenience, not a control: `run` is the one way a
-value leaves the vault, and whatever it starts can print what it receives
-(`floorvault run -e X=fv:id -- printenv X`).
+print a value, and `add` and `put` refuse values containing a NUL byte, which
+no environment variable can hold. Not printing values is a convenience, not a
+control: `run` is the one way a value leaves the vault, whatever it starts can
+print what it receives (`floorvault run -e X=fv:id -- printenv X`), and
+`floorvault inspect --reveal` prints a decrypted field by design.
 
 **Moving an existing `.env` into the vault.** `floorvault secrets import .env`
-prints a plan and changes nothing:
+prints a plan and changes nothing. When the vault already exists, the dry run
+unlocks it to compare values with existing items, so it needs the key:
 
 ```text
 OPENAI_API_KEY -> fv:openai_api_key (new item)

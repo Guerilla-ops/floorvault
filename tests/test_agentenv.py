@@ -253,7 +253,7 @@ def test_resolve_reports_every_failure_and_no_value():
 
 
 def test_default_vault_dir(monkeypatch, tmp_path):
-    assert default_vault_dir({"FLOORVAULT_DIR": str(tmp_path)}) == tmp_path
+    assert default_vault_dir({"FLOOR_VAULT_DIR": str(tmp_path)}) == tmp_path
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     assert default_vault_dir({}) == tmp_path / ".floorvault" / "agent-vault"
@@ -285,3 +285,28 @@ def test_parse_env_file_still_returns_the_value_map(tmp_path):
     path = tmp_path / ".env"
     path.write_text("export A=1\n# x\nB='2'\n", encoding="utf-8")
     assert parse_env_file(path) == {"A": "1", "B": "2"}
+
+
+def test_copies_of_a_key_value_are_removed_but_short_values_are_kept():
+    key = "ab" * 32
+    inherited = {"FLOOR_VAULT_KEY": key, "COPY": key, "SHORT_KEY": "1", "OTHER": "1"}
+    env, _ = collect(inherited, [{"FILE_COPY": key, "HERMES_VAULT_KEY": "cd" * 32}])
+    # The key variables and both copies go; SHORT_KEY is an ordinary name.
+    assert env == {"SHORT_KEY": "1", "OTHER": "1"}
+    short_env, _ = collect({"FLOOR_VAULT_KEY": "1", "OTHER": "1"})
+    assert short_env == {"OTHER": "1"}
+
+
+def test_hermes_vault_key_is_a_custody_name():
+    env, _ = collect({"HERMES_VAULT_KEY": "x" * 64, "PATH": "/bin"})
+    assert env == {"PATH": "/bin"}
+    with pytest.raises(AgentEnvError):
+        collect({}, [], ["HERMES_VAULT_KEY=fv:x"])
+
+
+def test_only_fv_references_are_taken_from_the_environment():
+    env, refs = collect({"A": "hv:x", "B": "fv:y", "C": "hv:not valid"})
+    assert refs == {"B": SecretRef("y")}
+    assert env == {"A": "hv:x", "C": "hv:not valid"}
+    _, refs = collect({}, [{"D": "hv:z"}], ["E=hv:w"])
+    assert refs == {"D": SecretRef("z"), "E": SecretRef("w")}

@@ -8,9 +8,13 @@ Rules this module keeps:
 * ``run`` writes nothing to stdout. MCP stdio servers speak JSON-RPC there,
   so every diagnostic goes to stderr.
 * ``run`` fails closed: every reference resolves or the command never starts.
-* Only ``secrets add`` may create a store or a master key. Every other command
-  opens an existing store and resolves the key with ``allow_create=False``.
-* The child never inherits a vault key variable.
+* Only ``secrets add`` and ``secrets import --write`` may create a store or a
+  master key. Every other command opens an existing store and resolves the key
+  with ``allow_create=False``.
+* The child never inherits a vault key variable, nor another variable holding
+  a copy of one's value.
+* ``run`` exits 125 when it fails itself, so its failures never look like the
+  command's own exit status.
 * No ``secrets`` command prints a secret value. That is a convenience rule, not
   a control: ``run`` is the one path out of the vault, and whatever it starts
   can print what it receives (``floorvault run -e X=fv:id -- printenv X``).
@@ -119,14 +123,28 @@ def open_store(
 # --------------------------------------------------------------------------- run
 
 
+# Exit status for run's own failures (usage, configuration, references, vault),
+# kept apart from the 1 and 2 that commands use themselves, as GNU env does.
+# 126 and 127 keep their shell meanings; anything else is the command's own.
+RUN_FAILED = 125
+
+
+class _RunArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str):  # argparse would exit 2, a status commands use
+        self.print_usage(sys.stderr)
+        self.exit(RUN_FAILED, f"{self.prog}: error: {message}\n")
+
+
 def _run_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _RunArgumentParser(
         prog="floorvault run",
         usage="floorvault run [options] -- <command> [args...]",
         description=(
             "Fill fv: references into environment variables, then start <command>. "
             "References come from the inherited environment, --env-file and -e. "
-            "If any reference cannot be resolved the command is not started."
+            "If any reference cannot be resolved the command is not started. "
+            "Exit status: 125 when run itself fails, 126 or 127 when the command "
+            "cannot be started, otherwise the command's own status."
         ),
     )
     _add_store_options(parser)
@@ -182,23 +200,23 @@ def _prepare_environment(args: argparse.Namespace, prog: str) -> tuple[Optional[
     except AgentEnvError as exc:
         for problem in exc.problems:
             _err(prog, problem)
-        return None, 2
+        return None, RUN_FAILED
     if not refs:
         return env, 0
     try:
         store = open_store(_vault_dir(args.vault, os.environ), key_env=args.key_env)
     except StoreUnavailable as exc:
         _err(prog, str(exc))
-        return None, 1
+        return None, RUN_FAILED
     except Exception as exc:  # noqa: BLE001 - the type is safe; a message may not be
         _err(prog, f"cannot open vault ({type(exc).__name__})")
-        return None, 1
+        return None, RUN_FAILED
     try:
         values = resolve(store, refs)
     except AgentEnvError as exc:
         for problem in exc.problems:
             _err(prog, problem)
-        return None, 2
+        return None, RUN_FAILED
     finally:
         del store
     env.update(values)
@@ -254,7 +272,7 @@ def run_main(argv: Sequence[str]) -> int:
     args = _run_parser().parse_args(options)
     if not command:
         _err(prog, "give the command after --, for example: floorvault run -- python app.py")
-        return 2
+        return RUN_FAILED
     env, code = _prepare_environment(args, prog)
     if env is None:
         return code
@@ -277,7 +295,7 @@ def _add_store_options(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=None,
         metavar="DIR",
-        help="store directory (default: $FLOORVAULT_DIR or ~/.floorvault/agent-vault)",
+        help="store directory (default: $FLOOR_VAULT_DIR or ~/.floorvault/agent-vault)",
     )
     parser.add_argument(
         "--key-env",
@@ -335,7 +353,8 @@ def add_secrets_parser(subparsers) -> None:
         description=(
             "Store each plaintext value of a dotenv-style file as a vault item and "
             "rewrite the file to fv: references. Without --write this only prints "
-            "the plan. Item ids are the lowercased variable names, after --prefix."
+            "the plan; when the vault exists, the dry run unlocks it to compare values. "
+            "Item ids are the lowercased variable names, after --prefix."
         ),
     )
     imp.add_argument("file", type=Path, help="the .env file")
@@ -362,6 +381,8 @@ def _field_values(pairs: Sequence[str]) -> dict[str, str]:
         field = field.strip()
         if not sep or not field:
             raise ValueError("fields must be given as field=value")
+        if "\x00" in field or "\x00" in value:
+            raise ValueError("fields and values may not contain a NUL byte")
         fields[field] = value
     return fields
 
@@ -411,6 +432,9 @@ def _cmd_put(args, prog: str) -> int:
     value = getpass.getpass(f"{args.item_id}.{args.field}: ")
     if not value:
         _err(prog, "empty value; nothing changed")
+        return 2
+    if "\x00" in value:
+        _err(prog, "the value may not contain a NUL byte; nothing changed")
         return 2
     if not store.update_generic_field(args.item_id, args.field, value):
         _err(prog, f"item {args.item_id} not found")
