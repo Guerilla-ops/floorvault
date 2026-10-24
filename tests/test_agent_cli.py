@@ -18,7 +18,13 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SECRET = "fixture-secret-value"
 TOKEN = "fixture-token-value"
-CUSTODY = ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "APPSTATE_KEY", "HERMES_VAULT_KEY")
+CUSTODY = (
+    "FLOOR_VAULT_KEY",
+    "VAULT_MASTER_KEY",
+    "APPSTATE_KEY",
+    "HERMES_VAULT_KEY",
+    "FLOOR_VAULT_KEY_FILE",
+)
 
 
 @pytest.fixture()
@@ -633,3 +639,182 @@ def test_windows_cmd_command_is_found_by_bare_name(tmp_path, base_env, store):
     result = fv(["run", "-e", "A=fv:openai", "--", "fvprobe"], env)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == f"cmd-ok {SECRET}"
+
+
+# ------------------------------------------------------------------- key file
+
+
+def _key_file(tmp_path, key, *, mode=0o600, text=None, name="master.key"):
+    path = tmp_path / name
+    path.write_text(f"{key}\n" if text is None else text, encoding="ascii")
+    if os.name != "nt":
+        path.chmod(mode)
+    return path
+
+
+def _without_key(env):
+    return {k: v for k, v in env.items() if k != "FLOOR_VAULT_KEY"}
+
+
+def test_key_file_opens_the_store_and_never_reaches_the_child(tmp_path, base_env, store, key):
+    path = _key_file(tmp_path, key)
+    env = {**_without_key(base_env), "COPY": key.upper()}
+    result = fv(
+        ["run", "--key-file", str(path), "-e", "A=fv:openai", "--"] + _dump_env(tmp_path), env
+    )
+    assert result.returncode == 0, result.stderr
+    child = json.loads(result.stdout)
+    assert child["A"] == SECRET
+    assert "COPY" not in child
+    assert key not in result.stdout.lower()
+
+
+def test_key_file_variable_is_the_default_and_is_removed(tmp_path, base_env, store, key):
+    path = _key_file(tmp_path, key)
+    env = {**_without_key(base_env), "FLOOR_VAULT_KEY_FILE": str(path)}
+    result = fv(["run", "-e", "A=fv:openai", "--"] + _dump_env(tmp_path), env)
+    assert result.returncode == 0, result.stderr
+    child = json.loads(result.stdout)
+    assert child["A"] == SECRET
+    assert "FLOOR_VAULT_KEY_FILE" not in {k.upper() for k in child}
+    # Without references the file is not read, but the variable still goes.
+    result = fv(["run", "--"] + _dump_env(tmp_path), env)
+    assert result.returncode == 0, result.stderr
+    assert "FLOOR_VAULT_KEY_FILE" not in json.loads(result.stdout)
+
+
+def test_key_file_variable_is_not_a_reference_target(tmp_path, base_env, store):
+    result = fv(
+        ["run", "-e", "FLOOR_VAULT_KEY_FILE=fv:openai", "--"] + _dump_env(tmp_path), base_env
+    )
+    assert result.returncode == 125
+    assert result.stdout == ""
+
+
+def test_key_env_wins_over_the_key_file_variable(tmp_path, base_env, store, key):
+    bad = _key_file(tmp_path, "0" * 64)
+    env = {**base_env, "FLOOR_VAULT_KEY_FILE": str(bad), "MY_KEY": key}
+    result = fv(
+        ["run", "--key-env", "MY_KEY", "-e", "A=fv:openai", "--"] + _dump_env(tmp_path), env
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["A"] == SECRET
+
+
+def test_key_env_and_key_file_together_are_refused(tmp_path, base_env, store, key):
+    path = _key_file(tmp_path, key)
+    env = {**base_env, "MY_KEY": key}
+    result = fv(
+        ["run", "--key-env", "MY_KEY", "--key-file", str(path), "-e", "A=fv:openai", "--"]
+        + _dump_env(tmp_path),
+        env,
+    )
+    assert result.returncode == 125
+    assert "not both" in result.stderr
+    listed = fv(["secrets", "list", "--key-env", "MY_KEY", "--key-file", str(path)], env)
+    assert listed.returncode != 0
+    assert "not both" in listed.stderr
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("not-hex\n", "64 hexadecimal"),
+        ("ab" * 31 + "\n", "64 hexadecimal"),
+        ("ab" * 32 + " extra\n", "64 hexadecimal"),
+        ("\xe9" * 10, "cannot read"),
+        ("a" * 5000, "too large"),
+    ],
+)
+def test_bad_key_file_content_is_refused_without_echoing_it(
+    tmp_path, base_env, store, text, message
+):
+    path = tmp_path / "master.key"
+    path.write_bytes(text.encode("latin-1"))
+    if os.name != "nt":
+        path.chmod(0o600)
+    result = fv(
+        ["run", "--key-file", str(path), "-e", "A=fv:openai", "--"] + _dump_env(tmp_path),
+        _without_key(base_env),
+    )
+    assert result.returncode == 125
+    assert message in result.stderr
+    assert result.stdout == ""
+    assert "not-hex" not in result.stderr and "abab" not in result.stderr
+
+
+def test_missing_key_file_and_directory_are_refused(tmp_path, base_env, store):
+    for path in (tmp_path / "missing.key", tmp_path):
+        result = fv(
+            ["run", "--key-file", str(path), "-e", "A=fv:openai", "--"] + _dump_env(tmp_path),
+            _without_key(base_env),
+        )
+        assert result.returncode == 125, path
+        assert "key file" in result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o620, 0o602, 0o666])
+def test_replaceable_key_file_is_refused(tmp_path, base_env, store, key, mode):
+    path = _key_file(tmp_path, key, mode=mode)
+    result = fv(
+        ["run", "--key-file", str(path), "-e", "A=fv:openai", "--"] + _dump_env(tmp_path),
+        _without_key(base_env),
+    )
+    assert result.returncode == 125
+    assert "writable by group or others" in result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_world_readable_key_file_warns_but_works(tmp_path, base_env, store, key):
+    path = _key_file(tmp_path, key, mode=0o644)
+    result = fv(
+        ["run", "--key-file", str(path), "-e", "A=fv:openai", "--"] + _dump_env(tmp_path),
+        _without_key(base_env),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "readable by other users" in result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_key_file_symlink_like_a_kubernetes_mount_is_followed(tmp_path, base_env, store, key):
+    data = tmp_path / "secrets" / "..2026_10_24" / "master.key"
+    data.parent.mkdir(parents=True)
+    data.write_text(key, encoding="ascii")
+    data.chmod(0o600)
+    link = tmp_path / "secrets" / "master.key"
+    link.symlink_to(data)
+    result = fv(
+        ["run", "--key-file", str(link), "-e", "A=fv:openai", "--"] + _dump_env(tmp_path),
+        _without_key(base_env),
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["A"] == SECRET
+
+
+def test_secrets_add_with_a_key_file_needs_no_os_custody(tmp_path, base_env, key):
+    path = _key_file(tmp_path, key)
+    env = _without_key(base_env)
+    added = fv(
+        ["secrets", "add", "Token", "--id", "tok", "--key-file", str(path), "--stdin"],
+        env,
+        stdin=f"value={SECRET}\n",
+    )
+    assert added.returncode == 0, added.stderr
+    vault = Path(base_env["FLOOR_VAULT_DIR"])
+    # No key was written next to the store and the store opens with the file alone.
+    from floorvault.providers.adaptive import OS_TIER_MARKER_FILENAME, WRAPPED_KEY_FILENAME
+
+    names = {p.name for p in vault.iterdir()}
+    assert "vault.db" in names
+    assert not names & {"master.key", WRAPPED_KEY_FILENAME, OS_TIER_MARKER_FILENAME}
+    env = {**env, "FLOOR_VAULT_KEY_FILE": str(path)}
+    listed = fv(["secrets", "list"], env)
+    assert listed.returncode == 0, listed.stderr
+    assert "tok" in listed.stdout
+    result = fv(["run", "-e", "A=fv:tok", "--"] + _dump_env(tmp_path), env)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["A"] == SECRET
+    # The same key through FLOOR_VAULT_KEY opens it too.
+    result = fv(["run", "-e", "A=fv:tok", "--"] + _dump_env(tmp_path), {**base_env})
+    assert result.returncode == 0, result.stderr

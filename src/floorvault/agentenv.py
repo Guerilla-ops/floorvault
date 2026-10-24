@@ -28,6 +28,7 @@ from typing import Any, Iterable, Mapping, Optional
 __all__ = [
     "AgentEnvError",
     "CUSTODY_ENV_NAMES",
+    "KEY_POINTER_ENV_NAMES",
     "EnvFile",
     "EnvFileLine",
     "SecretRef",
@@ -51,7 +52,11 @@ REF_SCHEMES = ("fv", "hv")
 CUSTODY_ENV_NAMES = ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "HERMES_VAULT_KEY")
 # APPSTATE_KEY is read only on explicit opt-in and is a name other tools share,
 # so it is passed through untouched, but a reference may not target it either.
-_REFUSED_TARGETS = (*CUSTODY_ENV_NAMES, "APPSTATE_KEY")
+# Variables that point at a key rather than hold one (--key-file's default).
+# They are removed from the child and may not be targeted, but their values
+# are paths, not keys, so they are not used to find copies.
+KEY_POINTER_ENV_NAMES = ("FLOOR_VAULT_KEY_FILE",)
+_REFUSED_TARGETS = (*CUSTODY_ENV_NAMES, *KEY_POINTER_ENV_NAMES, "APPSTATE_KEY")
 MAX_ENV_FILE_BYTES = 1 << 20
 
 _ITEM_ID = r"[A-Za-z0-9._-]{1,128}"
@@ -302,8 +307,10 @@ def collect(
         for name, value in inherited.items()
         if name.upper() in custody and isinstance(value, str) and len(value.strip()) >= 32
     }
+    pointers = {n.upper() for n in KEY_POINTER_ENV_NAMES}
+    removed = custody | pointers
     env: dict[str, str] = {
-        name: value for name, value in inherited.items() if name.upper() not in custody
+        name: value for name, value in inherited.items() if name.upper() not in removed
     }
     pending: dict[str, str] = {}
     if inherit_refs:
@@ -316,6 +323,8 @@ def collect(
                 # A vault key in an env file never reaches the child either.
                 if len(value.strip()) >= 32:
                     key_values.add(value.strip())
+                continue
+            if name.upper() in pointers and not is_ref_like(value):
                 continue
             if is_ref_like(value):
                 pending[name] = value

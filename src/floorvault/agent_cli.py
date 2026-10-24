@@ -79,17 +79,72 @@ def _is_regular_file(path: Path) -> bool:
         return False
 
 
+KEY_FILE_ENV = "FLOOR_VAULT_KEY_FILE"
+_MAX_KEY_FILE_BYTES = 4096
+
+
+def read_key_file(path: Path) -> bytes:
+    """Read a 64-hex master key from ``path``, such as an orchestrator secret mount.
+
+    Symlinks are followed (Kubernetes mounts secrets through ``..data`` links),
+    but the target must be a regular file owned by this user or root and not
+    writable by group or others: a replaceable key file would let someone else
+    choose the key new items are sealed under. A file readable by others is
+    used with a warning. Errors name the path, never the content.
+    """
+    path = Path(path).expanduser()
+    try:
+        resolved = path.resolve(strict=True)
+        st = resolved.stat()
+    except (OSError, RuntimeError) as exc:
+        raise StoreUnavailable(f"key file {path}: cannot read ({type(exc).__name__})") from None
+    if not stat.S_ISREG(st.st_mode):
+        raise StoreUnavailable(f"key file {path} is not a regular file")
+    if os.name != "nt":
+        if st.st_uid not in (os.geteuid(), 0):
+            raise StoreUnavailable(f"key file {path} is owned by another user")
+        if st.st_mode & 0o022:
+            raise StoreUnavailable(
+                f"key file {path} is writable by group or others; run chmod go-w on it"
+            )
+        if st.st_mode & 0o004:
+            _err("floorvault", f"warning: key file {path} is readable by other users")
+    if st.st_size > _MAX_KEY_FILE_BYTES:
+        raise StoreUnavailable(f"key file {path} is too large to hold a key")
+    try:
+        with resolved.open("rb") as handle:
+            raw = handle.read(_MAX_KEY_FILE_BYTES + 1).decode("ascii").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise StoreUnavailable(f"key file {path}: cannot read ({type(exc).__name__})") from None
+    if not _HEX_KEY.fullmatch(raw):
+        raise StoreUnavailable(f"key file {path} must hold 64 hexadecimal characters")
+    return bytes.fromhex(raw)
+
+
+def _key_file_from(args, environ: Mapping[str, str]) -> Optional[Path]:
+    """--key-file, else $FLOOR_VAULT_KEY_FILE unless --key-env was given."""
+    if getattr(args, "key_file", None) is not None:
+        return args.key_file
+    if getattr(args, "key_env", None):
+        return None
+    raw = (environ.get(KEY_FILE_ENV) or "").strip()
+    return Path(raw) if raw else None
+
+
 def open_store(
     vault_dir: Path,
     *,
     key_env: Optional[str] = None,
+    key_bytes: Optional[bytes] = None,
     create: bool = False,
     environ: Optional[Mapping[str, str]] = None,
 ):
     """Open the agent-secret store at ``vault_dir``.
 
-    With ``create=False`` (every command but ``secrets add``) the store must
-    already exist and the master key is only read, never created.
+    With ``create=False`` (every command but ``secrets add`` and
+    ``secrets import --write``) the store must already exist and the master
+    key is only read, never created. ``key_bytes`` (from ``--key-file``) and
+    ``key_env`` use the given key directly, never ``AdaptiveKeyProvider``.
     """
     from .core import FloorVault
     from .memory import HardenedMemoryKey
@@ -101,6 +156,9 @@ def open_store(
     if not create and not _is_regular_file(vault_dir / "vault.db"):
         raise StoreUnavailable(f"no vault at {vault_dir}; create one with `floorvault secrets add`")
     try:
+        if key_bytes is not None:
+            crypto = FloorVault(HardenedMemoryKey(key_bytes), app_instance_id=APP_CONTEXT)
+            return VaultStore(vault_dir, crypto=crypto)
         if key_env:
             raw = (environ.get(key_env) or "").strip()
             if not raw:
@@ -203,8 +261,16 @@ def _prepare_environment(args: argparse.Namespace, prog: str) -> tuple[Optional[
         return None, RUN_FAILED
     if not refs:
         return env, 0
+    key_hex = None
     try:
-        store = open_store(_vault_dir(args.vault, os.environ), key_env=args.key_env)
+        _check_key_options(args)
+        key_file = _key_file_from(args, os.environ)
+        key_bytes = read_key_file(key_file) if key_file is not None else None
+        if key_bytes is not None:
+            key_hex = key_bytes.hex()
+        store = open_store(
+            _vault_dir(args.vault, os.environ), key_env=args.key_env, key_bytes=key_bytes
+        )
     except StoreUnavailable as exc:
         _err(prog, str(exc))
         return None, RUN_FAILED
@@ -219,6 +285,9 @@ def _prepare_environment(args: argparse.Namespace, prog: str) -> tuple[Optional[
         return None, RUN_FAILED
     finally:
         del store
+    if key_hex is not None:
+        # A copy of the key file's content under any other name stays behind.
+        env = {name: value for name, value in env.items() if value.strip().lower() != key_hex}
     env.update(values)
     return env, 0
 
@@ -302,6 +371,16 @@ def _add_store_options(parser: argparse.ArgumentParser) -> None:
         default=None,
         metavar="NAME",
         help="read the master key (64 hex) from this variable instead of OS custody",
+    )
+    parser.add_argument(
+        "--key-file",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "read the master key (64 hex) from this file, such as a Docker or Kubernetes "
+            "secret mount, instead of OS custody (default: $FLOOR_VAULT_KEY_FILE)"
+        ),
     )
 
 
@@ -401,7 +480,20 @@ def _split_target(text: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def _store_for(args, *, create: bool = False):
-    return open_store(_vault_dir(args.vault, os.environ), key_env=args.key_env, create=create)
+    _check_key_options(args)
+    key_file = _key_file_from(args, os.environ)
+    key_bytes = read_key_file(key_file) if key_file is not None else None
+    return open_store(
+        _vault_dir(args.vault, os.environ),
+        key_env=args.key_env,
+        key_bytes=key_bytes,
+        create=create,
+    )
+
+
+def _check_key_options(args) -> None:
+    if getattr(args, "key_env", None) and getattr(args, "key_file", None) is not None:
+        raise StoreUnavailable("give --key-env or --key-file, not both")
 
 
 def _cmd_add(args, prog: str) -> int:
