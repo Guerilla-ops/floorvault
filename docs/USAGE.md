@@ -146,7 +146,8 @@ passed on as text.
    `--no-inherit-refs`).
 2. Each `--env-file`, in order. Lines are `[export ]NAME=value`, blank or
    `# comment`; one pair of matching quotes is removed; there is no
-   interpolation. Plain values are passed through unchanged.
+   interpolation. A `#` after a value is part of the value (`A=x # y` sets
+   `x # y`), not a comment. Plain values are passed through unchanged.
 3. Each `-e NAME=fv:ref`.
 
 **Failure.** Every reference resolves or the command is not started. Errors go
@@ -164,17 +165,26 @@ nothing needs resolving, no vault is opened.
 **Store and key.** The store is `--vault DIR`, else `$FLOORVAULT_DIR`, else
 `~/.floorvault/agent-vault`. The key uses the same custody as the Hermes plugin
 (service `floor-vault`, application context `floor-agent`), or `--key-env NAME`
-for a 64-hex key in a named variable. `--vault "$HERMES_HOME/agent-vault"
+for a 64-hex key in a named variable. `--key-env` uses that key directly, as the
+plugin's `token_env` does; it does not pass through `AdaptiveKeyProvider`, so
+it never creates or looks up a key elsewhere. `--vault "$HERMES_HOME/agent-vault"
 --key-env HERMES_VAULT_KEY` reads a Hermes store set up with `token_env`. Only
 `floorvault secrets add` creates a store or a key; `run` and the other commands
 open an existing store and fail if the key is missing. The command never
 receives `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY` or the `--key-env` variable, and
-no reference may target those names or `APPSTATE_KEY`.
+no reference may target those names or `APPSTATE_KEY`. The command is looked up
+on `run`'s own `PATH`; a `PATH` set in an env file or with `-e` reaches the
+command but does not choose which binary starts.
+
+The commands use the existing `vault.db` format (schema version 3, unchanged
+since 0.2.1), so a store shared with the Hermes plugin stays readable by both.
 
 **Managing items.** `floorvault secrets add | put | list | show | rm | ref | import`.
 `put` prompts for the value. `show` reports how many fields are set, or whether one named field is set. `ref` prints
-the reference to paste (`--env NAME` prints `NAME=fv:…`). No command prints a
-secret value.
+the reference to paste (`--env NAME` prints `NAME=fv:…`). These commands never
+print a value. That is a convenience, not a control: `run` is the one way a
+value leaves the vault, and whatever it starts can print what it receives
+(`floorvault run -e X=fv:id -- printenv X`).
 
 **Moving an existing `.env` into the vault.** `floorvault secrets import .env`
 prints a plan and changes nothing:
@@ -197,9 +207,36 @@ would be a second plaintext copy.
 - **Old copies:** earlier copies of the plaintext can survive in backups, editor swap files or git history. Rotate any key that was ever committed or shared.
 - **Symlinks:** `--write` refuses a symlinked file.
 
+**What the rewritten file works with.** After `--write` the file holds `fv:`
+references, not values, so it works only for programs started with
+`floorvault run --env-file .env -- <command>`. `run` puts the real values in
+the environment before the program starts. Then:
+- **A loader that keeps existing variables still works.** That covers python-dotenv's `load_dotenv()` and most dotenv libraries by default.
+- **Anything that reads the file and lets it win breaks.** That covers a loader set to override, Docker Compose `env_file`, and Hermes Agent. It gets the `fv:` text and fails to authenticate. Nothing leaks, but it doesn't work.
+- **MCP clients are unaffected.** They take secrets from the `env` block in their own config, not from `.env`.
+
+**Hermes Agent.** Hermes loads `$HERMES_HOME/.env` with override, after its
+environment is set, so fv: references there would replace the real values.
+`secrets import` recognises a Hermes `.env`: `$HERMES_HOME`, `~/.hermes`,
+`%LOCALAPPDATA%\hermes`, a `profiles/<name>` directory, or a directory with
+Hermes' `state.db` and `config.yaml`. It warns on a dry run and refuses
+`--write`. For Hermes, use the [plugin](#hermes-agent-integration):
+1. Store each key with `hermes hvault add`.
+2. Delete its line from `.env`.
+3. Map it under `secrets.hermesvault.env` (`hermes hvault env <item> <NAME>` prints the mapping).
+
 Protection is at rest. The started command, and code running as your user, can
 read the resolved values: `run` keeps secrets out of files, not away from the
 process that uses them.
+
+**Untrusted configuration.** References name items by guessable ids
+(`fv:openai`, `fv:github-pat`), and whatever configuration `run` reads decides
+which items are resolved. A cloned repository's `.env` and the program it
+starts, or an MCP server entry pasted from elsewhere, can name any item in your
+vault and receive it. Only run `floorvault run` on configuration and commands
+you have reviewed. When the command itself is untrusted, pass
+`--no-inherit-refs` and give only the references it needs with `-e`, so
+references already in the environment are not filled in for it.
 
 ## Hermes Agent integration
 
