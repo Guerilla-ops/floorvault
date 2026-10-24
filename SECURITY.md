@@ -195,6 +195,8 @@ proof of a plaintext-recovery attack.
   process. CLI secret arguments may appear in process listings; prefer stdin.
   `put` (in `floorvault secrets` and the optional plugin) replaces one field in
   a single SQLite transaction through `VaultStore.update_generic_field()`.
+  `floorvault secrets import --write` replaces the `.env` file atomically and
+  makes no backup, but it cannot erase earlier copies of that file.
 - **`floorvault run` hands plaintext to the child.** Resolved values become
   ordinary environment variables of the started process and of anything it
   starts. Code running as the same user can usually read a process's

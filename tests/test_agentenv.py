@@ -257,3 +257,31 @@ def test_default_vault_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     assert default_vault_dir({}) == tmp_path / ".floorvault" / "agent-vault"
+
+
+# ------------------------------------------------------------------- rewriting
+
+
+def test_render_rewrites_only_the_named_lines_and_keeps_layout(tmp_path):
+    from floorvault.agentenv import read_env_file, render_env_file
+
+    raw = b"\xef\xbb\xbf# c\r\n  export A='x'\r\nB=y\nC=z"
+    path = tmp_path / ".env"
+    path.write_bytes(raw)
+    env_file = read_env_file(path)
+    assert env_file.bom
+    assert [(line.name, line.value) for line in env_file.assignments()] == [
+        ("A", "x"),
+        ("B", "y"),
+        ("C", "z"),
+    ]
+    assert render_env_file(env_file, {}) == raw
+    by_name = {line.name: line.number for line in env_file.assignments()}
+    out = render_env_file(env_file, {by_name["A"]: "fv:a", by_name["C"]: "fv:c"})
+    assert out == b"\xef\xbb\xbf# c\r\n  export A=fv:a\r\nB=y\nC=fv:c"
+
+
+def test_parse_env_file_still_returns_the_value_map(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("export A=1\n# x\nB='2'\n", encoding="utf-8")
+    assert parse_env_file(path) == {"A": "1", "B": "2"}

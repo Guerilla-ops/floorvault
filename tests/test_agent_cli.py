@@ -303,3 +303,174 @@ def test_secrets_add_validates_input(base_env):
     assert fv(["secrets", "add", "L", "--id", "bad id", "a=1"], base_env).returncode == 2
     assert fv(["secrets", "add", "L"], base_env).returncode == 2
     assert fv(["secrets", "add", "L", "novalue"], base_env).returncode == 2
+
+
+# --------------------------------------------------------------------- import
+
+OPENAI = "fixture-openai-value"
+GITHUB = "fixture-github-value"
+
+
+def _env_file(tmp_path, body: bytes, name=".env"):
+    path = tmp_path / name
+    path.write_bytes(body)
+    return path
+
+
+def _sample(key=None):
+    lines = [
+        b"\xef\xbb\xbf# app config",
+        b'export OPENAI_API_KEY="' + OPENAI.encode() + b'"',
+        b"  GITHUB_TOKEN=" + GITHUB.encode(),
+        b"DEBUG=1",
+        b"EMPTY=",
+        b"REF=fv:openai_api_key",
+    ]
+    if key:
+        lines.append(b"FLOOR_VAULT_KEY=" + key.encode())
+    return b"\r\n".join(lines)  # CRLF, and no newline at the end
+
+
+def _leaks(*outputs):
+    return any(v in out for out in outputs for v in (OPENAI, GITHUB))
+
+
+def test_import_dry_run_changes_nothing(tmp_path, base_env):
+    path = _env_file(tmp_path, _sample())
+    before = path.read_bytes()
+    result = fv(["secrets", "import", str(path)], base_env)
+    assert result.returncode == 0, result.stderr
+    assert "OPENAI_API_KEY -> fv:openai_api_key (new item)" in result.stdout
+    assert "GITHUB_TOKEN -> fv:github_token (new item)" in result.stdout
+    assert "REF: left as is (already a reference)" in result.stdout
+    assert "dry run: nothing changed" in result.stdout
+    assert path.read_bytes() == before
+    assert not Path(base_env["FLOORVAULT_DIR"]).exists()
+    assert not _leaks(result.stdout, result.stderr)
+
+
+def test_import_write_round_trip_keeps_layout(tmp_path, base_env, key):
+    path = _env_file(tmp_path, _sample(key))
+    if os.name != "nt":
+        path.chmod(0o640)
+    result = fv(["secrets", "import", str(path), "--skip", "DEBUG", "--write"], base_env)
+    assert result.returncode == 0, result.stderr
+    assert "no backup was made" in result.stderr
+    assert not _leaks(result.stdout, result.stderr)
+
+    assert path.read_bytes() == b"\r\n".join(
+        [
+            b"\xef\xbb\xbf# app config",
+            b"export OPENAI_API_KEY=fv:openai_api_key",
+            b"  GITHUB_TOKEN=fv:github_token",
+            b"DEBUG=1",
+            b"EMPTY=",
+            b"REF=fv:openai_api_key",
+            b"FLOOR_VAULT_KEY=" + key.encode(),
+        ]
+    )
+    if os.name != "nt":
+        assert stat_mode(path) == 0o640
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".env", "home", "vault"]  # no temp file
+
+    # The rewritten file now drives `run`: same values, no plaintext in the file.
+    probe = _probe(
+        tmp_path,
+        "print(os.environ['OPENAI_API_KEY'] == %r, os.environ['GITHUB_TOKEN'] == %r)"
+        % (OPENAI, GITHUB),
+    )
+    ran = fv(["run", "--env-file", str(path), "--"] + probe, base_env)
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip() == "True True"
+    assert not _leaks(path.read_text(encoding="utf-8-sig"))
+
+
+def test_import_rerun_and_existing_same_value_are_reused(tmp_path, base_env):
+    added = fv(
+        ["secrets", "add", "pre", "--id", "openai_api_key", "--stdin"],
+        base_env,
+        stdin=f"value={OPENAI}\n",
+    )
+    assert added.returncode == 0, added.stderr
+    path = _env_file(tmp_path, _sample())
+    result = fv(["secrets", "import", str(path), "--write"], base_env)
+    assert result.returncode == 0, result.stderr
+    assert "OPENAI_API_KEY -> fv:openai_api_key (already in the vault)" in result.stdout
+    again = fv(["secrets", "import", str(path), "--write"], base_env)
+    assert again.returncode == 0, again.stderr
+    assert "nothing to import" in again.stdout
+
+
+def test_import_conflict_changes_nothing(tmp_path, base_env):
+    fv(
+        ["secrets", "add", "pre", "--id", "github_token", "--stdin"],
+        base_env,
+        stdin="value=other\n",
+    )
+    path = _env_file(tmp_path, _sample())
+    before = path.read_bytes()
+    result = fv(["secrets", "import", str(path), "--write"], base_env)
+    assert result.returncode == 2
+    assert "github_token already exists with different contents" in result.stderr
+    assert path.read_bytes() == before
+    listed = fv(["secrets", "list"], base_env)
+    assert listed.stdout.splitlines() == ["github_token\tgeneric\tpre"]
+
+
+def test_import_only_and_prefix(tmp_path, base_env):
+    path = _env_file(tmp_path, _sample())
+    result = fv(
+        ["secrets", "import", str(path), "--only", "GITHUB_TOKEN", "--prefix", "app.", "--write"],
+        base_env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "GITHUB_TOKEN -> fv:app.github_token (new item)" in result.stdout
+    assert "OPENAI_API_KEY: left as is (not selected by --only)" in result.stdout
+    text = path.read_text(encoding="utf-8-sig")
+    assert "GITHUB_TOKEN=fv:app.github_token" in text
+    assert OPENAI in text
+
+
+@pytest.mark.parametrize(
+    "args, body, message",
+    [
+        (["--only", "NOPE"], b"A=1\n", "not set in"),
+        (["--prefix", "bad prefix"], b"A=1\n", "--prefix"),
+        ([], b"FOO=1\nfoo=2\n", "would both be stored as foo"),
+        ([], b"A=1\nthis is not an assignment\n", ":2: expected NAME=value"),
+        ([], b"A=fv:bad id\n", "malformed reference"),
+    ],
+)
+def test_import_refuses_bad_input_and_changes_nothing(tmp_path, base_env, args, body, message):
+    path = _env_file(tmp_path, body)
+    result = fv(["secrets", "import", str(path), "--write", *args], base_env)
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert path.read_bytes() == body
+    assert not Path(base_env["FLOORVAULT_DIR"]).exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_import_write_refuses_a_symlink(tmp_path, base_env):
+    target = _env_file(tmp_path, b"A=fixture\n", name="real.env")
+    link = tmp_path / ".env"
+    link.symlink_to(target)
+    result = fv(["secrets", "import", str(link), "--write"], base_env)
+    assert result.returncode == 2
+    assert "refuses symlinks" in result.stderr
+    assert target.read_bytes() == b"A=fixture\n"
+
+
+def test_import_dry_run_never_creates_a_key(tmp_path, base_env, store):
+    before = sorted(p.name for p in store.iterdir())
+    env = {k: v for k, v in base_env.items() if k != "FLOOR_VAULT_KEY"}
+    path = _env_file(tmp_path, b"A=fixture\n")
+    result = fv(["secrets", "import", str(path)], env)
+    assert result.returncode == 1
+    assert sorted(p.name for p in store.iterdir()) == before
+
+
+def stat_mode(path):
+    import stat as _stat
+
+    return _stat.S_IMODE(path.stat().st_mode)

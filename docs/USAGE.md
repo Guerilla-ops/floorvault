@@ -171,10 +171,31 @@ open an existing store and fail if the key is missing. The command never
 receives `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY` or the `--key-env` variable, and
 no reference may target those names or `APPSTATE_KEY`.
 
-**Managing items.** `floorvault secrets add | put | list | show | rm | ref`.
+**Managing items.** `floorvault secrets add | put | list | show | rm | ref | import`.
 `put` prompts for the value. `show` reports how many fields are set, or whether one named field is set. `ref` prints
 the reference to paste (`--env NAME` prints `NAME=fv:…`). No command prints a
 secret value.
+
+**Moving an existing `.env` into the vault.** `floorvault secrets import .env`
+prints a plan and changes nothing:
+
+```text
+OPENAI_API_KEY -> fv:openai_api_key (new item)
+DEBUG: left as is (--skip)
+FLOOR_VAULT_KEY: left as is (a vault key variable cannot be stored in the vault it unlocks)
+dry run: nothing changed. Re-run with --write to store and rewrite .env.
+```
+
+`--write` stores each plaintext value as an item, then replaces the file in
+place with `fv:` references. The replacement is atomic, keeps the file's
+comments, line endings and permissions, and makes no backup, because a backup
+would be a second plaintext copy.
+- **Item ids** are the lowercased variable names. `--prefix myapp.` namespaces them.
+- **Selecting:** `--only NAME` and `--skip NAME` choose what moves.
+- **Left as is:** empty values, existing references and vault key variables.
+- **Re-running** is safe. An item that already holds the same value is reused, and one with different contents stops the import before anything changes.
+- **Old copies:** earlier copies of the plaintext can survive in backups, editor swap files or git history. Rotate any key that was ever committed or shared.
+- **Symlinks:** `--write` refuses a symlinked file.
 
 Protection is at rest. The started command, and code running as your user, can
 read the resolved values: `run` keeps secrets out of files, not away from the

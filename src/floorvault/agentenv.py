@@ -28,6 +28,8 @@ from typing import Any, Iterable, Mapping, Optional
 __all__ = [
     "AgentEnvError",
     "CUSTODY_ENV_NAMES",
+    "EnvFile",
+    "EnvFileLine",
     "SecretRef",
     "collect",
     "default_vault_dir",
@@ -35,6 +37,8 @@ __all__ = [
     "is_valid_env_name",
     "parse_env_file",
     "parse_ref",
+    "read_env_file",
+    "render_env_file",
     "resolve",
     "select_field",
 ]
@@ -140,8 +144,42 @@ def _unquote(raw: str) -> Optional[str]:
     return raw
 
 
-def parse_env_file(path: Path | str) -> dict[str, str]:
-    """Parse a strict dotenv-style file.
+@dataclass(frozen=True)
+class EnvFileLine:
+    """One line of an env file, kept exactly enough to rewrite it in place.
+
+    ``name``/``value`` are ``None`` for blank and comment lines. ``value`` is
+    unquoted. ``ending`` is the original line terminator ("" on a final line
+    without one).
+    """
+
+    number: int
+    text: str
+    ending: str
+    name: Optional[str] = None
+    value: Optional[str] = None
+    exported: bool = False
+    indent: str = ""
+
+    def with_reference(self, ref: str) -> str:
+        """This assignment rewritten to ``ref``, keeping indent, export and ending."""
+        export = "export " if self.exported else ""
+        return f"{self.indent}{export}{self.name}={ref}{self.ending}"
+
+
+@dataclass(frozen=True)
+class EnvFile:
+    path: Path
+    raw: bytes
+    lines: tuple[EnvFileLine, ...]
+    bom: bool = False
+
+    def assignments(self) -> list[EnvFileLine]:
+        return [line for line in self.lines if line.name is not None]
+
+
+def read_env_file(path: Path | str) -> EnvFile:
+    """Read and validate a strict dotenv-style file, keeping its layout.
 
     Accepted lines: blank, ``# comment``, and ``[export ]NAME=value``. A value
     may be wrapped in one pair of matching quotes, which are removed. There is
@@ -163,13 +201,19 @@ def parse_env_file(path: Path | str) -> dict[str, str]:
     except UnicodeDecodeError:
         raise AgentEnvError([f"{label}: env file is not valid UTF-8"]) from None
 
-    values: dict[str, str] = {}
+    lines: list[EnvFileLine] = []
+    seen: set[str] = set()
     problems: list[str] = []
-    for number, line in enumerate(text.splitlines(), start=1):
+    bare = text.splitlines()
+    for number, (line, full) in enumerate(zip(bare, text.splitlines(True)), start=1):
+        ending = full[len(line) :]
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
+            lines.append(EnvFileLine(number, line, ending))
             continue
-        if stripped.startswith("export ") or stripped.startswith("export\t"):
+        indent = line[: len(line) - len(line.lstrip())]
+        exported = stripped.startswith("export ") or stripped.startswith("export\t")
+        if exported:
             stripped = stripped[len("export") :].lstrip()
         name, sep, raw = stripped.partition("=")
         name = name.strip()
@@ -184,13 +228,29 @@ def parse_env_file(path: Path | str) -> dict[str, str]:
         if "\x00" in value:
             problems.append(f"{where}: {name}: value contains a NUL byte")
             continue
-        if name in values:
+        if name in seen:
             problems.append(f"{where}: {name} is set more than once")
             continue
-        values[name] = value
+        seen.add(name)
+        lines.append(EnvFileLine(number, line, ending, name, value, exported, indent))
     if problems:
         raise AgentEnvError(problems)
-    return values
+    return EnvFile(path, data, tuple(lines), data.startswith(b"\xef\xbb\xbf"))
+
+
+def parse_env_file(path: Path | str) -> dict[str, str]:
+    """``NAME -> value`` for a strict dotenv-style file (see :func:`read_env_file`)."""
+    return {line.name: line.value for line in read_env_file(path).assignments()}
+
+
+def render_env_file(env_file: EnvFile, replacements: Mapping[int, str]) -> bytes:
+    """The file's bytes with line ``number -> reference`` rewritten, all else verbatim."""
+    out = []
+    for line in env_file.lines:
+        ref = replacements.get(line.number)
+        out.append(line.with_reference(ref) if ref is not None else line.text + line.ending)
+    body = "".join(out).encode("utf-8")
+    return (b"\xef\xbb\xbf" + body) if env_file.bom else body
 
 
 def _parse_explicit(pairs: Iterable[str]) -> dict[str, str]:
