@@ -203,6 +203,11 @@ proof of a plaintext-recovery attack.
   environment. `run` keeps secrets out of files and configs; it is not an
   access-control boundary. It removes vault key variables from the child
   environment, refuses references onto them, and only reads existing keys.
+  The configuration `run` reads chooses which items are resolved: a `.env` or
+  MCP entry from an untrusted source can name any item by its id. Review such
+  configuration first, or use `--no-inherit-refs` with explicit `-e`
+  references. `floorvault secrets` commands print no values, but `run` can
+  start a command that does.
 - **Migration can write during listing.** The migration-aware `list_items()` path
   upgrades legacy items through metadata lookup. It can write modern records and
   retirement tombstones without a separate bulk-migration request. Back up legacy

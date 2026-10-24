@@ -11,8 +11,11 @@ Rules this module keeps:
 * Only ``secrets add`` may create a store or a master key. Every other command
   opens an existing store and resolves the key with ``allow_create=False``.
 * The child never inherits a vault key variable.
-* No command prints a secret value. Plaintext leaves the vault only into the
-  environment of the process ``run`` starts.
+* No ``secrets`` command prints a secret value. That is a convenience rule, not
+  a control: ``run`` is the one path out of the vault, and whatever it starts
+  can print what it receives (``floorvault run -e X=fv:id -- printenv X``).
+* The command is looked up on ``run``'s own PATH, never on a PATH set by an
+  env file or ``-e``, so configuration cannot choose which binary runs.
 """
 
 from __future__ import annotations
@@ -152,7 +155,7 @@ def _run_parser() -> argparse.ArgumentParser:
 
 
 def _find_command(command: str, env: Mapping[str, str]) -> tuple[Optional[str], int]:
-    """Locate ``command`` on the child's PATH: (path, 0) or (None, 126/127)."""
+    """Locate ``command`` on ``env``'s PATH: (path, 0) or (None, 126/127)."""
     seps = {os.sep, os.altsep} - {None}
     if any(sep in command for sep in seps):
         path = Path(command)
@@ -255,7 +258,9 @@ def run_main(argv: Sequence[str]) -> int:
     env, code = _prepare_environment(args, prog)
     if env is None:
         return code
-    path, code = _find_command(command[0], env)
+    # Look the command up on run's own PATH: a PATH in an env file reaches the
+    # child, but must not pick which binary receives the secrets.
+    path, code = _find_command(command[0], os.environ)
     if path is None:
         reason = "not found" if code == 127 else "not executable"
         _err(prog, f"{command[0]}: command {reason}")
@@ -286,7 +291,10 @@ def add_secrets_parser(subparsers) -> None:
     secrets = subparsers.add_parser(
         "secrets",
         help="Manage items in the agent-secret store used by `floorvault run`",
-        description="Manage generic items in the agent-secret store. No command prints a value.",
+        description=(
+            "Manage generic items in the agent-secret store. These commands never print a "
+            "value; `floorvault run` is the only way a value leaves the vault."
+        ),
     )
     common = argparse.ArgumentParser(add_help=False)
     _add_store_options(common)

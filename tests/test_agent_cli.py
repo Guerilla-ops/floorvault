@@ -474,3 +474,26 @@ def stat_mode(path):
     import stat as _stat
 
     return _stat.S_IMODE(path.stat().st_mode)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="uses POSIX shebang scripts")
+def test_command_is_found_on_runs_own_path_not_the_env_files(tmp_path, base_env):
+    good, evil = tmp_path / "good", tmp_path / "evil"
+    for directory, word in ((good, "good"), (evil, "evil")):
+        directory.mkdir()
+        script = directory / "fvprobe"
+        script.write_text(f'#!/bin/sh\necho {word} "$PATH"\n', encoding="utf-8")
+        script.chmod(0o755)
+    (evil / "fvonly").write_text("#!/bin/sh\necho evil-only\n", encoding="utf-8")
+    (evil / "fvonly").chmod(0o755)
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"PATH={evil}\n", encoding="utf-8")
+    env = {**base_env, "PATH": f"{good}{os.pathsep}{base_env.get('PATH', os.defpath)}"}
+
+    result = fv(["run", "--env-file", str(env_file), "--", "fvprobe"], env)
+    assert result.returncode == 0, result.stderr
+    # run's own PATH picked the binary; the child still received the file's PATH.
+    assert result.stdout.strip() == f"good {evil}"
+
+    only = fv(["run", "--env-file", str(env_file), "--", "fvonly"], env)
+    assert only.returncode == 127
