@@ -15,6 +15,9 @@ Rules this module keeps:
   a copy of one's value.
 * ``run`` exits 125 when it fails itself, so its failures never look like the
   command's own exit status.
+* An item bound with ``secrets allow`` resolves only for one of its exact
+  command lines, and not while a code-loading variable such as
+  ``LD_PRELOAD`` is set. A guardrail, not a boundary against the same user.
 * No ``secrets`` command prints a secret value. That is a convenience rule, not
   a control: ``run`` is the one path out of the vault, and whatever it starts
   can print what it receives (``floorvault run -e X=fv:id -- printenv X``).
@@ -28,6 +31,7 @@ import argparse
 import getpass
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import stat
@@ -40,7 +44,9 @@ from .agentenv import (
     CUSTODY_ENV_NAMES,
     AgentEnvError,
     EnvFile,
+    code_injection_variables,
     collect,
+    command_allowed,
     default_vault_dir,
     is_ref_like,
     is_valid_env_name,
@@ -256,8 +262,58 @@ def _find_command(command: str, env: Mapping[str, str]) -> tuple[Optional[str], 
     return (found, 0) if found else (None, 127)
 
 
-def _prepare_environment(args: argparse.Namespace, prog: str) -> tuple[Optional[dict], int]:
-    """Build the child environment. Store and key do not outlive this call."""
+def _format_command(argv: Sequence[str]) -> str:
+    return shlex.join(argv)
+
+
+def _check_bindings(store, refs, env, command_line, prog: str) -> bool:
+    """Enforce per-item command allowlists. Returns False after reporting."""
+    by_item: dict[str, list[str]] = {}
+    for name, ref in refs.items():
+        by_item.setdefault(ref.item_id, []).append(name)
+    bound: list[str] = []
+    problems: list[str] = []
+    for item_id in sorted(by_item):
+        try:
+            if store.get_meta(item_id) is None:
+                continue  # resolve() reports the missing item
+            allowed = store.get_allowed_commands(item_id)
+        except Exception as exc:  # noqa: BLE001 - fail closed; report the type only
+            problems.append(
+                f"vault item {item_id}: its command binding cannot be read "
+                f"({type(exc).__name__}), so it is not resolved"
+            )
+            continue
+        if allowed is None:
+            continue
+        bound.append(item_id)
+        if command_line is not None and not command_allowed(command_line, allowed):
+            for name in sorted(by_item[item_id]):
+                problems.append(
+                    f"{name}: vault item {item_id} is not allowed for "
+                    f"{_format_command(command_line)}"
+                )
+    if bound and command_line is not None and not problems:
+        for name in code_injection_variables(env):
+            problems.append(
+                f"{name} is set; it can change what the command loads, so items bound "
+                f"to commands ({', '.join(bound)}) are not resolved. Unset it, or clear "
+                "the binding with `floorvault secrets allow <id> --clear`"
+            )
+    for problem in problems:
+        _err(prog, problem)
+    return not problems
+
+
+def _prepare_environment(
+    args: argparse.Namespace, prog: str, command_line: Optional[Sequence[str]] = None
+) -> tuple[Optional[dict], int]:
+    """Build the child environment. Store and key do not outlive this call.
+
+    ``command_line`` is the command run will start (absolute program path,
+    then arguments), or None when it was not found; items bound to commands
+    are checked against it.
+    """
     try:
         files = [parse_env_file(path) for path in args.env_file]
         env, refs = collect(
@@ -290,6 +346,8 @@ def _prepare_environment(args: argparse.Namespace, prog: str) -> tuple[Optional[
         _err(prog, f"cannot open vault ({type(exc).__name__})")
         return None, RUN_FAILED
     try:
+        if not _check_bindings(store, refs, env, command_line, prog):
+            return None, RUN_FAILED
         values = resolve(store, refs)
     except AgentEnvError as exc:
         for problem in exc.problems:
@@ -354,12 +412,15 @@ def run_main(argv: Sequence[str]) -> int:
     if not command:
         _err(prog, "give the command after --, for example: floorvault run -- python app.py")
         return RUN_FAILED
-    env, code = _prepare_environment(args, prog)
-    if env is None:
-        return code
     # Look the command up on run's own PATH: a PATH in an env file reaches the
-    # child, but must not pick which binary receives the secrets.
+    # child, but must not pick which binary receives the secrets. It is looked
+    # up first so items bound to commands can be checked against it; run's own
+    # failures (125) still take precedence over a missing command (127).
     path, code = _find_command(command[0], os.environ)
+    command_line = [os.path.abspath(path), *command[1:]] if path is not None else None
+    env, env_code = _prepare_environment(args, prog, command_line)
+    if env is None:
+        return env_code
     if path is None:
         reason = "not found" if code == 127 else "not executable"
         _err(prog, f"{command[0]}: command {reason}")
@@ -428,6 +489,30 @@ def add_secrets_parser(subparsers) -> None:
 
     show = sub.add_parser("show", parents=[common], help="Show whether an item's fields are set")
     show.add_argument("ref", help="item id, item_id:field, or an fv: reference")
+
+    allow = sub.add_parser(
+        "allow",
+        parents=[common],
+        help="Bind an item to the exact command lines `run` may start with it",
+        usage="floorvault secrets allow [options] ITEM_ID [--clear | [--remove] -- PROGRAM [ARGS...]]",
+        description=(
+            "Bind an item to command lines. Once bound, `floorvault run` resolves the "
+            "item only when the command it starts is one of them: the program's absolute "
+            "path as found on PATH, plus exactly the same arguments. A guardrail against "
+            "mistakes and against a .env or MCP entry naming the item for another command; "
+            "not a defence against code already running as you."
+        ),
+    )
+    allow.add_argument("item_id")
+    allow.add_argument(
+        "--clear",
+        action="store_true",
+        help="remove every binding (the item resolves for any command)",
+    )
+    allow.add_argument("--remove", action="store_true", help="remove this one command line")
+    # The command after `--` is split off before parsing (split_allow_argv):
+    # argparse handles `--` after an option differently across Python versions.
+    allow.set_defaults(allowed_argv=[])
 
     rm = sub.add_parser("rm", parents=[common], help="Delete an item")
     rm.add_argument("item_id")
@@ -572,7 +657,86 @@ def _cmd_show(args, prog: str) -> int:
         return 0
     filled = sum(1 for value in secret.values() if value)
     print(f"{len(secret)} field(s): {filled} set, {len(secret) - filled} empty")
+    allowed = store.get_allowed_commands(item_id)
+    if allowed:
+        _print_bindings(item_id, allowed)
     return 0
+
+
+def split_allow_argv(argv: Sequence[str]) -> tuple[list[str], Optional[list[str]]]:
+    """Split ``secrets allow ... -- PROGRAM [ARGS...]`` at the first ``--``.
+
+    Returns ``(argv without the command, the command)``; the command is None
+    for any other invocation, or when there is no ``--``.
+    """
+    argv = list(argv)
+    if argv[:2] != ["secrets", "allow"] or "--" not in argv:
+        return argv, None
+    split = argv.index("--")
+    return argv[:split], argv[split + 1 :]
+
+
+def _cmd_allow(args, prog: str) -> int:
+    command = list(args.allowed_argv)
+    if not _ITEM_ID.fullmatch(args.item_id):
+        _err(prog, "item id must match [A-Za-z0-9._-]{1,128}")
+        return 2
+    if args.clear and (command or args.remove):
+        _err(prog, "--clear takes no command and cannot be combined with --remove")
+        return 2
+    if not args.clear and not command:
+        _err(prog, "give the command after --, for example: -- npx -y @scope/server")
+        return 2
+    store = _store_for(args)
+    if store.get_meta(args.item_id) is None:
+        _err(prog, f"item {args.item_id} not found")
+        return 1
+    if args.clear:
+        store.set_allowed_commands(args.item_id, None)
+        print(f"{args.item_id}: not bound; `run` resolves it for any command")
+        return 0
+    path, code = _find_command(command[0], os.environ)
+    if path is None:
+        reason = "not found" if code == 127 else "not executable"
+        _err(prog, f"{command[0]}: command {reason} on PATH")
+        return 1
+    line = [os.path.abspath(path), *command[1:]]
+    current = store.get_allowed_commands(args.item_id) or []
+    if args.remove:
+        remaining = [entry for entry in current if not command_allowed(line, [entry])]
+        if len(remaining) == len(current):
+            _err(prog, f"item {args.item_id} is not bound to {_format_command(line)}")
+            return 1
+        if not remaining:
+            # Unbinding widens access to every command; make that explicit.
+            _err(
+                prog,
+                f"that is the last command line {args.item_id} is bound to; removing it "
+                "would let `run` resolve the item for any command. Use --clear for that.",
+            )
+            return 1
+        store.set_allowed_commands(args.item_id, remaining)
+    else:
+        for arg in command[1:]:
+            if not arg.startswith("-") and not os.path.isabs(arg) and os.path.exists(arg):
+                _err(
+                    prog,
+                    f"warning: {arg} is a relative path; it is resolved against the "
+                    "directory the command starts in, which its configuration chooses. "
+                    "Prefer an absolute path.",
+                )
+        store.set_allowed_commands(args.item_id, [*current, line])
+    _print_bindings(args.item_id, store.get_allowed_commands(args.item_id))
+    return 0
+
+
+def _print_bindings(item_id: str, allowed: Optional[list]) -> None:
+    if not allowed:
+        print(f"{item_id}: not bound; `run` resolves it for any command")
+        return
+    print(f"{item_id}: bound to {len(allowed)} command line(s):")
+    for entry in allowed:
+        print(f"  {_format_command(entry)}")
 
 
 def _cmd_rm(args, prog: str) -> int:
@@ -847,6 +1011,7 @@ _SECRETS_COMMANDS = {
     "put": _cmd_put,
     "list": _cmd_list,
     "show": _cmd_show,
+    "allow": _cmd_allow,
     "rm": _cmd_rm,
     "ref": _cmd_ref,
     "import": _cmd_import,

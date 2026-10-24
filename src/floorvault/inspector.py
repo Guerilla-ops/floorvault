@@ -70,7 +70,12 @@ def main(argv: list[str] | None = None) -> int:
         help="print the decrypted plaintext (default: redacted)",
     )
 
+    from .agent_cli import split_allow_argv
+
+    argv, allowed_argv = split_allow_argv(argv)
     args = parser.parse_args(argv)
+    if allowed_argv is not None:
+        args.allowed_argv = allowed_argv
 
     if args.command == "secrets":
         from .agent_cli import secrets_main

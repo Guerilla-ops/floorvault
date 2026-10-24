@@ -830,3 +830,170 @@ def test_key_file_fifo_is_refused_without_hanging(tmp_path, base_env, store):
     )
     assert result.returncode == 125
     assert "not a regular file" in result.stderr
+
+
+# ----------------------------------------------------------- command bindings
+
+
+def _bound_env(base_env):
+    """base_env without PYTHONPATH or any variable that blocks bound items."""
+    from floorvault.agentenv import code_injection_variables
+
+    drop = set(code_injection_variables(base_env)) | {"PYTHONPATH"}
+    return {k: v for k, v in base_env.items() if k not in drop}
+
+
+_LAUNCH = (
+    f"import sys; sys.path.insert(0, {str(ROOT / 'src')!r}); "
+    "from floorvault.inspector import main; sys.exit(main())"
+)
+
+
+def fvb(args, env, *, stdin=None):
+    """floorvault without PYTHONPATH, so bound items are not blocked by it."""
+    return subprocess.run(
+        [sys.executable, "-c", _LAUNCH, *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=ROOT,
+        timeout=120,
+    )
+
+
+def _marker_probe(tmp_path, name="probe.py"):
+    marker = tmp_path / f"{name}.ran"
+    script = tmp_path / name
+    script.write_text(
+        "import os, pathlib, sys\n"
+        f"pathlib.Path({str(marker)!r}).write_text('x')\n"
+        "sys.stdout.write(os.environ.get('A', ''))\n",
+        encoding="utf-8",
+    )
+    return [sys.executable, str(script)], marker
+
+
+def test_bound_item_resolves_only_for_its_exact_command_line(tmp_path, base_env, store):
+    env = _bound_env(base_env)
+    probe, marker = _marker_probe(tmp_path)
+    allowed = fvb(["secrets", "allow", "openai", "--", *probe], env)
+    assert allowed.returncode == 0, allowed.stderr
+    assert "bound to 1 command line(s)" in allowed.stdout
+    result = fvb(["run", "-e", "A=fv:openai", "--", *probe], env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == SECRET
+    marker.unlink()
+    for command in ([*probe, "--extra"], [sys.executable, "-c", "print(1)"]):
+        result = fvb(["run", "-e", "A=fv:openai", "--", *command], env)
+        assert result.returncode == 125
+        assert result.stdout == ""
+        assert "A: vault item openai is not allowed for" in result.stderr
+        assert SECRET not in result.stderr
+        assert not marker.exists()
+    # Items that are not bound still resolve for any command.
+    other = fvb(["run", "-e", "B=fv:multi:token", "--", sys.executable, "-c", "print(1)"], env)
+    assert other.returncode == 0, other.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_a_symlink_to_the_bound_program_does_not_match(tmp_path, base_env, store):
+    env = _bound_env(base_env)
+    probe, marker = _marker_probe(tmp_path)
+    assert fvb(["secrets", "allow", "openai", "--", *probe], env).returncode == 0
+    link = tmp_path / "bin" / "python"
+    link.parent.mkdir()
+    link.symlink_to(sys.executable)
+    result = fvb(["run", "-e", "A=fv:openai", "--", str(link), probe[1]], env)
+    assert result.returncode == 125
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "name", ["NODE_OPTIONS", "LD_PRELOAD", "PYTHONPATH", "DYLD_INSERT_LIBRARIES"]
+)
+def test_code_injection_variable_blocks_bound_items_only(tmp_path, base_env, store, name):
+    env = _bound_env(base_env)
+    probe, marker = _marker_probe(tmp_path)
+    assert fvb(["secrets", "allow", "openai", "--", *probe], env).returncode == 0
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"{name}=whatever\n", encoding="utf-8")
+    result = fvb(["run", "--env-file", str(env_file), "-e", "A=fv:openai", "--", *probe], env)
+    assert result.returncode == 125
+    assert f"{name} is set" in result.stderr
+    assert result.stdout == "" and not marker.exists()
+    result = fvb(["run", "--env-file", str(env_file), "-e", "A=fv:multi:token", "--", *probe], env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == TOKEN
+
+
+def test_allow_remove_clear_and_show(tmp_path, base_env, store):
+    env = _bound_env(base_env)
+    probe, _ = _marker_probe(tmp_path)
+    second = [*probe, "--second"]
+    assert fvb(["secrets", "allow", "openai", "--", *probe], env).returncode == 0
+    # Option before the item id: argparse 3.10 and 3.13 differ here.
+    assert fvb(["secrets", "allow", "--remove", "openai", "--", *second], env).returncode == 1
+    assert fvb(["secrets", "allow", "openai", "--", *second], env).returncode == 0
+    shown = fvb(["secrets", "show", "openai"], env)
+    assert shown.returncode == 0
+    assert "bound to 2 command line(s)" in shown.stdout and "--second" in shown.stdout
+    assert SECRET not in shown.stdout
+    assert fvb(["secrets", "allow", "--remove", "openai", "--", *second], env).returncode == 0
+    last = fvb(["secrets", "allow", "openai", "--remove", "--", *probe], env)
+    assert last.returncode == 1 and "Use --clear" in last.stderr
+    cleared = fvb(["secrets", "allow", "openai", "--clear"], env)
+    assert cleared.returncode == 0 and "not bound" in cleared.stdout
+    result = fvb(["run", "-e", "A=fv:openai", "--", sys.executable, "-c", "print(1)"], env)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["secrets", "allow", "openai"],
+        ["secrets", "allow", "openai", "--clear", "--", "x"],
+        ["secrets", "allow", "bad id", "--", "x"],
+    ],
+)
+def test_allow_usage_errors(base_env, store, args):
+    assert fvb(args, _bound_env(base_env)).returncode == 2
+
+
+def test_allow_needs_an_existing_item_and_command(tmp_path, base_env, store):
+    env = _bound_env(base_env)
+    assert fvb(["secrets", "allow", "missing", "--", sys.executable], env).returncode == 1
+    result = fvb(["secrets", "allow", "openai", "--", "no-such-command-fv"], env)
+    assert result.returncode == 1 and "not found" in result.stderr
+
+
+def test_allow_warns_about_relative_paths(tmp_path, base_env, store):
+    env = _bound_env(base_env)
+    result = fvb(["secrets", "allow", "openai", "--", sys.executable, "pyproject.toml"], env)
+    assert result.returncode == 0
+    assert "pyproject.toml is a relative path" in result.stderr
+
+
+def test_unreadable_binding_fails_closed(tmp_path, base_env, store):
+    import sqlite3
+
+    env = _bound_env(base_env)
+    with sqlite3.connect(store / "vault.db") as conn:
+        conn.execute(
+            "UPDATE vault_items SET allowed_commands = ? WHERE id = 'openai'",
+            ('{"commands": [["/bin/sh"]]}',),
+        )
+    probe, marker = _marker_probe(tmp_path)
+    result = fvb(["run", "-e", "A=fv:openai", "--", *probe], env)
+    assert result.returncode == 125
+    assert "command binding cannot be read" in result.stderr
+    assert not marker.exists()
+
+
+def test_bound_item_with_a_missing_command_exits_127(tmp_path, base_env, store):
+    env = _bound_env(base_env)
+    probe, _ = _marker_probe(tmp_path)
+    assert fvb(["secrets", "allow", "openai", "--", *probe], env).returncode == 0
+    result = fvb(["run", "-e", "A=fv:openai", "--", "no-such-command-fv"], env)
+    assert result.returncode == 127
+    assert result.stdout == ""

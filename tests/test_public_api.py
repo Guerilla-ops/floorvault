@@ -70,6 +70,7 @@ VAULT_STORE_METHODS = {
     "begin_rotation": "(self, target_key_id: 'int', *, target_vault: 'FloorVault') -> 'None'",
     "clear_rotation_journal": "(self) -> 'None'",
     "delete_item": "(self, item_id: 'str') -> 'bool'",
+    "get_allowed_commands": "(self, item_id: 'str') -> 'Optional[list[list[str]]]'",
     "get_meta": "(self, item_id: 'str') -> 'Optional[VaultItemMeta]'",
     "get_secret": "(self, item_id: 'str') -> 'dict[str, Any]'",
     "has_items": "(self) -> 'bool'",
@@ -83,6 +84,7 @@ VAULT_STORE_METHODS = {
     "retire_legacy_id": "(self, legacy_id: 'str', modern_id: 'str') -> 'None'",
     "retired_modern_id": "(self, legacy_id: 'str') -> 'Optional[str]'",
     "rotation_journal": "(self) -> 'dict[tuple[str, str, str], tuple[int, str]]'",
+    "set_allowed_commands": "(self, item_id: 'str', commands: 'Optional[Sequence[Sequence[str]]]') -> 'bool'",
     "update_generic_field": "(self, item_id: 'str', field: 'str', value: 'str') -> 'bool'",
     "write_sealed_item": "(self, item_id: 'str', sealed: 'Mapping[str, Any]', *, new_vault: 'FloorVault', key_id: 'int' = 0, journal_rows: 'Optional[Iterable[tuple[str, str, str]]]' = None) -> 'None'",
 }

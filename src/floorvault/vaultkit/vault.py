@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -78,6 +79,21 @@ def _require_envelope_key_id(key_id: int) -> None:
 
 class VaultError(Exception):
     """Vault failure that is safe to surface without leaking secrets."""
+
+
+def _validated_command(command: Any, item_id: str) -> list[str]:
+    """One allowed command line: an argv list starting with an absolute path."""
+    if (
+        not isinstance(command, list)
+        or not command
+        or not all(isinstance(part, str) and "\x00" not in part for part in command)
+        or not command[0]
+        or not os.path.isabs(command[0])
+    ):
+        raise VaultError(
+            f"allowed commands for {item_id} must be argv lists starting with an absolute path"
+        )
+    return list(command)
 
 
 def normalize_origin(url_or_origin: str) -> str:
@@ -347,6 +363,7 @@ class VaultStore:
             """)
             self._migrate_plaintext_metadata(conn)
             self._remove_origin_index(conn)
+            self._ensure_allowed_commands_column(conn)
             self._ensure_rotation_commitment_column(conn)
             self._check_listing_metadata(conn)
             conn.execute(f"PRAGMA user_version = {self._SCHEMA_VERSION}")
@@ -521,6 +538,17 @@ class VaultStore:
         """)
         conn.execute("DROP TABLE vault_items")
         conn.execute("ALTER TABLE vault_items_without_origin_idx RENAME TO vault_items")
+
+    def _ensure_allowed_commands_column(self, conn: sqlite3.Connection) -> None:
+        """Add the sealed per-item command allowlist column to older stores.
+
+        Adding a nullable column keeps ``user_version`` at 3, so readers that
+        predate it still open the store. They ignore the column, which means
+        they do not enforce it either (SPEC.md section 12.2).
+        """
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(vault_items)")}
+        if "allowed_commands" not in columns:
+            conn.execute("ALTER TABLE vault_items ADD COLUMN allowed_commands BLOB")
 
     def _ensure_rotation_commitment_column(self, conn: sqlite3.Connection) -> None:
         """Add the target-commitment and store-nonce columns to older stores."""
@@ -837,6 +865,63 @@ class VaultStore:
             )
             return cursor.rowcount == 1
 
+    def get_allowed_commands(self, item_id: str) -> Optional[list[list[str]]]:
+        """Return the command lines ``item_id`` is bound to, or None if unbound.
+
+        Each entry is an argv list whose first element is an absolute program
+        path. The list is sealed under the item's id, so it cannot be moved to
+        another item or edited undetected; a value that fails authentication
+        or does not decode is an error, never "unbound".
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT allowed_commands FROM vault_items WHERE id = ?", (item_id,)
+            ).fetchone()
+        if row is None:
+            raise VaultError(f"Vault item not found: {item_id}")
+        plaintext = self._decrypt_metadata(item_id, "allowed_commands", row[0])
+        if plaintext is None:
+            return None
+        try:
+            decoded = json.loads(plaintext)
+        except ValueError:
+            raise VaultError(f"allowed commands for {item_id} do not decode") from None
+        commands = decoded.get("commands") if isinstance(decoded, dict) else None
+        if not commands or not isinstance(commands, list):
+            raise VaultError(f"allowed commands for {item_id} do not decode")
+        return [_validated_command(command, item_id) for command in commands]
+
+    def set_allowed_commands(
+        self, item_id: str, commands: Optional[Sequence[Sequence[str]]]
+    ) -> bool:
+        """Replace the command lines ``item_id`` may be resolved for.
+
+        ``None`` or an empty sequence removes the binding. Returns False when
+        the item does not exist. Each command is an argv sequence whose first
+        element is an absolute program path.
+        """
+        cleaned = [_validated_command(list(command), item_id) for command in commands or ()]
+        deduped: list[list[str]] = []
+        for command in cleaned:
+            if command not in deduped:
+                deduped.append(command)
+        sealed = (
+            self._encrypt_metadata(
+                item_id,
+                "allowed_commands",
+                json.dumps({"commands": deduped}, ensure_ascii=False),
+            )
+            if deduped
+            else None
+        )
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_writes_allowed(conn)
+            cursor = conn.execute(
+                "UPDATE vault_items SET allowed_commands = ? WHERE id = ?", (sealed, item_id)
+            )
+            return cursor.rowcount == 1
+
     # Alias for compatibility
     get_secret = resolve_secret
 
@@ -1103,6 +1188,7 @@ class VaultStore:
         "identifier_type",
         "identifier",
         "created_at",
+        "allowed_commands",
     )
 
     #: Listing columns that are cleartext by default and sealed (and rotated)

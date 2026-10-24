@@ -318,3 +318,43 @@ def test_key_file_variable_is_removed_refused_and_not_a_key_value():
     assert env == {"SAME": path}
     with pytest.raises(AgentEnvError):
         collect({}, [], ["FLOOR_VAULT_KEY_FILE=fv:x"])
+
+
+def test_code_injection_variables():
+    from floorvault.agentenv import code_injection_variables
+
+    env = {
+        "LD_PRELOAD": "x",
+        "dyld_insert_libraries": "x",
+        "npm_config_registry": "x",
+        "npm_config_@scope:registry": "x",
+        "Node_Options": "x",
+        "npm_config_https_proxy": "x",
+        "HTTPS_PROXY": "x",
+        "PATH": "/bin",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    assert code_injection_variables(env) == sorted(
+        [
+            "LD_PRELOAD",
+            "dyld_insert_libraries",
+            "npm_config_registry",
+            "npm_config_@scope:registry",
+            "Node_Options",
+        ]
+    )
+
+
+def test_command_allowed_needs_the_exact_program_and_arguments():
+    import os
+
+    from floorvault.agentenv import command_allowed
+
+    prog = os.path.abspath("/opt/bin/server")
+    allowed = [[prog, "--stdio"], [os.path.abspath("/opt/bin/other")]]
+    assert command_allowed([prog, "--stdio"], allowed)
+    assert not command_allowed([prog], allowed)
+    assert not command_allowed([prog, "--stdio", "x"], allowed)
+    assert not command_allowed([os.path.abspath("/tmp/server"), "--stdio"], allowed)
+    assert not command_allowed([], allowed)
+    assert command_allowed([os.path.abspath("/opt/bin/other")], allowed)
