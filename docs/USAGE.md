@@ -233,8 +233,8 @@ vault is opened.
 (service `floor-vault`, application context `floor-agent`), or `--key-env NAME`
 for a 64-hex key in a named variable, or `--key-file PATH` (default
 `$FLOOR_VAULT_KEY_FILE`) for one in a file. `--key-env` and `--key-file` use
-that key directly, as the plugin's `token_env` does; it does not pass through `AdaptiveKeyProvider`, so
-it never creates or looks up a key elsewhere. `--vault "$HERMES_HOME/agent-vault"
+that key directly, as the plugin's `token_env` does. They do not pass through
+`AdaptiveKeyProvider`, so they never create or look up a key elsewhere. `--vault "$HERMES_HOME/agent-vault"
 --key-env HERMES_VAULT_KEY` reads a Hermes store set up with `token_env`. Only
 `floorvault secrets add` and `secrets import --write` create a store or a key;
 `run` and the other commands open an existing store and fail if the key is
