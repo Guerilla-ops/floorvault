@@ -29,7 +29,7 @@ def key():
 @pytest.fixture()
 def base_env(tmp_path, key):
     env = {k: v for k, v in os.environ.items() if k.upper() not in CUSTODY}
-    env.pop("FLOORVAULT_DIR", None)
+    env.pop("FLOOR_VAULT_DIR", None)
     home = tmp_path / "home"
     home.mkdir()
     env.update(
@@ -38,7 +38,7 @@ def base_env(tmp_path, key):
             "USERPROFILE": str(home),
             "PYTHONPATH": str(ROOT / "src"),
             "FLOOR_VAULT_KEY": key,
-            "FLOORVAULT_DIR": str(tmp_path / "vault"),
+            "FLOOR_VAULT_DIR": str(tmp_path / "vault"),
         }
     )
     return env
@@ -72,7 +72,7 @@ def store(base_env):
         stdin=f"# comment\nuser=u1\ntoken={TOKEN}\n",
     )
     assert added.returncode == 0, added.stderr
-    return Path(base_env["FLOORVAULT_DIR"])
+    return Path(base_env["FLOOR_VAULT_DIR"])
 
 
 def _probe(tmp_path, body):
@@ -137,7 +137,7 @@ def test_one_bad_reference_stops_the_child_and_leaks_nothing(tmp_path, base_env,
     command = _probe(tmp_path, f"open({str(marker)!r}, 'w').close()\n")
     env = {**base_env, "GOOD": "fv:openai"}
     result = fv(["run", "-e", "BAD=fv:missing", "-e", "AMBIG=fv:multi", "--"] + command, env)
-    assert result.returncode == 2
+    assert result.returncode == 125
     assert not marker.exists()
     assert result.stdout == ""
     assert "BAD" in result.stderr and "AMBIG" in result.stderr
@@ -146,9 +146,9 @@ def test_one_bad_reference_stops_the_child_and_leaks_nothing(tmp_path, base_env,
 
 def test_missing_store_is_an_error_and_is_not_created(tmp_path, base_env):
     missing = tmp_path / "nowhere"
-    env = {**base_env, "FLOORVAULT_DIR": str(missing)}
+    env = {**base_env, "FLOOR_VAULT_DIR": str(missing)}
     result = fv(["run", "-e", "A=fv:openai", "--"] + _dump_env(tmp_path), env)
-    assert result.returncode == 1
+    assert result.returncode == 125
     assert "no vault at" in result.stderr
     assert not missing.exists()
 
@@ -157,13 +157,13 @@ def test_missing_key_is_an_error_and_no_key_is_created(tmp_path, base_env, store
     before = sorted(p.name for p in store.iterdir())
     env = {k: v for k, v in base_env.items() if k != "FLOOR_VAULT_KEY"}
     result = fv(["run", "-e", "A=fv:openai", "--"] + _dump_env(tmp_path), env)
-    assert result.returncode in (1, 2), result.stderr
+    assert result.returncode == 125, result.stderr
     assert result.stdout == ""
     assert sorted(p.name for p in store.iterdir()) == before
 
 
 def test_no_references_needs_no_store(tmp_path, base_env):
-    env = {**base_env, "FLOORVAULT_DIR": str(tmp_path / "absent")}
+    env = {**base_env, "FLOOR_VAULT_DIR": str(tmp_path / "absent")}
     result = fv(["run", "--", sys.executable, "-c", "print('ok')"], env)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
@@ -184,8 +184,10 @@ def test_unknown_command_exits_127(base_env):
 
 def test_missing_separator_is_a_usage_error(base_env):
     result = fv(["run", "python"], base_env)
-    assert result.returncode == 2
+    assert result.returncode == 125
     assert "--" in result.stderr
+    bad_option = fv(["run", "--no-such-option", "--", "python"], base_env)
+    assert bad_option.returncode == 125
 
 
 def test_run_writes_nothing_to_stdout_but_the_childs_bytes(tmp_path, base_env, store):
@@ -291,7 +293,7 @@ def test_secrets_round_trip_never_prints_a_value(base_env, store, monkeypatch, c
 
 
 def test_only_secrets_add_creates_a_store(tmp_path, base_env):
-    env = {**base_env, "FLOORVAULT_DIR": str(tmp_path / "fresh")}
+    env = {**base_env, "FLOOR_VAULT_DIR": str(tmp_path / "fresh")}
     for args in (["list"], ["show", "x"], ["rm", "x"], ["ref", "x"]):
         result = fv(["secrets", *args], env)
         assert result.returncode == 1, args
@@ -345,7 +347,7 @@ def test_import_dry_run_changes_nothing(tmp_path, base_env):
     assert "REF: left as is (already a reference)" in result.stdout
     assert "dry run: nothing changed" in result.stdout
     assert path.read_bytes() == before
-    assert not Path(base_env["FLOORVAULT_DIR"]).exists()
+    assert not Path(base_env["FLOOR_VAULT_DIR"]).exists()
     assert not _leaks(result.stdout, result.stderr)
 
 
@@ -447,7 +449,7 @@ def test_import_refuses_bad_input_and_changes_nothing(tmp_path, base_env, args, 
     assert result.returncode == 2
     assert message in result.stderr
     assert path.read_bytes() == body
-    assert not Path(base_env["FLOORVAULT_DIR"]).exists()
+    assert not Path(base_env["FLOOR_VAULT_DIR"]).exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
@@ -547,7 +549,7 @@ def test_import_refuses_to_rewrite_a_hermes_env(tmp_path, base_env, kind):
     assert write.returncode == 2
     assert "refusing to rewrite it" in write.stderr
     assert target.read_bytes() == before
-    assert not Path(env["FLOORVAULT_DIR"]).exists()
+    assert not Path(env["FLOOR_VAULT_DIR"]).exists()
     assert not _leaks(dry.stdout, dry.stderr, write.stdout, write.stderr)
 
 
@@ -559,3 +561,75 @@ def test_import_says_the_rewritten_file_needs_run(tmp_path, base_env):
     write = fv(["secrets", "import", str(path), "--write"], base_env)
     assert write.returncode == 0, write.stderr
     assert "works only for programs started with" in write.stderr
+
+
+# ------------------------------------------------- review follow-ups (#77)
+
+
+def test_hermes_key_and_copies_of_a_key_never_reach_the_child(tmp_path, base_env, store, key):
+    env = {
+        **base_env,
+        "HERMES_VAULT_KEY": key,  # the plugin's token_env, set but not passed as --key-env
+        "COPY_OF_KEY": key,  # the same key under an unrelated name
+        "SHORT": "1",
+    }
+    result = fv(["run", "-e", "A=fv:openai", "--"] + _dump_env(tmp_path), env)
+    assert result.returncode == 0, result.stderr
+    child = json.loads(result.stdout)
+    assert key not in child.values()
+    assert not {k.upper() for k in child} & {"HERMES_VAULT_KEY", "COPY_OF_KEY", "FLOOR_VAULT_KEY"}
+    assert child["SHORT"] == "1" and child["A"] == SECRET
+
+
+def test_inherited_hv_values_are_not_filled_in(tmp_path, base_env, store):
+    env = {**base_env, "OTHER_TOOL": "hv:openai", "MINE": "fv:openai"}
+    result = fv(["run", "--"] + _dump_env(tmp_path), env)
+    assert result.returncode == 0, result.stderr
+    child = json.loads(result.stdout)
+    assert child["OTHER_TOOL"] == "hv:openai"
+    assert child["MINE"] == SECRET
+
+
+def test_secrets_reject_nul_at_write_time(base_env, store, monkeypatch):
+    added = fv(["secrets", "add", "L", "--stdin"], base_env, stdin="value=a\x00b\n")
+    assert added.returncode == 2
+    assert "NUL" in added.stderr
+
+    from floorvault import agent_cli
+    from floorvault.inspector import main
+
+    for name, value in base_env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(agent_cli.getpass, "getpass", lambda prompt: "a\x00b")
+    assert main(["secrets", "put", "openai", "value"]) == 2
+
+
+def test_many_runs_can_start_at_once(tmp_path, base_env, store):
+    """MCP clients start all their servers together."""
+    probe = _probe(tmp_path, "sys.stdout.write(os.environ['A'])\n")
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-m", "floorvault.inspector", "run", "-e", "A=fv:openai", "--"]
+            + probe,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=base_env,
+            cwd=ROOT,
+        )
+        for _ in range(8)
+    ]
+    results = [proc.communicate(timeout=120) for proc in procs]
+    assert [proc.returncode for proc in procs] == [0] * 8, [err for _, err in results]
+    assert all(out == SECRET for out, _ in results)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows batch-file lookup (npx.cmd)")
+def test_windows_cmd_command_is_found_by_bare_name(tmp_path, base_env, store):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "fvprobe.cmd").write_text("@echo cmd-ok %A%\r\n", encoding="utf-8")
+    env = {**base_env, "PATH": f"{bindir}{os.pathsep}{base_env.get('PATH', '')}"}
+    result = fv(["run", "-e", "A=fv:openai", "--", "fvprobe"], env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"cmd-ok {SECRET}"

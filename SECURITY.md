@@ -201,8 +201,11 @@ proof of a plaintext-recovery attack.
   ordinary environment variables of the started process and of anything it
   starts. Code running as the same user can usually read a process's
   environment. `run` keeps secrets out of files and configs; it is not an
-  access-control boundary. It removes vault key variables from the child
-  environment, refuses references onto them, and only reads existing keys.
+  access-control boundary. It removes vault key variables (`FLOOR_VAULT_KEY`,
+  `VAULT_MASTER_KEY`, `HERMES_VAULT_KEY`, the `--key-env` name) and any copy of
+  their values from the child environment, refuses references onto them, and
+  only reads existing keys. On macOS and Linux the default custody uses one
+  key-store entry per user, so every default store shares one master key.
   The configuration `run` reads chooses which items are resolved: a `.env` or
   MCP entry from an untrusted source can name any item by its id. Review such
   configuration first, or use `--no-inherit-refs` with explicit `-e`
