@@ -162,8 +162,8 @@ floorvault run -e OPENAI_API_KEY=fv:openai -- python agent.py
 ```
 
 The file holds the 64-hex master key; surrounding whitespace is ignored. It
-must be a regular file owned by you or root and not writable by group or
-others, since a replaceable key file would let someone choose the key new items
+must be a regular file. On Linux and macOS it must also be owned by you or root
+and not writable by group or others, since a replaceable key file would let someone choose the key new items
 are sealed under. A file readable by others is used with a warning. Symlinks are
 followed, so a Kubernetes secret volume works. Like `--key-env`, the key is used
 directly and nothing is created elsewhere. `--key-file` and `--key-env` cannot

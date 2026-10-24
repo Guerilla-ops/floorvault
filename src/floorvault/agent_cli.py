@@ -87,19 +87,32 @@ def read_key_file(path: Path) -> bytes:
     """Read a 64-hex master key from ``path``, such as an orchestrator secret mount.
 
     Symlinks are followed (Kubernetes mounts secrets through ``..data`` links),
-    but the target must be a regular file owned by this user or root and not
-    writable by group or others: a replaceable key file would let someone else
+    but the target must be a regular file and, on POSIX, owned by this user or
+    root and not writable by group or others: a replaceable key file would let someone else
     choose the key new items are sealed under. A file readable by others is
     used with a warning. Errors name the path, never the content.
     """
     path = Path(path).expanduser()
+    # Open once and check that handle, so the file cannot be swapped between
+    # the checks and the read. O_NONBLOCK keeps a FIFO from hanging the open.
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
     try:
-        resolved = path.resolve(strict=True)
-        st = resolved.stat()
+        fd = os.open(path.resolve(strict=True), flags)
     except (OSError, RuntimeError) as exc:
         raise StoreUnavailable(f"key file {path}: cannot read ({type(exc).__name__})") from None
-    if not stat.S_ISREG(st.st_mode):
-        raise StoreUnavailable(f"key file {path} is not a regular file")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise StoreUnavailable(f"key file {path} is not a regular file")
+        handle = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    with handle:
+        return _key_from_handle(path, handle, st)
+
+
+def _key_from_handle(path: Path, handle, st: os.stat_result) -> bytes:
     if os.name != "nt":
         if st.st_uid not in (os.geteuid(), 0):
             raise StoreUnavailable(f"key file {path} is owned by another user")
@@ -112,8 +125,7 @@ def read_key_file(path: Path) -> bytes:
     if st.st_size > _MAX_KEY_FILE_BYTES:
         raise StoreUnavailable(f"key file {path} is too large to hold a key")
     try:
-        with resolved.open("rb") as handle:
-            raw = handle.read(_MAX_KEY_FILE_BYTES + 1).decode("ascii").strip()
+        raw = handle.read(_MAX_KEY_FILE_BYTES + 1).decode("ascii").strip()
     except (OSError, UnicodeDecodeError) as exc:
         raise StoreUnavailable(f"key file {path}: cannot read ({type(exc).__name__})") from None
     if not _HEX_KEY.fullmatch(raw):

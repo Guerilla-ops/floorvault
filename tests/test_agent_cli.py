@@ -818,3 +818,15 @@ def test_secrets_add_with_a_key_file_needs_no_os_custody(tmp_path, base_env, key
     # The same key through FLOOR_VAULT_KEY opens it too.
     result = fv(["run", "-e", "A=fv:tok", "--"] + _dump_env(tmp_path), {**base_env})
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFOs")
+def test_key_file_fifo_is_refused_without_hanging(tmp_path, base_env, store):
+    fifo = tmp_path / "master.key"
+    os.mkfifo(fifo, 0o600)
+    result = fv(
+        ["run", "--key-file", str(fifo), "-e", "A=fv:openai", "--"] + _dump_env(tmp_path),
+        _without_key(base_env),
+    )
+    assert result.returncode == 125
+    assert "not a regular file" in result.stderr
