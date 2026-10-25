@@ -67,8 +67,10 @@ Linux Secret Service collection or a missing key is reported, and
 of a Linux Secret Service key is serialized per service and attribute (one lock
 file per user, in `$XDG_RUNTIME_DIR/floorvault` or `~/.cache/floorvault`), and two
 entries holding different keys are refused rather than one being picked or
-overwritten. The macOS Keychain calls are unchanged and are not verified to be
-prompt-free.
+overwritten. On macOS the source's Keychain read asks the framework to fail
+rather than show a dialog (`kSecUseAuthenticationUIFail`) and never creates a key;
+this is tested against a stand-in for the Security framework, not a real Keychain,
+so whether it suppresses every legacy-keychain prompt is not verified.
 
 Review source, plugin code, dependencies, configuration, imports, packaging,
 tests, fuzz targets and release workflows where they affect these properties.
