@@ -158,6 +158,24 @@ def _failed(action: str, exc: BaseException) -> GuiError:
     return GuiError(f"{action} failed ({type(exc).__name__})")
 
 
+def split_command_line(text: str, *, windows: bool) -> list[str]:
+    """Split a typed command line into argv.
+
+    POSIX rules treat a backslash as an escape, which would mangle Windows
+    paths, so Windows uses shlex's non-POSIX mode. That mode keeps the quotes
+    around a quoted token (``"C:\\Program Files\\x.exe"``); strip one matching
+    pair so the program can be found. Raises ValueError on unbalanced quotes.
+    """
+    if not windows:
+        return shlex.split(text)
+    argv = []
+    for token in shlex.split(text, posix=False):
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+            token = token[1:-1]
+        argv.append(token)
+    return argv
+
+
 def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -316,7 +334,7 @@ class VaultSession:
         process's own PATH, as ``secrets allow`` does.
         """
         try:
-            argv = shlex.split(text, posix=os.name != "nt")
+            argv = split_command_line(text, windows=os.name == "nt")
         except ValueError as exc:
             raise GuiError(f"cannot parse the command line ({exc})") from None
         if not argv:

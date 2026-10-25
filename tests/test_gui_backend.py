@@ -17,6 +17,7 @@ from floorvault.gui.backend import (
     GuiError,
     VaultSession,
     key_source_hint,
+    split_command_line,
     suggested_env_name,
 )
 
@@ -212,6 +213,24 @@ def test_resolve_command_line_pins_an_absolute_program(session):
     assert os.path.isabs(argv[0])
     assert argv[1:] == ["-m", "http.server"]
     assert warnings == []
+
+
+def test_split_command_line_strips_windows_quotes():
+    text = r'"C:\Program Files\Python\python.exe" -m one "two words"'
+    assert split_command_line(text, windows=True) == [
+        r"C:\Program Files\Python\python.exe",
+        "-m",
+        "one",
+        "two words",
+    ]
+    assert split_command_line("npx -y '@scope/server'", windows=False) == [
+        "npx",
+        "-y",
+        "@scope/server",
+    ]
+    for windows in (True, False):
+        with pytest.raises(ValueError):
+            split_command_line('"unterminated', windows=windows)
 
 
 def test_resolve_command_line_rejects_unknown_programs(session):
