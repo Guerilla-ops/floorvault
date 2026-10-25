@@ -303,8 +303,10 @@ vault is opened.
 `~/.floorvault/agent-vault`. The key comes from the first of these that applies:
 `--key-env NAME` (a 64-hex key in a named variable), `--key-file PATH`, the
 `master.key.sdcred` beside the store (made by `secrets init --custody
-systemd-creds`), `$FLOOR_VAULT_KEY_FILE`, and otherwise the same custody as the
-Hermes plugin (service `floor-vault`, application context `floor-agent`). The first four
+systemd-creds`), `$FLOOR_VAULT_KEY_FILE`, and otherwise `AdaptiveKeyProvider` with
+the Hermes plugin's service and context (`floor-vault`, `floor-agent`): the OS key
+store, after `$FLOOR_VAULT_KEY` or `$VAULT_MASTER_KEY` when one is set (the plugin
+itself reads neither; see below). The first four
 use their key directly, as the plugin's `token_env` does. They do not pass
 through `AdaptiveKeyProvider`, so they never create or look up a key elsewhere.
 `--vault "$HERMES_HOME/agent-vault"
@@ -390,9 +392,12 @@ floorvault secrets import --hermes --write --skip DEBUG --remove-from-env
    (a `DEBUG` flag, a model name) in `.env` with `--skip NAME` or `--only NAME`.
 2. **`--write`** stores each value as a generic item in the plugin's store,
    `<home>/agent-vault` (pass `--vault DIR` when `secrets.hermesvault.dir` names
-   another), under the plugin's custody: the OS key store, or the key in
-   `$HERMES_VAULT_KEY` when that variable is set, as the plugin does (`--key-env`
-   and `--key-file` override). It does not touch `.env`. Re-running reuses items
+   another), under the plugin's custody: the key in `$HERMES_VAULT_KEY` when that
+   variable is set (or the variable `--key-env` names), else the OS key store, as
+   the plugin does. `$FLOOR_VAULT_KEY` and `$VAULT_MASTER_KEY` are ignored here
+   (the plugin does not read them, so a store keyed by them would be unreadable to
+   Hermes), and `--key-file` is refused, since the plugin cannot read a key file.
+   It does not touch `.env`. Re-running reuses items
    that already hold the same value and stops on one that differs.
 3. **`--write --remove-from-env`** deletes the imported lines from `.env`, but
    only after it has re-read each item from the store and found a mapping line
@@ -501,10 +506,15 @@ hermes plugins enable hermesvault
 ```
 
 The plugin directory is self-contained. Its `plugin.yaml` declares
-`floorvault>=0.2.1,<0.3` and the platform keyring packages, which Hermes installs
+`floorvault>=0.2.2,<0.3` and the platform keyring packages, which Hermes installs
 from PyPI after asking for consent. The library wheel does not include or register
 the plugin. See the [plugin README](../plugins/hermesvault/README.md) for
 configuration, the `hermes hvault` commands and what the plugin reads and writes.
+Run `hermes hvault setup` once per profile: it creates the store and its key and
+may unlock the OS key store (a prompt). The secret source itself never prompts
+and never creates anything, so Hermes startup cannot block on it; a missing store,
+a missing key or a locked Secret Service collection is reported and startup goes
+on without those variables.
 
 Once enabled, the plugin maps references to existing items into the host's
 environment:
@@ -557,7 +567,15 @@ must fail instead of silently downgrading custody.
 | Vault Transit | Separate provider wraps the master key remotely; unwrapped key use and field encryption remain local. |
 
 Use `AdaptiveKeyProvider(service_name="my-app", strict=True)` for explicit OS-only
-custody. `resolve_key(allow_create=False)` resolves an existing key without creating
+custody. `environ=` chooses where the environment tier reads its variables (`{}`
+for none, as the Hermes plugin does, or a per-configuration view in a process that
+serves several), and `interactive=False` keeps the Linux Secret Service tier from
+prompting: no unlock, no collection or key creation, a locked or missing key is
+an error instead. On macOS it asks the Keychain to fail rather than show a dialog
+(`kSecUseAuthenticationUIFail`) and creates no key; that is checked against a
+stand-in for the Security framework, not a real Keychain. On Linux the
+first key created for a service/account is serialized across processes of the
+user, and two entries that hold different keys are refused, not chosen between. `resolve_key(allow_create=False)` resolves an existing key without creating
 one. Legacy environment names and old key-store adoption require explicit opt-ins.
 Existing file custody and OS-tier markers guard against accidentally minting a
 different key when backend availability changes.
