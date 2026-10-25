@@ -413,6 +413,36 @@ floorvault secrets allow github-pat --clear   # unbind: resolves for any command
 - **Who enforces it:** only `floorvault run` from this release on. Older
   `floorvault` versions and the Hermes plugin ignore bindings.
 
+## Desktop window (beta)
+
+`floorvault-gui` is a desktop window over the same store as `floorvault
+secrets`. Install it with the `gui` extra (PySide6-Essentials):
+
+```bash
+python -m pip install "floorvault[gui]"
+floorvault-gui                       # OS key store, ~/.floorvault/agent-vault
+floorvault-gui --vault DIR --key-file /run/secrets/fv-key
+```
+
+It lists items, adds generic items, sets and replaces fields, copies `fv:`
+references, manages `secrets allow` bindings, deletes items and imports a
+project `.env` with a preview first. It keeps the CLI's rules:
+
+- **No stored value is shown or copied.** Fields read *Set* or *Empty*; copy
+  buttons copy references. Values are typed into masked inputs, and the
+  clipboard is cleared on save if it still holds the value just entered.
+- **Opening never creates a store or key.** Only the first *Add item* or
+  *Import* on a directory without a store creates one.
+- **Removing the last bound command line is refused.** *Allow any command* is
+  the separate, confirmed action that clears a binding.
+- **The window locks after five minutes** without keyboard or mouse input.
+
+Not in this release: login, payment and address items (they are listed and
+can be deleted, but not created or edited), Hermes `.env` imports (use
+`floorvault secrets import --hermes`), key rotation and recovery bundles. The
+window holds the same trust boundary as the CLI: code running as your user can
+read the key from your key store.
+
 ## Hermes Agent integration
 
 The optional plugin in [`plugins/hermesvault`](../plugins/hermesvault) resolves local

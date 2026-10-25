@@ -118,9 +118,16 @@ macos = [
 linux = [
     "secretstorage>=3.3",
 ]
+# Desktop window (src/floorvault/gui, the floorvault-gui command). The core
+# library never imports it. PySide6-Essentials is the QtCore/QtGui/QtWidgets
+# subset of PySide6, a much smaller install than the full bindings.
+gui = [
+    "PySide6-Essentials>=6.8",
+]
 
 [project.scripts]
 floorvault = "floorvault.inspector:main"
+floorvault-gui = "floorvault.gui.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/floorvault"]
