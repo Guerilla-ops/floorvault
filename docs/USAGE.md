@@ -532,8 +532,13 @@ uv run pytest
 bash scripts/security-check.sh
 ```
 
-The standalone local gate also requires external scanning tools. CI runs the full
-suite on four PR cells: Ubuntu Python 3.10/3.14 and macOS/Windows Python 3.13.
+The standalone local gate also requires external scanning tools. It needs
+Python 3.11 or newer: `pip-audit` is installed by the dev extra only there,
+because its `filelock` dependency has no patched release for 3.10 (the fixes for
+the six advisories published on 2026-10-23 need 3.11), so on 3.10 the gate fails
+closed with "Required gate tool not found: pip-audit". CI runs the audit on 3.13.
+CI runs the full suite on four PR cells: Ubuntu Python 3.10/3.14 and macOS/Windows
+Python 3.13.
 Weekly, version-tag and expanded manual runs cover all declared Python versions
 on Ubuntu plus Python 3.10/3.13 on macOS/Windows. Shared lint/build/scans run once;
 full mutations run on Linux, with platform subsets on macOS/Windows. Dependency
