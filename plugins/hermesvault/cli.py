@@ -305,23 +305,23 @@ def _cmd_doctor(_args) -> int:
     problems = bool(result.warnings)
     environ = get_source_environment()
     protected = source.protected_env_vars(cfg)
-    for name in env_map:
+    for idx, name in enumerate(env_map, start=1):
         if not is_valid_env_name(name):
             continue
         if name in protected:
             print(
-                f"{name}: bootstrap variable is protected; Hermes will not apply this mapping",
+                f"mapping #{idx}: bootstrap variable is protected; Hermes will not apply this mapping",
                 file=sys.stderr,
             )
             problems = True
         elif name in environ:
             if cfg.get("override_existing", False):
                 print(
-                    f"{name}: existing environment value will be overridden; plaintext copies are not removed"
+                    f"mapping #{idx}: existing environment value will be overridden; plaintext copies are not removed"
                 )
             else:
                 print(
-                    f"{name}: existing environment value takes precedence over the vault",
+                    f"mapping #{idx}: existing environment value takes precedence over the vault",
                     file=sys.stderr,
                 )
                 problems = True
