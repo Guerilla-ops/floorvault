@@ -21,6 +21,7 @@ Two distinct classes of coverage live here, and both are needed:
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 
@@ -792,11 +793,13 @@ def test_identity_lock_lives_in_an_owner_only_runtime_directory(monkeypatch, tmp
     provider = _secret_service_provider(monkeypatch, tmp_path)
     path = provider._identity_lock_path()
     assert path.parent == tmp_path / "runtime" / "floorvault"
-    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    if os.name != "nt":  # Windows reports no POSIX mode; the tier is Linux only
+        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     other = LinuxSecretServiceKeyProvider(
         store_path=tmp_path / "x", service="floorvault", attribute="other-account"
     )
     assert other._identity_lock_path() != path
     monkeypatch.delenv("XDG_RUNTIME_DIR")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # Path.home() on Windows
     assert provider._identity_lock_path().parent == tmp_path / "home" / ".cache" / "floorvault"
