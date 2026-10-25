@@ -6,10 +6,15 @@ agent-secret vault — a floorvault store at ``<home>/agent-vault`` (or
 ``secrets.hermesvault.dir``), kept deliberately separate from the browser-fill
 login vault at ``<home>/vault`` so no legacy migration ever conflates the two.
 
-The store's own key custody is floorvault's AdaptiveKeyProvider (OS keyring,
-then the HERMES_VAULT_KEY-style env tier). The bootstrap key name is declared
-via ``token_env`` so the orchestrator never lets a vault-resolved secret
-overwrite the credential that unlocks the vault.
+The store's key comes from the variable named by ``token_env``, read from the
+fetch-scoped environment only, or else from the OS key store through
+floorvault's AdaptiveKeyProvider with no environment tier: the process-wide
+``FLOOR_VAULT_KEY`` / ``VAULT_MASTER_KEY`` are not accepted, so under the
+multiplex gateway another profile's launch environment cannot unlock this
+store. ``fetch`` never prompts and never creates anything (no Secret Service
+unlock, no key, no store); ``hermes hvault setup`` does that once, interactively.
+The bootstrap key name and floorvault's key variables are returned by
+``protected_env_vars`` so a vault-resolved secret never overwrites them.
 """
 
 from __future__ import annotations
@@ -40,7 +45,25 @@ def _import_floorvault():
 
 DEFAULT_DIR_NAME = "agent-vault"
 DEFAULT_TOKEN_ENV = "HERMES_VAULT_KEY"
+#: floorvault's own key variables. The plugin does not read them, but a mapped
+#: output must not overwrite them for anything else in the process that does.
+FLOORVAULT_KEY_ENV_NAMES = frozenset(
+    {"FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "FLOOR_VAULT_KEY_FILE"}
+)
 _ITEM_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+#: Must equal VaultStore's default custody so stores made either way open alike.
+_SERVICE_NAME = "floor-vault"
+_APP_INSTANCE_ID = "floor-agent"
+
+
+class StoreNotSetUp(Exception):
+    """No store (or no key) yet; ``hermes hvault setup`` creates them."""
+
+
+class CustodyUnavailable(Exception):
+    """The store's key cannot be resolved here (locked key store, missing key,
+    an older floorvault). Its message is written by floorvault or this plugin and
+    names no key material, so it is safe to show, unlike arbitrary exceptions."""
 
 
 def parse_ref(ref: str) -> Tuple[Optional[str], Optional[str]]:
@@ -80,28 +103,49 @@ def resolve_base_dir(cfg: dict, home_path: Path) -> Path:
     return Path(home_path) / DEFAULT_DIR_NAME
 
 
-def _open_store(cfg: dict, home_path: Path):
+def _open_store(cfg: dict, home_path: Path, *, setup: bool = False):
     """Open the agent-secret vault at its resolved directory.
 
-    When the configured bootstrap key var is present in the fetch-scoped
-    environment, it is used directly (keeping per-profile override semantics
-    under multiplex); otherwise floorvault's AdaptiveKeyProvider resolves OS
-    custody itself. ``auto_migrate=False`` is deliberate: this store never
-    adopts the legacy browser vault files.
+    The key is the ``token_env`` variable from the fetch-scoped environment
+    (per-profile under multiplex), else the OS key store. Without ``setup``
+    nothing is created and nothing prompts: a missing store, a missing key or a
+    locked Secret Service collection raises instead. ``setup=True`` (only
+    ``hermes hvault setup``) may unlock the collection and create the key and
+    the store. Legacy browser-vault files are never adopted.
     """
     validate_config(cfg)
-    floorvault = _import_floorvault()
+    _import_floorvault()
+    from floorvault import FloorVault
+    from floorvault.providers.adaptive import AdaptiveKeyProvider
+    from floorvault.providers.base import KeyProviderError
+    from floorvault.vaultkit import VaultStore
 
     base = resolve_base_dir(cfg, home_path)
+    if not setup and not (base / "vault.db").is_file():
+        raise StoreNotSetUp(f"no store at {base}; run `hermes hvault setup` once")
     token_env = str(cfg.get("token_env") or DEFAULT_TOKEN_ENV)
     key_hex = get_source_environment().get(token_env)
     if key_hex:
-        from floorvault import FloorVault
-        from floorvault.vaultkit import VaultStore
-
-        crypto = FloorVault(bytes.fromhex(key_hex.strip()), app_instance_id="floor-agent")
+        crypto = FloorVault(bytes.fromhex(key_hex.strip()), app_instance_id=_APP_INSTANCE_ID)
         return VaultStore(base, crypto=crypto)
-    return floorvault.get_vault_store(base, auto_migrate=False)
+    try:
+        provider = AdaptiveKeyProvider(
+            service_name=_SERVICE_NAME,
+            fallback_dir=base,
+            environ={},  # no environment tier: token_env above is the only key variable
+            interactive=setup,
+        )
+    except TypeError:
+        # An older floorvault would read the process environment and could prompt.
+        raise CustodyUnavailable(
+            "this hermesvault needs a newer floorvault (AdaptiveKeyProvider with "
+            "environ= and interactive=); upgrade the floorvault package"
+        ) from None
+    try:
+        key = provider.resolve_key(allow_create=setup)
+    except KeyProviderError as exc:
+        raise CustodyUnavailable(str(exc)) from None
+    return VaultStore(base, crypto=FloorVault(key, app_instance_id=_APP_INSTANCE_ID))
 
 
 class HermesVaultSource(SecretSource):
@@ -117,8 +161,14 @@ class HermesVaultSource(SecretSource):
             "Is floorvault installed in the Hermes environment? Re-run "
             "`hermes plugins enable hermesvault` so Hermes prepares its dependencies."
         ),
-        ErrorKind.AUTH_FAILED: "No usable key custody — set {token_env} or allow the OS keychain tier.",
+        ErrorKind.AUTH_FAILED: (
+            "No usable key custody: set {token_env}, or run `hermes hvault setup` to "
+            "unlock or create the OS key store entry."
+        ),
     }
+
+    def protected_env_vars(self, cfg: dict) -> frozenset[str]:
+        return frozenset({self.token_env(cfg)}) | FLOORVAULT_KEY_ENV_NAMES
 
     def config_schema(self) -> dict:
         return {
@@ -154,6 +204,12 @@ class HermesVaultSource(SecretSource):
             return result
         try:
             store = _open_store(cfg, home_path)
+        except StoreNotSetUp as error:
+            return result.fail(str(error), ErrorKind.NOT_CONFIGURED)
+        except CustodyUnavailable as error:
+            return result.fail(
+                f"Could not open the hermes-vault store: {error}", ErrorKind.AUTH_FAILED
+            )
         except ImportError:
             return result.fail(
                 "floorvault package is not installed in this environment", ErrorKind.INTERNAL

@@ -18,12 +18,22 @@ hermes plugins enable hermesvault
 
 Hermes asks for consent to install the plugin's Python dependencies, which come
 from PyPI:
-- `floorvault>=0.2.1,<0.3`;
+- `floorvault>=0.2.2,<0.3`;
 - `secretstorage` on Linux;
 - `pyobjc-framework-Security` on macOS.
 
 The plugin directory contains no copy of FloorVault. Restart Hermes after
-enabling the plugin.
+enabling the plugin, then create the store once per profile:
+
+```bash
+hermes hvault setup
+```
+
+`setup` creates the store and its key, and may show the OS key store's unlock
+prompt. Nothing else does: the secret source runs at Hermes startup and never
+prompts, unlocks, or creates a key or a store. If the store is missing, the key is
+missing, or the Linux Secret Service collection is locked, the source reports an
+error and Hermes starts without those variables.
 
 Check an install with `hermes plugins doctor hermesvault`.
 
@@ -67,13 +77,15 @@ provider; chat uses the vault key). See
 [USAGE](../../docs/USAGE.md#run-any-command-with-vault-secrets). Or move keys one
 at a time with `hermes hvault` as above.
 
-The companion removal check requires `floorvault[hermes]` (PyYAML). This is
-development-source functionality; installing the plugin's published FloorVault
-0.2.1 dependency alone does not supply these newer migration checks.
+The companion removal check requires `floorvault[hermes]` (PyYAML). The
+`floorvault secrets` command line is not in a published release yet (the plugin's
+`floorvault>=0.2.2` dependency does not include it); run it from a FloorVault
+source checkout until it is.
 
 ## Manage items
 
 ```bash
+hermes hvault setup                          # once: create the store and key (may prompt)
 hermes hvault add "Service token" --stdin    # field=value lines on stdin
 hermes hvault put <item_id> <field>          # prompts for the value
 hermes hvault list                           # metadata only
@@ -84,16 +96,17 @@ hermes hvault rm <item_id>
 ```
 
 Prefer `--stdin` or `put` to `field=value` arguments, which show up in process
-listings. `put` replaces one field inside a single SQLite transaction.
+listings. A malformed line is reported by its number (`stdin line 3`), never
+echoed, since it may be the secret itself. `put` replaces one field inside a single SQLite transaction.
 
 `hermes hvault doctor` checks the active profile's configuration and existing
 store, attempts to resolve each mapping, and reports variables shadowed by the
 current environment or protected as the bootstrap key. Exit status is 0 when
 all configured mappings resolve without these issues, 1 for operational issues
 (including a disabled source or no mappings), and 2 for malformed configuration.
-It never prints credential values and does not create a missing vault. Existing
-stores are opened through the ordinary backend, so backend initialization and
-OS custody checks still apply. With `override_existing: true` it reports that
+It never prints credential values and does not create a missing vault. It opens
+the store exactly as the secret source does at startup: no prompt, no key or store
+created. With `override_existing: true` it reports that
 existing values will be replaced; it does not remove plaintext files. Restart
 Hermes and verify the actual service after changes: the command checks its own
 process environment, not a running gateway or another profile.
@@ -110,10 +123,23 @@ skips plugin CLI commands; the secret source itself still works.
 
 ## Key custody
 
-The store's master key comes from FloorVault's `AdaptiveKeyProvider`: the OS key
-store (macOS Keychain, Windows DPAPI, or Linux Secret Service). Alternatively, if
-the variable named by `token_env` is set in Hermes' environment for the source,
-the plugin uses that 64-hex-character key.
+The store's master key is the 64-hex-character key in the variable named by
+`token_env`, read from the environment Hermes gives this source for the profile
+being fetched (under the multiplex gateway, that profile's scope, not the launch
+environment). Without it, the key comes from the OS key store (macOS Keychain,
+Windows DPAPI, or Linux Secret Service) through FloorVault's `AdaptiveKeyProvider`,
+with its environment tier turned off: `FLOOR_VAULT_KEY` and `VAULT_MASTER_KEY` are
+not read, so a key in another profile's environment never unlocks this store. The
+source also declares `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY` and
+`FLOOR_VAULT_KEY_FILE`, besides `token_env`, as protected, so a mapped secret can
+never overwrite them.
+
+On Linux every store using default custody shares one Secret Service entry
+(`floor-vault` / `default-v1`). The first key for it is created under a per-user
+lock (`$XDG_RUNTIME_DIR/floorvault`, else `~/.cache/floorvault`), so two stores set
+up at the same time get the same key; if two entries with different keys exist
+anyway (for example made by an older version), opening is refused rather than one
+being picked, and no entry is overwritten or removed.
 
 On a host with no usable OS key store and no `token_env` key (for example a
 headless Linux box without Secret Service), opening the store fails closed: the
@@ -137,8 +163,9 @@ other.
 
 ## What this plugin does on your machine
 
-- **Reads and writes** a FloorVault store under `<profile-home>/agent-vault` (or
-  `secrets.hermesvault.dir`).
+- **Reads** a FloorVault store under `<profile-home>/agent-vault` (or
+  `secrets.hermesvault.dir`) at startup, and only reads. `hermes hvault` commands
+  write to it; `hermes hvault setup` creates it.
 - **Reads its own master key** from the OS key store (service `floor-vault`), or
   the `token_env` variable. It never reads other tools' credential stores, `.env`
   files or Hermes' `auth.json`. Any other FloorVault `VaultStore` on the same
