@@ -805,3 +805,63 @@ def test_the_environment_view_is_where_tier_one_reads(monkeypatch, tmp_path):
 def test_interactive_reaches_the_secret_service_tier(tmp_path, interactive):
     provider = AdaptiveKeyProvider(fallback_dir=tmp_path, interactive=interactive)
     assert provider._linux_provider()._interactive is interactive
+
+
+# --- non-interactive macOS Keychain reads (a secret source's fetch must not prompt) ---
+
+
+def _recording_security(monkeypatch, *, copy_status, with_ui_constants=True):
+    module = _fake_security(monkeypatch)
+    if with_ui_constants:
+        module.kSecUseAuthenticationUI = "kSecUseAuthenticationUI"
+        module.kSecUseAuthenticationUIFail = "kSecUseAuthenticationUIFail"
+    calls = {"copy": [], "add": []}
+
+    def SecItemCopyMatching(query, _flags):
+        calls["copy"].append(dict(query))
+        return copy_status
+
+    def SecItemAdd(query, _flags):
+        calls["add"].append(dict(query))
+        return (0, None)
+
+    module.SecItemCopyMatching = SecItemCopyMatching
+    module.SecItemAdd = SecItemAdd
+    return calls
+
+
+def test_non_interactive_keychain_read_asks_the_framework_not_to_prompt(monkeypatch, tmp_path):
+    calls = _recording_security(monkeypatch, copy_status=(0, b"K" * 32))
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}, interactive=False)
+    assert provider.resolve_key(allow_create=False).get_bytes() == b"K" * 32
+    assert calls["copy"][0]["kSecUseAuthenticationUI"] == "kSecUseAuthenticationUIFail"
+
+
+def test_interactive_keychain_read_is_unchanged(monkeypatch, tmp_path):
+    calls = _recording_security(monkeypatch, copy_status=(0, b"K" * 32))
+    AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}).resolve_key(allow_create=False)
+    assert "kSecUseAuthenticationUI" not in calls["copy"][0]
+
+
+def test_a_keychain_that_needs_a_prompt_is_reported_not_shown(monkeypatch, tmp_path):
+    calls = _recording_security(monkeypatch, copy_status=(-25308, None))  # InteractionNotAllowed
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}, interactive=False)
+    with pytest.raises(KeyProviderError, match="needs a prompt"):
+        provider.resolve_key(allow_create=False)
+    assert calls["add"] == []
+
+
+def test_non_interactive_keychain_never_creates_a_key(monkeypatch, tmp_path):
+    calls = _recording_security(monkeypatch, copy_status=(-25300, None))  # ItemNotFound
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}, interactive=False)
+    with pytest.raises(KeyProviderError, match="not created without a prompt"):
+        provider._resolve_os_tier_for_platform(allow_create=True, missing_ok=False)
+    assert calls["add"] == []
+
+
+def test_a_binding_without_the_no_prompt_option_is_refused(monkeypatch, tmp_path):
+    calls = _recording_security(monkeypatch, copy_status=(0, b"K" * 32), with_ui_constants=False)
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}, interactive=False)
+    with pytest.raises(KeyProviderError, match="cannot ask the Keychain"):
+        provider.resolve_key(allow_create=False)
+    assert calls["copy"] == []

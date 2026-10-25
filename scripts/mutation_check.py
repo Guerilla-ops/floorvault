@@ -1504,6 +1504,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         "Tier 1 reads the process environment even when the caller passed its own view: an ambient key unlocks the store",
     ),
     Mutation(
+        "MAC-1",
+        "src/floorvault/providers/adaptive.py",
+        "                    query[ui_key] = ui_fail\n",
+        "                    pass  # MUTANT\n",
+        "A non-interactive Keychain read no longer asks the framework to fail instead of prompting",
+    ),
+    Mutation(
+        "MAC-2",
+        "src/floorvault/providers/adaptive.py",
+        "                if status == -25300 and allow_create and not self.interactive:\n",
+        "                if False:  # MUTANT\n",
+        "A non-interactive resolve creates a new master key in the macOS Keychain",
+    ),
+    Mutation(
         "PKG-1",
         "scripts/verify_wheel.py",
         "        if missing:",

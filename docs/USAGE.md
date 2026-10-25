@@ -167,8 +167,9 @@ custody. `environ=` chooses where the environment tier reads its variables (`{}`
 for none, or a per-configuration view in a process that serves several, such as
 Hermes' multiplex gateway), and `interactive=False` keeps the Linux Secret Service
 tier from prompting: no unlock, no collection or key creation; a locked collection
-or a missing key is an error instead. The macOS Keychain calls are not changed by
-it. On Linux the first key created for a service/account is serialized across the
+or a missing key is an error instead. On macOS it asks the Keychain to fail rather
+than show a dialog (`kSecUseAuthenticationUIFail`) and creates no key; that is
+checked against a stand-in for the Security framework, not a real Keychain. On Linux the first key created for a service/account is serialized across the
 user's processes (a lock in `$XDG_RUNTIME_DIR/floorvault`, else
 `~/.cache/floorvault`), and two entries that hold different keys are refused, not
 chosen between and never overwritten. `resolve_key(allow_create=False)` resolves an existing key without creating

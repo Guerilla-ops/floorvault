@@ -86,10 +86,12 @@ class AdaptiveKeyProvider(KeyProvider):
         # so the launch environment of another configuration cannot unlock this
         # store. ``None`` keeps the process environment.
         self._environ: Mapping[str, str] = os.environ if environ is None else environ
-        # False: the Linux Secret Service tier never prompts (no unlock, no
-        # collection or key creation). Used where blocking on a user is not
-        # allowed, such as a secret source's fetch. The macOS Keychain calls are
-        # not changed by it; whether they can prompt is not verified here.
+        # False: never prompt. The Linux Secret Service tier does not unlock or
+        # create a collection or key; the macOS Keychain read asks the framework
+        # to fail instead of showing a dialog (kSecUseAuthenticationUIFail) and
+        # creates no key. Used where blocking on a user is not allowed, such as a
+        # secret source's fetch. The macOS behaviour is checked against a stand-in
+        # for the Security framework only, not a real Keychain.
         self.interactive = interactive
 
     def _is_interactive_desktop(self) -> bool:
@@ -432,10 +434,31 @@ class AdaptiveKeyProvider(KeyProvider):
                     Security.kSecReturnData: True,
                     Security.kSecMatchLimit: Security.kSecMatchLimitOne,
                 }
+                if not self.interactive:
+                    # Ask the Keychain to fail rather than show a dialog when the
+                    # item needs one (a locked keychain, access not yet granted).
+                    ui_key = getattr(Security, "kSecUseAuthenticationUI", None)
+                    ui_fail = getattr(Security, "kSecUseAuthenticationUIFail", None)
+                    if ui_key is None or ui_fail is None:
+                        raise KeyProviderError(
+                            "this Security framework binding cannot ask the Keychain to "
+                            "fail instead of prompting; refusing a non-interactive read"
+                        )
+                    query[ui_key] = ui_fail
                 status, data = Security.SecItemCopyMatching(query, None)
                 if status == 0 and data:
                     key_bytes = bytes(data)
                     return HardenedMemoryKey(key_bytes)
+                if status == -25308 and not self.interactive:  # errSecInteractionNotAllowed
+                    raise KeyProviderError(
+                        "the macOS Keychain needs a prompt to release the key (it may be "
+                        "locked) and this caller does not show one; unlock it and retry"
+                    )
+                if status == -25300 and allow_create and not self.interactive:
+                    raise MissingKeyError(
+                        "macOS Keychain master key not found, and it is not created "
+                        "without a prompt; set the key up interactively first"
+                    )
                 if status == -25300 and allow_create:  # errSecItemNotFound
                     new_key = os.urandom(32)
                     add_query = {
