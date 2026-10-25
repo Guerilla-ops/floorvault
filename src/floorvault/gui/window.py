@@ -55,6 +55,7 @@ from .backend import (
     ImportPreview,
     ItemDetail,
     VaultSession,
+    describe_argv,
     key_source_hint,
 )
 
@@ -158,13 +159,25 @@ def _clear_layout(layout) -> None:
         item = layout.takeAt(0)
         widget = item.widget()
         if widget is not None:
-            # Detach now: deleteLater alone leaves the old widget painted until
-            # the event loop gets round to deleting it.
+            # Hide now: deleteLater alone leaves the old widget painted until
+            # the event loop deletes it. Not setParent(None): that hands the
+            # widget to Python while deleteLater also frees it - a double free.
             widget.hide()
-            widget.setParent(None)
             widget.deleteLater()
         elif item.layout() is not None:
             _clear_layout(item.layout())
+
+
+def _run_dialog(dialog: QDialog, *, keep: bool = False) -> bool:
+    """Run ``dialog`` modally; True if accepted. Deletes it afterwards unless ``keep``.
+
+    A dialog parented to the window would otherwise live until the window
+    closes, keeping whatever was typed into it.
+    """
+    accepted = dialog.exec() == QDialog.DialogCode.Accepted
+    if not keep:
+        dialog.deleteLater()
+    return accepted
 
 
 def ask_secret(parent: QWidget, title: str, prompt: str) -> Optional[str]:
@@ -186,12 +199,11 @@ def ask_command(parent: QWidget, session: VaultSession) -> Optional[list[str]]:
     except GuiError as exc:
         _error(parent, exc)
         return None
-    shown = " ".join(argv)
     note = ("\n\nWarning: " + "\nWarning: ".join(warnings)) if warnings else ""
     answer = QMessageBox.question(
         parent,
         "Bind to a command",
-        f"Allow exactly this command line?\n\n{shown}{note}",
+        f"Allow exactly this command line, one argument per line?\n\n{describe_argv(argv)}{note}",
     )
     return argv if answer == QMessageBox.StandardButton.Yes else None
 
@@ -224,7 +236,7 @@ class UnlockPage(QWidget):
         browse.clicked.connect(self._browse_store)
         self.store_status = _label("", "muted")
 
-        self.source_os = QRadioButton("OS key store")
+        self.source_os = QRadioButton("OS key store only")
         self.source_file = QRadioButton("Key file")
         self.source_env = QRadioButton("Environment variable")
         group = QButtonGroup(self)
@@ -365,7 +377,7 @@ class UnlockPage(QWidget):
         except GuiError as exc:
             self.error.setText(str(exc))
             return
-        if AddItemDialog(self.session, self).exec() == QDialog.DialogCode.Accepted:
+        if _run_dialog(AddItemDialog(self.session, self)):
             self.unlocked.emit()
 
     def _import_first(self) -> None:
@@ -375,8 +387,7 @@ class UnlockPage(QWidget):
         except GuiError as exc:
             self.error.setText(str(exc))
             return
-        dialog = ImportDialog(self.session, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted and self.session.unlocked:
+        if _run_dialog(ImportDialog(self.session, self)) and self.session.unlocked:
             self.unlocked.emit()
 
     def reset(self) -> None:
@@ -523,6 +534,16 @@ class AddItemDialog(QDialog):
     def values(self) -> dict[str, str]:
         return {n.text().strip(): v.text() for n, v, _r in self.field_rows}
 
+    def wipe(self) -> None:
+        """Clear everything typed, for when the window locks under this dialog."""
+        for name_edit, value_edit, _row in self.field_rows:
+            value_edit.clear()
+            name_edit.clear()
+        self.label_edit.clear()
+        self.id_edit.clear()
+        self.command_edit.clear()
+        self.error.setText("")
+
     def _save(self) -> None:
         self.error.setText("")
         fields = self.values()
@@ -584,6 +605,10 @@ class ImportDialog(QDialog):
         self.prefix_edit.setMaximumWidth(180)
         preview = _button("Preview")
         preview.clicked.connect(self.refresh)
+        # Editing what shaped the preview withdraws it: the write must run a
+        # plan the person has seen, not one rebuilt from newer field values.
+        self.path_edit.textChanged.connect(self._invalidate)
+        self.prefix_edit.textChanged.connect(self._invalidate)
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Import", "Variable", "Becomes", "Status"])
@@ -649,6 +674,26 @@ class ImportDialog(QDialog):
             self.path_edit.setText(chosen)
             self.skip.clear()
             self.refresh()
+
+    def _invalidate(self, *_args) -> None:
+        if self.preview is None:
+            return
+        self.preview = None
+        self.write_button.setEnabled(False)
+        self.table.setRowCount(0)
+        self.after.setPlainText("")
+        self.problems.setText("The path or prefix changed. Press Preview to see the new plan.")
+
+    def wipe(self) -> None:
+        """Drop the preview and every field, for when the window locks."""
+        self.preview = None
+        self.skip.clear()
+        self.write_button.setEnabled(False)
+        self.table.setRowCount(0)
+        self.after.setPlainText("")
+        self.problems.setText("")
+        self.path_edit.clear()
+        self.prefix_edit.clear()
 
     def refresh(self) -> None:
         self.preview = None
@@ -716,18 +761,17 @@ class ImportDialog(QDialog):
         preview = self.preview
         if preview is None or not preview.can_write:
             return
+        refs = "\n".join(f"  {name}=fv:{item_id}" for name, item_id in preview.references)
         answer = QMessageBox.question(
             self,
             "Import",
-            f"Store {preview.to_store} new item(s) and rewrite {preview.path.name} "
-            f"with {preview.to_rewrite} reference(s)? No backup is made.",
+            f"Store {preview.to_store} new item(s) and rewrite {preview.path} "
+            f"with these references? No backup is made.\n\n{refs}",
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        if answer != QMessageBox.StandardButton.Yes or self.preview is not preview:
             return
         try:
-            result = self.session.run_import(
-                preview, skip=sorted(self.skip), prefix=self.prefix_edit.text().strip()
-            )
+            result = self.session.run_import(preview)
         except GuiError as exc:
             self.problems.setText(str(exc))
             self.refresh()
@@ -841,7 +885,7 @@ class DetailPanel(QWidget):
         else:
             for argv in detail.commands:
                 row = QHBoxLayout()
-                row.addWidget(_label(" ".join(argv), mono=True), 1)
+                row.addWidget(_label(describe_argv(argv), mono=True), 1)
                 remove = _button("Remove")
                 remove.clicked.connect(lambda _=False, a=argv: self._unbind_line(a))
                 row.addWidget(remove)
@@ -1031,7 +1075,7 @@ class VaultPage(QWidget):
             _error(self, exc)
             self.rows = []
         self.store_label.setText(
-            f"{self.session.vault_dir} · unlocked · key from {self.session.key_source}"
+            f"{self.session.vault_dir} · unlocked · key from {self.session.key_description}"
         )
         self._fill_list(select=current)
 
@@ -1083,11 +1127,13 @@ class VaultPage(QWidget):
 
     def _add(self) -> None:
         dialog = AddItemDialog(self.session, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.refresh(select=dialog.created_id or "")
+        created = dialog.created_id if _run_dialog(dialog, keep=True) else None
+        dialog.deleteLater()
+        if created is not None:
+            self.refresh(select=created)
 
     def _import(self) -> None:
-        if ImportDialog(self.session, self).exec() == QDialog.DialogCode.Accepted:
+        if _run_dialog(ImportDialog(self.session, self)):
             self.refresh()
 
 
@@ -1149,9 +1195,28 @@ class MainWindow(QMainWindow):
     def lock(self) -> None:
         self.idle_timer.stop()
         self.session.lock()
+        self.dismiss_dialogs()
         self.vault_page.clear()
         self.unlock_page.reset()
         self.stack.setCurrentWidget(self.unlock_page)
+
+    @staticmethod
+    def dismiss_dialogs() -> None:
+        """Clear and reject every open dialog, including prompts and confirmations.
+
+        A dialog run with exec() has its own event loop and stays on screen
+        when the main page changes, so locking must end each one explicitly.
+        A rejected confirmation answers "no", so nothing it guarded proceeds.
+        """
+        for widget in QApplication.topLevelWidgets():
+            if not isinstance(widget, QDialog) or not widget.isVisible():
+                continue
+            wipe = getattr(widget, "wipe", None)
+            if callable(wipe):
+                wipe()
+            for edit in widget.findChildren(QLineEdit):
+                edit.clear()
+            widget.reject()
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt's name
         self.lock()

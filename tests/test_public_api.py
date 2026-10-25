@@ -66,7 +66,9 @@ EXPECTED_ALL = {
 FV_INIT = "(master_key: 'Union[bytes, HardenedMemoryKey]', app_instance_id: 'str' = 'default', *, maximum_tracked_nonces: 'int' = 10000, memory_mode: 'str' = 'opportunistic', wipe_source_key: 'bool' = False) -> 'None'"
 VAULT_STORE_INIT = "(base_dir: 'Path | str', *, crypto: 'Optional[FloorVault]' = None, migrate_legacy_metadata: 'bool' = False, seal_listing_metadata: 'bool' = False, migrate_listing_metadata: 'bool' = False)"
 VAULT_STORE_METHODS = {
-    "add_item": "(self, kind: 'str', label: 'str', secret: 'dict[str, Any]', origin: 'Optional[str]' = None, *, item_id: 'Optional[str]' = None) -> 'VaultItemMeta'",
+    # allowed_commands (keyword-only, default None) binds an item in the same
+    # transaction that creates it; existing callers are unaffected.
+    "add_item": "(self, kind: 'str', label: 'str', secret: 'dict[str, Any]', origin: 'Optional[str]' = None, *, item_id: 'Optional[str]' = None, allowed_commands: 'Optional[Sequence[Sequence[str]]]' = None) -> 'VaultItemMeta'",
     "begin_rotation": "(self, target_key_id: 'int', *, target_vault: 'FloorVault') -> 'None'",
     "clear_rotation_journal": "(self) -> 'None'",
     "delete_item": "(self, item_id: 'str') -> 'bool'",

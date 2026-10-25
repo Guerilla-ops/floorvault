@@ -1,6 +1,8 @@
 """``floorvault-gui``'s PySide6 window, driven headless.
 
-Skipped where PySide6 (the ``gui`` extra) or its system libraries are missing.
+Skipped where PySide6 (the ``gui`` extra) or its system libraries are missing,
+unless FLOORVAULT_REQUIRE_GUI_TESTS=1 is set: then a missing Qt is a failure,
+so the CI job that exists to run these tests cannot pass by skipping them.
 Modal prompts are replaced with stubs, so nothing waits for a person. Every
 test checks that no stored value appears in any widget's text.
 """
@@ -13,12 +15,18 @@ import sys
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-QtWidgets = pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
+if os.environ.get("FLOORVAULT_REQUIRE_GUI_TESTS") == "1":
+    from PySide6 import QtWidgets
+else:
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
+from PySide6.QtCore import QTimer  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
+    QDialog,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -32,6 +40,8 @@ from floorvault.gui.backend import VaultSession  # noqa: E402
 
 SECRET = "fixture-secret-value"
 OTHER = "fixture-other-value"
+# The real confirmation, kept before the autouse stub replaces it.
+REAL_QUESTION = QMessageBox.question
 
 
 @pytest.fixture(scope="module")
@@ -54,6 +64,28 @@ def environ(tmp_path):
 @pytest.fixture()
 def session(tmp_path, environ):
     return VaultSession(tmp_path / "vault", key_source="env", environ=environ)
+
+
+# Every dialog a test creates gets this parent, which lives for the whole run.
+# A parentless dialog whose signal lambdas form a reference cycle would be freed
+# by Python's cycle collector at an arbitrary moment - possibly inside a later
+# test's nested event loop - and Qt crashes when that happens. In the app every
+# dialog has a parent, so this only affects tests.
+_KEEP: list = []
+
+
+def _parent():
+    if not _KEEP:
+        _KEEP.append(QtWidgets.QWidget())
+    return _KEEP[0]
+
+
+@pytest.fixture(autouse=True)
+def close_dialogs(app):
+    yield
+    for widget in QApplication.topLevelWidgets():
+        if isinstance(widget, QDialog) and widget.isVisible():
+            widget.reject()
 
 
 @pytest.fixture(autouse=True)
@@ -141,7 +173,7 @@ def test_wrong_key_stays_on_the_unlock_page(app, session, environ):
 
 def test_add_item_dialog_creates_binds_and_clears_the_clipboard(app, session):
     QGuiApplication.clipboard().setText(SECRET)
-    dialog = gui.AddItemDialog(session)
+    dialog = gui.AddItemDialog(session, _parent())
     dialog.label_edit.setText("Token")
     dialog.id_edit.setText("tok")
     name, value, _row = dialog.field_rows[0]
@@ -158,7 +190,7 @@ def test_add_item_dialog_creates_binds_and_clears_the_clipboard(app, session):
 
 
 def test_add_item_dialog_shows_errors_inline(app, session):
-    dialog = gui.AddItemDialog(session)
+    dialog = gui.AddItemDialog(session, _parent())
     dialog.bind_any.setChecked(True)
     dialog.field_rows[0][1].setText(SECRET)
     dialog._save()
@@ -210,7 +242,7 @@ def test_last_binding_removal_is_refused_in_the_window(app, session, no_modals):
 def test_import_dialog_previews_then_writes(app, session, tmp_path):
     path = tmp_path / "project.env"
     path.write_text(f"TOKEN={SECRET}\nFLOOR_VAULT_KEY=00\nLOG_LEVEL={OTHER}\n", encoding="utf-8")
-    dialog = gui.ImportDialog(session)
+    dialog = gui.ImportDialog(session, _parent())
     dialog.path_edit.setText(str(path))
     dialog.refresh()
     assert dialog.table.rowCount() == 3
@@ -229,3 +261,156 @@ def test_import_dialog_previews_then_writes(app, session, tmp_path):
     assert "TOKEN=fv:token" in text and SECRET not in text
     assert f"LOG_LEVEL={OTHER}" in text
     assert session.unlocked and session.detail("token").fields[0].is_set
+
+
+# --------------------------------------------------------------- stale previews
+
+
+def _previewed(session, tmp_path):
+    path = tmp_path / "project.env"
+    path.write_text(f"TOKEN={SECRET}\n", encoding="utf-8")
+    dialog = gui.ImportDialog(session, _parent())
+    dialog.path_edit.setText(str(path))
+    dialog.prefix_edit.setText("app.")
+    dialog.refresh()
+    assert dialog.preview is not None and dialog.write_button.isEnabled()
+    assert dialog.preview.references == (("TOKEN", "app.token"),)
+    return dialog, path
+
+
+def test_changing_the_prefix_after_preview_withdraws_it(app, session, tmp_path):
+    dialog, path = _previewed(session, tmp_path)
+    dialog.prefix_edit.setText("prod.")
+    assert dialog.preview is None
+    assert not dialog.write_button.isEnabled()
+    assert dialog.table.rowCount() == 0
+    dialog._write()
+    assert SECRET in path.read_text(encoding="utf-8"), "a stale preview must not write"
+
+    dialog.refresh()
+    assert dialog.preview.references == (("TOKEN", "prod.token"),)
+    dialog._write()
+    assert path.read_text(encoding="utf-8") == "TOKEN=fv:prod.token\n"
+
+
+def test_changing_the_path_after_preview_withdraws_it(app, session, tmp_path):
+    dialog, path = _previewed(session, tmp_path)
+    other = tmp_path / "other.env"
+    other.write_text(f"OTHER={OTHER}\n", encoding="utf-8")
+    dialog.path_edit.setText(str(other))
+    assert dialog.preview is None and not dialog.write_button.isEnabled()
+    dialog._write()
+    assert SECRET in path.read_text(encoding="utf-8")
+    assert OTHER in other.read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------- locking over dialogs
+
+
+def _visible_dialogs():
+    return [w for w in QApplication.topLevelWidgets() if isinstance(w, QDialog) and w.isVisible()]
+
+
+def _lock_while(win, open_modal, fill):
+    """Run ``open_modal`` (it blocks in exec) and let the idle lock end it.
+
+    ``fill`` runs inside the modal's event loop, before the lock. A safety
+    timer rejects anything still open after 3 s so a regression fails instead
+    of hanging; it records what it had to close.
+    """
+    left_open: list[str] = []
+
+    def safety():
+        for dialog in _visible_dialogs():
+            left_open.append(type(dialog).__name__)
+            dialog.reject()
+
+    guard = QTimer()
+    guard.setSingleShot(True)
+    guard.timeout.connect(safety)
+    guard.start(3000)
+    QTimer.singleShot(20, fill)
+    win.idle_timer.start()
+    try:
+        result = open_modal()
+    finally:
+        guard.stop()
+    assert left_open == [], f"the lock left these dialogs open: {left_open}"
+    assert not win.session.unlocked
+    assert win.stack.currentWidget() is win.unlock_page
+    assert _visible_dialogs() == []
+    return result
+
+
+@pytest.fixture()
+def locking_window(app, session):
+    session.add_generic("Token", {"value": OTHER}, item_id="tok")
+    win = gui.MainWindow(session, idle_lock_ms=150)
+    win.show_vault()
+    win.idle_timer.stop()
+    yield win
+    win.close()
+
+
+def test_lock_clears_and_closes_the_add_item_dialog(locking_window):
+    win = locking_window
+    seen = {}
+
+    def fill():
+        dialog = next(d for d in _visible_dialogs() if isinstance(d, gui.AddItemDialog))
+        seen["dialog"] = dialog
+        dialog.label_edit.setText("Typed label")
+        dialog.field_rows[0][1].setText(SECRET)
+
+    _lock_while(win, win.vault_page._add, fill)
+    dialog = seen["dialog"]
+    assert dialog.field_rows[0][1].text() == ""
+    assert dialog.label_edit.text() == ""
+    assert dialog.created_id is None
+
+
+def test_lock_clears_the_import_preview(locking_window, tmp_path):
+    win = locking_window
+    path = tmp_path / "project.env"
+    path.write_text(f"TOKEN={SECRET}\n", encoding="utf-8")
+    seen = {}
+
+    def fill():
+        dialog = next(d for d in _visible_dialogs() if isinstance(d, gui.ImportDialog))
+        seen["dialog"] = dialog
+        dialog.path_edit.setText(str(path))
+        dialog.refresh()
+        assert dialog.table.rowCount() == 1
+
+    _lock_while(win, win.vault_page._import, fill)
+    dialog = seen["dialog"]
+    assert dialog.preview is None
+    assert dialog.table.rowCount() == 0
+    assert dialog.path_edit.text() == "" and dialog.after.toPlainText() == ""
+    assert SECRET in path.read_text(encoding="utf-8")
+
+
+def test_lock_ends_a_value_prompt_without_saving(locking_window, environ):
+    win = locking_window
+
+    def fill():
+        prompt = next(d for d in _visible_dialogs() if isinstance(d, QInputDialog))
+        prompt.setTextValue(OTHER + "-replacement")
+
+    _lock_while(win, lambda: win.vault_page.detail._set_field("value"), fill)
+    win.session.unlock()
+    assert win.session.detail("tok").fields[0].is_set
+
+
+def test_lock_answers_a_pending_import_confirmation_with_no(locking_window, tmp_path, monkeypatch):
+    win = locking_window
+    path = tmp_path / "project.env"
+    path.write_text(f"TOKEN={SECRET}\n", encoding="utf-8")
+    dialog = gui.ImportDialog(win.session, _parent())
+    dialog.path_edit.setText(str(path))
+    dialog.refresh()
+    monkeypatch.setattr(QMessageBox, "question", REAL_QUESTION)
+
+    _lock_while(win, dialog._write, lambda: None)
+    assert SECRET in path.read_text(encoding="utf-8"), "a dismissed confirmation must not write"
+    dialog.close()

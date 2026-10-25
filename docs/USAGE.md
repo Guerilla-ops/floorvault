@@ -420,22 +420,49 @@ secrets`. Install it with the `gui` extra (PySide6-Essentials):
 
 ```bash
 python -m pip install "floorvault[gui]"
-floorvault-gui                       # OS key store, ~/.floorvault/agent-vault
+floorvault-gui                       # ~/.floorvault/agent-vault, key from the OS key store
 floorvault-gui --vault DIR --key-file /run/secrets/fv-key
+floorvault-gui --key-env FLOOR_VAULT_KEY
 ```
 
 It lists items, adds generic items, sets and replaces fields, copies `fv:`
 references, manages `secrets allow` bindings, deletes items and imports a
-project `.env` with a preview first. It keeps the CLI's rules:
+project `.env` with a preview first.
+
+**Key source.** The window enforces the source you pick, which differs from
+the CLI's default in one case:
+
+| Choice | Uses |
+| --- | --- |
+| OS key store only | Keychain, Secret Service or DPAPI. Refuses to open, or to create a store, while `FLOOR_VAULT_KEY` or `VAULT_MASTER_KEY` is set, and never uses a disk key file. The CLI's default would adopt those variables instead. |
+| Key file | The named file, or `$FLOOR_VAULT_KEY_FILE`. |
+| Environment variable | The named variable (default `FLOOR_VAULT_KEY`). |
+
+The status line names the source actually in use.
+
+It keeps the CLI's rules:
 
 - **No stored value is shown or copied.** Fields read *Set* or *Empty*; copy
   buttons copy references. Values are typed into masked inputs, and the
   clipboard is cleared on save if it still holds the value just entered.
 - **Opening never creates a store or key.** Only the first *Add item* or
   *Import* on a directory without a store creates one.
+- **A new item bound to a command is created bound.** The item and its
+  binding are written in one transaction: a failure leaves no item rather
+  than an unbound one.
 - **Removing the last bound command line is refused.** *Allow any command* is
   the separate, confirmed action that clears a binding.
+- **An import writes exactly what its preview showed.** Changing the path or
+  prefix withdraws the preview; the write runs the previewed plan, and stops
+  if the file or the resulting references changed.
 - **The window locks after five minutes** without keyboard or mouse input.
+  Locking also clears and closes any open dialog, prompt or confirmation; a
+  confirmation closed this way counts as "no".
+
+**Command lines** are split with shell rules on macOS and Linux, and on
+Windows with the rules the Microsoft C runtime uses to build `sys.argv`
+(so `--name="two words"` is one argument), except that an unclosed quote is
+an error. The confirmation lists each argument on its own line.
 
 Not in this release: login, payment and address items (they are listed and
 can be deleted, but not created or edited), Hermes `.env` imports (use

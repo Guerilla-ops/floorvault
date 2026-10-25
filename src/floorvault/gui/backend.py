@@ -24,7 +24,9 @@ from typing import Mapping, Optional, Sequence
 
 from ..agent_cli import (
     _ITEM_ID,
+    APP_CONTEXT,
     KEY_FILE_ENV,
+    SERVICE_NAME,
     ImportFileChanged,
     StoreUnavailable,
     _find_command,
@@ -46,10 +48,18 @@ from ..agentenv import (
     read_env_file,
     render_env_file,
 )
-from ..core import DecryptionVerificationError
+from ..core import DecryptionVerificationError, FloorVault
+from ..providers.adaptive import AdaptiveKeyProvider
+from ..providers.base import KeyProviderError
+from ..vaultkit.vault import VaultStore
 
-#: Where the master key comes from: the OS key store (the CLI's default), a
-#: key file such as an orchestrator secret mount, or an environment variable.
+#: Where the master key comes from, each enforced as chosen:
+#:
+#: ``os``   the OS key store only (Keychain, Secret Service or DPAPI). Unlike
+#:          the CLI's default, it never adopts FLOOR_VAULT_KEY or
+#:          VAULT_MASTER_KEY: it refuses to open while either is set.
+#: ``file`` a key file, such as an orchestrator secret mount.
+#: ``env``  a named environment variable.
 KEY_SOURCES = ("os", "file", "env")
 DEFAULT_KEY_ENV = "FLOOR_VAULT_KEY"
 
@@ -104,11 +114,29 @@ class ImportRow:
 
 @dataclass(frozen=True)
 class ImportPreview:
+    """An immutable import plan. ``run_import`` executes exactly this plan.
+
+    The settings that shape the plan (path, prefix, skipped names) live here
+    rather than being passed again at execution, so a field edited after the
+    preview cannot change what is written.
+    """
+
     path: Path
     digest: str
+    prefix: str
+    skip: tuple[str, ...]
     rows: tuple[ImportRow, ...]
     problems: tuple[str, ...]
     vault_exists: bool
+
+    @property
+    def references(self) -> tuple[tuple[str, str], ...]:
+        """``(variable, item id)`` for every line the import rewrites."""
+        return tuple(
+            (row.name, row.item_id or "")
+            for row in self.rows
+            if row.status in ("new", "same", "conflict")
+        )
 
     @property
     def to_store(self) -> int:
@@ -147,7 +175,7 @@ def key_source_hint(source: str, environ: Optional[Mapping[str, str]] = None) ->
             if (environ.get(DEFAULT_KEY_ENV) or "").strip()
             else f"{DEFAULT_KEY_ENV} is not set"
         )
-    return "OS key store (Keychain, Secret Service or DPAPI)"
+    return "Keychain, Secret Service or DPAPI. Refuses to open while FLOOR_VAULT_KEY or VAULT_MASTER_KEY is set."
 
 
 def _failed(action: str, exc: BaseException) -> GuiError:
@@ -159,21 +187,82 @@ def _failed(action: str, exc: BaseException) -> GuiError:
 
 
 def split_command_line(text: str, *, windows: bool) -> list[str]:
-    """Split a typed command line into argv.
+    """Split a typed command line into argv. Raises ValueError on an open quote.
 
-    POSIX rules treat a backslash as an escape, which would mangle Windows
-    paths, so Windows uses shlex's non-POSIX mode. That mode keeps the quotes
-    around a quoted token (``"C:\\Program Files\\x.exe"``); strip one matching
-    pair so the program can be found. Raises ValueError on unbalanced quotes.
+    POSIX: shell rules (``shlex.split``). Windows: the rules the Microsoft C
+    runtime uses to build ``sys.argv``, so a binding matches the argv that
+    ``floorvault run`` itself receives there (see ``_split_windows``).
     """
-    if not windows:
-        return shlex.split(text)
-    argv = []
-    for token in shlex.split(text, posix=False):
-        if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
-            token = token[1:-1]
-        argv.append(token)
+    return _split_windows(text) if windows else shlex.split(text)
+
+
+def _split_windows(text: str) -> list[str]:
+    """Windows command-line splitting, following the Microsoft C runtime.
+
+    * Arguments are separated by spaces or tabs outside double quotes.
+    * The program name (first argument) is special: a double quote only
+      toggles quoting and backslashes are literal, so ``"C:\\dir\\"`` works.
+    * Elsewhere, ``2n`` backslashes before a double quote give ``n`` backslashes
+      and the quote toggles quoting; ``2n+1`` give ``n`` backslashes and a
+      literal quote. Backslashes not before a quote are literal.
+    * Inside quotes, ``""`` is a literal quote.
+
+    Unlike the runtime, an unclosed quote is an error rather than running to
+    the end of the line, so a typo cannot silently become a different binding.
+    """
+    argv: list[str] = []
+    i, n = 0, len(text)
+    first = True
+    while True:
+        while i < n and text[i] in " \t":
+            i += 1
+        if i >= n:
+            break
+        arg: list[str] = []
+        quoted = False
+        while i < n and (quoted or text[i] not in " \t"):
+            char = text[i]
+            if first:
+                if char == '"':
+                    quoted = not quoted
+                else:
+                    arg.append(char)
+                i += 1
+            elif char == "\\":
+                end = i
+                while end < n and text[end] == "\\":
+                    end += 1
+                count = end - i
+                if end < n and text[end] == '"':
+                    arg.append("\\" * (count // 2))
+                    if count % 2:
+                        arg.append('"')
+                        i = end + 1
+                    else:
+                        i = end
+                else:
+                    arg.append("\\" * count)
+                    i = end
+            elif char == '"':
+                if quoted and i + 1 < n and text[i + 1] == '"':
+                    arg.append('"')
+                    i += 2
+                else:
+                    quoted = not quoted
+                    i += 1
+            else:
+                arg.append(char)
+                i += 1
+        if quoted:
+            raise ValueError("No closing quotation")
+        argv.append("".join(arg))
+        first = False
     return argv
+
+
+def describe_argv(argv: Sequence[str]) -> str:
+    """One numbered line per argument, so argument boundaries are unambiguous."""
+    return "\n".join(f"  [{index}] {arg}" for index, arg in enumerate(argv))
 
 
 def _digest(data: bytes) -> str:
@@ -214,6 +303,16 @@ class VaultSession:
         return _is_regular_file(self.vault_dir / "vault.db")
 
     @property
+    def key_description(self) -> str:
+        """Where the key actually comes from, for the status line."""
+        if self.key_source == "file":
+            raw = (self._environ.get(KEY_FILE_ENV) or "").strip()
+            return f"key file {self.key_file or raw or '(not chosen)'}"
+        if self.key_source == "env":
+            return f"environment variable {self.key_env or DEFAULT_KEY_ENV}"
+        return "OS key store only"
+
+    @property
     def unlocked(self) -> bool:
         return self._store is not None
 
@@ -230,6 +329,8 @@ class VaultSession:
             key_bytes = read_key_file(path)
         elif self.key_source == "env":
             key_env = self.key_env or DEFAULT_KEY_ENV
+        else:
+            return self._open_os_only(create=create)
         return open_store(
             self.vault_dir,
             key_env=key_env,
@@ -237,6 +338,26 @@ class VaultSession:
             create=create,
             environ=self._environ,
         )
+
+    def _open_os_only(self, *, create: bool):
+        """Open (or create) the store with a key from the OS key store alone.
+
+        ``strict=True`` makes the provider refuse FLOOR_VAULT_KEY and
+        VAULT_MASTER_KEY instead of adopting them, and refuse disk-file
+        custody, so this source means what its label says. The CLI's
+        ``open_store`` default is not strict and prefers those variables.
+        """
+        if not create and not self.store_exists():
+            raise GuiError(f"no vault at {self.vault_dir}")
+        provider = AdaptiveKeyProvider(
+            service_name=SERVICE_NAME, fallback_dir=self.vault_dir, strict=True
+        )
+        try:
+            key = provider.resolve_key(allow_create=create)
+        except KeyProviderError as exc:
+            # Provider messages name variables and paths, never key material.
+            raise GuiError(f"OS key store: {exc}") from None
+        return VaultStore(self.vault_dir, crypto=FloorVault(key, app_instance_id=APP_CONTEXT))
 
     def unlock(self) -> None:
         """Open an existing store and check the key reads it. Never creates either."""
@@ -383,17 +504,16 @@ class VaultSession:
         if item_id is not None and self._meta(store, item_id) is not None:
             raise GuiError(f"an item with id {item_id} already exists")
         try:
-            meta = store.add_item(kind="generic", label=label, secret=dict(fields), item_id=item_id)
+            # One transaction: the item exists bound as chosen, or not at all.
+            meta = store.add_item(
+                kind="generic",
+                label=label,
+                secret=dict(fields),
+                item_id=item_id,
+                allowed_commands=[list(bind_to)] if bind_to else None,
+            )
         except Exception as exc:  # noqa: BLE001
             raise _failed("adding the item", exc) from None
-        if bind_to:
-            try:
-                store.set_allowed_commands(meta.id, [list(bind_to)])
-            except Exception as exc:  # noqa: BLE001
-                raise GuiError(
-                    f"item {meta.id} was added but binding it failed "
-                    f"({type(exc).__name__}); it is not bound"
-                ) from None
         return meta.id
 
     def set_field(self, item_id: str, field: str, value: str) -> None:
@@ -511,17 +631,18 @@ class VaultSession:
         return ImportPreview(
             path=path,
             digest=_digest(env_file.raw),
+            prefix=prefix,
+            skip=tuple(sorted(set(skip))),
             rows=tuple(rows),
             problems=tuple([*problems, *conflicts.values()]),
             vault_exists=vault_exists,
         )
 
-    def run_import(
-        self, preview: ImportPreview, *, skip: Sequence[str] = (), prefix: str = ""
-    ) -> ImportResult:
-        """Store the previewed values and rewrite the file to ``fv:`` references.
+    def run_import(self, preview: ImportPreview) -> ImportResult:
+        """Execute ``preview``: store its values and rewrite its file to references.
 
-        Refuses when the file changed since ``preview``. No backup is made.
+        Uses only the preview's own path, prefix and selection. Refuses when the
+        file changed, or the plan no longer comes out the same. No backup is made.
         """
         path = preview.path
         try:
@@ -533,12 +654,15 @@ class VaultSession:
         if _digest(env_file.raw) != preview.digest:
             raise GuiError(f"{path} changed since the preview; preview it again")
         to_store, _left, problems = plan_env_import(
-            env_file, skip=skip, prefix=prefix, key_env=self.key_env
+            env_file, skip=preview.skip, prefix=preview.prefix, key_env=self.key_env
         )
         if problems:
             raise GuiError("; ".join(problems))
         if not to_store:
             raise GuiError("nothing to import")
+        planned = tuple((line.name, item_id) for line, item_id in to_store)
+        if planned != preview.references:
+            raise GuiError("the import no longer matches its preview; preview it again")
         store = self._store_or_create()
         already, conflicts = find_import_conflicts(store, to_store)
         if conflicts:

@@ -7,6 +7,7 @@ key store, ~/.floorvault or os.environ.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ import pytest
 from floorvault.gui.backend import (
     GuiError,
     VaultSession,
+    describe_argv,
     key_source_hint,
     split_command_line,
     suggested_env_name,
@@ -118,6 +120,41 @@ def test_unknown_key_source_is_rejected(tmp_path, environ):
         VaultSession(tmp_path / "vault", key_source="paper", environ=environ)
 
 
+def test_os_only_refuses_both_environment_keys_when_creating(tmp_path, environ, monkeypatch):
+    """Selecting the OS key store must not silently adopt an environment key."""
+    monkeypatch.setenv("FLOOR_VAULT_KEY", os.urandom(32).hex())
+    monkeypatch.setenv("VAULT_MASTER_KEY", os.urandom(32).hex())
+    s = VaultSession(tmp_path / "vault", key_source="os", environ=environ)
+    assert s.key_description == "OS key store only"
+    with pytest.raises(GuiError, match="refuses environment-variable key custody") as info:
+        s.add_generic("Token", {"value": SECRET})
+    assert os.environ["FLOOR_VAULT_KEY"] not in str(info.value)
+    assert not s.store_exists(), "no store may be created under the refused key"
+
+
+def test_os_only_refuses_environment_keys_when_unlocking(session, tmp_path, environ, monkeypatch):
+    session.add_generic("Token", {"value": SECRET}, item_id="tok")  # store under an env key
+    monkeypatch.setenv("FLOOR_VAULT_KEY", environ["FLOOR_VAULT_KEY"])
+    monkeypatch.setenv("VAULT_MASTER_KEY", environ["FLOOR_VAULT_KEY"])
+    s = VaultSession(tmp_path / "vault", key_source="os", environ=environ)
+    with pytest.raises(GuiError, match="refuses environment-variable key custody"):
+        s.unlock()
+    assert not s.unlocked
+
+
+def test_key_description_names_the_real_source(tmp_path, environ):
+    assert VaultSession(tmp_path, key_source="env", environ=environ).key_description == (
+        "environment variable FLOOR_VAULT_KEY"
+    )
+    key_file = tmp_path / "k"
+    assert (
+        VaultSession(
+            tmp_path, key_source="file", key_file=key_file, environ=environ
+        ).key_description
+        == f"key file {key_file}"
+    )
+
+
 def test_key_source_hint_never_shows_key_material(environ):
     hint = key_source_hint("env", environ)
     assert hint == "FLOOR_VAULT_KEY is set"
@@ -215,6 +252,41 @@ def test_resolve_command_line_pins_an_absolute_program(session):
     assert warnings == []
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # The review's case: a quoted value after '=' stays one argument.
+        (r'python.exe --name="two words"', ["python.exe", "--name=two words"]),
+        # A quoted program path keeps its backslashes.
+        (
+            r'"C:\Program Files\Python\python.exe" -m one',
+            [r"C:\Program Files\Python\python.exe", "-m", "one"],
+        ),
+        # Escaped quotes, outside and inside quotes.
+        (r'prog a\"b "c\"d"', ["prog", 'a"b', 'c"d']),
+        # 2n backslashes before a quote: n backslashes, and the quote toggles.
+        (r'prog e\\"f g" h', ["prog", "e\\f g", "h"]),
+        # A trailing backslash in a quoted argument is written doubled.
+        (r'prog "C:\dir\\" next', ["prog", "C:\\dir\\", "next"]),
+        # Backslashes not before a quote are literal.
+        (r"prog a\\b c\d", ["prog", "a\\\\b", "c\\d"]),
+        # "" inside quotes is a literal quote; an empty quoted argument survives.
+        (r'prog "say ""hi""" ""', ["prog", 'say "hi"', ""]),
+        # The program name: backslashes are literal even before a quote.
+        (r'"C:\dir\" x', ["C:\\dir\\", "x"]),
+        ("  prog\t a  ", ["prog", "a"]),
+    ],
+)
+def test_windows_command_lines_follow_the_c_runtime(text, expected):
+    assert split_command_line(text, windows=True) == expected
+
+
+def test_describe_argv_shows_argument_boundaries():
+    assert describe_argv(["prog", "--name=two words", ""]) == (
+        "  [0] prog\n  [1] --name=two words\n  [2] "
+    )
+
+
 def test_split_command_line_strips_windows_quotes():
     text = r'"C:\Program Files\Python\python.exe" -m one "two words"'
     assert split_command_line(text, windows=True) == [
@@ -251,6 +323,38 @@ def test_bind_at_add_then_add_and_remove_lines(session):
     assert len(session.detail("a").commands) == 2
     session.unbind_line("a", first)
     assert session.detail("a").commands == (tuple(second),)
+
+
+def test_bind_at_add_never_uses_a_second_write(session, monkeypatch):
+    """The binding is written with the item, not by a later set_allowed_commands."""
+    from floorvault.vaultkit.vault import VaultStore
+
+    def refuse(*_a, **_k):
+        raise AssertionError("binding must be part of add_item's transaction")
+
+    monkeypatch.setattr(VaultStore, "set_allowed_commands", refuse)
+    argv, _ = session.resolve_command_line(f'"{sys.executable}" -m one')
+    session.add_generic("A", {"v": SECRET}, item_id="a", bind_to=argv)
+    assert session.detail("a").commands == (tuple(argv),)
+
+
+def test_a_failed_binding_at_add_leaves_no_unbound_item(session, monkeypatch):
+    from floorvault.vaultkit.vault import VaultStore
+
+    session.add_generic("Seed", {"v": OTHER}, item_id="seed")  # creates the store
+    real = VaultStore._encrypt_metadata
+
+    def fail_on_binding(self, item_id, column, value):
+        if column == "allowed_commands":
+            raise RuntimeError("injected failure")
+        return real(self, item_id, column, value)
+
+    monkeypatch.setattr(VaultStore, "_encrypt_metadata", fail_on_binding)
+    argv, _ = session.resolve_command_line(f'"{sys.executable}" -m one')
+    with pytest.raises(GuiError, match="adding the item failed"):
+        session.add_generic("A", {"v": SECRET}, item_id="a", bind_to=argv)
+    monkeypatch.undo()
+    assert [row.id for row in session.items()] == ["seed"]
 
 
 def test_removing_the_last_line_is_refused_clearing_is_explicit(session):
@@ -305,7 +409,8 @@ def test_import_preview_then_write(session, tmp_path):
     assert not preview.vault_exists and preview.can_write
     assert not session.store_exists(), "a preview must change nothing"
 
-    result = session.run_import(preview, skip=["LOG_LEVEL"])
+    assert preview.skip == ("LOG_LEVEL",)
+    result = session.run_import(preview)
     assert (result.stored, result.rewritten) == (1, 1)
     text = path.read_text(encoding="utf-8")
     assert SECRET not in text
@@ -335,6 +440,24 @@ def test_import_same_value_is_reused_and_a_different_one_blocks(session, tmp_pat
 
     with_prefix = session.preview_import(clash, prefix="app.")
     assert with_prefix.rows[0].status == "new" and with_prefix.can_write
+
+
+def test_import_executes_the_previewed_prefix_only(session, tmp_path):
+    path = _env(tmp_path, f"TOKEN={SECRET}\n")
+    preview = session.preview_import(path, prefix="app.")
+    assert preview.references == (("TOKEN", "app.token"),)
+    session.run_import(preview)
+    assert path.read_text(encoding="utf-8") == "TOKEN=fv:app.token\n"
+
+
+def test_import_refuses_a_plan_that_differs_from_its_preview(session, tmp_path):
+    path = _env(tmp_path, f"TOKEN={SECRET}\n")
+    preview = session.preview_import(path, prefix="app.")
+    tampered = dataclasses.replace(preview, prefix="prod.")
+    with pytest.raises(GuiError, match="no longer matches its preview"):
+        session.run_import(tampered)
+    assert SECRET in path.read_text(encoding="utf-8")
+    assert not session.store_exists()
 
 
 def test_import_refuses_a_file_changed_since_preview(session, tmp_path):
