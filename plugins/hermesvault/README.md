@@ -18,7 +18,7 @@ hermes plugins enable hermesvault
 
 Hermes asks for consent to install the plugin's Python dependencies, which come
 from PyPI:
-- `floorvault>=0.2.1,<0.3`;
+- `floorvault>=0.2.2,<0.3`;
 - `secretstorage` on Linux;
 - `pyobjc-framework-Security` on macOS.
 

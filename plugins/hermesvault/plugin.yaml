@@ -1,5 +1,5 @@
 name: hermesvault
-version: 0.2.0
+version: 0.2.1
 description: "FloorVault secret source: resolves secrets.hermesvault.env refs (hv:<item>[:field]) from the local FloorVault AES-256-SIV store with configured key custody. Agent credentials only — the browser-fill login vault is untouched."
 author: "Scott Lee"
 license: MIT
@@ -15,10 +15,12 @@ platforms:
   - macos
   - windows
 python_dependencies:
-  # 0.2.1 is the first release with VaultStore.update_generic_field(), which
-  # `hermes hvault put` uses. Hermes installs PyPI requirements only, so this
+  # 0.2.2 is the first release with AdaptiveKeyProvider(environ=, interactive=),
+  # which the secret source uses to read no ambient key variable and never
+  # prompt (0.2.1 added VaultStore.update_generic_field(), which
+  # `hermes hvault put` uses). Hermes installs PyPI requirements only, so this
   # must name a published release; tests/test_hermes_plugin_packaging.py keeps
   # it within the checkout's own version.
-  - "floorvault>=0.2.1,<0.3"
+  - "floorvault>=0.2.2,<0.3"
   - "pyobjc-framework-Security>=10.0,<13; sys_platform == 'darwin'"
   - "secretstorage>=3.3,<4; sys_platform == 'linux'"
