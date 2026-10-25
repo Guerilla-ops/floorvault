@@ -97,7 +97,7 @@ FV_CRYPTO_METHODS = {
 
 EXPECTED_SIGNATURES = {
     "AdaptiveKeyProvider": {
-        "signature": "(service_name: 'str' = 'floorvault', account_name: 'str' = 'default-v1', *, fallback_dir: 'Optional[Path | str]' = None, strict: 'bool' = False, allow_disk_fallback: 'bool' = False, dpapi_entropy: 'Optional[bytes]' = None, allow_legacy_env_vars: 'bool' = False, allow_legacy_adoption: 'bool' = False, passphrase: 'Optional[Union[str, bytes]]' = None) -> 'None'",
+        "signature": "(service_name: 'str' = 'floorvault', account_name: 'str' = 'default-v1', *, fallback_dir: 'Optional[Path | str]' = None, strict: 'bool' = False, allow_disk_fallback: 'bool' = False, dpapi_entropy: 'Optional[bytes]' = None, allow_legacy_env_vars: 'bool' = False, allow_legacy_adoption: 'bool' = False, passphrase: 'Optional[Union[str, bytes]]' = None, environ: 'Optional[Mapping[str, str]]' = None, interactive: 'bool' = True) -> 'None'",
         "methods": {
             "resolve_key": "(self, *, allow_create: 'bool' = True) -> 'HardenedMemoryKey'",
         },

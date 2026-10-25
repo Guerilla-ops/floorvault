@@ -133,6 +133,7 @@ def _install_fake_secretstorage(
     dbus_init_raises: Exception | None = None,
     dbus_init_unavailable: bool = False,
     omit_module_attrs: tuple[str, ...] = (),
+    no_default_collection: bool = False,
 ):
     """Install a fake ``secretstorage`` defining only the REAL API surface."""
     module = types.ModuleType("secretstorage")
@@ -144,9 +145,13 @@ def _install_fake_secretstorage(
     class SecretServiceNotAvailableException(SecretStorageException):
         pass
 
+    class ItemNotFoundException(SecretStorageException):
+        pass
+
     for name, value in (
         ("SecretStorageException", SecretStorageException),
         ("SecretServiceNotAvailableException", SecretServiceNotAvailableException),
+        ("ItemNotFoundException", ItemNotFoundException),
         ("LockedException", _FakeLockedException),
     ):
         setattr(exceptions, name, value)
@@ -171,29 +176,50 @@ def _install_fake_secretstorage(
             raise dbus_init_raises
         return connection
 
+    calls: list[str] = []
+
     def get_default_collection(connection, session=None):
+        # The real function creates the default collection when there is none,
+        # which shows a prompt; the record lets tests prove it was not called.
+        calls.append("get_default_collection")
         assert collection is not None, "client called get_default_collection without a fake"
+        return collection
+
+    def get_collection_by_alias(connection, alias):
+        calls.append(f"get_collection_by_alias:{alias}")
+        if no_default_collection:
+            raise ItemNotFoundException("No collection with such alias.")
+        assert collection is not None, "client called get_collection_by_alias without a fake"
         return collection
 
     if "dbus_init" not in omit_module_attrs:
         module.dbus_init = dbus_init  # type: ignore[attr-defined]
     if "get_default_collection" not in omit_module_attrs:
         module.get_default_collection = get_default_collection  # type: ignore[attr-defined]
+    if "get_collection_by_alias" not in omit_module_attrs:
+        module.get_collection_by_alias = get_collection_by_alias  # type: ignore[attr-defined]
+    module.calls = calls  # type: ignore[attr-defined]
 
     monkeypatch.setitem(sys.modules, "secretstorage", module)
     monkeypatch.setitem(sys.modules, "secretstorage.exceptions", exceptions)
     return module, SecretServiceNotAvailableException
 
 
-def _secret_service_provider(monkeypatch, tmp_path, *, allow_disk_fallback: bool = False):
+def _secret_service_provider(
+    monkeypatch, tmp_path, *, allow_disk_fallback: bool = False, interactive: bool = True
+):
     """A provider that believes it is on an interactive Linux desktop."""
     monkeypatch.setattr(lk_module, "is_linux", lambda: True)
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    runtime = tmp_path / "runtime"
+    runtime.mkdir(mode=0o700, exist_ok=True)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
     return LinuxSecretServiceKeyProvider(
         store_path=tmp_path / "master.key",
         service="floorvault",
         attribute="master-key",
+        interactive=interactive,
     )
 
 
@@ -605,3 +631,172 @@ def test_existing_ss_store_is_read_when_file_fallback_is_allowed(monkeypatch, tm
     key = provider.resolve_key()
     assert key.get_bytes() == stored_key
     key.wipe()
+
+
+# --------------------------------------------------------------------------
+# Non-interactive resolution (a secret source's fetch must not prompt)
+# --------------------------------------------------------------------------
+
+_QUERY = {"application": "floorvault", "floorvault": "master-key"}
+
+
+def test_non_interactive_reads_the_key_without_the_creating_lookup(monkeypatch, tmp_path):
+    stored = b"\x21" * 32
+    collection = _FakeCollection(items=(_FakeItem(_QUERY, stored),))
+    module, _ = _install_fake_secretstorage(monkeypatch, collection=collection)
+    provider = _secret_service_provider(monkeypatch, tmp_path, interactive=False)
+    key = provider.resolve_key(allow_create=False)
+    assert key.get_bytes() == stored
+    # get_default_collection creates a missing collection (a prompt); the
+    # non-interactive path looks the alias up instead.
+    assert module.calls == ["get_collection_by_alias:default"]
+    key.wipe()
+
+
+def test_non_interactive_without_a_default_collection_creates_nothing(monkeypatch, tmp_path):
+    module, _ = _install_fake_secretstorage(monkeypatch, no_default_collection=True)
+    provider = _secret_service_provider(monkeypatch, tmp_path, interactive=False)
+    with pytest.raises(MissingKeyError, match="not created without a prompt"):
+        provider.resolve_key(allow_create=True)
+    assert "get_default_collection" not in module.calls
+    assert not (tmp_path / "master.key").exists()
+
+
+def test_non_interactive_reports_a_locked_collection_instead_of_unlocking(monkeypatch, tmp_path):
+    collection = _FakeCollection(items=(_FakeItem(_QUERY, b"\x22" * 32),), locked=True)
+    _install_fake_secretstorage(monkeypatch, collection=collection)
+    provider = _secret_service_provider(monkeypatch, tmp_path, interactive=False)
+    with pytest.raises(KeyProviderError, match="not unlocked without a prompt"):
+        provider.resolve_key(allow_create=False)
+    assert collection.unlock_calls == 0
+
+
+def test_non_interactive_never_creates_a_key(monkeypatch, tmp_path):
+    collection = _FakeCollection()
+    _install_fake_secretstorage(monkeypatch, collection=collection)
+    provider = _secret_service_provider(monkeypatch, tmp_path, interactive=False)
+    with pytest.raises(MissingKeyError, match="not created without a prompt"):
+        provider.resolve_key(allow_create=True)
+    assert collection.created == []
+
+
+# --------------------------------------------------------------------------
+# One key per service/attribute identity
+# --------------------------------------------------------------------------
+
+
+def test_duplicate_entries_with_different_keys_are_refused_and_kept(monkeypatch, tmp_path):
+    first, second = _FakeItem(_QUERY, b"\x01" * 32), _FakeItem(_QUERY, b"\x02" * 32)
+    collection = _FakeCollection(items=(first, second))
+    _install_fake_secretstorage(monkeypatch, collection=collection)
+    provider = _secret_service_provider(monkeypatch, tmp_path)
+    for allow_create in (True, False):
+        with pytest.raises(KeyProviderError, match="hold different keys"):
+            provider.resolve_key(allow_create=allow_create)
+    assert collection.items == [first, second] and collection.created == []
+
+
+def test_duplicate_entries_with_the_same_key_resolve(monkeypatch, tmp_path):
+    stored = b"\x03" * 32
+    collection = _FakeCollection(items=(_FakeItem(_QUERY, stored), _FakeItem(_QUERY, stored)))
+    _install_fake_secretstorage(monkeypatch, collection=collection)
+    key = _secret_service_provider(monkeypatch, tmp_path).resolve_key()
+    assert key.get_bytes() == stored
+    key.wipe()
+
+
+def test_creation_rechecks_under_the_identity_lock(monkeypatch, tmp_path):
+    """A key another resolver created while this one waited is used, not doubled."""
+    import contextlib
+
+    winner = b"\x04" * 32
+    collection = _FakeCollection()
+    _install_fake_secretstorage(monkeypatch, collection=collection)
+    provider = _secret_service_provider(monkeypatch, tmp_path)
+    taken = []
+
+    @contextlib.contextmanager
+    def lock(path, **_kw):
+        taken.append(path)
+        collection.items.append(_FakeItem(_QUERY, winner))  # the other resolver finished first
+        yield
+
+    monkeypatch.setattr(lk_module, "exclusive_lock", lock)
+    key = provider.resolve_key()
+    assert key.get_bytes() == winner and collection.created == []
+    assert taken and taken[0].parent == tmp_path / "runtime" / "floorvault"
+    key.wipe()
+
+
+def test_an_entry_created_alongside_ours_is_reported_not_overwritten(monkeypatch, tmp_path):
+    collection = _FakeCollection()
+    real_create = collection.create_item
+
+    def create_item(label, attributes, secret, replace=False, content_type="text/plain"):
+        item = real_create(label, attributes, secret, replace=replace)
+        # A resolver that does not take the lock (another tool, an older build).
+        collection.items.append(_FakeItem(_QUERY, b"\x05" * 32))
+        return item
+
+    collection.create_item = create_item
+    _install_fake_secretstorage(monkeypatch, collection=collection)
+    provider = _secret_service_provider(monkeypatch, tmp_path)
+    with pytest.raises(KeyProviderError, match="2 Secret Service entries now exist"):
+        provider.resolve_key()
+    assert len(collection.items) == 2 and all(c["replace"] is False for c in collection.created)
+
+
+def test_concurrent_first_resolutions_create_one_key(monkeypatch, tmp_path):
+    """Two stores sharing the identity, resolving for the first time at once."""
+    import threading
+    import time
+
+    class SlowSearch(_FakeCollection):
+        def search_items(self, attributes):
+            found = list(super().search_items(attributes))
+            time.sleep(0.05)  # widen the window between "none found" and creating
+            return iter(found)
+
+    collection = SlowSearch()
+    _install_fake_secretstorage(monkeypatch, collection=collection)
+    # One user, so one runtime directory; two store directories.
+    _secret_service_provider(monkeypatch, tmp_path)
+    providers = [
+        LinuxSecretServiceKeyProvider(
+            store_path=tmp_path / name / "master.key", service="floorvault", attribute="master-key"
+        )
+        for name in ("store-a", "store-b")
+    ]
+    keys: list[bytes] = []
+    errors: list[BaseException] = []
+
+    def resolve(provider):
+        try:
+            keys.append(provider.resolve_key().get_bytes())
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=resolve, args=(p,)) for p in providers]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(10)
+    assert not errors, errors
+    assert len(collection.created) == 1
+    assert len(keys) == 2 and keys[0] == keys[1]
+
+
+def test_identity_lock_lives_in_an_owner_only_runtime_directory(monkeypatch, tmp_path):
+    import stat
+
+    provider = _secret_service_provider(monkeypatch, tmp_path)
+    path = provider._identity_lock_path()
+    assert path.parent == tmp_path / "runtime" / "floorvault"
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    other = LinuxSecretServiceKeyProvider(
+        store_path=tmp_path / "x", service="floorvault", attribute="other-account"
+    )
+    assert other._identity_lock_path() != path
+    monkeypatch.delenv("XDG_RUNTIME_DIR")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert provider._identity_lock_path().parent == tmp_path / "home" / ".cache" / "floorvault"

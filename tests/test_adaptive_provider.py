@@ -769,3 +769,39 @@ def test_disk_fallback_opt_in_reads_the_secret_service_file_store(monkeypatch, t
     key = provider.resolve_key(allow_create=False)
     assert key.get_bytes() == stored
     key.wipe()
+
+
+# --- an explicit environment view (one process serving several configurations) ---
+
+
+def test_an_empty_environment_view_ignores_process_key_variables(monkeypatch, tmp_path):
+    for name in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
+        monkeypatch.setenv(name, "ab" * 32)  # gitleaks:allow
+    monkeypatch.setattr(adaptive_module, "is_macos", lambda: False)
+    monkeypatch.setattr(adaptive_module, "is_windows", lambda: False, raising=False)
+    monkeypatch.setattr(adaptive_module, "is_linux", lambda: False, raising=False)
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, environ={})
+    with pytest.raises(KeyProviderError):
+        provider.resolve_key(allow_create=False)
+    # strict reads the same view: a process variable is not a downgrade here.
+    with pytest.raises(KeyProviderError) as info:
+        AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}, strict=True).resolve_key(
+            allow_create=False
+        )
+    assert not isinstance(info.value, CustodyDowngradeError)
+
+
+def test_the_environment_view_is_where_tier_one_reads(monkeypatch, tmp_path):
+    monkeypatch.delenv("FLOOR_VAULT_KEY", raising=False)
+    monkeypatch.setenv("VAULT_MASTER_KEY", "cd" * 32)  # gitleaks:allow
+    view = {"FLOOR_VAULT_KEY": "ef" * 32}  # gitleaks:allow
+    key = AdaptiveKeyProvider(fallback_dir=tmp_path, environ=view).resolve_key()
+    assert key.get_bytes() == bytes.fromhex("ef" * 32)
+    with pytest.raises(CustodyDowngradeError, match="FLOOR_VAULT_KEY"):
+        AdaptiveKeyProvider(fallback_dir=tmp_path, environ=view, strict=True).resolve_key()
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+def test_interactive_reaches_the_secret_service_tier(tmp_path, interactive):
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, interactive=interactive)
+    assert provider._linux_provider()._interactive is interactive
