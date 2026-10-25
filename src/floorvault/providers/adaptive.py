@@ -146,6 +146,15 @@ class AdaptiveKeyProvider(KeyProvider):
                     stacklevel=2,
                 )
 
+        # --- Another custody holds this home's key: never mint a second one ---
+        # A systemd-creds credential beside the store means its master key was
+        # created and sealed there. The OS keyring and file tiers below know
+        # nothing of it and would create a different key, leaving the store's
+        # data under the original unreadable. An explicit key (tier 1) is still
+        # honoured: it is the caller naming the key.
+        if self._systemd_credential_present():
+            raise self._systemd_credential_refusal()
+
         # --- Tier 2: Direct system-keyring capability probe ---
         # Do not infer keyring availability from SSH_CONNECTION, DISPLAY, or
         # other session environment variables. The provider itself is the
@@ -298,6 +307,31 @@ class AdaptiveKeyProvider(KeyProvider):
             "and has disk fallback enabled could create a separate local key file",
             UserWarning,
             stacklevel=4,
+        )
+
+    def _systemd_credential_present(self) -> bool:
+        """Whether a systemd-creds credential sits in ``fallback_dir``.
+
+        ``lstat``, and any failure other than "not found" counts as present:
+        a lookup that cannot rule the credential out must not let a second key
+        be created.
+        """
+        try:
+            os.lstat(self.fallback_dir / SYSTEMD_CREDENTIAL_FILENAME)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        return True
+
+    def _systemd_credential_refusal(self) -> KeyProviderError:
+        credential = self.fallback_dir / SYSTEMD_CREDENTIAL_FILENAME
+        return KeyProviderError(
+            f"{credential} holds this home's master key, sealed by systemd-creds; "
+            "resolving another key here would silently fork it. Refusing. Open the "
+            "store with `floorvault run` or `floorvault secrets` (they decrypt it), or "
+            "name the key explicitly (FLOOR_VAULT_KEY). If the credential is "
+            "unusable and no data depends on it, remove it deliberately"
         )
 
     def _os_tier_marker_present(self) -> bool:
@@ -662,6 +696,11 @@ class AdaptiveKeyProvider(KeyProvider):
 
 #: File name of the passphrase-wrapped Tier-3 store, beside ``master.key``.
 WRAPPED_KEY_FILENAME = "master.key.fvpw"
+
+#: File name of the systemd-creds credential holding a store's master key
+#: (``floorvault secrets init --custody systemd-creds``). Ciphertext, not key
+#: material. Its presence means the key lives there, so no other tier may mint one.
+SYSTEMD_CREDENTIAL_FILENAME = "master.key.sdcred"
 
 #: Sentinel from the no-fork probe: the OS tier is usable but holds no key.
 _OS_KEY_MISSING = object()

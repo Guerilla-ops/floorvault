@@ -658,6 +658,45 @@ exists, rather than creating a fresh raw `master.key` beside it.
 
 ---
 
+### 10.9 systemd-creds credential (`master.key.sdcred`)
+
+A store directory may hold `master.key.sdcred`: a `systemd-creds` credential
+(Base64 text) whose plaintext is the 64-hexadecimal-character master key, optionally
+followed by a newline. It is created by `floorvault secrets init --custody
+systemd-creds`, which runs `systemd-creds encrypt --user
+--name=floorvault.master-key - -` (systemd 256 or newer; no `--with-key`, because an
+unprivileged `systemd-creds encrypt` passes no key choice to systemd, so which key
+(host, TPM2 or both) systemd's automatic selection binds is not chosen or recorded
+by floorvault), unseals the result once, and writes it with mode 0600 only if it
+round-trips.
+The credential name is bound into the sealed data, so a reader MUST decrypt with
+`--name=floorvault.master-key`; `--user` binds it to the calling user's UID,
+username and the machine-id. A writer MUST NOT request the `null` key; a reader
+SHOULD pass `--refuse-null` where the helper supports it (systemd 259 and newer).
+
+Rules for implementations:
+
+- A reader that finds the file MUST obtain the store's key from it, and MUST fail
+  rather than fall back to another custody when `systemd-creds` is missing, older
+  than 256, or cannot unseal it. In the `floorvault` command line only a key option
+  named in that invocation (`--key-env`, `--key-file`) takes precedence over the
+  credential; an ambient `$FLOOR_VAULT_KEY` or `$FLOOR_VAULT_KEY_FILE` is ignored
+  for a directory that holds it.
+- The file MUST be a regular file owned by the reading user and not writable by
+  group or others, and is never replaced once written.
+- `AdaptiveKeyProvider` (the default provider, a separate interface from the command
+  line) MUST NOT create or resolve an OS-keyring or file key for a directory that
+  holds the file (it raises `KeyProviderError`), after honouring its explicit
+  environment-key tier (so there an environment key does take precedence). A lookup
+  failure other than "not found" counts as present.
+- `floorvault secrets import --hermes` MUST refuse a directory that holds the file
+  unless the key comes from `--key-env` or `$HERMES_VAULT_KEY`, because the Hermes
+  plugin cannot read the credential; it refuses before storing or editing anything.
+- The helper is located in system directories only and is passed the key through
+  standard input and output, never argv or the environment.
+
+The file is ciphertext, not key material, and is not read by the core library.
+
 ## 11. Recovery bundle (`FVRB1`)
 
 ```
