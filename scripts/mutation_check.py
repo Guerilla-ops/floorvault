@@ -1516,6 +1516,46 @@ MUTATIONS: tuple[Mutation, ...] = (
         expect_on_windows="survived",
     ),
     Mutation(
+        "HIM-1",
+        "src/floorvault/agent_cli.py",
+        "    if missing:\n",
+        "    if False:  # MUTANT\n",
+        "Hermes import deletes .env lines before config.yaml maps them: Hermes loses the keys",
+    ),
+    Mutation(
+        "HIM-2",
+        "src/floorvault/agent_cli.py",
+        'rf"^[ \\t]+{re.escape(name)}:',
+        'rf"{re.escape(name)}:',
+        "A commented, unindented or longer-named config line counts as the mapping",
+    ),
+    Mutation(
+        "HIM-3",
+        "src/floorvault/agent_cli.py",
+        "        if not _is_hermes_env_file(path, os.environ):\n",
+        "        if False:  # MUTANT\n",
+        "Hermes import creates agent-vault beside any .env, not only a Hermes home",
+    ),
+    Mutation(
+        "HIM-4",
+        "src/floorvault/agent_cli.py",
+        "            if not stat.S_ISREG(path.lstat().st_mode):\n"
+        '                _err(prog, f"{path} is not a regular file; --remove-from-env',
+        "            if False:  # MUTANT\n"
+        '                _err(prog, f"{path} is not a regular file; --remove-from-env',
+        "--remove-from-env follows a symlinked .env and rewrites its target",
+        # The test that can tell needs a symlink, which Windows runners cannot
+        # create unprivileged.
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "HIM-5",
+        "src/floorvault/agent_cli.py",
+        "    if args.key_env is None and args.key_file is None and os.environ.get(_HERMES_KEY_VAR):",
+        "    if False:  # MUTANT",
+        "A store set up with the plugin's token_env key is written under a different key",
+    ),
+    Mutation(
         "PKG-1",
         "scripts/verify_wheel.py",
         "        if missing:",

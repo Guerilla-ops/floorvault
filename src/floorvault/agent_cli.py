@@ -54,6 +54,7 @@ from .agentenv import (
     parse_ref,
     read_env_file,
     render_env_file,
+    render_env_file_without,
     resolve,
 )
 
@@ -530,10 +531,35 @@ def add_secrets_parser(subparsers) -> None:
             "Store each plaintext value of a dotenv-style file as a vault item and "
             "rewrite the file to fv: references. Without --write this only prints "
             "the plan; when the vault exists, the dry run unlocks it to compare values. "
-            "Item ids are the lowercased variable names, after --prefix."
+            "Item ids are the lowercased variable names, after --prefix. "
+            "For a Hermes Agent .env use --hermes instead: Hermes reads that file "
+            "itself, so it is never rewritten to references."
         ),
     )
-    imp.add_argument("file", type=Path, help="the .env file")
+    imp.add_argument(
+        "file",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="the .env file (with --hermes: default $HERMES_HOME/.env)",
+    )
+    imp.add_argument(
+        "--hermes",
+        action="store_true",
+        help=(
+            "move a Hermes Agent .env into the hermesvault plugin's store "
+            "($HERMES_HOME/agent-vault) and print the secrets.hermesvault.env mapping; "
+            "the .env is not rewritten to references"
+        ),
+    )
+    imp.add_argument(
+        "--remove-from-env",
+        action="store_true",
+        help=(
+            "with --hermes --write: delete the imported lines from the .env, once "
+            "config.yaml maps each of them (run it after adding the mapping)"
+        ),
+    )
     imp.add_argument(
         "--write",
         action="store_true",
@@ -897,13 +923,257 @@ _RUN_ONLY_NOTE = (
 _HERMES_ENV_ADVICE = (
     "{path} is a Hermes Agent .env. Hermes reads it itself and lets it override the "
     "environment, so fv: references there would break Hermes. Move these keys with the "
-    "hermesvault plugin instead: store each one with `hermes hvault add`, delete its line "
-    "from .env, and map it under secrets.hermesvault.env (`hermes hvault env` prints the "
-    "mapping). See plugins/hermesvault/README.md."
+    "hermesvault plugin instead: `floorvault secrets import --hermes {path}` stores them "
+    "in the plugin's store and prints the secrets.hermesvault.env mapping to add to "
+    "config.yaml; then `--hermes --write --remove-from-env` deletes the imported lines. "
+    "See plugins/hermesvault/README.md."
 )
 
 
+def _find_conflicts(store, to_store, prog: str) -> Optional[set[str]]:
+    """Item ids already holding the same value, or None after reporting conflicts."""
+    already: set[str] = set()
+    problems: list[str] = []
+    for line, item_id in to_store:
+        if store is None or store.get_meta(item_id) is None:
+            continue
+        try:
+            same = store.resolve_secret(item_id) == {"value": line.value}
+        except Exception:  # noqa: BLE001 - an unreadable item is a conflict
+            same = False
+        if same:
+            already.add(item_id)
+        else:
+            problems.append(
+                f"{line.name}: vault item {item_id} already exists with different "
+                "contents; choose another --prefix"
+            )
+    for problem in problems:
+        _err(prog, problem)
+    return None if problems else already
+
+
+def _store_new_items(store, to_store, already: set[str], path: Path, prog: str) -> Optional[int]:
+    """Store the items not already present; the count, or None after reporting a failure."""
+    stored = 0
+    for line, item_id in to_store:
+        if item_id in already:
+            continue
+        try:
+            store.add_item(
+                kind="generic",
+                label=f"{line.name} (imported from {path.name})",
+                secret={"value": line.value},
+                item_id=item_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - the type is safe; a message may not be
+            _err(prog, f"storing {line.name} failed ({type(exc).__name__}); {path} is unchanged")
+            _err(prog, "items stored so far are kept; re-running the import reuses them")
+            return None
+        stored += 1
+    return stored
+
+
+def _default_hermes_env_file(environ: Mapping[str, str]) -> Optional[Path]:
+    for home in _hermes_homes(environ):
+        candidate = home / ".env"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _config_maps(config_text: str, name: str, item_id: str) -> bool:
+    """Whether a line of config.yaml maps ``name`` to ``hv:<item_id>``.
+
+    A text check, not a YAML parse: it confirms the mapping line is present, not
+    that it sits under an enabled ``secrets.hermesvault`` block.
+    """
+    pattern = (
+        rf"^[ \t]+{re.escape(name)}:[ \t]*([\"']?)hv:{re.escape(item_id)}(?::value)?\1"
+        r"[ \t]*(?:#.*)?$"
+    )
+    return re.search(pattern, config_text, re.MULTILINE) is not None
+
+
+_HERMES_KEY_VAR = "HERMES_VAULT_KEY"  # the plugin's default token_env
+
+
+def _cmd_import_hermes(args, prog: str) -> int:
+    """Move a Hermes ``.env`` into the plugin's store; never rewrite it to references.
+
+    Hermes reads its ``.env`` itself and lets it win over the environment, so the
+    values go into ``<home>/agent-vault`` and the user maps them under
+    ``secrets.hermesvault.env``. The imported lines are deleted from ``.env`` only
+    with ``--remove-from-env``, after config.yaml maps each of them.
+    """
+    if args.file is None:
+        path = _default_hermes_env_file(os.environ)
+        if path is None:
+            _err(prog, "no Hermes .env found under $HERMES_HOME or ~/.hermes; give the file")
+            return 2
+    else:
+        path = args.file.expanduser()
+    if args.remove_from_env and not args.write:
+        _err(prog, "--remove-from-env needs --write")
+        return 2
+    if args.remove_from_env:
+        try:
+            if not stat.S_ISREG(path.lstat().st_mode):
+                _err(prog, f"{path} is not a regular file; --remove-from-env refuses symlinks")
+                return 2
+        except OSError as exc:
+            _err(prog, f"{path}: cannot read env file ({type(exc).__name__})")
+            return 2
+    try:
+        home = path.resolve().parent
+    except (OSError, RuntimeError):
+        _err(prog, f"{path}: cannot resolve the file's directory")
+        return 2
+    if args.vault is None:
+        if not _is_hermes_env_file(path, os.environ):
+            _err(
+                prog,
+                f"{path} does not look like a Hermes .env (no state.db and config.yaml "
+                "beside it); give --vault DIR to choose the store",
+            )
+            return 2
+        args.vault = home / "agent-vault"
+    if args.key_env is None and args.key_file is None and os.environ.get(_HERMES_KEY_VAR):
+        # The plugin uses this variable's key directly when it is set.
+        args.key_env = _HERMES_KEY_VAR
+        _err(prog, f"using the key in ${_HERMES_KEY_VAR}, as the hermesvault plugin does")
+    try:
+        env_file = read_env_file(path)
+    except AgentEnvError as exc:
+        for problem in exc.problems:
+            _err(prog, problem)
+        return 2
+    plan = _import_plan(args, env_file, prog)
+    if plan is None:
+        return 2
+    to_store, left = plan
+    if not to_store:
+        for name, reason in left:
+            print(f"{name}: left as is ({reason})")
+        print(f"nothing to import from {path}")
+        return 0
+
+    vault_dir = _vault_dir(args.vault, os.environ)
+    vault_exists = _is_regular_file(vault_dir / "vault.db")
+    store = _store_for(args, create=args.write) if (args.write or vault_exists) else None
+    already = _find_conflicts(store, to_store, prog)
+    if already is None:
+        return 2
+
+    config = home / "config.yaml"
+    for line, item_id in to_store:
+        state = "already in the vault" if item_id in already else "new item"
+        print(f"{line.name} -> hv:{item_id} ({state})")
+    for name, reason in left:
+        print(f"{name}: left as is ({reason})")
+    print(f"store: {vault_dir} (pass --vault if secrets.hermesvault.dir names another)")
+    print(f"# Add this to {config}, merged with any existing secrets.hermesvault block:")
+    print("secrets:")
+    print("  hermesvault:")
+    print("    enabled: true")
+    print("    env:")
+    for line, item_id in to_store:
+        print(f'      {line.name}: "hv:{item_id}"')
+    if not args.write:
+        if not vault_exists:
+            print(f"the vault at {vault_dir} does not exist yet; --write creates it")
+        print(
+            f"dry run: nothing changed. Re-run with --write to store the items; {path} is not edited."
+        )
+        _err(
+            prog,
+            "only secrets belong in the vault: use --only NAME or --skip NAME to leave "
+            "plain settings (a DEBUG flag, a model name) in .env",
+        )
+        return 0
+
+    stored = _store_new_items(store, to_store, already, path, prog)
+    if stored is None:
+        return 1
+    if not args.remove_from_env:
+        print(f"stored {stored} new item(s) in {vault_dir}; {path} is unchanged")
+        print(
+            "next: add the mapping above to config.yaml, then re-run with --write "
+            "--remove-from-env (and the same --only/--skip/--prefix) to delete the "
+            "imported lines from .env"
+        )
+        return 0
+
+    for line, item_id in to_store:
+        try:
+            ok = store.resolve_secret(item_id) == {"value": line.value}
+        except Exception:  # noqa: BLE001 - treat an unreadable item as a mismatch
+            ok = False
+        if not ok:
+            _err(prog, f"{line.name}: vault item {item_id} does not return the .env value")
+            _err(prog, "nothing was removed from .env")
+            return 1
+    try:
+        config_text = config.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        _err(prog, f"cannot read {config} ({type(exc).__name__}); add the mapping, then re-run")
+        _err(prog, "nothing was removed from .env")
+        return 2
+    missing = [
+        line.name for line, item_id in to_store if not _config_maps(config_text, line.name, item_id)
+    ]
+    if missing:
+        _err(prog, f"{config} does not map {', '.join(missing)} to the stored hv: items")
+        _err(prog, "add the mapping printed above, then re-run; nothing was removed from .env")
+        return 2
+    data = render_env_file_without(env_file, [line.number for line, _ in to_store])
+    try:
+        _replace_file(path, env_file.raw, data)
+    except (ImportFileChanged, OSError) as exc:
+        _err(prog, f"{path} was not rewritten: {exc}")
+        _err(prog, "the items are stored; re-running reuses them")
+        return 1
+    print(f"stored {stored} new item(s); removed {len(to_store)} line(s) from {path}")
+    _err(
+        prog,
+        "no backup was made. Earlier copies of the plaintext may remain in backups, "
+        "editor swap files or git history; rotate any key that was ever committed or shared.",
+    )
+    _err(
+        prog,
+        f"checked that {config} has a mapping line for each key. Not checked: that "
+        "secrets.hermesvault.enabled is true, or that the Hermes process can reach the "
+        "same key (OS key store or token_env). Restart Hermes and confirm before relying on it.",
+    )
+    _err(
+        prog,
+        "expect two wrong readings from Hermes: `hermes doctor` warns that no API key is "
+        "in .env, and `hermes status` may name another provider, because both read the .env "
+        "text. Chat uses the vault key. If Hermes cannot open the vault it starts without "
+        "these keys and fails at its first API call, not at startup.",
+    )
+    if any(line.name.upper() == _HERMES_KEY_VAR for line in env_file.assignments()):
+        _err(
+            prog,
+            f"{_HERMES_KEY_VAR} is still in {path.name}: anyone who can read that file and "
+            "the vault can open it, so the move adds little protection for these keys until "
+            "the key is held by the OS key store instead.",
+        )
+    return 0
+
+
 def _cmd_import(args, prog: str) -> int:
+    if args.hermes:
+        if not re.fullmatch(r"[A-Za-z0-9._-]*", args.prefix):
+            _err(prog, "--prefix may contain only A-Z a-z 0-9 . _ -")
+            return 2
+        return _cmd_import_hermes(args, prog)
+    if args.remove_from_env:
+        _err(prog, "--remove-from-env is for --hermes")
+        return 2
+    if args.file is None:
+        _err(prog, "give the .env file to import (or --hermes for a Hermes .env)")
+        return 2
     if not re.fullmatch(r"[A-Za-z0-9._-]*", args.prefix):
         _err(prog, "--prefix may contain only A-Z a-z 0-9 . _ -")
         return 2
@@ -940,25 +1210,8 @@ def _cmd_import(args, prog: str) -> int:
     vault_dir = _vault_dir(args.vault, os.environ)
     vault_exists = _is_regular_file(vault_dir / "vault.db")
     store = _store_for(args, create=args.write) if (args.write or vault_exists) else None
-    already: set[str] = set()
-    problems: list[str] = []
-    for line, item_id in to_store:
-        if store is None or store.get_meta(item_id) is None:
-            continue
-        try:
-            same = store.resolve_secret(item_id) == {"value": line.value}
-        except Exception:  # noqa: BLE001 - an unreadable item is a conflict
-            same = False
-        if same:
-            already.add(item_id)
-        else:
-            problems.append(
-                f"{line.name}: vault item {item_id} already exists with different "
-                "contents; choose another --prefix"
-            )
-    for problem in problems:
-        _err(prog, problem)
-    if problems:
+    already = _find_conflicts(store, to_store, prog)
+    if already is None:
         return 2
 
     for line, item_id in to_store:
@@ -973,22 +1226,9 @@ def _cmd_import(args, prog: str) -> int:
         _err(prog, _RUN_ONLY_NOTE.format(path=path))
         return 0
 
-    stored = 0
-    for line, item_id in to_store:
-        if item_id in already:
-            continue
-        try:
-            store.add_item(
-                kind="generic",
-                label=f"{line.name} (imported from {path.name})",
-                secret={"value": line.value},
-                item_id=item_id,
-            )
-        except Exception as exc:  # noqa: BLE001 - the type is safe; a message may not be
-            _err(prog, f"storing {line.name} failed ({type(exc).__name__}); {path} is unchanged")
-            _err(prog, "items stored so far are kept; re-running the import reuses them")
-            return 1
-        stored += 1
+    stored = _store_new_items(store, to_store, already, path, prog)
+    if stored is None:
+        return 1
     data = render_env_file(env_file, {line.number: f"fv:{item_id}" for line, item_id in to_store})
     try:
         _replace_file(path, env_file.raw, data)

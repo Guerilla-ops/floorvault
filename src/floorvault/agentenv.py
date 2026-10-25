@@ -44,6 +44,7 @@ __all__ = [
     "parse_ref",
     "read_env_file",
     "render_env_file",
+    "render_env_file_without",
     "resolve",
     "select_field",
 ]
@@ -308,6 +309,18 @@ def render_env_file(env_file: EnvFile, replacements: Mapping[int, str]) -> bytes
     for line in env_file.lines:
         ref = replacements.get(line.number)
         out.append(line.with_reference(ref) if ref is not None else line.text + line.ending)
+    body = "".join(out).encode("utf-8")
+    return (b"\xef\xbb\xbf" + body) if env_file.bom else body
+
+
+def render_env_file_without(env_file: EnvFile, numbers: Iterable[int]) -> bytes:
+    """The file's bytes with the lines numbered ``numbers`` deleted, all else verbatim.
+
+    A deleted last line that had no terminator leaves the previous line's
+    terminator in place, so the file ends with a newline.
+    """
+    drop = set(numbers)
+    out = [line.text + line.ending for line in env_file.lines if line.number not in drop]
     body = "".join(out).encode("utf-8")
     return (b"\xef\xbb\xbf" + body) if env_file.bom else body
 

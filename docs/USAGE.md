@@ -300,10 +300,64 @@ environment is set, so fv: references there would replace the real values.
 `secrets import` recognises a Hermes `.env`: `$HERMES_HOME`, `~/.hermes`,
 `%LOCALAPPDATA%\hermes`, a `profiles/<name>` directory, or a directory with
 Hermes' `state.db` and `config.yaml`. It warns on a dry run and refuses
-`--write`. For Hermes, use the [plugin](#hermes-agent-integration):
-1. Store each key with `hermes hvault add`.
-2. Delete its line from `.env`.
-3. Map it under `secrets.hermesvault.env` (`hermes hvault env <item> <NAME>` prints the mapping).
+`--write`. For Hermes, use `--hermes`, which moves the keys into the
+[plugin](#hermes-agent-integration)'s store instead of rewriting the file:
+
+```bash
+floorvault secrets import --hermes                       # dry run on $HERMES_HOME/.env
+floorvault secrets import --hermes --write --skip DEBUG  # store the items; .env is untouched
+# add the printed secrets.hermesvault.env block to config.yaml, then:
+floorvault secrets import --hermes --write --skip DEBUG --remove-from-env
+```
+
+1. **Dry run** (the default) prints each `NAME -> hv:<item>` and the
+   `secrets.hermesvault.env` block to paste into `config.yaml`, and changes
+   nothing. It lists every assignment, settings included: keep plain settings
+   (a `DEBUG` flag, a model name) in `.env` with `--skip NAME` or `--only NAME`.
+2. **`--write`** stores each value as a generic item in the plugin's store,
+   `<home>/agent-vault` (pass `--vault DIR` when `secrets.hermesvault.dir` names
+   another), under the plugin's custody: the OS key store, or the key in
+   `$HERMES_VAULT_KEY` when that variable is set, as the plugin does (`--key-env`
+   and `--key-file` override). It does not touch `.env`. Re-running reuses items
+   that already hold the same value and stops on one that differs.
+3. **`--write --remove-from-env`** deletes the imported lines from `.env`, but
+   only after it has re-read each item from the store and found a mapping line
+   for each in `config.yaml` beside the `.env`. Otherwise it removes nothing.
+   Removal is atomic, keeps the file's mode, comments and other lines, makes no
+   backup (a backup would be a second plaintext copy) and refuses a symlink or a
+   file that changed during the import.
+
+`FILE` defaults to `$HERMES_HOME/.env`, else `~/.hermes/.env`; one profile per
+run, by path (`profiles/<name>/.env` uses that profile's own `agent-vault`). A
+directory that is not a Hermes home needs an explicit `--vault`. Vault key
+variables in the file are left as they are.
+
+What the config check is: a text match for the mapping line, not a YAML parse. It
+does not check that `secrets.hermesvault.enabled` is true, or that the Hermes
+process can reach the same key. Restart Hermes and look for
+`FloorVault: applied N secret(s)` in `hermes status` before relying on it. Earlier
+copies of the plaintext (backups, editor swap files, git history) are not
+removed.
+
+**What changes in Hermes once the lines are gone.** Checked against Hermes
+`fab9b01` with `hermes chat` in a scratch home: with the key only in the vault,
+the request carried the same key as with the key in `.env`. Two other commands
+misreport, because they read the `.env` text rather than the environment:
+`hermes doctor` warns "No API key found in .env", and `hermes status` can name a
+different provider (it listed AWS Bedrock where it listed OpenAI before). Both are
+display only in that test. Not tested: the messaging gateway, cron, the terminal
+UI, several profiles, an OS key store as the key source, newer Hermes versions.
+Two behaviours come from reading Hermes' source, not from a run: secret sources
+fail open, so if Hermes cannot open the vault (a service without access to the OS
+key store, a wrong key) it starts without these keys and fails at its first API
+call, not at startup; and Hermes commands that save keys, such as `hermes setup`,
+can write plaintext back into `.env`.
+
+**The master key.** A store opened through `token_env` needs `HERMES_VAULT_KEY`
+in the environment, and `.env` is where Hermes reads it from. Left there, anyone
+who can read `.env` and `vault.db` can open the vault, so the move mostly keeps
+keys out of what Hermes and its tools read as plain text. A store whose key is
+held by the OS key store gains real protection at rest.
 
 Protection is at rest. The started command, and code running as your user, can
 read the resolved values: `run` keeps secrets out of files, not away from the

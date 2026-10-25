@@ -57,7 +57,14 @@ stays on disk.
 
 `floorvault secrets import` will not rewrite a Hermes `.env` to references:
 Hermes reads that file itself, so references there would replace the real
-values. Move Hermes keys with `hermes hvault` as above.
+values. Move Hermes keys with `floorvault secrets import --hermes` instead. It
+stores each value in this plugin's store, prints the `secrets.hermesvault.env`
+block to add to `config.yaml`, and with `--write --remove-from-env` deletes the
+imported lines from `.env` once the mapping is there (afterwards `hermes doctor`
+warns that no API key is in `.env`, and `hermes status` can name a different
+provider; chat uses the vault key). See
+[USAGE](../../docs/USAGE.md#run-any-command-with-vault-secrets). Or move keys one
+at a time with `hermes hvault` as above.
 
 ## Manage items
 
