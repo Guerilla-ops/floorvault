@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "floorvault"
-version = "0.2.1"
+version = "0.2.2"
 description = "Contextual, misuse-resistant field encryption and credential stores."
 readme = "README.md"
 license = "MIT"
@@ -64,7 +64,12 @@ dev = [
     # Dependency CVE audit: gate step 2. Declared here so `uv sync --extra dev`
     # installs it; without this the gate skipped the audit with only a warning
     # while still reporting every security gate as passing.
-    "pip-audit>=2.7.0",
+    # Python 3.11+ only: pip-audit pulls in filelock, and every filelock release
+    # with the fixes for GHSA-v4x8-3wr5-3wq8 and five related advisories (4.2.1
+    # and later) requires 3.11, so on 3.10 it could only resolve to a vulnerable
+    # 4.1.x. CI runs the audit on 3.13. On 3.10 the gate fails closed (it will not
+    # run without pip-audit): run scripts/security-check.sh on 3.11 or newer.
+    "pip-audit>=2.7.0; python_version >= '3.11'",
     # The Linux Secret Service client calls secretstorage by name, and a name
     # that does not exist silently disabled the whole tier (the import failed
     # inside `except ImportError: return None`). The contract test asserts every

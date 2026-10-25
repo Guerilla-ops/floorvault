@@ -559,11 +559,9 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "SS-3",
         "src/floorvault/providers/linux_keyring.py",
-        "                    if all(\n"
-        "                        candidate.get_attributes().get(key) == value for key, value "
-        "in query.items()\n"
-        "                    )",
-        "                    if True  # MUTANT",
+        "            if all(candidate.get_attributes().get(key) == value for key, value "
+        "in query.items())\n",
+        "            if True  # MUTANT\n",
         "Entry matching stops checking attributes, so any service's item is "
         "accepted as the master key",
     ),
@@ -1462,6 +1460,62 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        except FileExistsError:\n            stack.enter_context(self._tier3_creation_lock())",
         "        except KeyError:  # MUTANT\n            stack.enter_context(self._tier3_creation_lock())",
         "A fallback_dir creation race skips the Tier-3 lock: the OS key is created unrecorded beside the winner's file key",
+    ),
+    Mutation(
+        "SS-4",
+        "src/floorvault/providers/linux_keyring.py",
+        "            if self._interactive:\n                # Creates the default collection when there is none (a prompt).\n",
+        "            if True:  # MUTANT\n                # Creates the default collection when there is none (a prompt).\n",
+        "A non-interactive resolve calls get_default_collection, which creates a missing collection behind a prompt",
+    ),
+    Mutation(
+        "SS-5",
+        "src/floorvault/providers/linux_keyring.py",
+        "            if collection.is_locked():\n                if not self._interactive:\n",
+        "            if collection.is_locked():\n                if False:  # MUTANT\n",
+        "A non-interactive resolve unlocks a locked collection, showing a prompt a secret source must not block on",
+    ),
+    Mutation(
+        "SS-6",
+        "src/floorvault/providers/linux_keyring.py",
+        '                raise MissingKeyError("Secret Service master key not found; recovery is required")\n            if not self._interactive:\n',
+        '                raise MissingKeyError("Secret Service master key not found; recovery is required")\n            if False:  # MUTANT\n',
+        "A non-interactive resolve creates a new master key through the Secret Service",
+    ),
+    Mutation(
+        "SS-7",
+        "src/floorvault/providers/linux_keyring.py",
+        "            with exclusive_lock(self._identity_lock_path()):\n                items = self._matching_items(collection, query)\n                if items:\n                    return self._single_key(items)\n",
+        "            if True:  # MUTANT\n",
+        "First-time creation is not serialized per keyring identity: two stores create two keys under one entry name",
+    ),
+    Mutation(
+        "SS-8",
+        "src/floorvault/providers/linux_keyring.py",
+        "        if any(secret != secrets[0] for secret in secrets[1:]):\n",
+        "        if False:  # MUTANT\n",
+        "Duplicate Secret Service entries with different keys resolve to the first one: a store can become unreadable",
+    ),
+    Mutation(
+        "ENV-1",
+        "src/floorvault/providers/adaptive.py",
+        "                val = self._environ.get(var_name)\n",
+        "                val = os.environ.get(var_name)  # MUTANT\n",
+        "Tier 1 reads the process environment even when the caller passed its own view: an ambient key unlocks the store",
+    ),
+    Mutation(
+        "MAC-1",
+        "src/floorvault/providers/adaptive.py",
+        "                    query[ui_key] = ui_fail\n",
+        "                    pass  # MUTANT\n",
+        "A non-interactive Keychain read no longer asks the framework to fail instead of prompting",
+    ),
+    Mutation(
+        "MAC-2",
+        "src/floorvault/providers/adaptive.py",
+        "                if status == -25300 and allow_create and not self.interactive:\n",
+        "                if False:  # MUTANT\n",
+        "A non-interactive resolve creates a new master key in the macOS Keychain",
     ),
     Mutation(
         "PKG-1",

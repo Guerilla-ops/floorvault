@@ -769,3 +769,99 @@ def test_disk_fallback_opt_in_reads_the_secret_service_file_store(monkeypatch, t
     key = provider.resolve_key(allow_create=False)
     assert key.get_bytes() == stored
     key.wipe()
+
+
+# --- an explicit environment view (one process serving several configurations) ---
+
+
+def test_an_empty_environment_view_ignores_process_key_variables(monkeypatch, tmp_path):
+    for name in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY"):
+        monkeypatch.setenv(name, "ab" * 32)  # gitleaks:allow
+    monkeypatch.setattr(adaptive_module, "is_macos", lambda: False)
+    monkeypatch.setattr(adaptive_module, "is_windows", lambda: False, raising=False)
+    monkeypatch.setattr(adaptive_module, "is_linux", lambda: False, raising=False)
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, environ={})
+    with pytest.raises(KeyProviderError):
+        provider.resolve_key(allow_create=False)
+    # strict reads the same view: a process variable is not a downgrade here.
+    with pytest.raises(KeyProviderError) as info:
+        AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}, strict=True).resolve_key(
+            allow_create=False
+        )
+    assert not isinstance(info.value, CustodyDowngradeError)
+
+
+def test_the_environment_view_is_where_tier_one_reads(monkeypatch, tmp_path):
+    monkeypatch.delenv("FLOOR_VAULT_KEY", raising=False)
+    monkeypatch.setenv("VAULT_MASTER_KEY", "cd" * 32)  # gitleaks:allow
+    view = {"FLOOR_VAULT_KEY": "ef" * 32}  # gitleaks:allow
+    key = AdaptiveKeyProvider(fallback_dir=tmp_path, environ=view).resolve_key()
+    assert key.get_bytes() == bytes.fromhex("ef" * 32)
+    with pytest.raises(CustodyDowngradeError, match="FLOOR_VAULT_KEY"):
+        AdaptiveKeyProvider(fallback_dir=tmp_path, environ=view, strict=True).resolve_key()
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+def test_interactive_reaches_the_secret_service_tier(tmp_path, interactive):
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, interactive=interactive)
+    assert provider._linux_provider()._interactive is interactive
+
+
+# --- non-interactive macOS Keychain reads (a secret source's fetch must not prompt) ---
+
+
+def _recording_security(monkeypatch, *, copy_status, with_ui_constants=True):
+    module = _fake_security(monkeypatch)
+    if with_ui_constants:
+        module.kSecUseAuthenticationUI = "kSecUseAuthenticationUI"
+        module.kSecUseAuthenticationUIFail = "kSecUseAuthenticationUIFail"
+    calls = {"copy": [], "add": []}
+
+    def SecItemCopyMatching(query, _flags):
+        calls["copy"].append(dict(query))
+        return copy_status
+
+    def SecItemAdd(query, _flags):
+        calls["add"].append(dict(query))
+        return (0, None)
+
+    module.SecItemCopyMatching = SecItemCopyMatching
+    module.SecItemAdd = SecItemAdd
+    return calls
+
+
+def test_non_interactive_keychain_read_asks_the_framework_not_to_prompt(monkeypatch, tmp_path):
+    calls = _recording_security(monkeypatch, copy_status=(0, b"K" * 32))
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}, interactive=False)
+    assert provider.resolve_key(allow_create=False).get_bytes() == b"K" * 32
+    assert calls["copy"][0]["kSecUseAuthenticationUI"] == "kSecUseAuthenticationUIFail"
+
+
+def test_interactive_keychain_read_is_unchanged(monkeypatch, tmp_path):
+    calls = _recording_security(monkeypatch, copy_status=(0, b"K" * 32))
+    AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}).resolve_key(allow_create=False)
+    assert "kSecUseAuthenticationUI" not in calls["copy"][0]
+
+
+def test_a_keychain_that_needs_a_prompt_is_reported_not_shown(monkeypatch, tmp_path):
+    calls = _recording_security(monkeypatch, copy_status=(-25308, None))  # InteractionNotAllowed
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}, interactive=False)
+    with pytest.raises(KeyProviderError, match="needs a prompt"):
+        provider.resolve_key(allow_create=False)
+    assert calls["add"] == []
+
+
+def test_non_interactive_keychain_never_creates_a_key(monkeypatch, tmp_path):
+    calls = _recording_security(monkeypatch, copy_status=(-25300, None))  # ItemNotFound
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}, interactive=False)
+    with pytest.raises(KeyProviderError, match="not created without a prompt"):
+        provider._resolve_os_tier_for_platform(allow_create=True, missing_ok=False)
+    assert calls["add"] == []
+
+
+def test_a_binding_without_the_no_prompt_option_is_refused(monkeypatch, tmp_path):
+    calls = _recording_security(monkeypatch, copy_status=(0, b"K" * 32), with_ui_constants=False)
+    provider = AdaptiveKeyProvider(fallback_dir=tmp_path, environ={}, interactive=False)
+    with pytest.raises(KeyProviderError, match="cannot ask the Keychain"):
+        provider.resolve_key(allow_create=False)
+    assert calls["copy"] == []
