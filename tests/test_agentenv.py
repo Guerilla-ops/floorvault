@@ -358,3 +358,21 @@ def test_command_allowed_needs_the_exact_program_and_arguments():
     assert not command_allowed([os.path.abspath("/tmp/server"), "--stdio"], allowed)
     assert not command_allowed([], allowed)
     assert command_allowed([os.path.abspath("/opt/bin/other")], allowed)
+
+
+def test_render_without_deletes_whole_lines_and_keeps_the_rest(tmp_path):
+    from floorvault.agentenv import read_env_file, render_env_file_without
+
+    raw = b"\xef\xbb\xbf# c\r\n  export A='x'\r\nB=y\nC=z"
+    path = tmp_path / ".env"
+    path.write_bytes(raw)
+    env_file = read_env_file(path)
+    by_name = {line.name: line.number for line in env_file.assignments()}
+    assert render_env_file_without(env_file, []) == raw
+    assert render_env_file_without(env_file, [by_name["A"]]) == b"\xef\xbb\xbf# c\r\nB=y\nC=z"
+    assert (
+        render_env_file_without(env_file, [by_name["C"]])
+        == b"\xef\xbb\xbf# c\r\n  export A='x'\r\nB=y\n"
+    )
+    everything = render_env_file_without(env_file, by_name.values())
+    assert everything == b"\xef\xbb\xbf# c\r\n"

@@ -549,7 +549,7 @@ def test_import_refuses_to_rewrite_a_hermes_env(tmp_path, base_env, kind):
     dry = fv(["secrets", "import", str(target)], env)
     assert dry.returncode == 0, dry.stderr
     assert "is a Hermes Agent .env" in dry.stderr
-    assert "hermes hvault add" in dry.stderr
+    assert "secrets import --hermes" in dry.stderr
 
     write = fv(["secrets", "import", str(target), "--write"], env)
     assert write.returncode == 2
@@ -1002,3 +1002,270 @@ def test_bound_item_with_a_missing_command_exits_127(tmp_path, base_env, store):
     result = fvb(["run", "-e", "A=fv:openai", "--", "no-such-command-fv"], env)
     assert result.returncode == 127
     assert result.stdout == ""
+
+
+# ----------------------------------------------------------- import --hermes
+
+
+HERMES_ENV = (
+    b"# provider keys\r\n"
+    b"export OPENAI_API_KEY=sk-hermes-openai\r\n"
+    b"DEBUG=1\r\n"
+    b'GITHUB_TOKEN="ghp-hermes-github"\r\n'
+    b"HERMES_VAULT_KEY=" + b"ab" * 32 + b"\r\n"
+    b"EMPTY=\r\n"
+    b"TAIL=keep-me"
+)
+
+
+def _hermes_home(tmp_path, *, env_bytes=HERMES_ENV, config="model: x\n"):
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "state.db").write_bytes(b"")
+    (home / "config.yaml").write_text(config, encoding="utf-8")
+    env_file = home / ".env"
+    env_file.write_bytes(env_bytes)
+    return home, env_file
+
+
+MAPPING = (
+    "secrets:\n"
+    "  hermesvault:\n"
+    "    enabled: true\n"
+    "    env:\n"
+    '      OPENAI_API_KEY: "hv:openai_api_key"\n'
+    "      GITHUB_TOKEN: hv:github_token   # pat\n"
+)
+
+
+def _hermes_import(args, env):
+    return fv(["secrets", "import", "--hermes", *args], env)
+
+
+def test_hermes_dry_run_changes_nothing_and_prints_the_mapping(tmp_path, base_env):
+    home, env_file = _hermes_home(tmp_path)
+    before = env_file.read_bytes()
+    result = _hermes_import([str(env_file), "--skip", "DEBUG", "--skip", "TAIL"], base_env)
+    assert result.returncode == 0, result.stderr
+    assert "OPENAI_API_KEY -> hv:openai_api_key (new item)" in result.stdout
+    assert "GITHUB_TOKEN -> hv:github_token (new item)" in result.stdout
+    assert "HERMES_VAULT_KEY: left as is (a vault key variable" in result.stdout
+    assert "EMPTY: left as is (empty)" in result.stdout
+    assert '      OPENAI_API_KEY: "hv:openai_api_key"' in result.stdout
+    assert "secrets:\n  hermesvault:\n    enabled: true\n    env:\n" in result.stdout
+    assert f"store: {home / 'agent-vault'}" in result.stdout
+    assert "dry run: nothing changed" in result.stdout
+    assert "--only NAME or --skip NAME" in result.stderr
+    for value in ("sk-hermes-openai", "ghp-hermes-github"):
+        assert value not in result.stdout + result.stderr
+    assert env_file.read_bytes() == before
+    assert not (home / "agent-vault").exists()
+
+
+def test_hermes_write_stores_items_and_leaves_the_env_alone(tmp_path, base_env):
+    home, env_file = _hermes_home(tmp_path)
+    before = env_file.read_bytes()
+    result = _hermes_import([str(env_file), "--only", "OPENAI_API_KEY", "--write"], base_env)
+    assert result.returncode == 0, result.stderr
+    assert f"stored 1 new item(s) in {home / 'agent-vault'}" in result.stdout
+    assert "is unchanged" in result.stdout and "--remove-from-env" in result.stdout
+    assert env_file.read_bytes() == before
+    assert "sk-hermes-openai" not in result.stdout + result.stderr
+    # The plugin's store opens the way the plugin opens it, and so does `run`.
+    probe = (
+        "from floorvault import get_vault_store\n"
+        f"store = get_vault_store({str(home / 'agent-vault')!r}, auto_migrate=False)\n"
+        "print(store.resolve_secret('openai_api_key')['value'])\n"
+    )
+    opened = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, env=base_env, cwd=ROOT
+    )
+    assert opened.stdout.strip() == "sk-hermes-openai", opened.stderr
+    ran = fv(
+        ["run", "--vault", str(home / "agent-vault"), "-e", "A=hv:openai_api_key", "--"]
+        + _dump_env(tmp_path),
+        base_env,
+    )
+    assert json.loads(ran.stdout)["A"] == "sk-hermes-openai", ran.stderr
+    # Re-running reuses the stored item.
+    again = _hermes_import([str(env_file), "--only", "OPENAI_API_KEY", "--write"], base_env)
+    assert again.returncode == 0 and "(already in the vault)" in again.stdout
+    assert "stored 0 new item(s)" in again.stdout
+
+
+def test_hermes_remove_is_refused_until_config_maps_every_key(tmp_path, base_env):
+    home, env_file = _hermes_home(tmp_path)
+    before = env_file.read_bytes()
+    flags = [str(env_file), "--skip", "DEBUG", "--skip", "TAIL", "--write", "--remove-from-env"]
+    result = _hermes_import(flags, base_env)
+    assert result.returncode == 2
+    assert "does not map OPENAI_API_KEY, GITHUB_TOKEN" in result.stderr
+    assert "nothing was removed from .env" in result.stderr
+    assert env_file.read_bytes() == before
+    # The items were stored, so adding the mapping and re-running is all that is left.
+    assert (home / "agent-vault" / "vault.db").is_file()
+    # A mapping for only one of the keys is still refused.
+    (home / "config.yaml").write_text(
+        "secrets:\n  hermesvault:\n    env:\n      OPENAI_API_KEY: hv:openai_api_key\n",
+        encoding="utf-8",
+    )
+    partial = _hermes_import(flags, base_env)
+    assert partial.returncode == 2 and "does not map GITHUB_TOKEN" in partial.stderr
+    assert env_file.read_bytes() == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_hermes_remove_deletes_only_the_mapped_lines_and_keeps_layout(tmp_path, base_env):
+    home, env_file = _hermes_home(tmp_path, config="model: x\n" + MAPPING)
+    env_file.chmod(0o640)
+    flags = [str(env_file), "--skip", "DEBUG", "--skip", "TAIL", "--write", "--remove-from-env"]
+    result = _hermes_import(flags, base_env)
+    assert result.returncode == 0, result.stderr
+    assert "removed 2 line(s)" in result.stdout
+    assert env_file.read_bytes() == (
+        b"# provider keys\r\n"
+        b"DEBUG=1\r\n"
+        b"HERMES_VAULT_KEY=" + b"ab" * 32 + b"\r\n"
+        b"EMPTY=\r\n"
+        b"TAIL=keep-me"
+    )
+    assert stat_mode(env_file) == 0o640
+    assert "no backup was made" in result.stderr
+    assert "Not checked: that secrets.hermesvault.enabled is true" in result.stderr
+    for value in ("sk-hermes-openai", "ghp-hermes-github"):
+        assert value not in result.stdout + result.stderr
+    ran = fv(
+        ["run", "--vault", str(home / "agent-vault"), "-e", "G=hv:github_token", "--"]
+        + _dump_env(tmp_path),
+        base_env,
+    )
+    assert json.loads(ran.stdout)["G"] == "ghp-hermes-github", ran.stderr
+    # Nothing is left to import once the lines are gone.
+    done = _hermes_import(flags, base_env)
+    assert done.returncode == 0, done.stderr
+    assert "nothing to import" in done.stdout
+
+
+def test_hermes_remove_needs_a_readable_config(tmp_path, base_env):
+    home, env_file = _hermes_home(tmp_path)
+    before = env_file.read_bytes()
+    (home / "config.yaml").unlink()
+    flags = [str(env_file), "--vault", str(home / "agent-vault"), "--only", "OPENAI_API_KEY"]
+    result = _hermes_import([*flags, "--write", "--remove-from-env"], base_env)
+    assert result.returncode == 2
+    assert f"cannot read {home / 'config.yaml'}" in result.stderr
+    assert "nothing was removed from .env" in result.stderr
+    assert env_file.read_bytes() == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_hermes_remove_refuses_a_symlinked_env(tmp_path, base_env):
+    home, env_file = _hermes_home(tmp_path, config=MAPPING)
+    link = home / "link.env"
+    link.symlink_to(env_file)
+    result = _hermes_import(
+        [str(link), "--vault", str(home / "agent-vault"), "--write", "--remove-from-env"],
+        base_env,
+    )
+    assert result.returncode == 2 and "refuses symlinks" in result.stderr
+    assert not (home / "agent-vault").exists()
+
+
+def test_hermes_usage_errors(tmp_path, base_env):
+    home, env_file = _hermes_home(tmp_path)
+    before = env_file.read_bytes()
+    # --remove-from-env needs --write, and belongs to --hermes.
+    assert _hermes_import([str(env_file), "--remove-from-env"], base_env).returncode == 2
+    plain = fv(["secrets", "import", str(env_file), "--remove-from-env", "--write"], base_env)
+    assert plain.returncode == 2 and "--remove-from-env is for --hermes" in plain.stderr
+    # A file is required without --hermes.
+    assert fv(["secrets", "import"], base_env).returncode == 2
+    # A directory that is not a Hermes home needs an explicit --vault.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / ".env").write_bytes(b"A=1\n")
+    result = _hermes_import([str(other / ".env"), "--write"], base_env)
+    assert result.returncode == 2 and "give --vault DIR" in result.stderr
+    assert not (other / "agent-vault").exists()
+    explicit = _hermes_import([str(other / ".env"), "--vault", str(tmp_path / "vv")], base_env)
+    assert explicit.returncode == 0, explicit.stderr
+    assert "A -> hv:a (new item)" in explicit.stdout
+    assert env_file.read_bytes() == before
+    bad_prefix = _hermes_import([str(env_file), "--prefix", "a b"], base_env)
+    assert bad_prefix.returncode == 2
+
+
+def test_hermes_default_file_comes_from_hermes_home(tmp_path, base_env):
+    home, env_file = _hermes_home(tmp_path)
+    env = {**base_env, "HERMES_HOME": str(home)}
+    result = _hermes_import(["--only", "OPENAI_API_KEY"], env)
+    assert result.returncode == 0, result.stderr
+    assert "OPENAI_API_KEY -> hv:openai_api_key" in result.stdout
+    nothing = {**base_env, "HERMES_HOME": str(tmp_path / "nowhere")}
+    missing = _hermes_import([], nothing)
+    assert missing.returncode == 2 and "no Hermes .env found" in missing.stderr
+
+
+def test_hermes_conflicting_item_stops_the_import(tmp_path, base_env):
+    home, env_file = _hermes_home(tmp_path)
+    assert (
+        _hermes_import([str(env_file), "--only", "OPENAI_API_KEY", "--write"], base_env).returncode
+        == 0
+    )
+    env_file.write_bytes(HERMES_ENV.replace(b"sk-hermes-openai", b"sk-rotated"))
+    result = _hermes_import([str(env_file), "--only", "OPENAI_API_KEY", "--write"], base_env)
+    assert result.returncode == 2
+    assert "already exists with different contents" in result.stderr
+
+
+def test_hermes_uses_the_plugins_token_env_key_when_it_is_set(tmp_path, base_env):
+    home, env_file = _hermes_home(tmp_path)
+    env = {k: v for k, v in base_env.items() if k != "FLOOR_VAULT_KEY"}
+    # A key of its own, not the one base_env holds in FLOOR_VAULT_KEY.
+    env["HERMES_VAULT_KEY"] = os.urandom(32).hex()
+    result = _hermes_import([str(env_file), "--only", "OPENAI_API_KEY", "--write"], env)
+    assert result.returncode == 0, result.stderr
+    assert "using the key in $HERMES_VAULT_KEY, as the hermesvault plugin does" in result.stderr
+    ran = fv(
+        ["run", "--vault", str(home / "agent-vault"), "--key-env", "HERMES_VAULT_KEY"]
+        + ["-e", "A=hv:openai_api_key", "--"]
+        + _dump_env(tmp_path),
+        env,
+    )
+    assert json.loads(ran.stdout)["A"] == "sk-hermes-openai", ran.stderr
+    # Without that key variable the store does not open under a different key.
+    wrong = fv(
+        ["run", "--vault", str(home / "agent-vault"), "-e", "A=hv:openai_api_key", "--"]
+        + _dump_env(tmp_path),
+        base_env,
+    )
+    assert wrong.returncode == 125
+
+
+@pytest.mark.parametrize(
+    "line, name, item_id, expected",
+    [
+        ('      K: "hv:a"', "K", "a", True),
+        ("      K: 'hv:a'", "K", "a", True),
+        ("      K: hv:a", "K", "a", True),
+        ("      K: hv:a   # note", "K", "a", True),
+        ('      K: "hv:a:value"', "K", "a", True),
+        ("\tK: hv:a", "K", "a", True),
+        ("      K: \"hv:a'", "K", "a", False),
+        ("      K: hv:ab", "K", "a", False),
+        ("      K: hv:a:token", "K", "a", False),
+        ("      K: hv:b", "K", "a", False),
+        ("      # K: hv:a", "K", "a", False),
+        ("K: hv:a", "K", "a", False),
+        ("      OTHER_K: hv:a", "K", "a", False),
+        ("      K: fv:a", "K", "a", False),
+        ("      K.X: hv:a", "K", "a", False),
+    ],
+)
+def test_config_mapping_check(line, name, item_id, expected):
+    from floorvault.agent_cli import _config_maps
+
+    assert (
+        _config_maps("secrets:\n  hermesvault:\n    env:\n" + line + "\n", name, item_id)
+        is expected
+    )

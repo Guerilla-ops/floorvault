@@ -197,6 +197,10 @@ proof of a plaintext-recovery attack.
   a single SQLite transaction through `VaultStore.update_generic_field()`.
   `floorvault secrets import --write` replaces the `.env` file atomically and
   makes no backup, but it cannot erase earlier copies of that file.
+  `secrets import --hermes --write --remove-from-env` does the same for a Hermes
+  `.env`, deleting lines instead of rewriting them, and only after it has read
+  each value back from the plugin's store and found a mapping line for it in
+  `config.yaml` (a text match, not a check that the plugin is enabled).
 - **`floorvault run` hands plaintext to the child.** Resolved values become
   ordinary environment variables of the started process and of anything it
   starts. Code running as the same user can usually read a process's
