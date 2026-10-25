@@ -180,6 +180,7 @@ def open_store(
     key_bytes: Optional[bytes] = None,
     create: bool = False,
     environ: Optional[Mapping[str, str]] = None,
+    provider_environ: Optional[Mapping[str, str]] = None,
 ):
     """Open the agent-secret store at ``vault_dir``.
 
@@ -187,6 +188,9 @@ def open_store(
     ``secrets import --write``) the store must already exist and the master
     key is only read, never created. ``key_bytes`` (from ``--key-file``) and
     ``key_env`` use the given key directly, never ``AdaptiveKeyProvider``.
+    ``provider_environ`` is where the default provider reads key variables
+    (``{}``: none, as the Hermes plugin does); ``None`` is the process
+    environment.
     """
     from .core import FloorVault
     from .memory import HardenedMemoryKey
@@ -209,10 +213,12 @@ def open_store(
                 raise StoreUnavailable(f"{key_env} must hold 64 hexadecimal characters")
             crypto = FloorVault(HardenedMemoryKey(bytes.fromhex(raw)), app_instance_id=APP_CONTEXT)
             return VaultStore(vault_dir, crypto=crypto)
-        if create:
+        if create and provider_environ is None:
             return VaultStore(vault_dir)
-        provider = AdaptiveKeyProvider(service_name=SERVICE_NAME, fallback_dir=vault_dir)
-        key = provider.resolve_key(allow_create=False)
+        provider = AdaptiveKeyProvider(
+            service_name=SERVICE_NAME, fallback_dir=vault_dir, environ=provider_environ
+        )
+        key = provider.resolve_key(allow_create=create)
         return VaultStore(vault_dir, crypto=FloorVault(key, app_instance_id=APP_CONTEXT))
     except StoreUnavailable:
         raise
@@ -638,7 +644,7 @@ def _split_target(text: str) -> tuple[Optional[str], Optional[str]]:
     return item_id, (field or None)
 
 
-def _store_for(args, *, create: bool = False):
+def _store_for(args, *, create: bool = False, provider_environ=None):
     _check_key_options(args)
     vault_dir = _vault_dir(args.vault, os.environ)
     return open_store(
@@ -646,6 +652,7 @@ def _store_for(args, *, create: bool = False):
         key_env=args.key_env,
         key_bytes=_custody_key(args, os.environ, vault_dir),
         create=create,
+        provider_environ=provider_environ,
     )
 
 
@@ -1115,6 +1122,14 @@ def _cmd_import_hermes(args, prog: str) -> int:
         # The plugin uses this variable's key directly when it is set.
         args.key_env = _HERMES_KEY_VAR
         _err(prog, f"using the key in ${_HERMES_KEY_VAR}, as the hermesvault plugin does")
+    if args.key_file is not None:
+        _err(
+            prog,
+            "the hermesvault plugin cannot read a key file, so Hermes could not open a store "
+            f"keyed by --key-file. Nothing was stored and .env is unchanged. Use the OS key "
+            f"store, or --key-env / ${_HERMES_KEY_VAR} with the plugin's token_env",
+        )
+        return 2
     if args.key_env is None and systemd_creds.credential_present(
         _vault_dir(args.vault, os.environ)
     ):
@@ -1147,7 +1162,24 @@ def _cmd_import_hermes(args, prog: str) -> int:
 
     vault_dir = _vault_dir(args.vault, os.environ)
     vault_exists = _is_regular_file(vault_dir / "vault.db")
-    store = _store_for(args, create=args.write) if (args.write or vault_exists) else None
+    if args.key_env is None:
+        ignored = [name for name in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY") if os.environ.get(name)]
+        if ignored:
+            _err(
+                prog,
+                f"${ignored[0]} is ignored here: the hermesvault plugin does not read it, so "
+                f"the store is opened with the OS key store. Set ${_HERMES_KEY_VAR} (the "
+                "plugin's token_env) to use an explicit key",
+            )
+    # Open the store as the plugin will: its own key variable, or the OS key store
+    # with no environment tier ($FLOOR_VAULT_KEY and $VAULT_MASTER_KEY are not
+    # read), so nothing is stored under a key the plugin never uses.
+    hermes_environ = None if args.key_env else {}
+    store = (
+        _store_for(args, create=args.write, provider_environ=hermes_environ)
+        if (args.write or vault_exists)
+        else None
+    )
     already = _find_conflicts(store, to_store, prog)
     if already is None:
         return 2

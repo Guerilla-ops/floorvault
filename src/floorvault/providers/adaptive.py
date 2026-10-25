@@ -14,7 +14,7 @@ import os
 import stat
 import warnings
 from pathlib import Path
-from typing import Optional, Union
+from typing import Mapping, Optional, Union
 
 from .._filelock import exclusive_lock
 from ..memory import HardenedMemoryKey
@@ -51,6 +51,8 @@ class AdaptiveKeyProvider(KeyProvider):
         allow_legacy_env_vars: bool = False,
         allow_legacy_adoption: bool = False,
         passphrase: Optional[Union[str, bytes]] = None,
+        environ: Optional[Mapping[str, str]] = None,
+        interactive: bool = True,
     ) -> None:
         self.service_name = service_name
         self.account_name = account_name
@@ -78,6 +80,17 @@ class AdaptiveKeyProvider(KeyProvider):
         if passphrase is not None:
             passphrase_store._normalize_passphrase(passphrase)
         self._passphrase = passphrase
+        # Where Tier 1 reads its key variables. A host that runs several
+        # configurations in one process (Hermes' multiplex gateway) passes the
+        # active configuration's view, or ``{}`` to accept no environment key,
+        # so the launch environment of another configuration cannot unlock this
+        # store. ``None`` keeps the process environment.
+        self._environ: Mapping[str, str] = os.environ if environ is None else environ
+        # False: the Linux Secret Service tier never prompts (no unlock, no
+        # collection or key creation). Used where blocking on a user is not
+        # allowed, such as a secret source's fetch. The macOS Keychain calls are
+        # not changed by it; whether they can prompt is not verified here.
+        self.interactive = interactive
 
     def _is_interactive_desktop(self) -> bool:
         """Deprecated compatibility hook; capability probing is unconditional."""
@@ -97,7 +110,7 @@ class AdaptiveKeyProvider(KeyProvider):
             if self.allow_legacy_env_vars:
                 strict_env.append("APPSTATE_KEY")
             for var_name in strict_env:
-                if os.environ.get(var_name):
+                if self._environ.get(var_name):
                     raise CustodyDowngradeError(
                         f"strict=True refuses environment-variable key custody, "
                         f"but {var_name} is set. Unset it, construct the provider "
@@ -111,7 +124,7 @@ class AdaptiveKeyProvider(KeyProvider):
             if self.allow_legacy_env_vars:
                 env_names.append("APPSTATE_KEY")
             for var_name in env_names:
-                val = os.environ.get(var_name)
+                val = self._environ.get(var_name)
                 if val:
                     if var_name == "APPSTATE_KEY":
                         warnings.warn(
@@ -136,7 +149,7 @@ class AdaptiveKeyProvider(KeyProvider):
             # Warn about the ignored legacy name only once the namespaced
             # variables had their chance: under warnings-as-errors a stray
             # APPSTATE_KEY must not veto a valid FLOOR_VAULT_KEY.
-            if not self.allow_legacy_env_vars and os.environ.get("APPSTATE_KEY"):
+            if not self.allow_legacy_env_vars and self._environ.get("APPSTATE_KEY"):
                 warnings.warn(
                     "APPSTATE_KEY is set but ignored: it shares a namespace "
                     "with other tools, so FloorVault honours it only when the "
@@ -401,6 +414,7 @@ class AdaptiveKeyProvider(KeyProvider):
             # the masked master.key.ss is unwrapped and must not be used.
             allow_file_fallback=self.allow_disk_fallback and self._passphrase is None,
             allow_legacy_adoption=self.allow_legacy_adoption,
+            interactive=self.interactive,
         )
 
     def _os_tier_usable(self) -> bool:
@@ -516,13 +530,18 @@ class AdaptiveKeyProvider(KeyProvider):
             if self.keychain_unavailable_reason
             else ""
         )
+        explicit = (
+            "This caller reads no key variable from the environment; give the key "
+            "the way it documents"
+            if self._environ is not os.environ and not self._environ
+            else "Provide the key explicitly (FLOOR_VAULT_KEY or VAULT_MASTER_KEY as 64 "
+            "hexadecimal characters; APPSTATE_KEY requires allow_legacy_env_vars=True "
+            "and neither is honoured while strict=True)"
+        )
         return (
             f"Refusing headless fallback to plaintext disk key ({cause}).{missing_tier} "
-            "Provide the key explicitly (FLOOR_VAULT_KEY or VAULT_MASTER_KEY as 64 "
-            "hexadecimal characters; APPSTATE_KEY requires allow_legacy_env_vars=True "
-            "and neither is honoured while strict=True), install the OS-native "
-            "custody extra for this platform, or opt in to a 0600 local key file with "
-            "AdaptiveKeyProvider(allow_disk_fallback=True)."
+            f"{explicit}, install the OS-native custody extra for this platform, or opt "
+            "in to a 0600 local key file with AdaptiveKeyProvider(allow_disk_fallback=True)."
         )
 
     def _resolve_machine_bound_file_key(self, *, allow_create: bool) -> HardenedMemoryKey:

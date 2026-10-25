@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
+from .._filelock import exclusive_lock
 from ..memory import HardenedMemoryKey
 from ..platform_support import is_linux
 from .base import CustodyDowngradeError, KeyProvider, KeyProviderError, MissingKeyError
@@ -31,6 +32,7 @@ from .platform_custody import (
     LEGACY_STORE_NAME,
     ProtectedStoreError,
     ProtectedStoreMissing,
+    _mkdir_owner_only,
     read_scheme_store,
     store_path_for,
     write_protected,
@@ -47,7 +49,7 @@ _HEADER = b"FLOORLV1"  # floorvault protected key store, linux/secret-service bo
 #: ``DBusAddressConnection``, none of which the library defines. The import
 #: failed inside ``except ImportError: return None``, so the tier reported
 #: "unavailable" forever and no test could see it.
-_REQUIRED_SECRETSTORAGE_API = ("dbus_init", "get_default_collection")
+_REQUIRED_SECRETSTORAGE_API = ("dbus_init", "get_default_collection", "get_collection_by_alias")
 
 #: The exception raised by ``secretstorage`` when no session bus / service is
 #: reachable. Named as a string so the contract test compares names rather than
@@ -59,6 +61,9 @@ _ATTRIBUTE_APPLICATION = "application"
 
 #: Attribute key binding an entry to a floorvault account within the service.
 _ATTRIBUTE_KEY = "floorvault"
+
+#: Raised by ``get_collection_by_alias`` when no collection has the alias.
+_ITEM_NOT_FOUND_EXCEPTION = "ItemNotFoundException"
 
 
 def _random(n: int) -> bytes:
@@ -114,6 +119,7 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
         random_bytes: Callable[[int], bytes] = _random,
         allow_file_fallback: bool = True,
         allow_legacy_adoption: bool = False,
+        interactive: bool = True,
     ) -> None:
         if not service or not isinstance(service, str):
             raise ValueError("service must be a non-empty string")
@@ -127,6 +133,10 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
         # strict mode must not have an existing master.key.ss silently read for
         # it. Standalone callers keep the documented fallback by default.
         self._allow_file_fallback = allow_file_fallback
+        # False: never prompt. The default collection is looked up without
+        # being created, a locked collection is reported instead of unlocked,
+        # and no key is created through the service.
+        self._interactive = interactive
 
     # ---- Secret Service primary (Linux, interactive) ----------------------
 
@@ -168,11 +178,31 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
             )
         unavailable = getattr(secretstorage_exceptions, _SECRET_SERVICE_UNAVAILABLE_EXCEPTION)
 
+        item_not_found = getattr(secretstorage_exceptions, _ITEM_NOT_FOUND_EXCEPTION, None)
+
         connection = None
         try:
             connection = secretstorage.dbus_init()
-            collection = secretstorage.get_default_collection(connection)
+            if self._interactive:
+                # Creates the default collection when there is none (a prompt).
+                collection = secretstorage.get_default_collection(connection)
+            else:
+                try:
+                    collection = secretstorage.get_collection_by_alias(connection, "default")
+                except Exception as exc:
+                    if item_not_found is None or not isinstance(exc, item_not_found):
+                        raise
+                    raise MissingKeyError(
+                        "the Secret Service has no default collection, and it is not "
+                        "created without a prompt; set the key up interactively first"
+                    ) from None
             if collection.is_locked():
+                if not self._interactive:
+                    raise KeyProviderError(
+                        "the Secret Service collection is locked and is not unlocked "
+                        "without a prompt; unlock it (for example by logging in to the "
+                        "desktop session) and retry"
+                    )
                 # ``unlock()`` returns True when the prompt was DISMISSED, i.e.
                 # when the unlock did NOT happen - the opposite of the intuitive
                 # reading. Re-check the lock state instead of trusting it.
@@ -186,37 +216,41 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
                 _ATTRIBUTE_APPLICATION: self._service,
                 _ATTRIBUTE_KEY: self._attribute,
             }
-            item = next(
-                (
-                    candidate
-                    for candidate in collection.search_items(query)
-                    # Exact re-check: a backend that ignores query filters would
-                    # otherwise hand back another application's entry.
-                    if all(
-                        candidate.get_attributes().get(key) == value for key, value in query.items()
-                    )
-                ),
-                None,
-            )
-            if item is not None:
-                secret = item.get_secret()
-                if secret is None or len(secret) != 32:
-                    # KeyProviderError, not ProtectedStoreError: the latter is a
-                    # file-store implementation detail. A caller of any tier
-                    # should see one provider-level error type for "the store
-                    # holds something that is not a master key".
-                    raise KeyProviderError("Secret Service entry has an invalid key length")
-                return HardenedMemoryKey(secret)
+            items = self._matching_items(collection, query)
+            if items:
+                return self._single_key(items)
             if not allow_create:
                 raise MissingKeyError("Secret Service master key not found; recovery is required")
-            key = self._random_bytes(32)
-            collection.create_item(
-                f"{self._service}:{self._attribute}",
-                dict(query),
-                key,
-                replace=False,
-            )
-            return HardenedMemoryKey(key)
+            if not self._interactive:
+                raise MissingKeyError(
+                    "Secret Service master key not found, and it is not created without "
+                    "a prompt; set the key up interactively first"
+                )
+            # Every store resolved through this service/attribute shares one entry,
+            # but callers lock per store directory. Serialize creation on the
+            # identity itself, re-check under the lock, and check afterwards that
+            # exactly one entry exists, so two first-time resolvers cannot each
+            # create a different key under the same attributes.
+            with exclusive_lock(self._identity_lock_path()):
+                items = self._matching_items(collection, query)
+                if items:
+                    return self._single_key(items)
+                key = self._random_bytes(32)
+                collection.create_item(
+                    f"{self._service}:{self._attribute}",
+                    dict(query),
+                    key,
+                    replace=False,
+                )
+                items = self._matching_items(collection, query)
+                if len(items) != 1:
+                    raise KeyProviderError(
+                        f"{len(items)} Secret Service entries now exist for "
+                        f"{self._service}/{self._attribute} after creating one; another "
+                        "process created a key at the same time. Refusing to choose; "
+                        "no entry was changed or removed"
+                    )
+                return self._single_key(items)
         except unavailable:
             # The tier is genuinely not present on this session: falling through
             # is correct and is not a downgrade.
@@ -242,6 +276,62 @@ class LinuxSecretServiceKeyProvider(KeyProvider):
                     close()
                 except Exception:  # noqa: BLE001 - cleanup must not mask the result  # nosec B110
                     pass
+
+    @staticmethod
+    def _matching_items(collection, query: dict[str, str]) -> list:
+        return [
+            candidate
+            for candidate in collection.search_items(query)
+            # Exact re-check: a backend that ignores query filters would
+            # otherwise hand back another application's entry.
+            if all(candidate.get_attributes().get(key) == value for key, value in query.items())
+        ]
+
+    def _single_key(self, items: list) -> HardenedMemoryKey:
+        """The key the matching entries hold; refuses entries that disagree.
+
+        Duplicates holding the same key are harmless. Duplicates holding
+        different keys mean two keys were created for one identity: data may be
+        under either, so neither is chosen and nothing is overwritten.
+        """
+        secrets = []
+        for item in items:
+            secret = item.get_secret()
+            if secret is None or len(secret) != 32:
+                # KeyProviderError, not ProtectedStoreError: the latter is a
+                # file-store implementation detail. A caller of any tier
+                # should see one provider-level error type for "the store
+                # holds something that is not a master key".
+                raise KeyProviderError("Secret Service entry has an invalid key length")
+            secrets.append(bytes(secret))
+        if any(secret != secrets[0] for secret in secrets[1:]):
+            raise KeyProviderError(
+                f"{len(items)} Secret Service entries for {self._service}/{self._attribute} "
+                "hold different keys; refusing to choose one. Data may be encrypted under "
+                "either: recover it with each key before removing an entry"
+            )
+        return HardenedMemoryKey(secrets[0])
+
+    def _identity_lock_path(self) -> Path:
+        """A per-user lock file for this service/attribute pair.
+
+        ``$XDG_RUNTIME_DIR`` (per-user, on tmpfs) when it is set, else
+        ``~/.cache/floorvault``; the directory is created owner-only.
+        """
+        runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+        base = (
+            Path(runtime) / "floorvault"
+            if runtime and os.path.isabs(runtime)
+            else Path.home() / ".cache" / "floorvault"
+        )
+        try:
+            _mkdir_owner_only(base)
+        except FileExistsError:
+            # Two first-time resolvers both saw the directory missing; it exists
+            # now, so validate it again rather than fail (as the Tier-3 lock does).
+            _mkdir_owner_only(base)
+        digest = hashlib.sha256(f"{self._service}\0{self._attribute}".encode()).hexdigest()
+        return base / f"secret-service-{digest[:32]}.lock"
 
     # ---- fallback custody (masked protected file) -------------------------
 

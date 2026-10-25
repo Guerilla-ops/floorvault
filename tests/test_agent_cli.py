@@ -1039,6 +1039,10 @@ MAPPING = (
 
 
 def _hermes_import(args, env):
+    # The plugin takes its key from $HERMES_VAULT_KEY (its token_env) or the OS key
+    # store, never $FLOOR_VAULT_KEY, and so does the import; give it the same key.
+    if "FLOOR_VAULT_KEY" in env and "HERMES_VAULT_KEY" not in env:
+        env = {**env, "HERMES_VAULT_KEY": env["FLOOR_VAULT_KEY"]}
     return fv(["secrets", "import", "--hermes", *args], env)
 
 
@@ -1071,10 +1075,14 @@ def test_hermes_write_stores_items_and_leaves_the_env_alone(tmp_path, base_env):
     assert "is unchanged" in result.stdout and "--remove-from-env" in result.stdout
     assert env_file.read_bytes() == before
     assert "sk-hermes-openai" not in result.stdout + result.stderr
-    # The plugin's store opens the way the plugin opens it, and so does `run`.
+    # The store opens the way the plugin opens it with $HERMES_VAULT_KEY, and so does `run`.
     probe = (
-        "from floorvault import get_vault_store\n"
-        f"store = get_vault_store({str(home / 'agent-vault')!r}, auto_migrate=False)\n"
+        "import os\n"
+        "from floorvault import FloorVault\n"
+        "from floorvault.vaultkit import VaultStore\n"
+        "key = bytes.fromhex(os.environ['FLOOR_VAULT_KEY'])\n"
+        f"store = VaultStore({str(home / 'agent-vault')!r}, "
+        "crypto=FloorVault(key, app_instance_id='floor-agent'))\n"
         "print(store.resolve_secret('openai_api_key')['value'])\n"
     )
     opened = subprocess.run(
@@ -1285,3 +1293,32 @@ def test_hermes_remove_notes_omit_the_master_key_warning_when_it_is_not_in_env(t
     assert env_file.read_bytes() == b"DEBUG=1\n"
     assert "`hermes doctor` warns" in result.stderr
     assert "HERMES_VAULT_KEY is still in" not in result.stderr
+
+
+def test_hermes_import_does_not_use_floor_vault_key(tmp_path, base_env):
+    """The plugin ignores $FLOOR_VAULT_KEY, so the import must not store under it."""
+    home, env_file = _hermes_home(tmp_path, config="model: x\n" + MAPPING)
+    before = env_file.read_bytes()
+    env = {k: v for k, v in base_env.items() if not k.startswith(("DISPLAY", "WAYLAND", "DBUS"))}
+    flags = [str(env_file), "--only", "OPENAI_API_KEY"]
+    dry = fv(["secrets", "import", "--hermes", *flags], env)
+    assert dry.returncode == 0, dry.stderr
+    assert "$FLOOR_VAULT_KEY is ignored here" in dry.stderr
+    written = fv(["secrets", "import", "--hermes", *flags, "--write", "--remove-from-env"], env)
+    assert written.returncode != 0
+    assert env_file.read_bytes() == before
+    assert not (home / "agent-vault" / "vault.db").exists()
+    assert "sk-hermes-openai" not in written.stdout + written.stderr
+
+
+def test_hermes_import_refuses_a_key_file(tmp_path, base_env, key):
+    home, env_file = _hermes_home(tmp_path)
+    before = env_file.read_bytes()
+    key_file = tmp_path / "master.hex"
+    key_file.write_text(key + "\n", encoding="utf-8")
+    if os.name != "nt":
+        key_file.chmod(0o600)
+    result = _hermes_import([str(env_file), "--write", "--key-file", str(key_file)], base_env)
+    assert result.returncode == 2 and "cannot read a key file" in result.stderr
+    assert env_file.read_bytes() == before
+    assert not (home / "agent-vault").exists()

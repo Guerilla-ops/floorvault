@@ -606,7 +606,8 @@ def test_hermes_import_into_a_sealed_store_is_refused_with_an_explicit_vault_and
             "--vault", str(store), "--key-file", str(key_file),
         ]
     )  # fmt: skip
-    assert result.returncode == 2 and "cannot open yet" in result.stderr
+    assert result.returncode == 2 and "cannot read a key file" in result.stderr
+    assert "Nothing was stored and .env is unchanged" in result.stderr
     assert _tree(home) == before
 
 

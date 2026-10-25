@@ -56,7 +56,19 @@ The optional Hermes Agent plugin resolves local item references into plaintext
 values for host-managed environment injection. It is an integration with FloorVault.
 Its default agent-secret directory is separate from the browser-fill vault, and
 its read path disables legacy browser-vault migration. Distinct directories are
-not proof of independent keys or authorisation.
+not proof of independent keys or authorisation. Its secret source takes the key
+only from the `token_env` variable in the fetch-scoped environment, else from the
+OS key store; it does not read `FLOOR_VAULT_KEY` or `VAULT_MASTER_KEY`, so under
+Hermes' multiplex gateway one profile's launch environment cannot unlock another
+profile's store, and it protects those names from being overwritten by a mapped
+secret. The source never prompts and never creates a key or a store: a locked
+Linux Secret Service collection or a missing key is reported, and
+`hermes hvault setup` does the one-time unlock and creation. First-time creation
+of a Linux Secret Service key is serialized per service and attribute (one lock
+file per user, in `$XDG_RUNTIME_DIR/floorvault` or `~/.cache/floorvault`), and two
+entries holding different keys are refused rather than one being picked or
+overwritten. The macOS Keychain calls are unchanged and are not verified to be
+prompt-free.
 
 Review source, plugin code, dependencies, configuration, imports, packaging,
 tests, fuzz targets and release workflows where they affect these properties.
