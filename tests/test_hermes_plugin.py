@@ -114,10 +114,15 @@ def test_store_never_uses_login_vault_dir(vault_home):
     assert resolve_base_dir({"dir": "/abs/path"}, vault_home) == Path("/abs/path")
 
 
-def test_bootstrap_key_is_protected():
+FLOORVAULT_KEYS = {"FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "FLOOR_VAULT_KEY_FILE"}
+
+
+def test_bootstrap_key_and_floorvault_key_variables_are_protected():
     source = HermesVaultSource()
-    assert source.protected_env_vars({}) == frozenset({"HERMES_VAULT_KEY"})
-    assert source.protected_env_vars({"token_env": "MY_KEY"}) == frozenset({"MY_KEY"})
+    assert source.protected_env_vars({}) == frozenset({"HERMES_VAULT_KEY", *FLOORVAULT_KEYS})
+    assert source.protected_env_vars({"token_env": "MY_KEY"}) == frozenset(
+        {"MY_KEY", *FLOORVAULT_KEYS}
+    )
 
 
 def test_source_contract_surface():
@@ -195,7 +200,7 @@ def test_store_written_by_the_plugin_opens_under_floorvault_run(tmp_path, monkey
     from source import _open_store
 
     monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
-    store = _open_store({}, tmp_path)
+    store = _open_store({}, tmp_path, setup=True)
     store.add_item(kind="generic", label="k", secret={"value": "sk-hermes"}, item_id="vault_i")
 
     base = {k: v for k, v in os.environ.items() if k not in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY")}
@@ -216,3 +221,137 @@ def test_store_written_by_the_plugin_opens_under_floorvault_run(tmp_path, monkey
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "sk-hermes"
+
+
+# --- review of pin 6fc8132e: scope, prompts, creation, error text ---------------
+
+
+def test_an_empty_fetch_scope_does_not_unlock_with_the_ambient_key(vault_home):
+    """Under multiplex the process environment is another profile's: ignore it."""
+    from agent.secret_sources.base import reset_source_environment, set_source_environment
+
+    token = set_source_environment({})  # this profile's scope: no key at all
+    try:
+        result = fetch(vault_home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
+    finally:
+        reset_source_environment(token)
+    # os.environ holds FLOOR_VAULT_KEY and HERMES_VAULT_KEY (the fixture); neither unlocks.
+    assert not result.ok and result.secrets == {}
+    assert result.error_kind == ErrorKind.AUTH_FAILED
+
+
+def test_the_scoped_token_env_key_is_used(vault_home, monkeypatch):
+    from agent.secret_sources.base import reset_source_environment, set_source_environment
+
+    monkeypatch.delenv("HERMES_VAULT_KEY")
+    monkeypatch.delenv("FLOOR_VAULT_KEY")
+    token = set_source_environment({"HERMES_VAULT_KEY": KEY})
+    try:
+        result = fetch(vault_home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
+    finally:
+        reset_source_environment(token)
+    assert result.ok and result.secrets == {"OPENAI_API_KEY": "sk-test-123"}
+
+
+def test_fetch_resolves_os_custody_read_only_and_without_prompts(vault_home, monkeypatch):
+    """No token_env key: the OS tier is asked without prompts, creation or env tier."""
+    import floorvault.providers.adaptive as adaptive
+
+    monkeypatch.delenv("HERMES_VAULT_KEY")
+    seen = {}
+
+    class Spy(adaptive.AdaptiveKeyProvider):
+        def __init__(self, *args, **kwargs):
+            seen["init"] = kwargs
+            super().__init__(*args, **kwargs)
+
+        def resolve_key(self, *, allow_create=True):
+            seen["allow_create"] = allow_create
+            return super().resolve_key(allow_create=allow_create)
+
+    monkeypatch.setattr(adaptive, "AdaptiveKeyProvider", Spy)
+    result = fetch(vault_home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
+    assert seen["init"]["interactive"] is False and seen["init"]["environ"] == {}
+    assert seen["init"]["service_name"] == "floor-vault"
+    assert seen["allow_create"] is False
+    # FLOOR_VAULT_KEY is still in os.environ, yet it is not what opened the store.
+    assert not result.ok and result.secrets == {}
+
+
+def test_fetch_creates_nothing_when_the_store_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    result = fetch(tmp_path, {"env": {"A": "hv:vault_a"}})
+    assert not result.ok and result.error_kind == ErrorKind.NOT_CONFIGURED
+    assert "hermes hvault setup" in result.error
+    assert not (tmp_path / "agent-vault").exists()
+
+
+def test_setup_creates_the_store_that_fetch_then_reads(tmp_path, monkeypatch, capsys):
+    sys.path.insert(0, str(ROOT / "plugins"))
+    from hermesvault import cli as hermesvault_cli
+
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    monkeypatch.setattr(hermesvault_cli, "get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(hermesvault_cli, "_secrets_cfg", lambda: {})
+    assert hermesvault_cli.hvault_command(SimpleNamespace(hvault_command="setup")) == 0
+    assert f"store ready at {tmp_path / 'agent-vault'}" in capsys.readouterr().out
+    assert (tmp_path / "agent-vault" / "vault.db").is_file()
+    assert fetch(tmp_path, {"env": {"A": "hv:vault_a"}}).ok
+
+
+def test_add_on_a_missing_store_points_to_setup(tmp_path, monkeypatch, capsys):
+    sys.path.insert(0, str(ROOT / "plugins"))
+    from hermesvault import cli as hermesvault_cli
+
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    monkeypatch.setattr(hermesvault_cli, "get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(hermesvault_cli, "_secrets_cfg", lambda: {})
+    args = SimpleNamespace(hvault_command="add", label="x", fields=["value=v"], stdin=False,
+                           item_id=None)  # fmt: skip
+    assert hermesvault_cli.hvault_command(args) == 1
+    assert "hermes hvault setup" in capsys.readouterr().err
+    assert not (tmp_path / "agent-vault").exists()
+
+
+@pytest.mark.parametrize(
+    "fields, stdin, where",
+    [
+        (["sk-live-SECRET-no-equals"], "", "argument 1"),
+        (["value=ok", "=sk-live-SECRET"], "", "argument 2"),
+        ([], "# comment\nvalue=ok\nsk-live-SECRET-no-equals\n", "stdin line 3"),
+    ],
+)
+def test_malformed_field_lines_are_reported_without_their_text(
+    monkeypatch, capsys, fields, stdin, where
+):
+    import io
+
+    sys.path.insert(0, str(ROOT / "plugins"))
+    from hermesvault import cli as hermesvault_cli
+
+    def no_store(**_kw):
+        raise AssertionError("a malformed line must stop the command before the store opens")
+
+    monkeypatch.setattr(hermesvault_cli, "_store", no_store)
+    monkeypatch.setattr(hermesvault_cli.sys, "stdin", io.StringIO(stdin))
+    args = SimpleNamespace(hvault_command="add", label="x", fields=fields, stdin=bool(stdin),
+                           item_id=None)  # fmt: skip
+    assert hermesvault_cli.hvault_command(args) == 2
+    captured = capsys.readouterr()
+    assert f"{where} is not in field=value form" in captured.err
+    assert "SECRET" not in captured.out + captured.err
+
+
+def test_an_older_floorvault_fails_closed_with_a_clear_message(vault_home, monkeypatch):
+    import floorvault.providers.adaptive as adaptive
+
+    monkeypatch.delenv("HERMES_VAULT_KEY")
+
+    class Old:
+        def __init__(self, service_name="floorvault", account_name="default-v1", *,
+                     fallback_dir=None):  # fmt: skip
+            raise AssertionError("must not be reached with the old signature")
+
+    monkeypatch.setattr(adaptive, "AdaptiveKeyProvider", Old)
+    result = fetch(vault_home, {"env": {"A": "hv:vault_testopenai"}})
+    assert not result.ok and "upgrade the floorvault package" in result.error

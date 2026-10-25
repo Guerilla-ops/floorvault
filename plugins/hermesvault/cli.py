@@ -31,26 +31,33 @@ def _secrets_cfg() -> dict:
         return {}
 
 
-def _store():
+def _store(*, setup: bool = False):
     cfg = _secrets_cfg()
     from .source import _open_store
 
-    return _open_store(cfg, Path(get_hermes_home()))
+    return _open_store(cfg, Path(get_hermes_home()), setup=setup)
 
 
-def _field_values(pairs) -> dict:
+def _field_values(pairs, *, where: str = "argument") -> dict:
+    """Parse ``field=value`` items. Errors name the position, never the text:
+    a mistyped line may be the secret itself."""
     out = {}
-    for pair in pairs or []:
+    for number, pair in enumerate(pairs or [], start=1):
         field, sep, value = str(pair).partition("=")
         field = field.strip()
         if not sep or not field:
-            raise ValueError(f"field must be given as field=value: {pair!r}")
+            raise ValueError(f"{where} {number} is not in field=value form")
         out[field] = value
     return out
 
 
 def register_cli(subparser) -> None:
     sub = subparser.add_subparsers(dest="hvault_command", metavar="<command>")
+
+    sub.add_parser(
+        "setup",
+        help="Create the store and its key, unlocking the OS key store if needed (may prompt)",
+    )
 
     add = sub.add_parser("add", help="Create a generic secret item")
     add.add_argument("label", help="Human label for the item")
@@ -92,14 +99,28 @@ def register_cli(subparser) -> None:
     env.add_argument("--field", default=None)
 
 
+def _cmd_setup(_args) -> int:
+    from .source import resolve_base_dir
+
+    cfg = _secrets_cfg()
+    store = _store(setup=True)
+    del store
+    print(f"store ready at {resolve_base_dir(cfg, Path(get_hermes_home()))}")
+    print("the secret source now opens it at startup without prompting")
+    return 0
+
+
 def _cmd_add(args) -> int:
     fields = _field_values(args.fields)
     if args.stdin:
-        for line in sys.stdin:
+        for number, line in enumerate(sys.stdin, start=1):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            fields.update(_field_values([line]))
+            try:
+                fields.update(_field_values([line]))
+            except ValueError:
+                raise ValueError(f"stdin line {number} is not in field=value form") from None
     if not fields:
         print("hvault add: give at least one field=value (argv, or --stdin)", file=sys.stderr)
         return 2
@@ -192,8 +213,12 @@ def _cmd_env(args) -> int:
 
 def hvault_command(args) -> int:
     """``hermes hvault ...`` dispatch. Returns the process exit code."""
+    from .source import StoreNotSetUp
+
     cmd = getattr(args, "hvault_command", None)
     try:
+        if cmd == "setup":
+            return _cmd_setup(args)
         if cmd == "add":
             return _cmd_add(args)
         if cmd == "put":
@@ -206,11 +231,14 @@ def hvault_command(args) -> int:
             return _cmd_list(args)
         if cmd == "env":
             return _cmd_env(args)
+    except StoreNotSetUp as error:
+        print(f"hvault {cmd}: {error}", file=sys.stderr)
+        return 1
     except ValueError as error:
         print(f"hvault {cmd}: {error}", file=sys.stderr)
         return 2
     except Exception as error:  # noqa: BLE001 — operator CLI surfaces the reason, never a traceback value
         print(f"hvault {cmd}: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
-    print("usage: hermes hvault {add|put|show|rm|list|env}", file=sys.stderr)
+    print("usage: hermes hvault {setup|add|put|show|rm|list|env}", file=sys.stderr)
     return 2
