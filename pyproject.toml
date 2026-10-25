@@ -54,7 +54,9 @@ Repository = "https://github.com/Guerilla-ops/floorvault"
 Issues = "https://github.com/Guerilla-ops/floorvault/issues"
 
 [project.optional-dependencies]
+hermes = ["PyYAML>=6.0.2,<7"]
 dev = [
+    "PyYAML>=6.0.2,<7",
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.5.0",

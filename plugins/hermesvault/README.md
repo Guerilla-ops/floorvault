@@ -60,11 +60,16 @@ Hermes reads that file itself, so references there would replace the real
 values. Move Hermes keys with `floorvault secrets import --hermes` instead. It
 stores each value in this plugin's store, prints the `secrets.hermesvault.env`
 block to add to `config.yaml`, and with `--write --remove-from-env` deletes the
-imported lines from `.env` once the mapping is there (afterwards `hermes doctor`
+imported lines from `.env` once enabled YAML mappings, the configured store and
+plugin-key decryption have been verified (afterwards `hermes doctor`
 warns that no API key is in `.env`, and `hermes status` can name a different
 provider; chat uses the vault key). See
 [USAGE](../../docs/USAGE.md#run-any-command-with-vault-secrets). Or move keys one
 at a time with `hermes hvault` as above.
+
+The companion removal check requires `floorvault[hermes]` (PyYAML). This is
+development-source functionality; installing the plugin's published FloorVault
+0.2.1 dependency alone does not supply these newer migration checks.
 
 ## Manage items
 
@@ -72,6 +77,7 @@ at a time with `hermes hvault` as above.
 hermes hvault add "Service token" --stdin    # field=value lines on stdin
 hermes hvault put <item_id> <field>          # prompts for the value
 hermes hvault list                           # metadata only
+hermes hvault doctor                         # check mappings, custody and precedence
 hermes hvault show hv:<item_id>              # field names and status; never plaintext
 hermes hvault env <item_id> SERVICE_TOKEN    # prints the config.yaml mapping
 hermes hvault rm <item_id>
@@ -79,6 +85,24 @@ hermes hvault rm <item_id>
 
 Prefer `--stdin` or `put` to `field=value` arguments, which show up in process
 listings. `put` replaces one field inside a single SQLite transaction.
+
+`hermes hvault doctor` checks the active profile's configuration and existing
+store, attempts to resolve each mapping, and reports variables shadowed by the
+current environment or protected as the bootstrap key. Exit status is 0 when
+all configured mappings resolve without these issues, 1 for operational issues
+(including a disabled source or no mappings), and 2 for malformed configuration.
+It never prints credential values and does not create a missing vault. Existing
+stores are opened through the ordinary backend, so backend initialization and
+OS custody checks still apply. With `override_existing: true` it reports that
+existing values will be replaced; it does not remove plaintext files. Restart
+Hermes and verify the actual service after changes: the command checks its own
+process environment, not a running gateway or another profile.
+
+CLI commands reject malformed IDs/environment names before opening the store.
+`env` safely quotes its YAML output but does not verify that an item exists;
+use `doctor` after merging that output into the profile configuration. Configuration
+load errors or Hermes' `FailedConfigRead` fallback stop commands instead of
+silently selecting the default store.
 
 `hermes hvault` is a Hermes CLI subcommand, so it is available under the
 default `plugins.isolation: in_process`. Under `plugins.isolation: host`, Hermes

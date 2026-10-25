@@ -606,9 +606,13 @@ dev = [
     { name = "pycryptodome" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "pyyaml" },
     { name = "ruff" },
     { name = "secretstorage" },
     { name = "sqlalchemy" },
+]
+hermes = [
+    { name = "pyyaml" },
 ]
 libsql = [
     { name = "libsql" },
@@ -643,13 +647,15 @@ requires-dist = [
     { name = "pyobjc-framework-security", marker = "sys_platform == 'darwin' and extra == 'macos'", specifier = ">=10.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.2,<7" },
+    { name = "pyyaml", marker = "extra == 'hermes'", specifier = ">=6.0.2,<7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5.0" },
     { name = "secretstorage", marker = "extra == 'dev'", specifier = ">=3.3" },
     { name = "secretstorage", marker = "extra == 'linux'", specifier = ">=3.3" },
     { name = "sqlalchemy", marker = "extra == 'dev'", specifier = "==2.0.46" },
     { name = "sqlalchemy", marker = "extra == 'sqlalchemy'", specifier = ">=2.0.40" },
 ]
-provides-extras = ["dev", "sqlalchemy", "libsql", "postgres", "mysql", "macos", "linux"]
+provides-extras = ["hermes", "dev", "sqlalchemy", "libsql", "postgres", "mysql", "macos", "linux"]
 
 [[package]]
 name = "greenlet"

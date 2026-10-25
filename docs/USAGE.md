@@ -395,8 +395,10 @@ floorvault secrets import --hermes --write --skip DEBUG --remove-from-env
    and `--key-file` override). It does not touch `.env`. Re-running reuses items
    that already hold the same value and stops on one that differs.
 3. **`--write --remove-from-env`** deletes the imported lines from `.env`, but
-   only after it has re-read each item from the store and found a mapping line
-   for each in `config.yaml` beside the `.env`. Otherwise it removes nothing.
+   only after it has re-read each item, parsed `config.yaml` beside the `.env`,
+   confirmed `secrets.hermesvault.enabled: true` and each nested mapping, checked
+   the configured vault directory, and decrypted the imported values through
+   the plugin's prospective key route. Otherwise it removes nothing.
    Removal is atomic, keeps the file's mode, comments and other lines, makes no
    backup (a backup would be a second plaintext copy) and refuses a symlink or a
    file that changed during the import.
@@ -406,12 +408,28 @@ run, by path (`profiles/<name>/.env` uses that profile's own `agent-vault`). A
 directory that is not a Hermes home needs an explicit `--vault`. Vault key
 variables in the file are left as they are.
 
-What the config check is: a text match for the mapping line, not a YAML parse. It
-does not check that `secrets.hermesvault.enabled` is true, or that the Hermes
-process can reach the same key. Restart Hermes and look for
-`FloorVault: applied N secret(s)` in `hermes status` before relying on it. Earlier
-copies of the plaintext (backups, editor swap files, git history) are not
-removed.
+The removal check requires the optional `hermes` extra (`floorvault[hermes]`,
+which installs PyYAML). Without it removal fails with installation guidance;
+dry runs and store-only imports still work. Duplicate YAML keys (including
+overlapping merges), malformed YAML, disabled sources and mismatched mappings
+are refused. The known `max_turns`/`agent` shape that makes Hermes use fallback
+configuration is also refused. This guard does not run Hermes' full version-specific
+normalization or managed overlays; unrelated configuration errors can still cause
+Hermes to use its fallback, so review the rest of the profile and check with Hermes
+after restart. Quoted keys, flow mappings and non-overlapping YAML merges work.
+Relative `secrets.hermesvault.dir` paths resolve under the profile home.
+
+The key check overlays the remaining profile `.env` values on the importing
+process environment, then uses `token_env` (default `HERMES_VAULT_KEY`) or the
+normal FloorVault environment/OS custody route. A custom `token_env` must remain
+available; it cannot itself be removed. `--key-file` alone does not configure
+plugin custody. The check verifies decryption, not just matching variable names.
+A changed config detected before replacement also prevents removal.
+
+This does not prove that a separately launched Hermes process has the same
+environment or OS key-store session. Run `hermes hvault doctor`, restart Hermes,
+and verify the service before relying on the migration. Earlier plaintext
+copies in backups, editor swap files and git history are not removed.
 
 **What changes in Hermes once the lines are gone.** Checked against Hermes
 `fab9b01` with `hermes chat` in a scratch home: with the key only in the vault,

@@ -54,6 +54,20 @@ def parse_ref(ref: str) -> Tuple[Optional[str], Optional[str]]:
     return item_id, (field if field else None)
 
 
+def validate_config(cfg: dict) -> None:
+    """Reject malformed settings rather than silently selecting default custody."""
+    if not isinstance(cfg, dict):
+        raise ValueError("secrets.hermesvault must be a mapping")
+    if not isinstance(cfg.get("dir", ""), str):
+        raise ValueError("secrets.hermesvault.dir must be a string")
+    token = cfg.get("token_env", DEFAULT_TOKEN_ENV)
+    if not isinstance(token, str) or not is_valid_env_name(token):
+        raise ValueError("secrets.hermesvault.token_env must be an environment variable name")
+    for name in ("enabled", "override_existing"):
+        if name in cfg and not isinstance(cfg[name], bool):
+            raise ValueError(f"secrets.hermesvault.{name} must be a boolean")
+
+
 def resolve_base_dir(cfg: dict, home_path: Path) -> Path:
     """Store directory: ``secrets.hermesvault.dir`` else ``<home>/agent-vault``.
 
@@ -75,6 +89,7 @@ def _open_store(cfg: dict, home_path: Path):
     custody itself. ``auto_migrate=False`` is deliberate: this store never
     adopts the legacy browser vault files.
     """
+    validate_config(cfg)
     floorvault = _import_floorvault()
 
     base = resolve_base_dir(cfg, home_path)
@@ -123,8 +138,10 @@ class HermesVaultSource(SecretSource):
 
     def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
         result = FetchResult()
-        if not isinstance(cfg, dict):
-            return result
+        try:
+            validate_config(cfg)
+        except ValueError as error:
+            return result.fail(str(error), ErrorKind.NOT_CONFIGURED)
         env_map = cfg.get("env")
         if not isinstance(env_map, dict):
             if env_map is None:
@@ -143,7 +160,9 @@ class HermesVaultSource(SecretSource):
             )
         except Exception as error:
             return result.fail(
-                f"Could not open the hermes-vault store: {error}", ErrorKind.AUTH_FAILED
+                f"Could not open the hermes-vault store ({type(error).__name__}); "
+                "check the profile directory and key custody",
+                ErrorKind.AUTH_FAILED,
             )
         for name, ref in env_map.items():
             if not is_valid_env_name(name):
