@@ -165,23 +165,35 @@ def test_creating_twice_makes_different_keys_and_never_replaces(fake, tmp_path):
 
 
 @linux_only
-@pytest.mark.parametrize("with_key", ["host", "tpm2", "host+tpm2"])
-def test_with_key_is_passed_through_and_auto_is_omitted(fake, tmp_path, with_key):
-    sdc.create_credential(tmp_path / "v", with_key=with_key, binary=str(fake.binary))
+def test_encrypt_makes_no_key_choice(fake, tmp_path):
+    # An unprivileged `systemd-creds encrypt` ignores --with-key (it asks systemd to
+    # encrypt without one) and refuses `tpm2` with --user, so none is ever passed.
+    sdc.create_credential(tmp_path / "v", binary=str(fake.binary))
     encrypt = next(c for c in fake.calls if c[0] == "encrypt")
-    assert f"--with-key={with_key}" in encrypt
-    fresh = Fake(tmp_path / "other")
-    sdc.create_credential(tmp_path / "w", binary=str(fresh.binary))
-    default_encrypt = next(c for c in fresh.calls if c[0] == "encrypt")
-    assert not any(a.startswith("--with-key") for a in default_encrypt)
+    assert encrypt == ["encrypt", "--user", "--name=floorvault.master-key", "-", "-"]
 
 
-@linux_only
-@pytest.mark.parametrize("with_key", ["null", "", "host,tpm2", "auto-initrd"])
-def test_unsafe_or_unknown_with_key_is_refused_before_anything_runs(fake, vault, with_key):
-    with pytest.raises(sdc.SystemdCredsError, match="--with-key must be one of"):
-        sdc.create_credential(vault, with_key=with_key, binary=str(fake.binary))
-    assert fake.calls == [] and not vault.exists()
+def test_no_key_choice_is_part_of_the_module_interface():
+    assert not hasattr(sdc, "WITH_KEY_CHOICES")
+    with pytest.raises(TypeError):
+        sdc.create_credential(Path("v"), with_key="host")  # type: ignore[call-arg]
+
+
+def test_credential_present_matches_the_provider_guard(tmp_path, monkeypatch):
+    assert sdc.credential_present(tmp_path) is False
+    (tmp_path / "master.key.sdcred").write_text("FAKECRED1.x")
+    assert sdc.credential_present(tmp_path) is True
+    real = os.lstat
+
+    def lstat(path, *a, **k):
+        if str(path).endswith("master.key.sdcred"):
+            raise PermissionError("denied")
+        return real(path, *a, **k)
+
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setattr(os, "lstat", lstat)
+    assert sdc.credential_present(other) is True
 
 
 @linux_only
@@ -405,8 +417,9 @@ def test_init_then_add_list_show_and_run_use_the_sealed_key(tmp_path, cli, fake,
     result = cli(["secrets", "init", "--custody", "systemd-creds"])
     assert result.returncode == 0, result.stderr
     assert f"created {vault / 'master.key.sdcred'}" in result.stdout
-    assert "--with-key=auto" in result.stdout
-    assert "never uses the null key" in result.stderr
+    assert "--with-key" not in result.stdout
+    assert "systemd chooses what else the key is bound to" in result.stderr
+    assert "do not assume hardware binding" in result.stderr
     assert "Not checked: unsealing from a service" in result.stderr
     assert stat.S_IMODE((vault / "master.key.sdcred").stat().st_mode) == 0o600
     assert not [p for p in vault.iterdir() if p.name != "master.key.sdcred"]
@@ -514,10 +527,11 @@ def test_init_refuses_an_existing_vault_a_second_init_and_key_options(tmp_path, 
 
 
 @linux_only
-def test_init_needs_a_custody_and_rejects_the_null_key(tmp_path, cli, vault):
+def test_init_needs_a_custody_and_offers_no_key_choice(tmp_path, cli, vault):
     assert cli(["secrets", "init"]).returncode == 2
-    bad = cli(["secrets", "init", "--custody", "systemd-creds", "--with-key", "null"])
-    assert bad.returncode == 2 and "invalid choice" in bad.stderr
+    for value in ("null", "host", "tpm2", "host+tpm2"):
+        bad = cli(["secrets", "init", "--custody", "systemd-creds", "--with-key", value])
+        assert bad.returncode == 2 and "unrecognized arguments: --with-key" in bad.stderr
     assert not vault.exists()
 
 
@@ -537,3 +551,87 @@ def test_the_default_store_is_unchanged_without_a_credential(tmp_path, cli, vaul
     assert not (vault / "master.key.sdcred").exists()
     ran = cli(["run", "-e", "A=fv:t", "--", *_dump(tmp_path)])
     assert ran.returncode == 0 and json.loads(ran.stdout)["A"] == "v"
+
+
+# ----------------------------------------- Hermes import into a store the plugin cannot open
+
+HERMES_ENV_TEXT = "OPENAI_API_KEY=sk-test-openai\nDEBUG=1\n"
+HERMES_MAPPING = 'secrets:\n  hermesvault:\n    enabled: true\n    env:\n      OPENAI_API_KEY: "hv:openai_api_key"\n'
+
+
+def _sealed_hermes_home(tmp_path, cli):
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "state.db").write_bytes(b"")
+    (home / "config.yaml").write_text(HERMES_MAPPING, encoding="utf-8")
+    (home / ".env").write_text(HERMES_ENV_TEXT, encoding="utf-8")
+    store = home / "agent-vault"
+    made = cli(["secrets", "init", "--custody", "systemd-creds", "--vault", str(store)])
+    assert made.returncode == 0, made.stderr
+    return home, store
+
+
+def _tree(path: Path) -> dict:
+    return {
+        str(p.relative_to(path)): p.read_bytes() for p in sorted(path.rglob("*")) if p.is_file()
+    }
+
+
+@linux_only
+@pytest.mark.parametrize("flags", [[], ["--write"], ["--write", "--remove-from-env"]])
+def test_hermes_import_refuses_a_sealed_store_and_changes_nothing(tmp_path, cli, flags):
+    home, store = _sealed_hermes_home(tmp_path, cli)
+    before = _tree(home)
+    result = cli(["secrets", "import", "--hermes", str(home / ".env"), *flags])
+    assert result.returncode == 2, result.stderr
+    assert "systemd-creds credential" in result.stderr
+    assert "Nothing was stored and .env is unchanged" in result.stderr
+    assert "sk-test-openai" not in result.stdout + result.stderr
+    assert _tree(home) == before
+    assert not (store / "vault.db").exists()
+
+
+@linux_only
+def test_hermes_import_into_a_sealed_store_is_refused_with_an_explicit_vault_and_key_file(
+    tmp_path, cli
+):
+    home, store = _sealed_hermes_home(tmp_path, cli)
+    key_file = tmp_path / "k"
+    key_file.write_text("ab" * 32 + "\n")
+    key_file.chmod(0o600)
+    before = _tree(home)
+    result = cli(
+        [
+            "secrets", "import", "--hermes", str(home / ".env"), "--write",
+            "--vault", str(store), "--key-file", str(key_file),
+        ]
+    )  # fmt: skip
+    assert result.returncode == 2 and "cannot open yet" in result.stderr
+    assert _tree(home) == before
+
+
+@linux_only
+def test_hermes_import_still_works_with_the_plugins_own_key_variable(tmp_path, cli):
+    home, store = _sealed_hermes_home(tmp_path, cli)
+    result = cli(
+        ["secrets", "import", "--hermes", str(home / ".env"), "--only", "OPENAI_API_KEY"],
+        extra_env={"HERMES_VAULT_KEY": "cd" * 32},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "using the key in $HERMES_VAULT_KEY" in result.stderr
+    assert "dry run: nothing changed" in result.stdout
+
+
+@linux_only
+def test_hermes_import_without_a_credential_is_unaffected(tmp_path, cli):
+    home = tmp_path / "plain-home"
+    home.mkdir()
+    (home / "state.db").write_bytes(b"")
+    (home / "config.yaml").write_text("model: x\n", encoding="utf-8")
+    (home / ".env").write_text(HERMES_ENV_TEXT, encoding="utf-8")
+    result = cli(
+        ["secrets", "import", "--hermes", str(home / ".env"), "--only", "OPENAI_API_KEY"],
+        extra_env={"FLOOR_VAULT_KEY": "ef" * 32},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "dry run: nothing changed" in result.stdout

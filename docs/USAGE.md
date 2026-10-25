@@ -211,15 +211,22 @@ floorvault run -e OPENAI_API_KEY=fv:openai -- python agent.py
 
 - **What binds the key.** The credential is tied to your numeric UID, your
   username and the machine-id, so another user, or the file copied to another
-  machine, cannot unseal it. `--with-key` chooses the rest (default `auto`): the
-  TPM2 chip when one is found, and the host key (a root-only file under
-  `/var/lib/systemd`) when that directory is on persistent media. `auto` fails
-  when neither is available; it never uses systemd's `null` key, which has no
-  confidentiality or authentication, and `--with-key=null` is not accepted.
+  machine, cannot unseal it. Beyond that, systemd's automatic selection decides:
+  per its documentation it uses the TPM2 chip when it finds one (outside a
+  container) and the host key (a root-only file under `/var/lib/systemd`) when that
+  directory is on persistent media, and fails when neither is available.
+  **floorvault cannot choose or check which one it used.** For an unprivileged
+  caller `systemd-creds encrypt` passes no key choice to systemd (it ignores
+  `--with-key`, and refuses `tpm2` alone with `--user`), so `init` offers no
+  `--with-key`. Do not assume hardware binding: on a machine without a TPM2 the
+  credential may be bound to the host key alone. It never asks for systemd's
+  `null` key, which has no confidentiality or authentication.
 - **What it does not stop.** Code running as you can ask `systemd-creds` to unseal
-  the key just as `run` does, and root can too. With the host key alone, a full
-  disk image holds the credential and the key that opens it. Add a TPM2
-  (`--with-key=tpm2` or `host+tpm2`) to tie it to the hardware.
+  the key just as `run` does, and root can too. A copied credential, without the
+  host's secrets, cannot be opened elsewhere. With the host key alone, a full disk
+  image holds the credential and the key that opens it; a TPM2 binding would add
+  the hardware, but you must confirm that your host provides it, because
+  floorvault does not.
 - **Fails closed.** It needs Linux and systemd 256 or newer (`--user` arrived in
   256). Without that, `init`, `run` and `secrets` stop with a message; nothing
   falls back to the OS key store, a key file or `$FLOOR_VAULT_KEY`. A store with
@@ -235,20 +242,24 @@ floorvault run -e OPENAI_API_KEY=fv:openai -- python agent.py
 - **New stores only.** `init` refuses when `vault.db` already exists, and when
   `master.key.sdcred` does (it is never replaced). Moving an existing store's key
   into systemd-creds is not supported yet. Back up what the vault holds: losing
-  the credential, the TPM2 or the host key loses the data.
+  the credential or the keys that open it loses the data.
 - **No second key.** With a credential beside it, the default key provider
   (`AdaptiveKeyProvider`, which the Hermes plugin uses) refuses to create an OS or
   file key for that directory instead of forking it. An explicit key
   (`FLOOR_VAULT_KEY`, `--key-env`) is still honoured. The Hermes plugin does not
-  read the credential yet, so it cannot open such a store.
+  read the credential yet, so it cannot open such a store, and
+  `floorvault secrets import --hermes` therefore refuses one (exit 2, nothing
+  stored, `.env` unchanged) unless `$HERMES_VAULT_KEY` or `--key-env` names the key
+  the plugin will use.
 
 **Checked and not checked.** Tested against a stand-in for `systemd-creds` that
 enforces the documented command contract (`--user`, the credential name,
-`--refuse-null` only from 259, the key never in argv). `init` also unseals the
+`--refuse-null` only from 259, the key never in argv). That stand-in cannot show what
+systemd's automatic selection binds the key to. `init` also unseals the
 credential once from your shell before it writes anything. **Not checked on a real
 host:** unsealing from a service, a cron job or an SSH session with no login (the
-case this exists for), which distributions ship systemd 256 or newer, and whether
-your cloud image offers a TPM2. Ubuntu 24.04 LTS ships systemd 255, which is too
+case this exists for), which distributions ship systemd 256 or newer, which key systemd's automatic
+selection used on your host, and whether your cloud image offers a TPM2. Ubuntu 24.04 LTS ships systemd 255, which is too
 old. Try `init` and a `run` from the kind of session you will use before relying
 on it.
 

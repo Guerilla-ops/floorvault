@@ -526,15 +526,6 @@ def add_secrets_parser(subparsers) -> None:
     init.add_argument(
         "--custody", required=True, choices=["systemd-creds"], help="where the key is kept"
     )
-    init.add_argument(
-        "--with-key",
-        default="auto",
-        choices=list(systemd_creds.WITH_KEY_CHOICES),
-        help=(
-            "what systemd-creds binds the key to (default auto: the TPM2 chip when found, "
-            "and the host key when /var/lib/systemd is persistent; fails if neither)"
-        ),
-    )
 
     allow = sub.add_parser(
         "allow",
@@ -759,20 +750,21 @@ def _cmd_init(args, prog: str) -> int:
         )
         return 2
     try:
-        path = systemd_creds.create_credential(vault_dir, with_key=args.with_key)
+        path = systemd_creds.create_credential(vault_dir)
     except systemd_creds.SystemdCredsError as exc:
         raise StoreUnavailable(str(exc)) from None
     print(f"created {path}")
     print(
-        f"the master key is sealed by systemd-creds (--user, --with-key={args.with_key}); "
+        f"the master key is sealed by systemd-creds (--user); "
         f"`run` and `secrets` use it for the vault at {vault_dir}"
     )
     _err(
         prog,
-        "auto binds the key to the TPM2 chip when one is found and to the host key when "
-        "/var/lib/systemd is on persistent media, and fails when neither is available. "
-        "It never uses the null key. The host key is a root-only file on this machine's "
-        "disk: it keeps other users and a copied credential out, not root or a full disk image.",
+        "systemd chooses what else the key is bound to (its automatic selection: the TPM2 "
+        "chip, the host key, or both; per its documentation it fails when neither is "
+        "available). floorvault cannot choose or check which, so do not assume hardware "
+        "binding. The host key is a root-only file on this machine's disk: it keeps other "
+        "users and a copied credential out, not root or a full disk image.",
     )
     _err(
         prog,
@@ -1123,6 +1115,20 @@ def _cmd_import_hermes(args, prog: str) -> int:
         # The plugin uses this variable's key directly when it is set.
         args.key_env = _HERMES_KEY_VAR
         _err(prog, f"using the key in ${_HERMES_KEY_VAR}, as the hermesvault plugin does")
+    if args.key_env is None and systemd_creds.credential_present(
+        _vault_dir(args.vault, os.environ)
+    ):
+        # The plugin opens its store with $HERMES_VAULT_KEY or the default provider, and
+        # the provider refuses a directory that holds a sealed credential. Storing here
+        # would work for the CLI and leave Hermes unable to read the keys it was moved from.
+        _err(
+            prog,
+            f"{_vault_dir(args.vault, os.environ)} holds a systemd-creds credential, which the "
+            "hermesvault plugin cannot open yet, so Hermes could not read what is imported. "
+            "Nothing was stored and .env is unchanged. Use a store opened by OS key custody or "
+            f"by ${_HERMES_KEY_VAR} (--vault DIR), or wait for plugin support",
+        )
+        return 2
     try:
         env_file = read_env_file(path)
     except AgentEnvError as exc:

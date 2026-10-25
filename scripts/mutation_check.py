@@ -1579,9 +1579,9 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "SDC-4",
         "src/floorvault/systemd_creds.py",
-        'WITH_KEY_CHOICES = ("auto", "host", "tpm2", "host+tpm2")',
-        'WITH_KEY_CHOICES = ("auto", "host", "tpm2", "host+tpm2", "null")',
-        "--with-key=null is offered: the key would be sealed with no confidentiality or authentication",
+        'f"--name={CREDENTIAL_NAME}", "-", "-"]',
+        'f"--name={CREDENTIAL_NAME}", "--with-key=null", "-", "-"]',
+        "A key choice is passed to the helper: --with-key=null would seal the key with no confidentiality or authentication, and other values are ignored or refused for an unprivileged caller",
     ),
     Mutation(
         "SDC-5",
@@ -1659,6 +1659,27 @@ MUTATIONS: tuple[Mutation, ...] = (
         "SYSTEMD_CREDENTIAL_FILENAME)\n        except FileNotFoundError:\n            return False\n        except OSError:\n            return True\n",
         "SYSTEMD_CREDENTIAL_FILENAME)\n        except FileNotFoundError:\n            return False\n        except OSError:\n            return False\n",
         "A credential that cannot be looked up is treated as absent: a second master key can be minted",
+    ),
+    Mutation(
+        "SDC-16",
+        "src/floorvault/agent_cli.py",
+        "    if args.key_env is None and systemd_creds.credential_present(\n",
+        "    if False and systemd_creds.credential_present(  # MUTANT\n",
+        "`secrets import --hermes` stores into a sealed store the Hermes plugin cannot open, then can delete the working keys from .env",
+    ),
+    Mutation(
+        "SDC-17",
+        "src/floorvault/agent_cli.py",
+        "    if args.key_env is None and systemd_creds.credential_present(\n",
+        "    if systemd_creds.credential_present(  # MUTANT\n",
+        "`secrets import --hermes` refuses a sealed store even when the plugin's own key variable names the key",
+    ),
+    Mutation(
+        "SDC-18",
+        "src/floorvault/systemd_creds.py",
+        "        os.lstat(credential_path(vault_dir))\n    except FileNotFoundError:\n        return False\n    except OSError:\n        return True\n",
+        "        os.lstat(credential_path(vault_dir))\n    except FileNotFoundError:\n        return False\n    except OSError:\n        return False\n",
+        "A credential that cannot be looked up is treated as absent by the Hermes import guard",
     ),
     Mutation(
         "PKG-1",

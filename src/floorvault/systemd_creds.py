@@ -2,11 +2,14 @@
 
 ``floorvault secrets init --custody systemd-creds`` creates a random master key
 and seals it with ``systemd-creds encrypt --user``. The credential is bound to
-the calling user's UID, username and the machine-id and, by default, to the
-host's credential key and a TPM2 chip when there is one. It is stored beside the
-vault as ``master.key.sdcred``; ``floorvault run`` and ``floorvault secrets``
-find it there and unseal it with ``systemd-creds decrypt --user`` without a
-prompt.
+the calling user's UID, username and the machine-id. Which further secret it
+is bound to (the host's credential key, a TPM2 chip, or both) is chosen by
+systemd's automatic selection, not by floorvault: for an unprivileged caller
+``systemd-creds encrypt`` hands the request to systemd without a key choice, so
+floorvault offers no ``--with-key`` and does not report what systemd picked.
+It is stored beside the vault as ``master.key.sdcred``; ``floorvault run`` and
+``floorvault secrets`` find it there and unseal it with ``systemd-creds decrypt
+--user`` without a prompt.
 
 Rules this module keeps:
 
@@ -27,7 +30,8 @@ ownership and mode check.
 
 Not verified here: unattended decryption on a real host (no login session, a
 service, cron), which systemd versions and distributions ship ``--user``, and
-whether cloud images expose a TPM2. See docs/USAGE.md.
+whether cloud images expose a TPM2, and which key systemd's automatic selection
+used for a given credential. See docs/USAGE.md.
 """
 
 from __future__ import annotations
@@ -48,10 +52,10 @@ __all__ = [
     "CREDENTIAL_FILENAME",
     "CREDENTIAL_NAME",
     "MIN_SYSTEMD_VERSION",
-    "WITH_KEY_CHOICES",
     "SystemdCredsError",
     "create_credential",
     "credential_path",
+    "credential_present",
     "read_key",
 ]
 
@@ -61,8 +65,6 @@ CREDENTIAL_FILENAME = SYSTEMD_CREDENTIAL_FILENAME
 CREDENTIAL_NAME = "floorvault.master-key"
 MIN_SYSTEMD_VERSION = 256  # first release with `systemd-creds --user`
 REFUSE_NULL_SINCE = 259  # first release with `decrypt --refuse-null`
-#: ``--with-key=`` values worth offering. ``null`` (no protection) is not one.
-WITH_KEY_CHOICES = ("auto", "host", "tpm2", "host+tpm2")
 #: Where the helper is looked for. Deliberately not ``$PATH``.
 SEARCH_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin", "/run/current-system/sw/bin")
 TIMEOUT_SECONDS = 30
@@ -77,6 +79,21 @@ class SystemdCredsError(Exception):
 
 def credential_path(vault_dir: Path) -> Path:
     return Path(vault_dir) / CREDENTIAL_FILENAME
+
+
+def credential_present(vault_dir: Path) -> bool:
+    """Whether a credential sits beside ``vault_dir``.
+
+    ``lstat``, and any failure other than "not found" counts as present: a
+    lookup that cannot rule the credential out must not let another key stand in.
+    """
+    try:
+        os.lstat(credential_path(vault_dir))
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _find_binary() -> str:
@@ -139,11 +156,11 @@ def _require_binary(binary: Optional[str] = None) -> tuple[str, int]:
     return binary, version
 
 
-def _encrypt(binary: str, plaintext: bytes, with_key: str) -> bytes:
-    argv = [binary, "encrypt", "--user", f"--name={CREDENTIAL_NAME}"]
-    if with_key != "auto":
-        argv.append(f"--with-key={with_key}")
-    argv += ["-", "-"]
+def _encrypt(binary: str, plaintext: bytes) -> bytes:
+    # No --with-key: an unprivileged `systemd-creds encrypt` ignores it (it sends the
+    # request to systemd without a key choice, whatever the option says), and `tpm2`
+    # alone is refused with --user. Offering it would claim a binding nothing enforces.
+    argv = [binary, "encrypt", "--user", f"--name={CREDENTIAL_NAME}", "-", "-"]
     result = _run(argv, plaintext)
     if result.returncode != 0 or not result.stdout.strip():
         raise _failure("encrypt", result)
@@ -172,20 +189,16 @@ def _parse_key(plaintext: bytes) -> bytes:
     return bytes.fromhex(text)
 
 
-def create_credential(
-    vault_dir: Path, *, with_key: str = "auto", binary: Optional[str] = None
-) -> Path:
+def create_credential(vault_dir: Path, *, binary: Optional[str] = None) -> Path:
     """Create a random master key, seal it beside ``vault_dir`` and return the file's path.
 
     The credential is unsealed again before anything is written, so a host that
     can encrypt but not decrypt (or the reverse) fails here, not at the first
     ``run``. The file is created exclusively with mode 0600 and never replaced.
     """
-    if with_key not in WITH_KEY_CHOICES:
-        raise SystemdCredsError(f"--with-key must be one of {', '.join(WITH_KEY_CHOICES)}")
     binary, version = _require_binary(binary)
     plaintext = (secrets.token_bytes(32).hex() + "\n").encode("ascii")
-    ciphertext = _encrypt(binary, plaintext, with_key)
+    ciphertext = _encrypt(binary, plaintext)
     if _decrypt(binary, version, ciphertext) != plaintext:
         raise SystemdCredsError(
             "the sealed credential did not unseal to the same key; nothing written"

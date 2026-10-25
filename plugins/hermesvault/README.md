@@ -99,6 +99,9 @@ sealed in `master.key.sdcred`) cannot be opened by this plugin yet: the plugin
 does not read the credential, and FloorVault's default key provider refuses to
 create a different key beside it, so the source fails closed. Use `token_env` or
 the OS key store for a Hermes store until the plugin supports it.
+`floorvault secrets import --hermes` refuses such a store for the same reason
+(nothing is stored and `.env` is left alone), unless `$HERMES_VAULT_KEY` or
+`--key-env` names the key the plugin will use.
 Keep the same custody settings and the `floor-agent` application context when
 reopening an existing store. See FloorVault's
 [SECURITY.md](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md)
