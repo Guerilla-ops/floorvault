@@ -92,6 +92,10 @@ reopening an existing store. See FloorVault's
 [SECURITY.md](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md)
 for the custody model and its limits.
 
+Command bindings set with `floorvault secrets allow` are enforced only by
+`floorvault run`. This plugin ignores them and resolves a bound item like any
+other.
+
 ## What this plugin does on your machine
 
 - **Reads and writes** a FloorVault store under `<profile-home>/agent-vault` (or

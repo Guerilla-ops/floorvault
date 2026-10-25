@@ -708,6 +708,8 @@ CREATE TABLE IF NOT EXISTS vault_items (
     created_at TEXT NOT NULL,
     payload_cipher BLOB NOT NULL
 );
+-- added on open when missing, without changing user_version:
+ALTER TABLE vault_items ADD COLUMN allowed_commands BLOB;
 CREATE TABLE IF NOT EXISTS vault_legacy_retirements (
     legacy_id TEXT PRIMARY KEY,
     tombstone_cipher BLOB NOT NULL
@@ -738,10 +740,21 @@ CREATE TABLE IF NOT EXISTS vault_rotation_state (
 | `has_otp` | cleartext 0/1 |
 | `label`, `origin`, `identifier_type`, `identifier`, `created_at` | **sealed** — v2 envelopes stored in the TEXT-declared columns (SQLite affinity permits BLOBs there) |
 | `payload_cipher` | **sealed** — envelope whose plaintext is `json.dumps(secret_dict, ensure_ascii=False)` with DEFAULT separators (i.e. `", "` / `": "` — spaces present) |
+| `allowed_commands` | NULL (item not bound to commands), or **sealed** — envelope whose plaintext is `json.dumps({"commands": [[program, arg, ...], ...]}, ensure_ascii=False)`; see below |
 | `tombstone_cipher` | **sealed** — see §12.3 |
 
 This is the documented leakage contract: an observer learns item count, ids,
 kinds, and OTP flags; nothing that identifies or reconstructs a secret.
+
+**Command bindings** (`allowed_commands`). NULL means the item is not bound.
+Otherwise `commands` is a non-empty list of non-empty string lists, each
+starting with an absolute program path, with no NUL in any element. A reader
+that enforces bindings MUST treat an envelope that fails authentication, a
+cleartext value, or a plaintext that does not have this shape as an error,
+never as "not bound". Adding the column does not change `user_version`, so
+readers that predate it still open the store; they ignore the column and do
+not enforce it. An observer learns whether each item is bound, and the
+envelope length.
 
 **Sealed-listing mode** (`VaultStore(..., seal_listing_metadata=True)`): `kind`
 and `has_otp` are sealed too, as `meta:kind` and `meta:has_otp` (§12.3), and
@@ -770,7 +783,7 @@ All vault records use `schema_id="floor.vault.v1"`, `schema_version=1`, no
 | Content | `table` | `record_id` | `column` |
 |---|---|---|---|
 | item payload | `vault_items` | `<item id>` | `payload` |
-| item metadata field `<f>` in {label, origin, identifier_type, identifier, created_at} | `vault_items` | `<item id>` | `meta:<f>` |
+| item metadata field `<f>` in {label, origin, identifier_type, identifier, created_at, allowed_commands} | `vault_items` | `<item id>` | `meta:<f>` |
 | sealed-listing mode only: `<f>` in {kind, has_otp} | `vault_items` | `<item id>` | `meta:<f>` |
 | retirement tombstone | `vault_legacy_retirements` | `<legacy_id>` | `tombstone` |
 
@@ -784,7 +797,7 @@ mismatching is an error, never "not retired".
 
 - `vault_rotation_journal` rows record re-seal progress: unit keys are
   `("item", <item_id>, "payload")`, `("item", <item_id>, "meta:<f>")` for the
-  five sealed metadata columns, and `("tombstone", <legacy_id>,
+  six sealed metadata columns, and `("tombstone", <legacy_id>,
   "tombstone")`; `state` is `'done'`; each unit is journaled in the same
   transaction as its write.
 - `vault_rotation_state` is a single-flight barrier: `singleton=1`, `active`
@@ -820,6 +833,11 @@ mismatching is an error, never "not retired".
   plaintext resealing.
 - A legacy `origin_idx` column triggers a table rebuild without it (drop
   `idx_vault_origin`, copy rows, rename).
+- A missing `allowed_commands` column is added (`ALTER TABLE ... ADD COLUMN`),
+  leaving every item unbound. A rotation run by a release that predates the
+  column re-seals the other columns but not `allowed_commands`; a reader that
+  enforces bindings then fails closed for those items until they are bound
+  again.
 
 ---
 

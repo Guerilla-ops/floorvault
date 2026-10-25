@@ -256,7 +256,7 @@ command but does not choose which binary starts.
 The commands use the existing `vault.db` format (schema version 3, unchanged
 since 0.2.1), so a store shared with the Hermes plugin stays readable by both.
 
-**Managing items.** `floorvault secrets add | put | list | show | rm | ref | import`.
+**Managing items.** `floorvault secrets add | put | list | show | rm | ref | import | allow`.
 `put` prompts for the value. `show` reports how many fields are set, or whether one named field is set. `ref` prints
 the reference to paste (`--env NAME` prints `NAME=fv:…`). These commands never
 print a value, and `add` and `put` refuse values containing a NUL byte, which
@@ -317,6 +317,47 @@ vault and receive it. Only run `floorvault run` on configuration and commands
 you have reviewed. When the command itself is untrusted, pass
 `--no-inherit-refs` and give only the references it needs with `-e`, so
 references already in the environment are not filled in for it.
+
+**Binding items to commands.** `floorvault secrets allow` binds an item to the
+exact command lines `run` may start with it:
+
+```bash
+floorvault secrets allow github-pat -- npx -y @modelcontextprotocol/server-github
+floorvault secrets show github-pat            # lists the bound command lines
+floorvault secrets allow github-pat --remove -- npx -y @modelcontextprotocol/server-github
+floorvault secrets allow github-pat --clear   # unbind: resolves for any command again
+```
+
+- **What must match:** the program's absolute path as found on `PATH` (symlinks
+  are not followed, so a link to the same interpreter does not count), and then
+  exactly the same arguments. Run `secrets allow` with the `PATH` the client
+  uses; when they differ, `run` prints the command line it saw.
+- **On a mismatch** `run` exits `125` naming the variable and item, and the
+  command does not start. Items without a binding behave as before.
+- **Variables that steer the program.** While a bound item is being resolved,
+  `run` refuses to start if the command's environment sets a variable that can
+  change what it loads: `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`,
+  `NODE_OPTIONS`, `NODE_PATH`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONHOME`,
+  `PYTHONUSERBASE`, `PERL5OPT`, `RUBYOPT`, `BASH_ENV`, `JAVA_TOOL_OPTIONS`,
+  package-index variables for pip and uv, and npm's registry, config-file and
+  TLS settings (`agentenv.CODE_INJECTION_ENV_NAMES` has the full list). Unset
+  them for that command. The list is best effort: `HOME`, `PATH` and a
+  program's own configuration files can steer it too.
+- **Removing the last command line** is refused; use `--clear`, so widening an
+  item to every command is always explicit.
+- **Interpreters and launchers.** Binding `npx -y <package>` or
+  `python /abs/path/agent.py` pins the arguments, not what they load: `npx`
+  fetches the package when it runs, and a script can be edited. Give scripts as
+  absolute paths; `secrets allow` warns about relative ones, which resolve
+  against whatever directory the command starts in.
+- **Not a boundary against your own user.** The binding is sealed with the
+  item, so it cannot be edited or moved to another item undetected, but code
+  running as you can still clear it, read the key from your key store, or read
+  the started command's environment. It protects against mistakes and against
+  a configuration that names an item for a command you did not choose. It does
+  not fix which variable the value lands in.
+- **Who enforces it:** only `floorvault run` from this release on. Older
+  `floorvault` versions and the Hermes plugin ignore bindings.
 
 ## Hermes Agent integration
 

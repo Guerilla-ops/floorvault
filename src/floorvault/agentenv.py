@@ -23,16 +23,20 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 __all__ = [
     "AgentEnvError",
+    "CODE_INJECTION_ENV_NAMES",
+    "CODE_INJECTION_ENV_PREFIXES",
     "CUSTODY_ENV_NAMES",
     "KEY_POINTER_ENV_NAMES",
     "EnvFile",
     "EnvFileLine",
     "SecretRef",
+    "code_injection_variables",
     "collect",
+    "command_allowed",
     "default_vault_dir",
     "is_ref_like",
     "is_valid_env_name",
@@ -58,6 +62,54 @@ CUSTODY_ENV_NAMES = ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "HERMES_VAULT_KEY")
 KEY_POINTER_ENV_NAMES = ("FLOOR_VAULT_KEY_FILE",)
 _REFUSED_TARGETS = (*CUSTODY_ENV_NAMES, *KEY_POINTER_ENV_NAMES, "APPSTATE_KEY")
 MAX_ENV_FILE_BYTES = 1 << 20
+
+# Variables that let a configuration change what an allowed program loads or
+# runs: dynamic-linker injection, interpreter start-up hooks and package-index
+# redirection. While an item bound to commands is being resolved, `run`
+# refuses to start if any of these is set. Best effort: no list can name every
+# way an environment steers a program (HOME and PATH do too).
+CODE_INJECTION_ENV_NAMES = frozenset(
+    {
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "LD_AUDIT",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "ELECTRON_RUN_AS_NODE",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONHOME",
+        "PYTHONUSERBASE",
+        "PERL5OPT",
+        "PERL5LIB",
+        "PERLLIB",
+        "RUBYOPT",
+        "RUBYLIB",
+        "BASH_ENV",
+        "ENV",
+        "JAVA_TOOL_OPTIONS",
+        "_JAVA_OPTIONS",
+        "JDK_JAVA_OPTIONS",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+        "UV_INDEX",
+        "UV_INDEX_URL",
+        "UV_DEFAULT_INDEX",
+        "UV_EXTRA_INDEX_URL",
+        # npm settings that pick where packages come from or what runs them.
+        # Proxy settings are left alone: npm verifies TLS through a proxy.
+        "NPM_CONFIG_REGISTRY",
+        "NPM_CONFIG_USERCONFIG",
+        "NPM_CONFIG_GLOBALCONFIG",
+        "NPM_CONFIG_STRICT_SSL",
+        "NPM_CONFIG_CA",
+        "NPM_CONFIG_CAFILE",
+        "NPM_CONFIG_NODE_OPTIONS",
+        "NPM_CONFIG_SCRIPT_SHELL",
+        "NPM_CONFIG_PREFIX",
+    }
+)
+CODE_INJECTION_ENV_PREFIXES = ("DYLD_",)
 
 _ITEM_ID = r"[A-Za-z0-9._-]{1,128}"
 _REF = re.compile(
@@ -399,3 +451,38 @@ def default_vault_dir(environ: Optional[Mapping[str, str]] = None) -> Path:
     if raw:
         return Path(raw).expanduser()
     return Path.home() / ".floorvault" / "agent-vault"
+
+
+def code_injection_variables(env: Mapping[str, str]) -> list[str]:
+    """Names in ``env`` that can change what a started program loads or runs.
+
+    Compared case-insensitively (Windows names are, and npm reads both
+    ``npm_config_*`` and ``NPM_CONFIG_*``).
+    """
+    found = []
+    for name in env:
+        upper = name.upper()
+        if (
+            upper in CODE_INJECTION_ENV_NAMES
+            or upper.startswith(CODE_INJECTION_ENV_PREFIXES)
+            # Scoped registries: npm_config_@scope:registry.
+            or (upper.startswith("NPM_CONFIG_") and upper.endswith("REGISTRY"))
+        ):
+            found.append(name)
+    return sorted(found)
+
+
+def command_allowed(command: Sequence[str], allowed: Iterable[Sequence[str]]) -> bool:
+    """True when ``command`` (absolute program path, then arguments) is listed.
+
+    The program path is compared with ``os.path.normcase`` (case-insensitive
+    on Windows); arguments must match exactly.
+    """
+    if not command:
+        return False
+    program = os.path.normcase(command[0])
+    rest = list(command[1:])
+    return any(
+        entry and os.path.normcase(entry[0]) == program and list(entry[1:]) == rest
+        for entry in allowed
+    )

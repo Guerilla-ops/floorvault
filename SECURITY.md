@@ -212,7 +212,13 @@ proof of a plaintext-recovery attack.
   The configuration `run` reads chooses which items are resolved: a `.env` or
   MCP entry from an untrusted source can name any item by its id. Review such
   configuration first, or use `--no-inherit-refs` with explicit `-e`
-  references. `floorvault secrets` commands print no values, but `run` can
+  references. `floorvault secrets allow` binds an item to exact command lines
+  (absolute program path and arguments), and `run` then refuses to start any
+  other command with it, or one whose environment sets a listed code-loading
+  variable such as `LD_PRELOAD` or `NODE_OPTIONS`. The binding is sealed with
+  the item but is a guardrail, not a boundary: code running as the same user
+  can clear it, a bound interpreter or launcher runs whatever its arguments
+  load, and older readers and the Hermes plugin ignore it. `floorvault secrets` commands print no values, but `run` can
   start a command that does.
 - **Migration can write during listing.** The migration-aware `list_items()` path
   upgrades legacy items through metadata lookup. It can write modern records and
