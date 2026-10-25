@@ -339,6 +339,26 @@ process can reach the same key. Restart Hermes and look for
 copies of the plaintext (backups, editor swap files, git history) are not
 removed.
 
+**What changes in Hermes once the lines are gone.** Checked against Hermes
+`fab9b01` with `hermes chat` in a scratch home: with the key only in the vault,
+the request carried the same key as with the key in `.env`. Two other commands
+misreport, because they read the `.env` text rather than the environment:
+`hermes doctor` warns "No API key found in .env", and `hermes status` can name a
+different provider (it listed AWS Bedrock where it listed OpenAI before). Both are
+display only in that test. Not tested: the messaging gateway, cron, the terminal
+UI, several profiles, an OS key store as the key source, newer Hermes versions.
+Two behaviours come from reading Hermes' source, not from a run: secret sources
+fail open, so if Hermes cannot open the vault (a service without access to the OS
+key store, a wrong key) it starts without these keys and fails at its first API
+call, not at startup; and Hermes commands that save keys, such as `hermes setup`,
+can write plaintext back into `.env`.
+
+**The master key.** A store opened through `token_env` needs `HERMES_VAULT_KEY`
+in the environment, and `.env` is where Hermes reads it from. Left there, anyone
+who can read `.env` and `vault.db` can open the vault, so the move mostly keeps
+keys out of what Hermes and its tools read as plain text. A store whose key is
+held by the OS key store gains real protection at rest.
+
 Protection is at rest. The started command, and code running as your user, can
 read the resolved values: `run` keeps secrets out of files, not away from the
 process that uses them.

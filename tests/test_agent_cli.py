@@ -1132,6 +1132,9 @@ def test_hermes_remove_deletes_only_the_mapped_lines_and_keeps_layout(tmp_path, 
     assert stat_mode(env_file) == 0o640
     assert "no backup was made" in result.stderr
     assert "Not checked: that secrets.hermesvault.enabled is true" in result.stderr
+    assert "`hermes doctor` warns that no API key is in .env" in result.stderr
+    assert "fails at its first API call, not at startup" in result.stderr
+    assert "HERMES_VAULT_KEY is still in .env" in result.stderr
     for value in ("sk-hermes-openai", "ghp-hermes-github"):
         assert value not in result.stdout + result.stderr
     ran = fv(
@@ -1269,3 +1272,16 @@ def test_config_mapping_check(line, name, item_id, expected):
         _config_maps("secrets:\n  hermesvault:\n    env:\n" + line + "\n", name, item_id)
         is expected
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_hermes_remove_notes_omit_the_master_key_warning_when_it_is_not_in_env(tmp_path, base_env):
+    env_bytes = b"OPENAI_API_KEY=sk-hermes-openai\nDEBUG=1\n"
+    home, env_file = _hermes_home(tmp_path, env_bytes=env_bytes, config=MAPPING)
+    result = _hermes_import(
+        [str(env_file), "--only", "OPENAI_API_KEY", "--write", "--remove-from-env"], base_env
+    )
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_bytes() == b"DEBUG=1\n"
+    assert "`hermes doctor` warns" in result.stderr
+    assert "HERMES_VAULT_KEY is still in" not in result.stderr

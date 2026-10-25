@@ -1145,6 +1145,20 @@ def _cmd_import_hermes(args, prog: str) -> int:
         "secrets.hermesvault.enabled is true, or that the Hermes process can reach the "
         "same key (OS key store or token_env). Restart Hermes and confirm before relying on it.",
     )
+    _err(
+        prog,
+        "expect two wrong readings from Hermes: `hermes doctor` warns that no API key is "
+        "in .env, and `hermes status` may name another provider, because both read the .env "
+        "text. Chat uses the vault key. If Hermes cannot open the vault it starts without "
+        "these keys and fails at its first API call, not at startup.",
+    )
+    if any(line.name.upper() == _HERMES_KEY_VAR for line in env_file.assignments()):
+        _err(
+            prog,
+            f"{_HERMES_KEY_VAR} is still in {path.name}: anyone who can read that file and "
+            "the vault can open it, so the move adds little protection for these keys until "
+            "the key is held by the OS key store instead.",
+        )
     return 0
 
 
