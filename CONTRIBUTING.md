@@ -46,6 +46,9 @@ uv run --no-sync python -u scripts/mutation_check.py --mode curated
 `scripts/security-check.sh` is the complete local security gate (gitleaks,
 pip-audit, Bandit, Semgrep CE and more). It fails closed when a gate tool is
 missing; set `FLOORVAULT_STRICT=0` only if you deliberately accept skipping one.
+Run it on Python 3.11 or newer: the dev extra installs `pip-audit` only there
+(see [the usage guide](docs/USAGE.md#development)), so on 3.10 the gate stops at
+"Required gate tool not found: pip-audit".
 
 ## Pull request guidelines
 
