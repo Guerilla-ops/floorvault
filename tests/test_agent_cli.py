@@ -1295,6 +1295,12 @@ def test_hermes_remove_notes_omit_the_master_key_warning_when_it_is_not_in_env(t
     assert "HERMES_VAULT_KEY is still in" not in result.stderr
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="falls through to the real OS key store: the macOS Keychain (which can block "
+    "on a CI runner) or Windows DPAPI; on Linux the stripped environment has no "
+    "Secret Service",
+)
 def test_hermes_import_does_not_use_floor_vault_key(tmp_path, base_env):
     """The plugin ignores $FLOOR_VAULT_KEY, so the import must not store under it."""
     home, env_file = _hermes_home(tmp_path, config="model: x\n" + MAPPING)
