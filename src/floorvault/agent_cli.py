@@ -8,9 +8,9 @@ Rules this module keeps:
 * ``run`` writes nothing to stdout. MCP stdio servers speak JSON-RPC there,
   so every diagnostic goes to stderr.
 * ``run`` fails closed: every reference resolves or the command never starts.
-* Only ``secrets add`` and ``secrets import --write`` may create a store or a
-  master key. Every other command opens an existing store and resolves the key
-  with ``allow_create=False``.
+* Only ``secrets add``, ``secrets import --write`` and ``secrets init`` may
+  create a store or a master key. Every other command opens an existing store
+  and resolves the key with ``allow_create=False``.
 * The child never inherits a vault key variable, nor another variable holding
   a copy of one's value.
 * ``run`` exits 125 when it fails itself, so its failures never look like the
@@ -40,6 +40,7 @@ import tempfile
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
+from . import systemd_creds
 from .agentenv import (
     CUSTODY_ENV_NAMES,
     AgentEnvError,
@@ -148,6 +149,28 @@ def _key_file_from(args, environ: Mapping[str, str]) -> Optional[Path]:
         return None
     raw = (environ.get(KEY_FILE_ENV) or "").strip()
     return Path(raw) if raw else None
+
+
+def _custody_key(args, environ: Mapping[str, str], vault_dir: Path) -> Optional[bytes]:
+    """The master key from a file or a sealed credential, or None for ``--key-env`` / default custody.
+
+    Order: ``--key-env`` (None here, ``open_store`` reads it), ``--key-file``,
+    the systemd-creds credential beside the vault, ``$FLOOR_VAULT_KEY_FILE``.
+    A vault that has a credential gets its key from it and from nowhere else
+    unless a key option names another; ``$FLOOR_VAULT_KEY`` is not consulted.
+    """
+    if getattr(args, "key_env", None):
+        return None
+    if getattr(args, "key_file", None) is not None:
+        return read_key_file(args.key_file)
+    try:
+        sealed = systemd_creds.read_key(vault_dir)
+    except systemd_creds.SystemdCredsError as exc:
+        raise StoreUnavailable(str(exc)) from None
+    if sealed is not None:
+        return sealed
+    key_file = _key_file_from(args, environ)
+    return read_key_file(key_file) if key_file is not None else None
 
 
 def open_store(
@@ -333,13 +356,11 @@ def _prepare_environment(
     key_hex = None
     try:
         _check_key_options(args)
-        key_file = _key_file_from(args, os.environ)
-        key_bytes = read_key_file(key_file) if key_file is not None else None
+        vault_dir = _vault_dir(args.vault, os.environ)
+        key_bytes = _custody_key(args, os.environ, vault_dir)
         if key_bytes is not None:
             key_hex = key_bytes.hex()
-        store = open_store(
-            _vault_dir(args.vault, os.environ), key_env=args.key_env, key_bytes=key_bytes
-        )
+        store = open_store(vault_dir, key_env=args.key_env, key_bytes=key_bytes)
     except StoreUnavailable as exc:
         _err(prog, str(exc))
         return None, RUN_FAILED
@@ -357,7 +378,7 @@ def _prepare_environment(
     finally:
         del store
     if key_hex is not None:
-        # A copy of the key file's content under any other name stays behind.
+        # A copy of the key under any other name (from a key file or a sealed credential).
         env = {name: value for name, value in env.items() if value.strip().lower() != key_hex}
     env.update(values)
     return env, 0
@@ -491,6 +512,30 @@ def add_secrets_parser(subparsers) -> None:
     show = sub.add_parser("show", parents=[common], help="Show whether an item's fields are set")
     show.add_argument("ref", help="item id, item_id:field, or an fv: reference")
 
+    init = sub.add_parser(
+        "init",
+        parents=[common],
+        help="Create the master key for a new store, sealed by systemd-creds",
+        description=(
+            "Create a random master key and seal it with `systemd-creds encrypt --user` "
+            "beside the store (master.key.sdcred). `run` and `secrets` then unseal it without "
+            "a prompt. Needs Linux with systemd 256 or newer, and fails rather than fall back "
+            "to a weaker custody. Only for a store that does not exist yet."
+        ),
+    )
+    init.add_argument(
+        "--custody", required=True, choices=["systemd-creds"], help="where the key is kept"
+    )
+    init.add_argument(
+        "--with-key",
+        default="auto",
+        choices=list(systemd_creds.WITH_KEY_CHOICES),
+        help=(
+            "what systemd-creds binds the key to (default auto: the TPM2 chip when found, "
+            "and the host key when /var/lib/systemd is persistent; fails if neither)"
+        ),
+    )
+
     allow = sub.add_parser(
         "allow",
         parents=[common],
@@ -604,12 +649,11 @@ def _split_target(text: str) -> tuple[Optional[str], Optional[str]]:
 
 def _store_for(args, *, create: bool = False):
     _check_key_options(args)
-    key_file = _key_file_from(args, os.environ)
-    key_bytes = read_key_file(key_file) if key_file is not None else None
+    vault_dir = _vault_dir(args.vault, os.environ)
     return open_store(
-        _vault_dir(args.vault, os.environ),
+        vault_dir,
         key_env=args.key_env,
-        key_bytes=key_bytes,
+        key_bytes=_custody_key(args, os.environ, vault_dir),
         create=create,
     )
 
@@ -700,6 +744,43 @@ def split_allow_argv(argv: Sequence[str]) -> tuple[list[str], Optional[list[str]
         return argv, None
     split = argv.index("--")
     return argv[:split], argv[split + 1 :]
+
+
+def _cmd_init(args, prog: str) -> int:
+    if args.key_env or args.key_file is not None:
+        _err(prog, "init creates the key; it takes no --key-env or --key-file")
+        return 2
+    vault_dir = _vault_dir(args.vault, os.environ)
+    if _is_regular_file(vault_dir / "vault.db"):
+        _err(
+            prog,
+            f"a vault already exists at {vault_dir}; init creates the key for a new store "
+            "only. Moving an existing store's key here is not supported",
+        )
+        return 2
+    try:
+        path = systemd_creds.create_credential(vault_dir, with_key=args.with_key)
+    except systemd_creds.SystemdCredsError as exc:
+        raise StoreUnavailable(str(exc)) from None
+    print(f"created {path}")
+    print(
+        f"the master key is sealed by systemd-creds (--user, --with-key={args.with_key}); "
+        f"`run` and `secrets` use it for the vault at {vault_dir}"
+    )
+    _err(
+        prog,
+        "auto binds the key to the TPM2 chip when one is found and to the host key when "
+        "/var/lib/systemd is on persistent media, and fails when neither is available. "
+        "It never uses the null key. The host key is a root-only file on this machine's "
+        "disk: it keeps other users and a copied credential out, not root or a full disk image.",
+    )
+    _err(
+        prog,
+        "checked: the credential unseals from this shell. Not checked: unsealing from a "
+        "service, a cron job or an SSH session without a login. Losing the credential or "
+        "this machine's keys loses the data: keep your own backup of the secrets.",
+    )
+    return 0
 
 
 def _cmd_allow(args, prog: str) -> int:
@@ -1251,6 +1332,7 @@ _SECRETS_COMMANDS = {
     "put": _cmd_put,
     "list": _cmd_list,
     "show": _cmd_show,
+    "init": _cmd_init,
     "allow": _cmd_allow,
     "rm": _cmd_rm,
     "ref": _cmd_ref,

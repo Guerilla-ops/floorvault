@@ -94,6 +94,11 @@ the plugin uses that 64-hex-character key.
 On a host with no usable OS key store and no `token_env` key (for example a
 headless Linux box without Secret Service), opening the store fails closed: the
 source reports an error and sets nothing. It never downgrades to a weaker tier.
+A store created with `floorvault secrets init --custody systemd-creds` (its key
+sealed in `master.key.sdcred`) cannot be opened by this plugin yet: the plugin
+does not read the credential, and FloorVault's default key provider refuses to
+create a different key beside it, so the source fails closed. Use `token_env` or
+the OS key store for a Hermes store until the plugin supports it.
 Keep the same custody settings and the `floor-agent` application context when
 reopening an existing store. See FloorVault's
 [SECURITY.md](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md)

@@ -211,7 +211,19 @@ proof of a plaintext-recovery attack.
   supply from the child environment, refuses references onto them, and only
   reads existing keys. A `--key-file` key is plaintext at rest, guarded only by
   file permissions: `run` refuses a file that another user owns or that group or
-  others can write, but the child runs as the same user and can read the file. On macOS and Linux the default custody uses one
+  others can write, but the child runs as the same user and can read the file.
+  `floorvault secrets init --custody systemd-creds` instead seals the key with
+  `systemd-creds encrypt --user` (Linux, systemd 256 or newer), bound to the
+  user's UID, the machine-id and, by default, the TPM2 and the host key. It keeps
+  other users and a copied credential out; code running as the same user can
+  still ask `systemd-creds` to unseal it, and root can too. It fails closed
+  where `systemd-creds` is missing or too old, never accepts the `null` key,
+  looks the helper up only in system directories, and passes the key through
+  pipes. From systemd 259 decryption passes `--refuse-null`; on 256 to 258 the
+  file's ownership and mode are the check against a planted credential. A
+  directory holding `master.key.sdcred` makes the default key provider refuse to
+  create a second key for it. Unattended unsealing from a service or cron job is
+  not verified on a real host. On macOS and Linux the default custody uses one
   key-store entry per user, so every default store shares one master key.
   The configuration `run` reads chooses which items are resolved: a `.env` or
   MCP entry from an untrusted source can name any item by its id. Review such

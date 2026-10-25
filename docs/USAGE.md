@@ -147,9 +147,12 @@ same environment whose `floorvault` the client starts. Windows uses DPAPI with
 no extra.
 
 **Headless Linux, servers and containers.** Without a Secret Service (no
-desktop session, a server, a container), give the key in a file with
-`--key-file PATH` or `$FLOOR_VAULT_KEY_FILE`, rather than putting the master
-key itself in `FLOOR_VAULT_KEY` or an MCP config, where it unlocks every item.
+desktop session, a server, a container) there are two routes, and neither puts
+the master key itself in `FLOOR_VAULT_KEY` or an MCP config, where it unlocks
+every item. On a host with systemd 256 or newer, prefer
+[systemd-creds](#headless-host-with-systemd-creds): the key is sealed to the
+machine and your user. In a container, or where systemd-creds is not available,
+give the key in a file with `--key-file PATH` or `$FLOOR_VAULT_KEY_FILE`.
 
 ```sh
 mkdir -p ~/.config/floorvault
@@ -192,6 +195,63 @@ from root or from code running as you. The command started by `run` runs as the
 same user and can read the file if it knows the path, so keep the file outside
 the command's working directory.
 
+### Headless host with systemd-creds
+
+`floorvault secrets init --custody systemd-creds` creates a random master key
+and seals it with `systemd-creds encrypt --user`. The sealed credential lives
+beside the vault as `master.key.sdcred`; `run` and `secrets` find it there and
+unseal it with `systemd-creds decrypt --user`, with no prompt and nothing in an
+environment variable, an MCP config or a key file.
+
+```sh
+floorvault secrets init --custody systemd-creds      # new store only
+read -rs KEY && printf 'value=%s\n' "$KEY" | floorvault secrets add "OpenAI" --id openai --stdin; unset KEY
+floorvault run -e OPENAI_API_KEY=fv:openai -- python agent.py
+```
+
+- **What binds the key.** The credential is tied to your numeric UID, your
+  username and the machine-id, so another user, or the file copied to another
+  machine, cannot unseal it. `--with-key` chooses the rest (default `auto`): the
+  TPM2 chip when one is found, and the host key (a root-only file under
+  `/var/lib/systemd`) when that directory is on persistent media. `auto` fails
+  when neither is available; it never uses systemd's `null` key, which has no
+  confidentiality or authentication, and `--with-key=null` is not accepted.
+- **What it does not stop.** Code running as you can ask `systemd-creds` to unseal
+  the key just as `run` does, and root can too. With the host key alone, a full
+  disk image holds the credential and the key that opens it. Add a TPM2
+  (`--with-key=tpm2` or `host+tpm2`) to tie it to the hardware.
+- **Fails closed.** It needs Linux and systemd 256 or newer (`--user` arrived in
+  256). Without that, `init`, `run` and `secrets` stop with a message; nothing
+  falls back to the OS key store, a key file or `$FLOOR_VAULT_KEY`. A store with
+  a `master.key.sdcred` takes its key from there and ignores `$FLOOR_VAULT_KEY`
+  and `$FLOOR_VAULT_KEY_FILE`; `--key-env` and `--key-file` still override, which
+  is the recovery route if you hold a copy of the key.
+- **The helper.** `systemd-creds` is looked for only in `/usr/bin`, `/bin`,
+  `/usr/sbin`, `/sbin` and `/run/current-system/sw/bin`, never on `$PATH` or
+  through a variable, and runs with a minimal environment. The key reaches it
+  and comes back through pipes, never argv. From systemd 259 decryption also
+  passes `--refuse-null`; on 256 to 258 the only check against a planted
+  credential is that the file is yours and not writable by others.
+- **New stores only.** `init` refuses when `vault.db` already exists, and when
+  `master.key.sdcred` does (it is never replaced). Moving an existing store's key
+  into systemd-creds is not supported yet. Back up what the vault holds: losing
+  the credential, the TPM2 or the host key loses the data.
+- **No second key.** With a credential beside it, the default key provider
+  (`AdaptiveKeyProvider`, which the Hermes plugin uses) refuses to create an OS or
+  file key for that directory instead of forking it. An explicit key
+  (`FLOOR_VAULT_KEY`, `--key-env`) is still honoured. The Hermes plugin does not
+  read the credential yet, so it cannot open such a store.
+
+**Checked and not checked.** Tested against a stand-in for `systemd-creds` that
+enforces the documented command contract (`--user`, the credential name,
+`--refuse-null` only from 259, the key never in argv). `init` also unseals the
+credential once from your shell before it writes anything. **Not checked on a real
+host:** unsealing from a service, a cron job or an SSH session with no login (the
+case this exists for), which distributions ship systemd 256 or newer, and whether
+your cloud image offers a TPM2. Ubuntu 24.04 LTS ships systemd 255, which is too
+old. Try `init` and a `run` from the kind of session you will use before relying
+on it.
+
 **References.** `fv:<item_id>[:<field>]`. In `-e` and env files `hv:` is
 accepted too, so a Hermes `secrets.hermesvault.env` mapping can be reused; in
 the inherited environment only `fv:` is filled in, because an `hv:` value there
@@ -229,18 +289,21 @@ commands only arguments you wrote yourself. If nothing needs resolving, no
 vault is opened.
 
 **Store and key.** The store is `--vault DIR`, else `$FLOOR_VAULT_DIR`, else
-`~/.floorvault/agent-vault`. The key uses the same custody as the Hermes plugin
-(service `floor-vault`, application context `floor-agent`), or `--key-env NAME`
-for a 64-hex key in a named variable, or `--key-file PATH` (default
-`$FLOOR_VAULT_KEY_FILE`) for one in a file. `--key-env` and `--key-file` use
-that key directly, as the plugin's `token_env` does. They do not pass through
-`AdaptiveKeyProvider`, so they never create or look up a key elsewhere. `--vault "$HERMES_HOME/agent-vault"
+`~/.floorvault/agent-vault`. The key comes from the first of these that applies:
+`--key-env NAME` (a 64-hex key in a named variable), `--key-file PATH`, the
+`master.key.sdcred` beside the store (made by `secrets init --custody
+systemd-creds`), `$FLOOR_VAULT_KEY_FILE`, and otherwise the same custody as the
+Hermes plugin (service `floor-vault`, application context `floor-agent`). The first four
+use their key directly, as the plugin's `token_env` does. They do not pass
+through `AdaptiveKeyProvider`, so they never create or look up a key elsewhere.
+`--vault "$HERMES_HOME/agent-vault"
 --key-env HERMES_VAULT_KEY` reads a Hermes store set up with `token_env`. Only
-`floorvault secrets add` and `secrets import --write` create a store or a key;
+`floorvault secrets add`, `secrets import --write` and `secrets init` create a store or a key;
 `run` and the other commands open an existing store and fail if the key is
 missing. The command never receives `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY`,
 `HERMES_VAULT_KEY`, `FLOOR_VAULT_KEY_FILE` or the `--key-env` variable, nor any
-other variable holding a copy of one of their values or of the key file's key,
+other variable holding a copy of one of their values or of the key from a key file or
+sealed credential,
 and no reference may target those names or `APPSTATE_KEY`. A program that needs one of those variables itself, such as
 Hermes with `token_env`, should be started directly rather than through `run`.
 

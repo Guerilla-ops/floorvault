@@ -658,6 +658,36 @@ exists, rather than creating a fresh raw `master.key` beside it.
 
 ---
 
+### 10.9 systemd-creds credential (`master.key.sdcred`)
+
+A store directory may hold `master.key.sdcred`: a `systemd-creds` credential
+(Base64 text) whose plaintext is the 64-hexadecimal-character master key, optionally
+followed by a newline. It is created by `floorvault secrets init --custody
+systemd-creds`, which runs `systemd-creds encrypt --user
+--name=floorvault.master-key [--with-key=<host|tpm2|host+tpm2>] - -` (systemd 256
+or newer), unseals the result once, and writes it with mode 0600 only if it round-trips.
+The credential name is bound into the sealed data, so a reader MUST decrypt with
+`--name=floorvault.master-key`; `--user` binds it to the calling user's UID,
+username and the machine-id. The `null` key MUST NOT be used; a reader SHOULD
+pass `--refuse-null` where the helper supports it (systemd 259 and newer).
+
+Rules for implementations:
+
+- A reader that finds the file MUST obtain the store's key from it, and MUST fail
+  rather than fall back to another custody when `systemd-creds` is missing, older
+  than 256, or cannot unseal it. An explicit key named by the caller (an
+  environment variable, `--key-env`, `--key-file`) takes precedence.
+- The file MUST be a regular file owned by the reading user and not writable by
+  group or others, and is never replaced once written.
+- `AdaptiveKeyProvider` MUST NOT create or resolve an OS-keyring or file key for a
+  directory that holds the file (it raises `KeyProviderError`), after honouring an
+  explicit environment key. A lookup failure other than "not found" counts as
+  present.
+- The helper is located in system directories only and is passed the key through
+  standard input and output, never argv or the environment.
+
+The file is ciphertext, not key material, and is not read by the core library.
+
 ## 11. Recovery bundle (`FVRB1`)
 
 ```
