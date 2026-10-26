@@ -7,15 +7,20 @@ developer's key store or ~/.floorvault.
 
 from __future__ import annotations
 
+import contextlib
+import getpass
+import io
 import os
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 from floorvault.agentenv import AgentEnvError, code_injection_variables, read_env_file
+from floorvault.inspector import main
 
 ROOT = Path(__file__).resolve().parents[1]
 SECRET = "fixture-secret-value"
@@ -64,16 +69,41 @@ _LAUNCH = (
 )
 
 
+def _prompted(*_args, **_kwargs):
+    raise AssertionError("the command prompted for a value")
+
+
 def fv(args, env, *, stdin=None):
-    return subprocess.run(
-        [sys.executable, "-c", _LAUNCH, *args],
-        input=stdin,
-        capture_output=True,
-        text=True,
-        env=env,
-        cwd=ROOT,
-        timeout=120,
-    )
+    """Run the CLI with ``env`` as its whole environment.
+
+    Only ``run`` needs a process of its own (it execs the command on POSIX).
+    Everything else runs in this process, which keeps this file cheap for the
+    mutation harness: it runs the whole suite once per curated mutant.
+    """
+    if args[0] == "run":
+        return subprocess.run(
+            [sys.executable, "-c", _LAUNCH, *args],
+            input=stdin,
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=ROOT,
+            timeout=120,
+        )
+    out, err = io.StringIO(), io.StringIO()
+    with (
+        mock.patch.dict(os.environ, env, clear=True),
+        mock.patch.object(sys, "argv", ["floorvault", *args]),
+        mock.patch.object(sys, "stdin", io.StringIO(stdin or "")),
+        mock.patch.object(getpass, "getpass", _prompted),
+        contextlib.redirect_stdout(out),
+        contextlib.redirect_stderr(err),
+    ):
+        try:
+            code = main()
+        except SystemExit as exc:  # argparse exits for usage errors and --help
+            code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+    return subprocess.CompletedProcess(args, code, out.getvalue(), err.getvalue())
 
 
 @pytest.fixture()
