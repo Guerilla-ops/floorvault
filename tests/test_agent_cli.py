@@ -1469,14 +1469,135 @@ def test_hermes_import_does_not_use_floor_vault_key(tmp_path, base_env):
     assert "sk-hermes-openai" not in written.stdout + written.stderr
 
 
-def test_hermes_import_refuses_a_key_file(tmp_path, base_env, key):
-    home, env_file = _hermes_home(tmp_path)
-    before = env_file.read_bytes()
-    key_file = tmp_path / "master.hex"
-    key_file.write_text(key + "\n", encoding="utf-8")
+KEY_FILE_ENV_BYTES = b"OPENAI_API_KEY=sk-hermes-openai\nDEBUG=1\n"
+KEY_FILE_MAPPING = (
+    "secrets:\n"
+    "  hermesvault:\n"
+    "    enabled: true\n"
+    "    custody: key_file\n"
+    "    key_file: master.hex\n"
+    "    env:\n"
+    '      OPENAI_API_KEY: "hv:openai_api_key"\n'
+)
+
+
+def _no_key_env(base_env):
+    return {k: v for k, v in base_env.items() if k not in ("FLOOR_VAULT_KEY", "HERMES_VAULT_KEY")}
+
+
+def _write_key(path, key):
+    path.write_text(key + "\n", encoding="utf-8")
     if os.name != "nt":
-        key_file.chmod(0o600)
-    result = _hermes_import([str(env_file), "--write", "--key-file", str(key_file)], base_env)
-    assert result.returncode == 2 and "cannot read a key file" in result.stderr
-    assert env_file.read_bytes() == before
-    assert not (home / "agent-vault").exists()
+        path.chmod(0o600)
+    return path
+
+
+def _plugin_manifest(home, version):
+    directory = home / "plugins" / "hermesvault"
+    directory.mkdir(parents=True)
+    (directory / "plugin.yaml").write_text(
+        f'name: hermesvault\nversion: "{version}"\n', encoding="utf-8"
+    )
+
+
+def test_hermes_import_with_a_key_file_suggests_custody_key_file(tmp_path, base_env, key):
+    home, env_file = _hermes_home(tmp_path, env_bytes=KEY_FILE_ENV_BYTES)
+    key_file = _write_key(tmp_path / "master.hex", key)
+    result = fv(
+        ["secrets", "import", "--hermes", str(env_file), "--only", "OPENAI_API_KEY",
+         "--write", "--key-file", str(key_file)],
+        _no_key_env(base_env),
+    )  # fmt: skip
+    assert result.returncode == 0, result.stderr
+    assert "    custody: key_file\n" in result.stdout
+    assert f"    key_file: {json.dumps(str(key_file))}\n" in result.stdout
+    assert (home / "agent-vault" / "vault.db").is_file()
+    assert env_file.read_bytes() == KEY_FILE_ENV_BYTES
+
+
+@pytest.mark.parametrize(
+    "version, message",
+    [("0.3.0", None), ("0.2.1", "Update the plugin first"), (None, "could not be read")],
+)
+def test_hermes_remove_with_custody_key_file_needs_a_plugin_that_reads_it(
+    tmp_path, base_env, key, version, message
+):
+    home, env_file = _hermes_home(tmp_path, env_bytes=KEY_FILE_ENV_BYTES, config=KEY_FILE_MAPPING)
+    key_file = _write_key(home / "master.hex", key)
+    if version is not None:
+        _plugin_manifest(home, version)
+    result = fv(
+        ["secrets", "import", "--hermes", str(env_file), "--only", "OPENAI_API_KEY",
+         "--write", "--remove-from-env", "--key-file", str(key_file)],
+        _no_key_env(base_env),
+    )  # fmt: skip
+    if message is None:
+        assert result.returncode == 0, result.stderr
+        assert env_file.read_bytes() == b"DEBUG=1\n"
+    else:
+        assert result.returncode == 2 and message in result.stderr
+        assert env_file.read_bytes() == KEY_FILE_ENV_BYTES
+
+
+def test_hermes_remove_is_not_certified_by_another_key_file(tmp_path, base_env, key):
+    """The removal check reads the key file config.yaml names, not the import's."""
+    home, env_file = _hermes_home(tmp_path, env_bytes=KEY_FILE_ENV_BYTES, config=KEY_FILE_MAPPING)
+    _write_key(home / "master.hex", os.urandom(32).hex())  # what the plugin would read
+    imported_with = _write_key(tmp_path / "import.hex", key)
+    _plugin_manifest(home, "0.3.0")
+    result = fv(
+        ["secrets", "import", "--hermes", str(env_file), "--only", "OPENAI_API_KEY",
+         "--write", "--remove-from-env", "--key-file", str(imported_with)],
+        _no_key_env(base_env),
+    )  # fmt: skip
+    assert result.returncode == 2 and "plugin key cannot decrypt" in result.stderr
+    assert env_file.read_bytes() == KEY_FILE_ENV_BYTES
+
+
+def test_hermes_remove_never_reads_floor_vault_key_file(tmp_path, monkeypatch, key):
+    """Unit-level: $FLOOR_VAULT_KEY_FILE, which the plugin ignores, certifies nothing."""
+    import floorvault.providers.adaptive as adaptive
+    from floorvault import agent_cli
+    from floorvault.agentenv import read_env_file
+    from floorvault.providers.base import KeyProviderError
+
+    class Provider:
+        def __init__(self, **kwargs):
+            pass
+
+        def resolve_key(self, *, allow_create):
+            raise KeyProviderError("no OS key here")
+
+    monkeypatch.setattr(adaptive, "AdaptiveKeyProvider", Provider)
+    monkeypatch.setenv("FLOOR_VAULT_KEY_FILE", str(_write_key(tmp_path / "k.hex", key)))
+    monkeypatch.delenv("HERMES_VAULT_KEY", raising=False)
+    home = tmp_path / "h"
+    (home / "agent-vault").mkdir(parents=True)
+    (home / ".env").write_text("OPENAI_API_KEY=x\n", encoding="utf-8")
+    env_file = read_env_file(home / ".env")
+    (line,) = list(env_file.assignments())
+    with pytest.raises(ValueError, match="plugin key cannot decrypt"):
+        agent_cli._verify_hermes_removal(
+            MAPPING, home, home / "agent-vault", env_file, [(line, "openai_api_key")]
+        )
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="falls through to the real OS key store: the macOS Keychain (which can block "
+    "on a CI runner) or Windows DPAPI; on Linux the stripped environment has no "
+    "Secret Service",
+)
+def test_hermes_import_does_not_use_floor_vault_key_file(tmp_path, base_env, key):
+    home, env_file = _hermes_home(tmp_path, env_bytes=KEY_FILE_ENV_BYTES)
+    env = {k: v for k, v in _no_key_env(base_env).items()
+           if not k.startswith(("DISPLAY", "WAYLAND", "DBUS"))}  # fmt: skip
+    env["FLOOR_VAULT_KEY_FILE"] = str(_write_key(tmp_path / "k.hex", key))
+    flags = [str(env_file), "--only", "OPENAI_API_KEY"]
+    dry = fv(["secrets", "import", "--hermes", *flags], env)
+    assert dry.returncode == 0, dry.stderr
+    assert "$FLOOR_VAULT_KEY_FILE is ignored here" in dry.stderr
+    written = fv(["secrets", "import", "--hermes", *flags, "--write"], env)
+    assert written.returncode != 0
+    assert not (home / "agent-vault" / "vault.db").exists()
+    assert env_file.read_bytes() == KEY_FILE_ENV_BYTES

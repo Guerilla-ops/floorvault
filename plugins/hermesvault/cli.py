@@ -99,7 +99,10 @@ def register_cli(subparser) -> None:
 
     sub.add_parser(
         "setup",
-        help="Create the store and its key, unlocking the OS key store if needed (may prompt)",
+        help=(
+            "Create the store and its key (OS key store, which may prompt; or a "
+            "systemd-creds credential), as secrets.hermesvault.custody says"
+        ),
     )
 
     add = sub.add_parser("add", help="Create a generic secret item")
@@ -146,6 +149,18 @@ def register_cli(subparser) -> None:
     env.add_argument("--field", default=None)
 
 
+def _custody_line(cfg: dict) -> str:
+    """Which key route opens the store. Prints fixed text only, never a configured value."""
+    from .source import CUSTODIES, DEFAULT_CUSTODY, DEFAULT_TOKEN_ENV
+
+    token_env = str(cfg.get("token_env") or DEFAULT_TOKEN_ENV)
+    if token_env in get_source_environment():
+        return "key: the token_env variable (set in this environment; custody is not used)"
+    configured = cfg.get("custody", DEFAULT_CUSTODY)
+    label = next((name for name in CUSTODIES if name == configured), "unknown")
+    return f"key: custody {label}"
+
+
 def _cmd_setup(_args) -> int:
     from .source import resolve_base_dir
 
@@ -153,7 +168,15 @@ def _cmd_setup(_args) -> int:
     store = _store(setup=True)
     del store
     print(f"store ready at {resolve_base_dir(cfg, Path(get_hermes_home()))}")
+    print(_custody_line(cfg))
     print("the secret source now opens it at startup without prompting")
+    if cfg.get("custody") == "systemd-creds":
+        print(
+            "checked: the credential unseals from this shell. Not checked: unsealing from "
+            "the service or session Hermes runs in; restart Hermes and run "
+            "`hermes hvault doctor` there before relying on it",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -277,6 +300,7 @@ def _cmd_doctor(_args) -> int:
     base = resolve_base_dir(cfg, home)
     print(f"profile: {home}")
     print(f"store: {base}")
+    print(_custody_line(cfg))
     if cfg.get("enabled") is not True:
         print(
             "hvault doctor: source is disabled; set secrets.hermesvault.enabled: true",

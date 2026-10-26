@@ -1668,16 +1668,16 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "SDC-16",
         "src/floorvault/agent_cli.py",
-        "    if args.key_env is None and systemd_creds.credential_present(\n",
-        "    if False and systemd_creds.credential_present(  # MUTANT\n",
-        "`secrets import --hermes` stores into a sealed store the Hermes plugin cannot open, then can delete the working keys from .env",
+        "    if sealed and args.key_file is not None:\n",
+        "    if False:  # MUTANT\n",
+        "`secrets import --hermes --key-file` creates a store under the key file's key beside a sealed credential that holds another: the store's key is forked",
     ),
     Mutation(
         "SDC-17",
         "src/floorvault/agent_cli.py",
-        "    if args.key_env is None and systemd_creds.credential_present(\n",
-        "    if systemd_creds.credential_present(  # MUTANT\n",
-        "`secrets import --hermes` refuses a sealed store even when the plugin's own key variable names the key",
+        "    custody_environ = {k: v for k, v in os.environ.items() if k != KEY_FILE_ENV}\n",
+        "    custody_environ = dict(os.environ)  # MUTANT\n",
+        "`secrets import --hermes` stores under $FLOOR_VAULT_KEY_FILE, which the Hermes plugin never reads",
     ),
     Mutation(
         "SDC-18",
@@ -1738,9 +1738,16 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "HIM-7",
         "src/floorvault/agent_cli.py",
-        '    if args.key_file is not None:\n        _err(\n            prog,\n            "the hermesvault plugin cannot read a key file',
-        '    if False:  # MUTANT\n        _err(\n            prog,\n            "the hermesvault plugin cannot read a key file',
-        "`secrets import --hermes` stores under a --key-file key, which the Hermes plugin cannot read",
+        '    if not key_hex and custody != "os":\n        _require_plugin_custody(home, custody)\n',
+        "    if False:  # MUTANT\n        _require_plugin_custody(home, custody)\n",
+        "The removal check certifies custody: key_file / systemd-creds for a plugin too old to read it, which then opens the OS key store and cannot read the deleted keys",
+    ),
+    Mutation(
+        "HIM-9",
+        "src/floorvault/agent_cli.py",
+        "            key = read_key_file(_hermes_key_file(cfg, home))\n",
+        "            key = read_key_file(Path(os.environ[KEY_FILE_ENV]))  # MUTANT\n",
+        "The removal check reads $FLOOR_VAULT_KEY_FILE instead of the key_file config.yaml names, so a key the plugin never reads certifies deleting .env lines",
     ),
     Mutation(
         "MAC-1",
