@@ -122,8 +122,10 @@ jobs:
     runs-on: ubuntu-latest
     # The curated roster runs one mutant at a time and each one runs the whole
     # suite, so the job grows with both: 87 min at 165 mutants, 109 min at 172,
-    # about 130 min at 177 (a 120 min limit cancelled it 13 mutants short).
-    timeout-minutes: 180
+    # about 130 min at 177 (a 120 min limit cancelled it 13 mutants short), and
+    # past 180 min at 211 (cancelled on main at ef4cf15 and on #96 at 013f434,
+    # about 30 mutants short). GitHub's per-job ceiling is 360 min.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
