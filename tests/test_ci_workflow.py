@@ -337,3 +337,14 @@ def test_dependency_audit_covers_platform_marked_extras():
         assert system in audit
     assert "uv sync --all-extras" in audit
     assert "uv run --no-sync pip-audit" in audit
+
+
+def test_the_desktop_window_tests_run_and_cannot_pass_by_skipping():
+    gui = TEXT.split("\n  gui:", 1)[1]
+    assert "runs-on: ubuntu-latest" in gui
+    assert "--extra gui" in gui
+    assert 'FLOORVAULT_REQUIRE_GUI_TESTS: "1"' in gui
+    assert "QT_QPA_PLATFORM: offscreen" in gui
+    assert "tests/test_gui_window.py" in gui
+    window_tests = (ROOT / "tests" / "test_gui_window.py").read_text(encoding="utf-8")
+    assert 'os.environ.get("FLOORVAULT_REQUIRE_GUI_TESTS") == "1"' in window_tests

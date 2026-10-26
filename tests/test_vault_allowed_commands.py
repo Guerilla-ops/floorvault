@@ -154,3 +154,49 @@ def test_sealed_listing_mode_stores_bindings_too(tmp_path):
     assert result["verified"] == 1
     rotated = VaultStore(tmp_path / "vault", crypto=_crypto(NEW), seal_listing_metadata=True)
     assert rotated.get_allowed_commands(item.id) == [[PROG]]
+
+
+# --------------------------------------------------------------------------
+# Binding at creation is atomic: the bound item, or no item, never unbound.
+# --------------------------------------------------------------------------
+
+
+def test_add_item_binds_in_the_same_transaction(tmp_path):
+    store = _store(tmp_path)
+    store.add_item("generic", "Token", {"value": "s"}, item_id="tok", allowed_commands=[[PROG]])
+    assert store.get_allowed_commands("tok") == [[PROG]]
+    assert _raw(tmp_path, "tok") is not None
+
+
+def test_add_item_rejects_an_invalid_binding_and_stores_nothing(tmp_path):
+    store = _store(tmp_path)
+    with pytest.raises(VaultError, match="absolute path"):
+        store.add_item(
+            "generic", "Token", {"value": "s"}, item_id="tok", allowed_commands=[["relative"]]
+        )
+    assert store.get_meta("tok") is None
+    assert store.list_items() == []
+
+
+def test_a_failure_sealing_the_binding_leaves_no_item(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    real = store._encrypt_metadata
+
+    def fail_on_binding(item_id, column, value):
+        if column == "allowed_commands":
+            raise RuntimeError("injected sealing failure")
+        return real(item_id, column, value)
+
+    monkeypatch.setattr(store, "_encrypt_metadata", fail_on_binding)
+    with pytest.raises(RuntimeError):
+        store.add_item("generic", "Token", {"value": "s"}, item_id="tok", allowed_commands=[[PROG]])
+    assert store.get_meta("tok") is None
+
+
+def test_a_failed_insert_leaves_no_unbound_item(tmp_path):
+    store = _store(tmp_path)
+    store.add_item("generic", "First", {"value": "s"}, item_id="tok", allowed_commands=[[PROG]])
+    with pytest.raises(sqlite3.IntegrityError):
+        store.add_item("generic", "Dup", {"value": "t"}, item_id="tok", allowed_commands=[[OTHER]])
+    assert store.get_allowed_commands("tok") == [[PROG]]
+    assert [m.id for m in store.list_items()] == ["tok"]
