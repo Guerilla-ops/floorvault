@@ -38,8 +38,7 @@ def key():
 def base_env(tmp_path, key):
     # Drop custody variables, and every variable the code-injection guard
     # flags (CI images and developer shells set some), so tests about bound
-    # items are not refused for an unrelated reason. The package is installed
-    # in the test interpreter, so PYTHONPATH is not needed either.
+    # items are not refused for an unrelated reason (fv() puts src on sys.path).
     flagged = set(code_injection_variables(os.environ))
     env = {k: v for k, v in os.environ.items() if k.upper() not in CUSTODY and k not in flagged}
     home = tmp_path / "home"
@@ -55,9 +54,19 @@ def base_env(tmp_path, key):
     return env
 
 
+# Import floorvault from this checkout's src without PYTHONPATH (a code-loading
+# variable the bound-item guard refuses). The mutation harness runs the suite
+# against a mutated copy of the repository, so the subprocess must load that
+# copy's source rather than the installed package.
+_LAUNCH = (
+    f"import sys; sys.path.insert(0, {str(ROOT / 'src')!r}); "
+    "from floorvault.inspector import main; sys.exit(main())"
+)
+
+
 def fv(args, env, *, stdin=None):
     return subprocess.run(
-        [sys.executable, "-m", "floorvault.inspector", *args],
+        [sys.executable, "-c", _LAUNCH, *args],
         input=stdin,
         capture_output=True,
         text=True,
