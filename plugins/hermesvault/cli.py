@@ -300,8 +300,12 @@ def _cmd_doctor(_args) -> int:
     if not result.ok:
         print(f"hvault doctor: {result.error}", file=sys.stderr)
         return 1
-    for warning in result.warnings:
-        print(f"hvault doctor: {warning}", file=sys.stderr)
+    if result.warnings:
+        print(
+            f"hvault doctor: {len(result.warnings)} mapping warning(s) detected; "
+            "details suppressed to avoid exposing sensitive configuration data",
+            file=sys.stderr,
+        )
     problems = bool(result.warnings)
     environ = get_source_environment()
     protected = source.protected_env_vars(cfg)
