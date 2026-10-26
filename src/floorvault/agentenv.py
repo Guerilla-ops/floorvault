@@ -97,6 +97,13 @@ CODE_INJECTION_ENV_NAMES = frozenset(
         "UV_INDEX_URL",
         "UV_DEFAULT_INDEX",
         "UV_EXTRA_INDEX_URL",
+        # Settings that pick the interpreter, a config file or a package source.
+        "UV_PYTHON",
+        "UV_PYTHON_INSTALL_MIRROR",
+        "UV_CONFIG_FILE",
+        "UV_FIND_LINKS",
+        "PIP_CONFIG_FILE",
+        "PIP_FIND_LINKS",
         # npm settings that pick where packages come from or what runs them.
         # Proxy settings are left alone: npm verifies TLS through a proxy.
         "NPM_CONFIG_REGISTRY",
@@ -117,6 +124,11 @@ _REF = re.compile(
     rf"(?P<scheme>fv|hv):(?P<item>{_ITEM_ID})(?::(?P<field>[^\x00\r\n:][^\x00\r\n]*))?"
 )
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# One env-file line and its terminator. Only CR, LF and CRLF end a line: the
+# other characters str.splitlines() treats as breaks are refused instead (see
+# _HIDDEN_BREAKS), so what an editor or grep shows as one line stays one line.
+_LINE = re.compile(r"([^\r\n]*)(\r\n|\r|\n|\Z)")
+_HIDDEN_BREAKS = frozenset("\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
 
 
 class AgentEnvError(ValueError):
@@ -264,9 +276,15 @@ def read_env_file(path: Path | str) -> EnvFile:
     lines: list[EnvFileLine] = []
     seen: set[str] = set()
     problems: list[str] = []
-    bare = text.splitlines()
-    for number, (line, full) in enumerate(zip(bare, text.splitlines(True)), start=1):
-        ending = full[len(line) :]
+    for number, (line, ending) in enumerate(_split_lines(text), start=1):
+        hidden = sorted({char for char in line if char in _HIDDEN_BREAKS})
+        if hidden:
+            codes = ", ".join(f"U+{ord(char):04X}" for char in hidden)
+            problems.append(
+                f"{label}:{number}: contains a line-break character ({codes}) that some "
+                "tools show as part of one line; remove it"
+            )
+            continue
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             lines.append(EnvFileLine(number, line, ending))
@@ -296,6 +314,17 @@ def read_env_file(path: Path | str) -> EnvFile:
     if problems:
         raise AgentEnvError(problems)
     return EnvFile(path, data, tuple(lines), data.startswith(b"\xef\xbb\xbf"))
+
+
+def _split_lines(text: str) -> list[tuple[str, str]]:
+    """``(line, terminator)`` pairs, ending lines only at CR, LF or CRLF."""
+    parts: list[tuple[str, str]] = []
+    pos = 0
+    while pos < len(text):
+        match = _LINE.match(text, pos)
+        parts.append((match.group(1), match.group(2)))
+        pos = match.end()
+    return parts
 
 
 def parse_env_file(path: Path | str) -> dict[str, str]:
@@ -367,8 +396,10 @@ def collect(
     custody = _custody_names(key_env)
     refused = _custody_names(key_env, _REFUSED_TARGETS)
     # Values of the key variables, so a copy under another name is caught too.
+    # Compared case-insensitively: a hex key works in either case, so a copy
+    # in the other case is still a copy.
     key_values = {
-        value.strip()
+        value.strip().lower()
         for name, value in inherited.items()
         if name.upper() in custody and isinstance(value, str) and len(value.strip()) >= 32
     }
@@ -387,7 +418,7 @@ def collect(
             if name.upper() in custody and not is_ref_like(value):
                 # A vault key in an env file never reaches the child either.
                 if len(value.strip()) >= 32:
-                    key_values.add(value.strip())
+                    key_values.add(value.strip().lower())
                 continue
             if name.upper() in pointers and not is_ref_like(value):
                 continue
@@ -417,7 +448,9 @@ def collect(
     if problems:
         raise AgentEnvError(problems)
     if key_values:
-        env = {name: value for name, value in env.items() if value.strip() not in key_values}
+        env = {
+            name: value for name, value in env.items() if value.strip().lower() not in key_values
+        }
     return env, refs
 
 

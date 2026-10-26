@@ -278,7 +278,10 @@ passed on as text.
 2. Each `--env-file`, in order. Lines are `[export ]NAME=value`, blank or
    `# comment`; one pair of matching quotes is removed; there is no
    interpolation. A `#` after a value is part of the value (`A=x # y` sets
-   `x # y`), not a comment. Plain values are passed through unchanged.
+   `x # y`), not a comment. Plain values are passed through unchanged. Lines
+   end only at LF, CR or CRLF; a line holding any other line-break character
+   (form feed, vertical tab, U+0085, U+2028, U+2029, U+001C–U+001E) is refused,
+   so a file means the same to `run` as it shows in an editor or `grep`.
 3. Each `-e NAME=fv:ref`.
 
 **Failure.** Every reference resolves or the command is not started. Errors go
@@ -315,8 +318,9 @@ through `AdaptiveKeyProvider`, so they never create or look up a key elsewhere.
 `run` and the other commands open an existing store and fail if the key is
 missing. The command never receives `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY`,
 `HERMES_VAULT_KEY`, `FLOOR_VAULT_KEY_FILE` or the `--key-env` variable, nor any
-other variable holding a copy of one of their values or of the key from a key file or
-sealed credential,
+other variable holding a copy of one of their values (in either hex case) or of the
+key from a key file or sealed credential (a sealed credential is unsealed, and so
+its copies looked for, only when the command uses a reference),
 and no reference may target those names or `APPSTATE_KEY`. A program that needs one of those variables itself, such as
 Hermes with `token_env`, should be started directly rather than through `run`.
 
@@ -332,11 +336,17 @@ command but does not choose which binary starts.
 The commands use the existing `vault.db` format (schema version 3, unchanged
 since 0.2.1), so a store shared with the Hermes plugin stays readable by both.
 
-**Managing items.** `floorvault secrets add | put | list | show | rm | ref | import | allow`.
+**Managing items.** `floorvault secrets add | put | list | show | rm | ref | import | allow | init`.
 `put` prompts for the value. `show` reports how many fields are set, or whether one named field is set. `ref` prints
-the reference to paste (`--env NAME` prints `NAME=fv:…`). These commands never
-print a value, and `add` and `put` refuse values containing a NUL byte, which
-no environment variable can hold. Not printing values is a convenience, not a
+the reference to paste (`--env NAME` prints `NAME=fv:…`), and only one `run` can
+resolve: for an item with several fields it asks for `--field`, and it refuses a
+field the item does not have. These commands never print a value. `add` and
+`put` refuse values that are blank or contain a NUL byte, field names a
+reference cannot name (blank, a leading `:`, a NUL or newline), and `add`
+refuses labels with a tab, newline or other control character. Before writing
+to an existing store, `add` and `import --write` check that the key opens the
+items already there, so a wrong key fails instead of leaving a store sealed
+under two keys. Not printing values is a convenience, not a
 control: `run` is the one way a value leaves the vault, whatever it starts can
 print what it receives (`floorvault run -e X=fv:id -- printenv X`), and
 `floorvault inspect --reveal` prints a decrypted field by design.
@@ -600,8 +610,13 @@ diagnostics should account for this side effect before opening a vault.
 - `floorvault.testing.siv_reference`: conformance helpers, not an application encryption API.
 
 `floorvault inspect` opens an existing SQLite database read-only and decrypts a
-selected field. Output is redacted unless `--reveal` is supplied. Match the
-original custody service and application context; inspection creates no missing key.
+selected field. Output is redacted unless `--reveal` is supplied (a binary value
+is then printed as hex). Match the original custody service and application
+context; inspection creates no missing key. It tries the table and column names
+as given and then ASCII-lower-cased, as `EncryptedSQLiteTable` binds them;
+`--id-column` names the record id column (default `id`) and `--revision` the
+revision a record was written at. It refuses qualified column names and an id
+that more than one row holds.
 
 ## Compatibility
 

@@ -101,6 +101,7 @@ options and replay limits live in the
 | Database adapters | SQLite, libSQL, PostgreSQL, MySQL and SQLAlchemy table integrations; opt-in libSQL page encryption — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#database-adapters) |
 | Credential stores | `VaultStore` local credential database with opt-in sealed listing metadata and legacy migration — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#credential-stores) |
 | Key custody | Environment, macOS Keychain, Windows DPAPI, Linux Secret Service, opt-in file custody, Vault Transit — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#key-custody) |
+| Command line | `floorvault run` fills `fv:` references into a command's environment; `floorvault secrets` manages items, bindings and `.env` imports; `floorvault inspect` checks one encrypted SQLite field — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#run-any-command-with-vault-secrets) |
 | Hermes Agent | Optional plugin resolving vault items into host environment variables — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#hermes-agent-integration) |
 | Freshness | Opt-in revisions and external anchors for rollback detection — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#context-binding-and-freshness) |
 
