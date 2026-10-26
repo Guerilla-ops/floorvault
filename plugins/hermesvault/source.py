@@ -60,6 +60,12 @@ class StoreNotSetUp(Exception):
     """No store (or no key) yet; ``hermes hvault setup`` creates them."""
 
 
+class CustodyUnavailable(Exception):
+    """The store's key cannot be resolved here (locked key store, missing key,
+    an older floorvault). Its message is written by floorvault or this plugin and
+    names no key material, so it is safe to show, unlike arbitrary exceptions."""
+
+
 def parse_ref(ref: str) -> Tuple[Optional[str], Optional[str]]:
     """``hv:<item_id>[:<field>]`` → (item_id, field-or-None); (None, None) when invalid."""
     if not isinstance(ref, str) or not ref.startswith("hv:"):
@@ -69,6 +75,20 @@ def parse_ref(ref: str) -> Tuple[Optional[str], Optional[str]]:
     if not _ITEM_ID.fullmatch(item_id or ""):
         return None, None
     return item_id, (field if field else None)
+
+
+def validate_config(cfg: dict) -> None:
+    """Reject malformed settings rather than silently selecting default custody."""
+    if not isinstance(cfg, dict):
+        raise ValueError("secrets.hermesvault must be a mapping")
+    if not isinstance(cfg.get("dir", ""), str):
+        raise ValueError("secrets.hermesvault.dir must be a string")
+    token = cfg.get("token_env", DEFAULT_TOKEN_ENV)
+    if not isinstance(token, str) or not is_valid_env_name(token):
+        raise ValueError("secrets.hermesvault.token_env must be an environment variable name")
+    for name in ("enabled", "override_existing"):
+        if name in cfg and not isinstance(cfg[name], bool):
+            raise ValueError(f"secrets.hermesvault.{name} must be a boolean")
 
 
 def resolve_base_dir(cfg: dict, home_path: Path) -> Path:
@@ -93,9 +113,11 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False):
     ``hermes hvault setup``) may unlock the collection and create the key and
     the store. Legacy browser-vault files are never adopted.
     """
+    validate_config(cfg)
     _import_floorvault()
     from floorvault import FloorVault
     from floorvault.providers.adaptive import AdaptiveKeyProvider
+    from floorvault.providers.base import KeyProviderError
     from floorvault.vaultkit import VaultStore
 
     base = resolve_base_dir(cfg, home_path)
@@ -115,11 +137,14 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False):
         )
     except TypeError:
         # An older floorvault would read the process environment and could prompt.
-        raise RuntimeError(
+        raise CustodyUnavailable(
             "this hermesvault needs a newer floorvault (AdaptiveKeyProvider with "
             "environ= and interactive=); upgrade the floorvault package"
         ) from None
-    key = provider.resolve_key(allow_create=setup)
+    try:
+        key = provider.resolve_key(allow_create=setup)
+    except KeyProviderError as exc:
+        raise CustodyUnavailable(str(exc)) from None
     return VaultStore(base, crypto=FloorVault(key, app_instance_id=_APP_INSTANCE_ID))
 
 
@@ -163,8 +188,10 @@ class HermesVaultSource(SecretSource):
 
     def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
         result = FetchResult()
-        if not isinstance(cfg, dict):
-            return result
+        try:
+            validate_config(cfg)
+        except ValueError as error:
+            return result.fail(str(error), ErrorKind.NOT_CONFIGURED)
         env_map = cfg.get("env")
         if not isinstance(env_map, dict):
             if env_map is None:
@@ -179,13 +206,19 @@ class HermesVaultSource(SecretSource):
             store = _open_store(cfg, home_path)
         except StoreNotSetUp as error:
             return result.fail(str(error), ErrorKind.NOT_CONFIGURED)
+        except CustodyUnavailable as error:
+            return result.fail(
+                f"Could not open the hermes-vault store: {error}", ErrorKind.AUTH_FAILED
+            )
         except ImportError:
             return result.fail(
                 "floorvault package is not installed in this environment", ErrorKind.INTERNAL
             )
         except Exception as error:
             return result.fail(
-                f"Could not open the hermes-vault store: {error}", ErrorKind.AUTH_FAILED
+                f"Could not open the hermes-vault store ({type(error).__name__}); "
+                "check the profile directory and key custody",
+                ErrorKind.AUTH_FAILED,
             )
         for name, ref in env_map.items():
             if not is_valid_env_name(name):

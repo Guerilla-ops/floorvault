@@ -1107,14 +1107,14 @@ def test_hermes_remove_is_refused_until_config_maps_every_key(tmp_path, base_env
     flags = [str(env_file), "--skip", "DEBUG", "--skip", "TAIL", "--write", "--remove-from-env"]
     result = _hermes_import(flags, base_env)
     assert result.returncode == 2
-    assert "does not map OPENAI_API_KEY, GITHUB_TOKEN" in result.stderr
+    assert "secrets.hermesvault mapping" in result.stderr
     assert "nothing was removed from .env" in result.stderr
     assert env_file.read_bytes() == before
     # The items were stored, so adding the mapping and re-running is all that is left.
     assert (home / "agent-vault" / "vault.db").is_file()
     # A mapping for only one of the keys is still refused.
     (home / "config.yaml").write_text(
-        "secrets:\n  hermesvault:\n    env:\n      OPENAI_API_KEY: hv:openai_api_key\n",
+        "secrets:\n  hermesvault:\n    enabled: true\n    env:\n      OPENAI_API_KEY: hv:openai_api_key\n",
         encoding="utf-8",
     )
     partial = _hermes_import(flags, base_env)
@@ -1125,6 +1125,7 @@ def test_hermes_remove_is_refused_until_config_maps_every_key(tmp_path, base_env
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
 def test_hermes_remove_deletes_only_the_mapped_lines_and_keeps_layout(tmp_path, base_env):
     home, env_file = _hermes_home(tmp_path, config="model: x\n" + MAPPING)
+    base_env["FLOOR_VAULT_KEY"] = "ab" * 32
     env_file.chmod(0o640)
     flags = [str(env_file), "--skip", "DEBUG", "--skip", "TAIL", "--write", "--remove-from-env"]
     result = _hermes_import(flags, base_env)
@@ -1139,7 +1140,7 @@ def test_hermes_remove_deletes_only_the_mapped_lines_and_keeps_layout(tmp_path, 
     )
     assert stat_mode(env_file) == 0o640
     assert "no backup was made" in result.stderr
-    assert "Not checked: that secrets.hermesvault.enabled is true" in result.stderr
+    assert "checked enabled YAML mappings" in result.stderr
     assert "`hermes doctor` warns that no API key is in .env" in result.stderr
     assert "fails at its first API call, not at startup" in result.stderr
     assert "HERMES_VAULT_KEY is still in .env" in result.stderr
@@ -1261,7 +1262,7 @@ def test_hermes_uses_the_plugins_token_env_key_when_it_is_set(tmp_path, base_env
         ("      K: hv:a", "K", "a", True),
         ("      K: hv:a   # note", "K", "a", True),
         ('      K: "hv:a:value"', "K", "a", True),
-        ("\tK: hv:a", "K", "a", True),
+        ("\tK: hv:a", "K", "a", False),
         ("      K: \"hv:a'", "K", "a", False),
         ("      K: hv:ab", "K", "a", False),
         ("      K: hv:a:token", "K", "a", False),
@@ -1277,7 +1278,9 @@ def test_config_mapping_check(line, name, item_id, expected):
     from floorvault.agent_cli import _config_maps
 
     assert (
-        _config_maps("secrets:\n  hermesvault:\n    env:\n" + line + "\n", name, item_id)
+        _config_maps(
+            "secrets:\n  hermesvault:\n    enabled: true\n    env:\n" + line + "\n", name, item_id
+        )
         is expected
     )
 
@@ -1293,6 +1296,155 @@ def test_hermes_remove_notes_omit_the_master_key_warning_when_it_is_not_in_env(t
     assert env_file.read_bytes() == b"DEBUG=1\n"
     assert "`hermes doctor` warns" in result.stderr
     assert "HERMES_VAULT_KEY is still in" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        MAPPING.replace("enabled: true", "enabled: false"),
+        MAPPING.replace("enabled: true", 'enabled: "true"'),
+        MAPPING.replace("secrets:", "unrelated:"),
+        "notes: |\n" + "\n".join("  " + line for line in MAPPING.splitlines()),
+        MAPPING + "secrets: {}\n",
+        MAPPING.replace("    env:", "    env: {}\n    env:"),
+        MAPPING.replace("    env:", "    dir: another-store\n    env:"),
+        MAPPING + "invalid: [\n",
+    ],
+)
+def test_hermes_remove_requires_nested_plugin_config(tmp_path, base_env, config):
+    _, env_file = _hermes_home(tmp_path, config=config, env_bytes=b"OPENAI_API_KEY=fixture\n")
+    before = env_file.read_bytes()
+    result = _hermes_import([str(env_file), "--write", "--remove-from-env"], base_env)
+    assert result.returncode == 2, result.stderr
+    assert "nothing was removed from .env" in result.stderr
+    assert env_file.read_bytes() == before
+
+
+def test_hermes_remove_rejects_different_dotenv_bootstrap_key(tmp_path, base_env):
+    _, env_file = _hermes_home(tmp_path, config=MAPPING)
+    result = _hermes_import(
+        [str(env_file), "--only", "OPENAI_API_KEY", "--write", "--remove-from-env"], base_env
+    )
+    assert result.returncode == 2
+    assert "plugin key" in result.stderr
+    assert env_file.read_bytes() == HERMES_ENV
+    assert "sk-hermes-openai" not in result.stdout + result.stderr
+
+
+def test_hermes_remove_accepts_flow_yaml_and_custom_key(tmp_path, base_env):
+    config = 'secrets: {hermesvault: {enabled: true, token_env: CUSTOM_KEY, env: {"OPENAI_API_KEY": "hv:openai_api_key:value"}}}\n'
+    _, env_file = _hermes_home(tmp_path, config=config, env_bytes=b"OPENAI_API_KEY=fixture\n")
+    env = {**base_env, "CUSTOM_KEY": base_env["FLOOR_VAULT_KEY"]}
+    result = _hermes_import(
+        [str(env_file), "--key-env", "CUSTOM_KEY", "--write", "--remove-from-env"], env
+    )
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_bytes() == b""
+
+
+@pytest.mark.parametrize("setting", ['token_env: ""', 'override_existing: "false"'])
+def test_hermes_remove_rejects_malformed_plugin_settings(tmp_path, base_env, setting):
+    config = MAPPING.replace("    env:", f"    {setting}\n    env:")
+    _, env_file = _hermes_home(tmp_path, config=config, env_bytes=b"OPENAI_API_KEY=fixture\n")
+    result = _hermes_import([str(env_file), "--write", "--remove-from-env"], base_env)
+    assert result.returncode == 2
+    assert env_file.read_bytes() == b"OPENAI_API_KEY=fixture\n"
+
+
+def test_hermes_yaml_dependency_is_optional_but_required_for_removal(monkeypatch):
+    import builtins
+
+    from floorvault.hermes_config import load_hermes_config
+
+    original = builtins.__import__
+
+    def without_yaml(name, *args, **kwargs):
+        if name == "yaml":
+            raise ImportError("not installed")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_yaml)
+    with pytest.raises(ValueError, match=r"floorvault\[hermes\]"):
+        load_hermes_config(MAPPING)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "!!python/object/apply:os.system ['sensitive-input']",
+        MAPPING + "\n---\n" + MAPPING,
+        "",
+        "17",
+        "secrets: {hermesvault: {enabled: true, env: {}}}\nsecrets: {}",
+    ],
+)
+def test_hermes_yaml_errors_do_not_disclose_document(text):
+    from floorvault.hermes_config import load_hermes_config
+
+    with pytest.raises(ValueError) as error:
+        load_hermes_config(text)
+    assert "sensitive-input" not in str(error.value)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="the plugin's fallback is the real OS key store (macOS Keychain, Windows "
+    "DPAPI); on Linux the stripped environment has no Secret Service",
+)
+def test_hermes_remove_refuses_when_the_profile_env_clears_the_plugin_key(tmp_path, base_env):
+    # Hermes loads .env with override, so `HERMES_VAULT_KEY=` leaves the plugin
+    # without its key; the import's own key must not certify the removal.
+    original = b"OPENAI_API_KEY=fixture\nHERMES_VAULT_KEY=\n"
+    _, env_file = _hermes_home(tmp_path, config=MAPPING, env_bytes=original)
+    env = {k: v for k, v in base_env.items() if not k.startswith(("DISPLAY", "WAYLAND", "DBUS"))}
+    result = _hermes_import(
+        [str(env_file), "--only", "OPENAI_API_KEY", "--write", "--remove-from-env"], env
+    )
+    assert result.returncode == 2, result.stderr
+    assert env_file.read_bytes() == original
+    assert "plugin key cannot decrypt the imported values" in result.stderr
+
+
+def test_hermes_remove_is_not_certified_by_floor_vault_key(tmp_path, monkeypatch):
+    """Unit-level: a FLOOR_VAULT_KEY the plugin ignores never stands in for its key."""
+    import floorvault.providers.adaptive as adaptive
+    from floorvault import agent_cli
+    from floorvault.agentenv import read_env_file
+    from floorvault.providers.base import KeyProviderError
+
+    seen = []
+
+    class Provider:
+        def __init__(self, **kwargs):
+            seen.append(kwargs)
+
+        def resolve_key(self, *, allow_create):
+            assert allow_create is False
+            raise KeyProviderError("no OS key here")
+
+    monkeypatch.setattr(adaptive, "AdaptiveKeyProvider", Provider)
+    monkeypatch.setenv("FLOOR_VAULT_KEY", "ab" * 32)
+    monkeypatch.delenv("HERMES_VAULT_KEY", raising=False)
+    home = tmp_path / "h"
+    (home / "agent-vault").mkdir(parents=True)
+    (home / ".env").write_text("OPENAI_API_KEY=x\n", encoding="utf-8")
+    env_file = read_env_file(home / ".env")
+    (line,) = list(env_file.assignments())
+    with pytest.raises(ValueError, match="plugin key cannot decrypt"):
+        agent_cli._verify_hermes_removal(
+            MAPPING, home, home / "agent-vault", env_file, [(line, "openai_api_key")]
+        )
+    assert seen and seen[0]["environ"] == {} and seen[0]["interactive"] is False
+
+
+def test_hermes_remove_refuses_known_host_config_fallback(tmp_path, base_env):
+    config = MAPPING + "max_turns: 4\nagent: broken\n"
+    original = b"OPENAI_API_KEY=fixture\n"
+    _, env_file = _hermes_home(tmp_path, config=config, env_bytes=original)
+    result = _hermes_import([str(env_file), "--write", "--remove-from-env"], base_env)
+    assert result.returncode == 2
+    assert env_file.read_bytes() == original
+    assert "agent must be a mapping" in result.stderr
 
 
 @pytest.mark.skipif(
