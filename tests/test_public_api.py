@@ -87,6 +87,8 @@ VAULT_STORE_METHODS = {
     "retired_modern_id": "(self, legacy_id: 'str') -> 'Optional[str]'",
     "rotation_journal": "(self) -> 'dict[tuple[str, str, str], tuple[int, str]]'",
     "set_allowed_commands": "(self, item_id: 'str', commands: 'Optional[Sequence[Sequence[str]]]') -> 'bool'",
+    # Read-change-write of a binding under one write lock (`secrets allow`).
+    "update_allowed_commands": "(self, item_id: 'str', change: 'Callable[[Optional[list[list[str]]]], Optional[Sequence[Sequence[str]]]]') -> 'Optional[list[list[str]]]'",
     "update_generic_field": "(self, item_id: 'str', field: 'str', value: 'str') -> 'bool'",
     "write_sealed_item": "(self, item_id: 'str', sealed: 'Mapping[str, Any]', *, new_vault: 'FloorVault', key_id: 'int' = 0, journal_rows: 'Optional[Iterable[tuple[str, str, str]]]' = None) -> 'None'",
 }

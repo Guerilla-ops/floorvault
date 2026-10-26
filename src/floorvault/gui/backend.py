@@ -316,14 +316,29 @@ class VaultSession:
     def unlocked(self) -> bool:
         return self._store is not None
 
+    def _chosen_key_file(self) -> Optional[Path]:
+        if self.key_source != "file":
+            return None
+        if self.key_file is not None:
+            return self.key_file
+        raw = (self._environ.get(KEY_FILE_ENV) or "").strip()
+        return Path(raw) if raw else None
+
+    def _import_plan(self, env_file, *, skip: Sequence[str], prefix: str):
+        return plan_env_import(
+            env_file,
+            skip=skip,
+            prefix=prefix,
+            key_env=self.key_env,
+            key_file=self._chosen_key_file(),
+            environ=self._environ,
+        )
+
     def _open(self, *, create: bool):
         key_bytes = None
         key_env = None
         if self.key_source == "file":
-            path = self.key_file
-            if path is None:
-                raw = (self._environ.get(KEY_FILE_ENV) or "").strip()
-                path = Path(raw) if raw else None
+            path = self._chosen_key_file()
             if path is None:
                 raise GuiError(f"choose a key file, or set ${KEY_FILE_ENV}")
             key_bytes = read_key_file(path)
@@ -542,28 +557,32 @@ class VaultSession:
         """Add one command line ``item_id`` may be resolved for."""
         store = self._require()
         try:
-            current = store.get_allowed_commands(item_id) or []
-            store.set_allowed_commands(item_id, [*current, list(argv)])
+            store.update_allowed_commands(item_id, lambda current: [*(current or []), list(argv)])
         except Exception as exc:  # noqa: BLE001
             raise _failed(f"binding {item_id}", exc) from None
 
     def unbind_line(self, item_id: str, argv: Sequence[str]) -> None:
-        """Remove one command line. Refuses the last one: see ``clear_binding``."""
+        """Remove one command line. Refuses the last one: see ``clear_binding``.
+
+        The read and the write are one transaction, so a concurrent change
+        cannot bring back a line removed here (audit SEC-2).
+        """
         store = self._require()
+
+        def change(current):
+            current = current or []
+            remaining = [entry for entry in current if not command_allowed(list(argv), [entry])]
+            if len(remaining) == len(current):
+                raise GuiError(f"item {item_id} is not bound to {_format_command(argv)}")
+            if not remaining:
+                raise GuiError(
+                    f"that is the last command line {item_id} is bound to; removing it would "
+                    "let any command resolve the item. Use “Allow any command” for that."
+                )
+            return remaining
+
         try:
-            current = store.get_allowed_commands(item_id) or []
-        except Exception as exc:  # noqa: BLE001
-            raise _failed(f"reading {item_id}'s bindings", exc) from None
-        remaining = [entry for entry in current if not command_allowed(list(argv), [entry])]
-        if len(remaining) == len(current):
-            raise GuiError(f"item {item_id} is not bound to {_format_command(argv)}")
-        if not remaining:
-            raise GuiError(
-                f"that is the last command line {item_id} is bound to; removing it would "
-                "let any command resolve the item. Use “Allow any command” for that."
-            )
-        try:
-            store.set_allowed_commands(item_id, remaining)
+            store.update_allowed_commands(item_id, change)
         except Exception as exc:  # noqa: BLE001
             raise _failed(f"unbinding {item_id}", exc) from None
 
@@ -601,9 +620,7 @@ class VaultSession:
         if vault_exists and self._store is None:
             raise GuiError("unlock the vault first")
         env_file = self._read_import_file(path)
-        to_store, left, problems = plan_env_import(
-            env_file, skip=skip, prefix=prefix, key_env=self.key_env
-        )
+        to_store, left, problems = self._import_plan(env_file, skip=skip, prefix=prefix)
         already: set[str] = set()
         conflicts: dict[str, str] = {}
         if self._store is not None and not problems:
@@ -653,8 +670,8 @@ class VaultSession:
         env_file = self._read_import_file(path)
         if _digest(env_file.raw) != preview.digest:
             raise GuiError(f"{path} changed since the preview; preview it again")
-        to_store, _left, problems = plan_env_import(
-            env_file, skip=preview.skip, prefix=preview.prefix, key_env=self.key_env
+        to_store, _left, problems = self._import_plan(
+            env_file, skip=preview.skip, prefix=preview.prefix
         )
         if problems:
             raise GuiError("; ".join(problems))

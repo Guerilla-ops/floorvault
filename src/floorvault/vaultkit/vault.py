@@ -14,7 +14,7 @@ import secrets
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -905,7 +905,10 @@ class VaultStore:
             ).fetchone()
         if row is None:
             raise VaultError(f"Vault item not found: {item_id}")
-        plaintext = self._decrypt_metadata(item_id, "allowed_commands", row[0])
+        return self._open_allowed_commands(item_id, row[0])
+
+    def _open_allowed_commands(self, item_id: str, sealed: Any) -> Optional[list[list[str]]]:
+        plaintext = self._decrypt_metadata(item_id, "allowed_commands", sealed)
         if plaintext is None:
             return None
         try:
@@ -916,6 +919,33 @@ class VaultStore:
         if not commands or not isinstance(commands, list):
             raise VaultError(f"allowed commands for {item_id} do not decode")
         return [_validated_command(command, item_id) for command in commands]
+
+    def update_allowed_commands(
+        self,
+        item_id: str,
+        change: Callable[[Optional[list[list[str]]]], Optional[Sequence[Sequence[str]]]],
+    ) -> Optional[list[list[str]]]:
+        """Read, change and write ``item_id``'s command lines in one transaction.
+
+        ``change`` receives the current lines (None when unbound) and returns the
+        new ones (None or empty to unbind). The write lock is held from the read
+        to the write, so a concurrent change cannot be lost; an exception from
+        ``change`` leaves the binding untouched. Returns the stored lines.
+        """
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._assert_writes_allowed(conn)
+            row = conn.execute(
+                "SELECT allowed_commands FROM vault_items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if row is None:
+                raise VaultError(f"Vault item not found: {item_id}")
+            updated = change(self._open_allowed_commands(item_id, row[0]))
+            sealed = self._seal_allowed_commands(item_id, updated)
+            conn.execute(
+                "UPDATE vault_items SET allowed_commands = ? WHERE id = ?", (sealed, item_id)
+            )
+            return self._open_allowed_commands(item_id, sealed)
 
     def set_allowed_commands(
         self, item_id: str, commands: Optional[Sequence[Sequence[str]]]
