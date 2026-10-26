@@ -82,9 +82,9 @@ provider; chat uses the vault key). See
 at a time with `hermes hvault` as above.
 
 The companion removal check requires `floorvault[hermes]` (PyYAML). The
-`floorvault secrets` command line is not in a published release yet (the plugin's
-`floorvault>=0.2.2` dependency does not include it); run it from a FloorVault
-source checkout until it is.
+`floorvault secrets` command line is in floorvault 0.2.8 and newer; the plugin's
+`floorvault>=0.2.2` dependency admits older releases that lack it, so install
+`floorvault[hermes]>=0.2.8` where you run the import.
 
 ## Manage items
 

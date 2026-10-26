@@ -38,7 +38,7 @@ from .store import (
 )
 from .vault_rotation import rotate_vault_store
 
-__version__ = "0.2.2"
+__version__ = "0.2.8"
 
 # SQLAlchemy is an optional extra; the adapter classes that import it resolve
 # lazily so that `import floorvault` never hard-requires SQLAlchemy. The error
