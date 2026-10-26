@@ -1582,22 +1582,32 @@ def test_hermes_remove_never_reads_floor_vault_key_file(tmp_path, monkeypatch, k
         )
 
 
-@pytest.mark.skipif(
-    sys.platform != "linux",
-    reason="falls through to the real OS key store: the macOS Keychain (which can block "
-    "on a CI runner) or Windows DPAPI; on Linux the stripped environment has no "
-    "Secret Service",
-)
-def test_hermes_import_does_not_use_floor_vault_key_file(tmp_path, base_env, key):
+def test_hermes_import_refuses_floor_vault_key_file_and_names_the_plugin_route(
+    tmp_path, base_env, key
+):
+    """The plugin never reads $FLOOR_VAULT_KEY_FILE; --key-file plus custody: key_file is the route."""
     home, env_file = _hermes_home(tmp_path, env_bytes=KEY_FILE_ENV_BYTES)
-    env = {k: v for k, v in _no_key_env(base_env).items()
-           if not k.startswith(("DISPLAY", "WAYLAND", "DBUS"))}  # fmt: skip
+    env = _no_key_env(base_env)
     env["FLOOR_VAULT_KEY_FILE"] = str(_write_key(tmp_path / "k.hex", key))
     flags = [str(env_file), "--only", "OPENAI_API_KEY"]
-    dry = fv(["secrets", "import", "--hermes", *flags], env)
-    assert dry.returncode == 0, dry.stderr
-    assert "$FLOOR_VAULT_KEY_FILE is ignored here" in dry.stderr
-    written = fv(["secrets", "import", "--hermes", *flags, "--write"], env)
-    assert written.returncode != 0
-    assert not (home / "agent-vault" / "vault.db").exists()
+    for extra in ([], ["--write"]):
+        result = fv(["secrets", "import", "--hermes", *flags, *extra], env)
+        assert result.returncode == 2
+        assert "does not read $FLOOR_VAULT_KEY_FILE" in result.stderr
+        assert "--key-file" in result.stderr and "custody: key_file" in result.stderr
+    assert not (home / "agent-vault").exists()
     assert env_file.read_bytes() == KEY_FILE_ENV_BYTES
+    # Naming the same file with --key-file is the supported route.
+    named = fv(
+        [
+            "secrets",
+            "import",
+            "--hermes",
+            *flags,
+            "--write",
+            "--key-file",
+            env["FLOOR_VAULT_KEY_FILE"],
+        ],
+        env,
+    )
+    assert named.returncode == 0, named.stderr

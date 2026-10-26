@@ -377,6 +377,28 @@ def test_unbinding_a_line_that_is_not_bound(session):
         session.unbind_line("a", other)
 
 
+def test_binding_changes_are_one_transaction(session, monkeypatch):
+    """bind and unbind_line go through update_allowed_commands (audit SEC-2): a
+    separate read then write could restore a line another change removed."""
+    from floorvault.vaultkit.vault import VaultStore
+
+    first, _ = session.resolve_command_line(f'"{sys.executable}" -m one')
+    second, _ = session.resolve_command_line(f'"{sys.executable}" -m two')
+    session.add_generic("A", {"v": SECRET}, item_id="a", bind_to=first)
+
+    def refuse(*_a, **_k):
+        raise AssertionError("binding changes must read and write in one transaction")
+
+    monkeypatch.setattr(VaultStore, "set_allowed_commands", refuse)
+    monkeypatch.setattr(VaultStore, "get_allowed_commands", refuse)
+    session.bind("a", second)
+    session.unbind_line("a", first)
+    with pytest.raises(GuiError, match="last command line"):
+        session.unbind_line("a", second)
+    monkeypatch.undo()
+    assert session.detail("a").commands == (tuple(second),)
+
+
 # --------------------------------------------------------------- import
 
 
@@ -417,6 +439,22 @@ def test_import_preview_then_write(session, tmp_path):
     assert "OPENAI_API_KEY=fv:openai_api_key" in text
     assert f"LOG_LEVEL={OTHER}" in text
     assert session.detail("openai_api_key").fields[0].is_set
+
+
+def test_import_leaves_key_copies_and_the_key_file_pointer(session, tmp_path, environ):
+    """Audit SEC-1 and SEC-4, through the GUI's own key settings."""
+    path = _env(
+        tmp_path,
+        f"BACKUP_KEY={environ['FLOOR_VAULT_KEY'].upper()}\n"
+        f"FLOOR_VAULT_KEY_FILE={tmp_path / 'k'}\n"
+        f"OPENAI_API_KEY={SECRET}\n",
+    )
+    statuses = {row.name: row.status for row in session.preview_import(path).rows}
+    assert statuses == {
+        "BACKUP_KEY": "left",
+        "FLOOR_VAULT_KEY_FILE": "left",
+        "OPENAI_API_KEY": "new",
+    }
 
 
 def test_import_same_value_is_reused_and_a_different_one_blocks(session, tmp_path):

@@ -38,12 +38,14 @@ import sqlite3
 import stat
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
 from . import systemd_creds
 from .agentenv import (
     CUSTODY_ENV_NAMES,
+    KEY_POINTER_ENV_NAMES,
     AgentEnvError,
     EnvFile,
     code_injection_variables,
@@ -73,6 +75,30 @@ _HEX_KEY = re.compile(r"[0-9A-Fa-f]{64}")
 
 class StoreUnavailable(Exception):
     """The store or its key could not be opened. The message is safe to print."""
+
+
+class KeyOptionsConflict(StoreUnavailable):
+    """--key-env and --key-file were both given: a usage error (exit 2 in `secrets`)."""
+
+
+# A field name a reference can name: fv:<item_id>:<field> (see agentenv._REF).
+_FIELD = re.compile(r"[^\x00\r\n:][^\x00\r\n]*")
+
+
+def _printable(text: str) -> str:
+    """``text`` with control characters escaped, so one record stays one line."""
+    return "".join(
+        f"\\x{ord(char):02x}" if unicodedata.category(char) == "Cc" else char for char in text
+    )
+
+
+def _bad_label(label: str) -> Optional[str]:
+    """Why ``label`` cannot be used, or None."""
+    if not label.strip():
+        return "the label is empty"
+    if any(unicodedata.category(char) == "Cc" for char in label):
+        return "the label contains a control character such as a tab or newline"
+    return None
 
 
 def _err(prog: str, message: str) -> None:
@@ -205,6 +231,9 @@ class _RunArgumentParser(argparse.ArgumentParser):
         self.print_usage(sys.stderr)
         self.exit(RUN_FAILED, f"{self.prog}: error: {message}\n")
 
+    def print_help(self, file=None):  # run writes nothing to stdout, help included
+        super().print_help(sys.stderr)
+
 
 def _run_parser() -> argparse.ArgumentParser:
     parser = _RunArgumentParser(
@@ -246,14 +275,19 @@ def _run_parser() -> argparse.ArgumentParser:
 def _find_command(command: str, env: Mapping[str, str]) -> tuple[Optional[str], int]:
     """Locate ``command`` on ``env``'s PATH: (path, 0) or (None, 126/127)."""
     seps = {os.sep, os.altsep} - {None}
-    if any(sep in command for sep in seps):
-        path = Path(command)
-        if not path.exists():
-            return None, 127
-        if path.is_dir() or not os.access(path, os.X_OK):
-            return None, 126
-        return str(path), 0
-    found = shutil.which(command, path=env.get("PATH", os.defpath))
+    try:
+        if any(sep in command for sep in seps):
+            path = Path(command)
+            if not path.exists():
+                return None, 127
+            if path.is_dir() or not os.access(path, os.X_OK):
+                return None, 126
+            return str(path), 0
+        found = shutil.which(command, path=env.get("PATH", os.defpath))
+    except PermissionError:
+        return None, 126
+    except (OSError, ValueError):  # e.g. a name too long for the filesystem
+        return None, 127
     return (found, 0) if found else (None, 127)
 
 
@@ -289,7 +323,9 @@ def _check_bindings(store, refs, env, command_line, prog: str) -> bool:
                     f"{_format_command(command_line)}"
                 )
     if bound and command_line is not None and not problems:
-        for name in code_injection_variables(env):
+        # Reference targets are not in env yet: they are filled in after this
+        # check, and LD_PRELOAD=fv:x is as much a code-loading variable.
+        for name in code_injection_variables({**env, **{name: "" for name in refs}}):
             problems.append(
                 f"{name} is set; it can change what the command loads, so items bound "
                 f"to commands ({', '.join(bound)}) are not resolved. Unset it, or clear "
@@ -323,6 +359,16 @@ def _prepare_environment(
             _err(prog, problem)
         return None, RUN_FAILED
     if not refs:
+        # No vault is opened, but a copy of a key file's key under another
+        # name must not reach the child either. Reading the file opens nothing.
+        key_file = _key_file_from(args, os.environ)
+        if key_file is not None:
+            try:
+                copy = read_key_file(key_file).hex()
+            except StoreUnavailable as exc:
+                _err(prog, str(exc))
+                return None, RUN_FAILED
+            env = {name: value for name, value in env.items() if value.strip().lower() != copy}
         return env, 0
     key_hex = None
     try:
@@ -418,7 +464,10 @@ def run_main(argv: Sequence[str]) -> int:
         reason = "not found" if code == 127 else "not executable"
         _err(prog, f"{command[0]}: command {reason}")
         return code
-    return _launch(path, command, env)
+    # Start exactly the path the bindings were checked against. The lookup's
+    # own path may hold '..' after a symlink, which the kernel resolves to a
+    # different binary than abspath's textual normalisation.
+    return _launch(command_line[0], command, env)
 
 
 # ----------------------------------------------------------------------- secrets
@@ -483,9 +532,21 @@ def add_secrets_parser(subparsers) -> None:
     show = sub.add_parser("show", parents=[common], help="Show whether an item's fields are set")
     show.add_argument("ref", help="item id, item_id:field, or an fv: reference")
 
+    # init creates the key, so it takes only --vault. The key options are still
+    # parsed, hidden, so giving one gets init's own explanation, not argparse's.
+    init_options = argparse.ArgumentParser(add_help=False)
+    init_options.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="store directory (default: $FLOOR_VAULT_DIR or ~/.floorvault/agent-vault)",
+    )
+    init_options.add_argument("--key-env", default=None, help=argparse.SUPPRESS)
+    init_options.add_argument("--key-file", type=Path, default=None, help=argparse.SUPPRESS)
     init = sub.add_parser(
         "init",
-        parents=[common],
+        parents=[init_options],
         help="Create the master key for a new store, sealed by systemd-creds",
         description=(
             "Create a random master key and seal it with `systemd-creds encrypt --user` "
@@ -590,10 +651,22 @@ def _field_values(pairs: Sequence[str]) -> dict[str, str]:
         field = field.strip()
         if not sep or not field:
             raise ValueError("fields must be given as field=value")
-        if "\x00" in field or "\x00" in value:
+        if "\x00" in value:
             raise ValueError("fields and values may not contain a NUL byte")
+        _check_field_name(field)
+        if not value.strip():
+            # The store keeps no empty generic field; say so rather than drop it.
+            raise ValueError(f"field {_printable(field)!r} has no value")
         fields[field] = value
     return fields
+
+
+def _check_field_name(field: str) -> None:
+    if not field.strip() or not _FIELD.fullmatch(field):
+        raise ValueError(
+            f"field name {_printable(field)!r} cannot be named by a reference: it may not be "
+            "blank, start with ':' or contain a NUL or newline"
+        )
 
 
 def _split_target(text: str) -> tuple[Optional[str], Optional[str]]:
@@ -609,28 +682,56 @@ def _split_target(text: str) -> tuple[Optional[str], Optional[str]]:
     return item_id, (field or None)
 
 
-def _store_for(args, *, create: bool = False, provider_environ=None, custody_environ=None):
+def _store_for(args, *, create: bool = False, provider_environ=None):
+    """Open the store; with ``create``, create it (and a key) only if there is none.
+
+    An existing store is never opened in create mode, so a missing key is an
+    error rather than a new key, and the key is checked against the items
+    already there before any command writes: a store sealed under two keys
+    can no longer be listed.
+    """
     _check_key_options(args)
     vault_dir = _vault_dir(args.vault, os.environ)
-    return open_store(
+    existed = _is_regular_file(vault_dir / "vault.db")
+    store = open_store(
         vault_dir,
         key_env=args.key_env,
-        key_bytes=_custody_key(
-            args, os.environ if custody_environ is None else custody_environ, vault_dir
-        ),
-        create=create,
+        key_bytes=_custody_key(args, os.environ, vault_dir),
+        create=create and not existed,
         provider_environ=provider_environ,
     )
+    if existed:
+        _check_store_key(store, vault_dir)
+    return store
+
+
+def _check_store_key(store, vault_dir: Path) -> None:
+    from .core import DecryptionVerificationError
+    from .vaultkit.vault import VaultError
+
+    try:
+        store.list_items()  # authenticates every item's sealed metadata
+    except DecryptionVerificationError:
+        raise StoreUnavailable(
+            f"this key does not open the vault at {vault_dir}; nothing was changed. "
+            "Use the key the store was created with"
+        ) from None
+    except VaultError:
+        pass  # e.g. sealed listing metadata: nothing this check can read
 
 
 def _check_key_options(args) -> None:
     if getattr(args, "key_env", None) and getattr(args, "key_file", None) is not None:
-        raise StoreUnavailable("give --key-env or --key-file, not both")
+        raise KeyOptionsConflict("give --key-env or --key-file, not both")
 
 
 def _cmd_add(args, prog: str) -> int:
     if args.item_id is not None and not _ITEM_ID.fullmatch(args.item_id):
         _err(prog, "--id must match [A-Za-z0-9._-]{1,128}")
+        return 2
+    problem = _bad_label(args.label)
+    if problem:
+        _err(prog, f"{problem}; give a one-line label")
         return 2
     fields = _field_values(args.fields)
     if args.stdin:
@@ -643,18 +744,29 @@ def _cmd_add(args, prog: str) -> int:
         _err(prog, "give at least one field=value (argv, or --stdin)")
         return 2
     store = _store_for(args, create=True)
+    if args.item_id is not None and store.get_meta(args.item_id) is not None:
+        _err(prog, f"item {args.item_id} already exists; use `put` to change a field")
+        return 1
     meta = store.add_item(kind="generic", label=args.label, secret=fields, item_id=args.item_id)
     print(meta.id)
     return 0
 
 
 def _cmd_put(args, prog: str) -> int:
+    if not _ITEM_ID.fullmatch(args.item_id):
+        _err(prog, "item id must match [A-Za-z0-9._-]{1,128}")
+        return 2
+    try:
+        _check_field_name(args.field)
+    except ValueError as exc:
+        _err(prog, str(exc))
+        return 2
     store = _store_for(args)
     if store.get_meta(args.item_id) is None:
         _err(prog, f"item {args.item_id} not found")
         return 1
     value = getpass.getpass(f"{args.item_id}.{args.field}: ")
-    if not value:
+    if not value.strip():
         _err(prog, "empty value; nothing changed")
         return 2
     if "\x00" in value:
@@ -669,7 +781,7 @@ def _cmd_put(args, prog: str) -> int:
 
 def _cmd_list(args, prog: str) -> int:
     for meta in sorted(_store_for(args).list_items(), key=lambda m: m.id):
-        print("\t".join((meta.id, meta.kind, meta.label)))
+        print("\t".join((meta.id, meta.kind, _printable(meta.label))))
     return 0
 
 
@@ -774,22 +886,7 @@ def _cmd_allow(args, prog: str) -> int:
         _err(prog, f"{command[0]}: command {reason} on PATH")
         return 1
     line = [os.path.abspath(path), *command[1:]]
-    current = store.get_allowed_commands(args.item_id) or []
-    if args.remove:
-        remaining = [entry for entry in current if not command_allowed(line, [entry])]
-        if len(remaining) == len(current):
-            _err(prog, f"item {args.item_id} is not bound to {_format_command(line)}")
-            return 1
-        if not remaining:
-            # Unbinding widens access to every command; make that explicit.
-            _err(
-                prog,
-                f"that is the last command line {args.item_id} is bound to; removing it "
-                "would let `run` resolve the item for any command. Use --clear for that.",
-            )
-            return 1
-        store.set_allowed_commands(args.item_id, remaining)
-    else:
+    if not args.remove:
         for arg in command[1:]:
             if not arg.startswith("-") and not os.path.isabs(arg) and os.path.exists(arg):
                 _err(
@@ -798,9 +895,34 @@ def _cmd_allow(args, prog: str) -> int:
                     "directory the command starts in, which its configuration chooses. "
                     "Prefer an absolute path.",
                 )
-        store.set_allowed_commands(args.item_id, [*current, line])
-    _print_bindings(args.item_id, store.get_allowed_commands(args.item_id))
+
+    def change(current):
+        # Runs under the store's write lock, so a concurrent change is not lost.
+        current = current or []
+        if not args.remove:
+            return [*current, line]
+        remaining = [entry for entry in current if not command_allowed(line, [entry])]
+        if len(remaining) == len(current):
+            raise _AllowRefused(f"item {args.item_id} is not bound to {_format_command(line)}")
+        if not remaining:
+            # Unbinding widens access to every command; make that explicit.
+            raise _AllowRefused(
+                f"that is the last command line {args.item_id} is bound to; removing it "
+                "would let `run` resolve the item for any command. Use --clear for that."
+            )
+        return remaining
+
+    try:
+        stored = store.update_allowed_commands(args.item_id, change)
+    except _AllowRefused as exc:
+        _err(prog, str(exc))
+        return 1
+    _print_bindings(args.item_id, stored)
     return 0
+
+
+class _AllowRefused(Exception):
+    """A `secrets allow` change refused inside its transaction; nothing was written."""
 
 
 def _print_bindings(item_id: str, allowed: Optional[list]) -> None:
@@ -827,14 +949,32 @@ def _cmd_ref(args, prog: str) -> int:
     if args.env_name is not None and not is_valid_env_name(args.env_name):
         _err(prog, "--env must be a variable name such as OPENAI_API_KEY")
         return 2
-    reference = f"fv:{args.item_id}" + (f":{args.field}" if args.field else "")
+    if args.field is not None and not args.field:
+        _err(prog, "--field must be non-empty and contain no NUL or newline")
+        return 2
+    reference = f"fv:{args.item_id}" + (f":{args.field}" if args.field is not None else "")
     try:
         parse_ref(reference)
     except AgentEnvError:
         _err(prog, "--field must be non-empty and contain no NUL or newline")
         return 2
-    if _store_for(args).get_meta(args.item_id) is None:
+    store = _store_for(args)
+    if store.get_meta(args.item_id) is None:
         _err(prog, f"item {args.item_id} not found")
+        return 1
+    # Only print a reference `run` can resolve. The payload is read for its
+    # field names; no value is printed.
+    try:
+        fields = list(store.resolve_secret(args.item_id))
+    except Exception as exc:  # noqa: BLE001 - report the type, never a message
+        _err(prog, f"item {args.item_id} is unavailable ({type(exc).__name__})")
+        return 1
+    if args.field is None and len(fields) > 1:
+        names = ", ".join(_printable(name) for name in fields)
+        _err(prog, f"item {args.item_id} holds several fields ({names}); name one with --field")
+        return 1
+    if args.field is not None and args.field not in fields:
+        _err(prog, f"item {args.item_id} has no field {_printable(args.field)!r}")
         return 1
     print(f"{args.env_name}={reference}" if args.env_name else reference)
     return 0
@@ -872,6 +1012,31 @@ def _replace_file(path: Path, expected: bytes, data: bytes) -> None:
         raise
 
 
+def _known_key_values(
+    env_file: EnvFile,
+    *,
+    key_env: Optional[str],
+    key_file: Optional[Path],
+    environ: Mapping[str, str],
+) -> set[str]:
+    """Lower-cased master-key values in sight: the key variables in ``environ``
+    and in the file, ``key_env``, and ``key_file``. A copy of one under another
+    name must not be stored, or `run` would hand the key to the child."""
+    names = {name.upper() for name in CUSTODY_ENV_NAMES}
+    if key_env:
+        names.add(key_env.upper())
+    values = {value.strip().lower() for name, value in environ.items() if name.upper() in names}
+    values |= {
+        line.value.strip().lower() for line in env_file.assignments() if line.name.upper() in names
+    }
+    if key_file is not None:
+        try:
+            values.add(read_key_file(key_file).hex())
+        except StoreUnavailable:
+            pass  # opening the store reports it
+    return {value for value in values if len(value) >= 32}
+
+
 def plan_env_import(
     env_file: EnvFile,
     *,
@@ -879,21 +1044,34 @@ def plan_env_import(
     skip: Sequence[str] = (),
     prefix: str = "",
     key_env: Optional[str] = None,
+    key_file: Optional[Path] = None,
+    environ: Optional[Mapping[str, str]] = None,
 ) -> tuple[list, list[tuple[str, str]], list[str]]:
     """Split a file's assignments into ``(to_store, left_as_is, problems)``.
 
     ``to_store`` holds ``(line, item_id)`` pairs and ``left_as_is`` holds
     ``(name, reason)`` pairs. A non-empty ``problems`` means nothing may be
-    imported. Messages name variables and ids, never values.
+    imported. Messages name variables and ids, never values. Vault key
+    variables, key-file pointers and copies of a key in sight (see
+    ``_known_key_values``; ``environ`` defaults to ``os.environ``) are left
+    as is.
     """
     assignments = env_file.assignments()
     names = {line.name for line in assignments}
     unknown = sorted((set(only) | set(skip)) - names)
     if unknown:
         return [], [], [f"not set in {env_file.path}: {', '.join(unknown)}"]
-    refused = {name.upper() for name in (*CUSTODY_ENV_NAMES, "APPSTATE_KEY")}
+    refused = {
+        name.upper() for name in (*CUSTODY_ENV_NAMES, *KEY_POINTER_ENV_NAMES, "APPSTATE_KEY")
+    }
     if key_env:
         refused.add(key_env.upper())
+    key_copies = _known_key_values(
+        env_file,
+        key_env=key_env,
+        key_file=key_file,
+        environ=os.environ if environ is None else environ,
+    )
 
     to_store: list = []
     left: list[tuple[str, str]] = []
@@ -907,6 +1085,8 @@ def plan_env_import(
             left.append((name, "--skip"))
         elif name.upper() in refused:
             left.append((name, "a vault key variable cannot be stored in the vault it unlocks"))
+        elif line.value.strip().lower() in key_copies:
+            left.append((name, "a copy of a vault key cannot be stored in the vault it unlocks"))
         elif is_ref_like(line.value):
             try:
                 parse_ref(line.value)
@@ -914,7 +1094,7 @@ def plan_env_import(
                 problems.append(f"{env_file.path}:{line.number}: {name}: malformed reference")
                 continue
             left.append((name, "already a reference"))
-        elif not line.value:
+        elif not line.value.strip():
             left.append((name, "empty"))
         else:
             item_id = f"{prefix}{name.lower()}"
@@ -931,7 +1111,12 @@ def plan_env_import(
 def _import_plan(args, env_file: EnvFile, prog: str):
     """Split a file's assignments into (to_store, left_as_is), or None on error."""
     to_store, left, problems = plan_env_import(
-        env_file, only=args.only, skip=args.skip, prefix=args.prefix, key_env=args.key_env
+        env_file,
+        only=args.only,
+        skip=args.skip,
+        prefix=args.prefix,
+        key_env=args.key_env,
+        key_file=_key_file_from(args, os.environ),
     )
     for problem in problems:
         _err(prog, problem)
@@ -1044,7 +1229,7 @@ def store_imported_items(
         try:
             store.add_item(
                 kind="generic",
-                label=f"{line.name} (imported from {path.name})",
+                label=f"{line.name} (imported from {_printable(path.name)})",
                 secret={"value": line.value},
                 item_id=item_id,
             )
@@ -1258,6 +1443,19 @@ def _cmd_import_hermes(args, prog: str) -> int:
         # The plugin uses this variable's key directly when it is set.
         args.key_env = _HERMES_KEY_VAR
         _err(prog, f"using the key in ${_HERMES_KEY_VAR}, as the hermesvault plugin does")
+    if (
+        args.key_env is None
+        and args.key_file is None
+        and (os.environ.get(KEY_FILE_ENV) or "").strip()
+    ):
+        _err(
+            prog,
+            f"the hermesvault plugin does not read ${KEY_FILE_ENV}, so Hermes could not open "
+            "a store keyed by it. Nothing was stored and .env is unchanged. Name the file "
+            "with --key-file (and set custody: key_file and key_file for the plugin), or "
+            f"unset ${KEY_FILE_ENV} for this command",
+        )
+        return 2
     try:
         env_file = read_env_file(path)
     except AgentEnvError as exc:
@@ -1287,11 +1485,7 @@ def _cmd_import_hermes(args, prog: str) -> int:
         )
         return 2
     if args.key_env is None and args.key_file is None:
-        ignored = [
-            name
-            for name in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", KEY_FILE_ENV)
-            if os.environ.get(name)
-        ]
+        ignored = [name for name in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY") if os.environ.get(name)]
         if ignored:
             _err(
                 prog,
@@ -1301,17 +1495,11 @@ def _cmd_import_hermes(args, prog: str) -> int:
     # Open the store as the plugin will: its own key variable, a key file named on the
     # command line (the plugin's custody: key_file), the sealed credential beside the
     # store (custody: systemd-creds), or the OS key store with no environment tier.
-    # $FLOOR_VAULT_KEY, $VAULT_MASTER_KEY and $FLOOR_VAULT_KEY_FILE are not read, so
-    # nothing is stored under a key the plugin never uses.
+    # $FLOOR_VAULT_KEY and $VAULT_MASTER_KEY are not read and $FLOOR_VAULT_KEY_FILE is
+    # refused above, so nothing is stored under a key the plugin never uses.
     hermes_environ = None if args.key_env else {}
-    custody_environ = {k: v for k, v in os.environ.items() if k != KEY_FILE_ENV}
     store = (
-        _store_for(
-            args,
-            create=args.write,
-            provider_environ=hermes_environ,
-            custody_environ=custody_environ,
-        )
+        _store_for(args, create=args.write, provider_environ=hermes_environ)
         if (args.write or vault_exists)
         else None
     )
@@ -1525,6 +1713,9 @@ def secrets_main(args: argparse.Namespace) -> int:
     prog = f"floorvault secrets {args.subcommand}"
     try:
         return _SECRETS_COMMANDS[args.subcommand](args, prog)
+    except KeyOptionsConflict as exc:
+        _err(prog, str(exc))
+        return 2
     except StoreUnavailable as exc:
         _err(prog, str(exc))
         return 1

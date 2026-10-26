@@ -8,10 +8,10 @@ import sys
 import urllib.parse
 from pathlib import Path
 
-from .core import FloorVault
+from .core import DecryptionVerificationError, FloorVault
 from .providers.adaptive import AdaptiveKeyProvider
 from .providers.base import KeyProviderError
-from .sqlite_adapter import _quoted_identifier, _safe_identifier
+from .sqlite_adapter import _fold_sqlite, _quoted_identifier, _safe_column, _safe_identifier
 
 
 def safe_identifier(name: str) -> str:
@@ -69,6 +69,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="print the decrypted plaintext (default: redacted)",
     )
+    inspect_parser.add_argument(
+        "--id-column",
+        default="id",
+        help="column holding the record id (default: id), as an adapter's id_column",
+    )
+    inspect_parser.add_argument(
+        "--revision",
+        type=int,
+        default=None,
+        help="revision the record was written at, when it was written with one",
+    )
 
     from .agent_cli import split_allow_argv
 
@@ -107,71 +118,133 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Error: {args.db_path} is not a SQLite database", file=sys.stderr)
             return 1
 
-        db_uri = f"file:{urllib.parse.quote(db_path.as_posix(), safe='/')}?mode=ro"
-        with sqlite3.connect(db_uri, uri=True) as conn:
-            try:
-                table = safe_identifier(args.table)
-                column = safe_identifier(args.column)
-            except ValueError as error:
-                print(f"Error: {error}", file=sys.stderr)
-                return 1
-            query = f"SELECT {_quoted_identifier(column)} FROM {_quoted_identifier(table)} WHERE id = ?"  # identifiers allow-listed + quoted  # nosec B608
-            try:
-                row = conn.execute(query, (args.record_id,)).fetchone()
-            except sqlite3.OperationalError as error:
-                print(f"Error: {error}", file=sys.stderr)
-                return 1
-            if not row:
-                print(
-                    f"Error: Record {args.record_id!r} not found in {args.table}", file=sys.stderr
-                )
-                return 1
-            ciphertext = row[0]
-            if not isinstance(ciphertext, (bytes, bytearray)):
-                # Decline to echo the value: a diagnostic that prints stored
-                # plaintext to the terminal defeats the encryption it exists
-                # to verify.
-                print(
-                    f"Value in {args.column} is not binary ciphertext "
-                    f"(type: {type(ciphertext).__name__}); contents not displayed"
-                )
-                return 0
-            # Custody is touched last, and read-only: a read path that resolved
-            # keys with the default allow_create=True would mint a fresh
-            # Keychain/Secret-Service/file entry for any typo'd --service-name
-            # before decryption ever ran. allow_create=False turns an absent
-            # key into a plain error instead.
-            provider_kwargs = (
-                {"service_name": args.service_name} if args.service_name is not None else {}
-            )
-            vault_kwargs = (
-                {"app_instance_id": args.app_instance} if args.app_instance is not None else {}
-            )
-            try:
-                master_key = AdaptiveKeyProvider(**provider_kwargs).resolve_key(allow_create=False)
-            except KeyProviderError as exc:
-                print(f"Error: {exc}", file=sys.stderr)
-                return 1
-            crypto = FloorVault(master_key, **vault_kwargs)
-            try:
-                decrypted = crypto.decrypt(
-                    bytes(ciphertext),
-                    table=args.table,
-                    record_id=args.record_id,
-                    column=args.column,
-                )
-                if args.reveal:
-                    print(f"Decrypted value: {decrypted}")
-                else:
-                    # No length, hash or prefix: even the exact plaintext
-                    # length is a leak once this output lands in logs.
-                    print("Decrypted value: <redacted> (pass --reveal to print plaintext)")
-                return 0
-            except Exception as exc:
-                print(f"Decryption failed: {exc}", file=sys.stderr)
-                return 1
+        return _inspect_record(args, db_path)
 
     return 0
+
+
+def _inspect_record(args, db_path: Path) -> int:
+    """Read one encrypted field read-only and report whether it authenticates."""
+    for label, value in (
+        ("table", args.table),
+        ("column", args.column),
+        ("record id", args.record_id),
+        ("id column", args.id_column),
+    ):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            print(f"Error: the {label} is not valid UTF-8", file=sys.stderr)
+            return 1
+    try:
+        table = safe_identifier(args.table)
+        # Bare names only, as the adapters require: a qualified spelling would
+        # name the same column under a different authenticated identity.
+        column = _safe_column(args.column)
+        id_column = _safe_column(args.id_column)
+    except ValueError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    if args.app_instance is not None and not args.app_instance.strip():
+        print("Error: --app-instance must not be empty", file=sys.stderr)
+        return 1
+
+    db_uri = f"file:{urllib.parse.quote(db_path.as_posix(), safe='/')}?mode=ro"
+    query = (
+        f"SELECT {_quoted_identifier(column)} FROM {_quoted_identifier(table)} "  # nosec B608
+        f"WHERE {_quoted_identifier(id_column)} = ?"  # identifiers allow-listed + quoted
+    )
+    try:
+        conn = sqlite3.connect(db_uri, uri=True)
+        try:
+            rows = conn.execute(query, (args.record_id,)).fetchmany(2)
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as error:  # also a corrupt or truncated file
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    if not rows:
+        print(f"Error: Record {args.record_id!r} not found in {args.table}", file=sys.stderr)
+        return 1
+    if len(rows) > 1:
+        print(
+            f"Error: more than one row in {args.table} has {args.id_column} = "
+            f"{args.record_id!r}; refusing to pick one",
+            file=sys.stderr,
+        )
+        return 1
+    ciphertext = rows[0][0]
+    if not isinstance(ciphertext, (bytes, bytearray)):
+        # Decline to echo the value: a diagnostic that prints stored
+        # plaintext to the terminal defeats the encryption it exists
+        # to verify.
+        print(
+            f"Value in {args.column} is not binary ciphertext "
+            f"(type: {type(ciphertext).__name__}); contents not displayed"
+        )
+        return 0
+    # Custody is touched last, and read-only: a read path that resolved
+    # keys with the default allow_create=True would mint a fresh
+    # Keychain/Secret-Service/file entry for any typo'd --service-name
+    # before decryption ever ran. allow_create=False turns an absent
+    # key into a plain error instead.
+    provider_kwargs = {"service_name": args.service_name} if args.service_name is not None else {}
+    vault_kwargs = {"app_instance_id": args.app_instance} if args.app_instance is not None else {}
+    try:
+        master_key = AdaptiveKeyProvider(**provider_kwargs).resolve_key(allow_create=False)
+    except KeyProviderError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    try:
+        crypto = FloorVault(master_key, **vault_kwargs)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    # The names as given first; then ASCII-folded, as the SQLite adapter binds
+    # them (SQLite treats Users and users as one table).
+    spellings = [(args.table, args.column)]
+    folded = (_fold_sqlite(args.table), _fold_sqlite(args.column))
+    if folded != spellings[0]:
+        spellings.append(folded)
+    failure: Exception | None = None
+    for bound_table, bound_column in spellings:
+        try:
+            plaintext = crypto.decrypt_bytes(
+                bytes(ciphertext),
+                table=bound_table,
+                record_id=args.record_id,
+                column=bound_column,
+                revision=args.revision,
+            )
+        except DecryptionVerificationError as exc:
+            failure = exc
+            continue
+        except Exception as exc:  # noqa: BLE001 - malformed envelope, wiped key, ...
+            print(f"Decryption failed: {exc}", file=sys.stderr)
+            return 1
+        if (bound_table, bound_column) != spellings[0]:
+            print(f"Authenticated as {bound_table}.{bound_column} (SQLite folds name case)")
+        _print_plaintext(plaintext, reveal=args.reveal)
+        return 0
+    print(f"Decryption failed: {failure}", file=sys.stderr)
+    return 1
+
+
+def _print_plaintext(plaintext: bytes, *, reveal: bool) -> None:
+    try:
+        text: str | None = plaintext.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    if not reveal:
+        # No length, hash or prefix: even the exact plaintext length is a
+        # leak once this output lands in logs.
+        kind = "binary value" if text is None else "value"
+        print(f"Decrypted {kind}: <redacted> (pass --reveal to print it)")
+    elif text is None:
+        print(f"Decrypted binary value (hex): {plaintext.hex()}")
+    else:
+        print(f"Decrypted value: {text}")
 
 
 if __name__ == "__main__":

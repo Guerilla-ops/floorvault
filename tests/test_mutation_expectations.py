@@ -149,9 +149,18 @@ def test_platform_overrides_are_declared_explicitly():
     """
     module = _load()
     relaxed = [mutant.id for mutant in module.MUTATIONS if mutant.expect_on_windows is not None]
-    assert relaxed == ["DS-5", "PC-18", "DUR-1", "DUR-2", "DUR-3", "DUR-4", "BIND-7", "HIM-4"], (
-        f"unexpected set of platform-relaxed mutants: {relaxed}"
-    )
+    # AUD-2 (CLI audit): like BIND-7, only a symlink test can kill it.
+    assert relaxed == [
+        "DS-5",
+        "PC-18",
+        "DUR-1",
+        "DUR-2",
+        "DUR-3",
+        "DUR-4",
+        "BIND-7",
+        "HIM-4",
+        "AUD-2",
+    ], f"unexpected set of platform-relaxed mutants: {relaxed}"
     for mutant in module.MUTATIONS:
         assert mutant.expect_on_windows in (None, "survived"), (
             f"{mutant.id} declares a Windows expectation other than 'survived'"

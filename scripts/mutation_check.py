@@ -1675,8 +1675,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "SDC-17",
         "src/floorvault/agent_cli.py",
-        "    custody_environ = {k: v for k, v in os.environ.items() if k != KEY_FILE_ENV}\n",
-        "    custody_environ = dict(os.environ)  # MUTANT\n",
+        '        and (os.environ.get(KEY_FILE_ENV) or "").strip()\n    ):\n',
+        "        and False  # MUTANT\n    ):\n",
         "`secrets import --hermes` stores under $FLOOR_VAULT_KEY_FILE, which the Hermes plugin never reads",
     ),
     Mutation(
@@ -1762,6 +1762,45 @@ MUTATIONS: tuple[Mutation, ...] = (
         "                if status == -25300 and allow_create and not self.interactive:\n",
         "                if False:  # MUTANT\n",
         "A non-interactive resolve creates a new master key in the macOS Keychain",
+    ),
+    # CLI audit 2026-10-26 (docs/CLI-AUDIT-2026-10-26.md).
+    Mutation(
+        "AUD-1",
+        "src/floorvault/agent_cli.py",
+        'code_injection_variables({**env, **{name: "" for name in refs}})',
+        "code_injection_variables(env)  # MUTANT",
+        "LD_PRELOAD=fv:x no longer blocks a bound item: the reference sets the variable unchecked",
+    ),
+    Mutation(
+        "AUD-2",
+        "src/floorvault/agent_cli.py",
+        "    return _launch(command_line[0], command, env)",
+        "    return _launch(path, command, env)  # MUTANT",
+        "run starts the unnormalised path, which '..' after a symlink resolves to another binary",
+        # The only test that can tell needs a symlink, which Windows runners
+        # cannot create unprivileged.
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AUD-3",
+        "src/floorvault/agentenv.py",
+        "        if hidden:\n",
+        "        if False:  # MUTANT\n",
+        "An env-file line with U+2028 or a form feed hides a second assignment again",
+    ),
+    Mutation(
+        "AUD-4",
+        "src/floorvault/agent_cli.py",
+        "        elif line.value.strip().lower() in key_copies:\n",
+        "        elif False:  # MUTANT\n",
+        "import stores a copy of the master key, which run would then hand to the child",
+    ),
+    Mutation(
+        "AUD-5",
+        "src/floorvault/agent_cli.py",
+        "        _check_store_key(store, vault_dir)\n",
+        "        pass  # MUTANT\n",
+        "secrets add under another key writes to an existing store, leaving it sealed under two keys",
     ),
     Mutation(
         "PKG-1",
