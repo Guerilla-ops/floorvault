@@ -173,7 +173,7 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False, warnings=Non
 
 def _newer_floorvault(custody: str) -> CustodyUnavailable:
     return CustodyUnavailable(
-        f"custody: {custody} needs floorvault 0.3.0 or newer; upgrade the floorvault package"
+        f"custody: {custody} needs floorvault 0.2.8 or newer; upgrade the floorvault package"
     )
 
 

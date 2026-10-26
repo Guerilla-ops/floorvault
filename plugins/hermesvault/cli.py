@@ -324,8 +324,14 @@ def _cmd_doctor(_args) -> int:
     if not result.ok:
         print(f"hvault doctor: {result.error}", file=sys.stderr)
         return 1
-    for warning in result.warnings:
-        print(f"hvault doctor: {warning}", file=sys.stderr)
+    if result.warnings:
+        # The warnings name configured variables and items (from the secrets: section),
+        # so only their number is printed here; the numbered checks below name none.
+        print(
+            f"hvault doctor: the secret source reported {len(result.warnings)} warning(s); "
+            "details are not printed",
+            file=sys.stderr,
+        )
     problems = bool(result.warnings)
     environ = get_source_environment()
     protected = source.protected_env_vars(cfg)

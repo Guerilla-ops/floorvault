@@ -247,8 +247,8 @@ floorvault run -e OPENAI_API_KEY=fv:openai -- python agent.py
   (`AdaptiveKeyProvider`, which the Hermes plugin uses) refuses to create an OS or
   file key for that directory instead of forking it. An explicit key
   (`FLOOR_VAULT_KEY`, `--key-env`) is still honoured. The Hermes plugin opens such
-  a store with `secrets.hermesvault.custody: systemd-creds` (plugin 0.3.0, with
-  floorvault 0.3.0); its `hermes hvault setup` can also create the credential for
+  a store with `secrets.hermesvault.custody: systemd-creds` (plugin 0.2.8, with
+  floorvault 0.2.8); its `hermes hvault setup` can also create the credential for
   a new store.
 
 **Checked and not checked.** Tested against a stand-in for `systemd-creds` that
@@ -444,7 +444,7 @@ from the profile home), or the systemd-creds credential beside the store.
 `$FLOOR_VAULT_KEY`, `$VAULT_MASTER_KEY` and `$FLOOR_VAULT_KEY_FILE` are not read,
 as the plugin does not read them. For `key_file` and `systemd-creds` it also reads
 the version of the plugin installed in the profile
-(`<home>/plugins/hermesvault/plugin.yaml`) and refuses removal unless it is 0.3.0
+(`<home>/plugins/hermesvault/plugin.yaml`) and refuses removal unless it is 0.2.8
 or newer: an older plugin ignores `custody` and could not open the store. A custom `token_env` must remain available; it cannot itself be
 removed. The check verifies decryption, not just matching variable names.
 A changed config detected before replacement also prevents removal.
@@ -599,7 +599,7 @@ hermes plugins enable hermesvault
 ```
 
 The plugin directory is self-contained. Its `plugin.yaml` declares
-`floorvault>=0.2.2,<0.4` and the platform keyring packages, which Hermes installs
+`floorvault>=0.2.2,<0.3` and the platform keyring packages, which Hermes installs
 from PyPI after asking for consent. The library wheel does not include or register
 the plugin. See the [plugin README](../plugins/hermesvault/README.md) for
 configuration, the `hermes hvault` commands and what the plugin reads and writes.

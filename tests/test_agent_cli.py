@@ -1517,7 +1517,7 @@ def test_hermes_import_with_a_key_file_suggests_custody_key_file(tmp_path, base_
 
 @pytest.mark.parametrize(
     "version, message",
-    [("0.3.0", None), ("0.2.1", "Update the plugin first"), (None, "could not be read")],
+    [("0.2.8", None), ("0.2.1", "Update the plugin first"), (None, "could not be read")],
 )
 def test_hermes_remove_with_custody_key_file_needs_a_plugin_that_reads_it(
     tmp_path, base_env, key, version, message
@@ -1544,7 +1544,7 @@ def test_hermes_remove_is_not_certified_by_another_key_file(tmp_path, base_env, 
     home, env_file = _hermes_home(tmp_path, env_bytes=KEY_FILE_ENV_BYTES, config=KEY_FILE_MAPPING)
     _write_key(home / "master.hex", os.urandom(32).hex())  # what the plugin would read
     imported_with = _write_key(tmp_path / "import.hex", key)
-    _plugin_manifest(home, "0.3.0")
+    _plugin_manifest(home, "0.2.8")
     result = fv(
         ["secrets", "import", "--hermes", str(env_file), "--only", "OPENAI_API_KEY",
          "--write", "--remove-from-env", "--key-file", str(imported_with)],

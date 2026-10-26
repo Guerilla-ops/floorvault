@@ -630,7 +630,7 @@ def test_custody_without_floorvault_support_names_the_version(file_home, monkeyp
     monkeypatch.setitem(sys.modules, "floorvault.key_file", None)  # an import of it fails
     cfg = {"env": {"A": "hv:vault_k"}, "custody": "key_file", "key_file": "secrets/vault.key"}
     result = fetch(file_home, cfg)
-    assert not result.ok and "floorvault 0.3.0 or newer" in result.error
+    assert not result.ok and "floorvault 0.2.8 or newer" in result.error
 
 
 @pytest.fixture()

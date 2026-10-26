@@ -18,8 +18,8 @@ hermes plugins enable hermesvault
 
 Hermes asks for consent to install the plugin's Python dependencies, which come
 from PyPI:
-- `floorvault>=0.2.2,<0.4` (`custody: key_file` and `custody: systemd-creds` need
-  0.3.0 or newer; with 0.2.2 they report that and open nothing);
+- `floorvault>=0.2.2,<0.3` (`custody: key_file` and `custody: systemd-creds` need
+  0.2.8 or newer; with 0.2.2 they report that and open nothing);
 - `secretstorage` on Linux;
 - `pyobjc-framework-Security` on macOS.
 
@@ -183,7 +183,7 @@ to that file), else a credential beside the store (`custody: systemd-creds`),
 else the OS key store; the mapping it prints includes the `custody` lines. With
 `--remove-from-env` it deletes the `.env` lines only after opening the store the
 way the plugin will, and, for `key_file` or `systemd-creds`, only if the plugin
-installed in the profile (`<profile-home>/plugins/hermesvault`) is 0.3.0 or newer.
+installed in the profile (`<profile-home>/plugins/hermesvault`) is 0.2.8 or newer.
 Keep the same custody settings and the `floor-agent` application context when
 reopening an existing store. See FloorVault's
 [SECURITY.md](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md)

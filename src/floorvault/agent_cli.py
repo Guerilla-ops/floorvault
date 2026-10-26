@@ -1347,7 +1347,7 @@ def _verify_hermes_removal(config_text, home, vault_dir, env_file, to_store):
 _HERMES_KEY_VAR = "HERMES_VAULT_KEY"  # the plugin's default token_env
 _HERMES_CUSTODIES = ("os", "key_file", "systemd-creds")
 #: The first hermesvault plugin release that reads ``custody`` other than os.
-_PLUGIN_CUSTODY_SINCE = (0, 3, 0)
+_PLUGIN_CUSTODY_SINCE = (0, 2, 8)
 
 
 def _hermes_custody(cfg: dict) -> str:

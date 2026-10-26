@@ -606,9 +606,9 @@ def test_hermes_import_stores_under_the_sealed_key_and_suggests_its_custody(tmp_
 @pytest.mark.parametrize(
     "config, version, message",
     [
-        (SEALED_MAPPING, "0.3.0", None),
+        (SEALED_MAPPING, "0.2.8", None),
         (SEALED_MAPPING, "0.2.1", "Update the plugin first"),
-        (HERMES_MAPPING, "0.3.0", "plugin key cannot decrypt"),
+        (HERMES_MAPPING, "0.2.8", "plugin key cannot decrypt"),
     ],
 )
 def test_hermes_remove_from_a_sealed_store_follows_the_plugin_custody(
