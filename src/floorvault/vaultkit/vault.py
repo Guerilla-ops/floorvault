@@ -698,8 +698,14 @@ class VaultStore:
         origin: Optional[str] = None,
         *,
         item_id: Optional[str] = None,
+        allowed_commands: Optional[Sequence[Sequence[str]]] = None,
     ) -> VaultItemMeta:
-        """Add credential item matching the reference agent's tool parameters."""
+        """Add credential item matching the reference agent's tool parameters.
+
+        ``allowed_commands`` binds the item to those command lines in the same
+        transaction that creates it, so a failure leaves either the bound item
+        or no item - never the item without its binding.
+        """
         if kind not in VAULT_KINDS:
             raise VaultError(f"unknown vault kind {kind!r}")
         label = (label or "").strip()
@@ -750,6 +756,7 @@ class VaultStore:
         elif not isinstance(item_id, str) or not item_id.strip():
             raise VaultError("item_id must be a non-empty string")
         created_at = datetime.now(timezone.utc).isoformat()
+        sealed_commands = self._seal_allowed_commands(item_id, allowed_commands)
 
         # Contextually encrypt secret payload with AAD
         payload_json = json.dumps(clean_secret, ensure_ascii=False)
@@ -767,8 +774,9 @@ class VaultStore:
                 """
                 INSERT INTO vault_items (
                     id, kind, label, origin,
-                    identifier_type, identifier, has_otp, created_at, payload_cipher
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    identifier_type, identifier, has_otp, created_at, payload_cipher,
+                    allowed_commands
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item_id,
@@ -784,6 +792,7 @@ class VaultStore:
                     ),
                     self._encrypt_metadata(item_id, "created_at", created_at),
                     payload_cipher,
+                    sealed_commands,
                 ),
             )
 
@@ -865,6 +874,23 @@ class VaultStore:
             )
             return cursor.rowcount == 1
 
+    def _seal_allowed_commands(
+        self, item_id: str, commands: Optional[Sequence[Sequence[str]]]
+    ) -> Optional[bytes]:
+        """Validate, de-duplicate and seal command lines; None for no binding."""
+        cleaned = [_validated_command(list(command), item_id) for command in commands or ()]
+        deduped: list[list[str]] = []
+        for command in cleaned:
+            if command not in deduped:
+                deduped.append(command)
+        if not deduped:
+            return None
+        return self._encrypt_metadata(
+            item_id,
+            "allowed_commands",
+            json.dumps({"commands": deduped}, ensure_ascii=False),
+        )
+
     def get_allowed_commands(self, item_id: str) -> Optional[list[list[str]]]:
         """Return the command lines ``item_id`` is bound to, or None if unbound.
 
@@ -900,20 +926,7 @@ class VaultStore:
         the item does not exist. Each command is an argv sequence whose first
         element is an absolute program path.
         """
-        cleaned = [_validated_command(list(command), item_id) for command in commands or ()]
-        deduped: list[list[str]] = []
-        for command in cleaned:
-            if command not in deduped:
-                deduped.append(command)
-        sealed = (
-            self._encrypt_metadata(
-                item_id,
-                "allowed_commands",
-                json.dumps({"commands": deduped}, ensure_ascii=False),
-            )
-            if deduped
-            else None
-        )
+        sealed = self._seal_allowed_commands(item_id, commands)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._assert_writes_allowed(conn)

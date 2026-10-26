@@ -905,17 +905,28 @@ def _replace_file(path: Path, expected: bytes, data: bytes) -> None:
         raise
 
 
-def _import_plan(args, env_file: EnvFile, prog: str):
-    """Split a file's assignments into (to_store, left_as_is), or None on error."""
+def plan_env_import(
+    env_file: EnvFile,
+    *,
+    only: Sequence[str] = (),
+    skip: Sequence[str] = (),
+    prefix: str = "",
+    key_env: Optional[str] = None,
+) -> tuple[list, list[tuple[str, str]], list[str]]:
+    """Split a file's assignments into ``(to_store, left_as_is, problems)``.
+
+    ``to_store`` holds ``(line, item_id)`` pairs and ``left_as_is`` holds
+    ``(name, reason)`` pairs. A non-empty ``problems`` means nothing may be
+    imported. Messages name variables and ids, never values.
+    """
     assignments = env_file.assignments()
     names = {line.name for line in assignments}
-    unknown = sorted((set(args.only) | set(args.skip)) - names)
+    unknown = sorted((set(only) | set(skip)) - names)
     if unknown:
-        _err(prog, f"not set in {env_file.path}: {', '.join(unknown)}")
-        return None
+        return [], [], [f"not set in {env_file.path}: {', '.join(unknown)}"]
     refused = {name.upper() for name in (*CUSTODY_ENV_NAMES, "APPSTATE_KEY")}
-    if args.key_env:
-        refused.add(args.key_env.upper())
+    if key_env:
+        refused.add(key_env.upper())
 
     to_store: list = []
     left: list[tuple[str, str]] = []
@@ -923,9 +934,9 @@ def _import_plan(args, env_file: EnvFile, prog: str):
     problems: list[str] = []
     for line in assignments:
         name = line.name
-        if args.only and name not in args.only:
+        if only and name not in only:
             left.append((name, "not selected by --only"))
-        elif name in args.skip:
+        elif name in skip:
             left.append((name, "--skip"))
         elif name.upper() in refused:
             left.append((name, "a vault key variable cannot be stored in the vault it unlocks"))
@@ -939,7 +950,7 @@ def _import_plan(args, env_file: EnvFile, prog: str):
         elif not line.value:
             left.append((name, "empty"))
         else:
-            item_id = f"{args.prefix}{name.lower()}"
+            item_id = f"{prefix}{name.lower()}"
             if not _ITEM_ID.fullmatch(item_id):
                 problems.append(f"{name}: item id {item_id!r} is invalid; shorten --prefix")
             elif item_id in claimed:
@@ -947,6 +958,14 @@ def _import_plan(args, env_file: EnvFile, prog: str):
             else:
                 claimed[item_id] = name
                 to_store.append((line, item_id))
+    return to_store, left, problems
+
+
+def _import_plan(args, env_file: EnvFile, prog: str):
+    """Split a file's assignments into (to_store, left_as_is), or None on error."""
+    to_store, left, problems = plan_env_import(
+        env_file, only=args.only, skip=args.skip, prefix=args.prefix, key_env=args.key_env
+    )
     for problem in problems:
         _err(prog, problem)
     return None if problems else (to_store, left)
@@ -1010,10 +1029,14 @@ _HERMES_ENV_ADVICE = (
 )
 
 
-def _find_conflicts(store, to_store, prog: str) -> Optional[set[str]]:
-    """Item ids already holding the same value, or None after reporting conflicts."""
+def find_import_conflicts(store, to_store) -> tuple[set[str], dict[str, str]]:
+    """``(ids already holding the same value, {conflicting id: message})``.
+
+    An existing item with different contents, or one that cannot be read, is a
+    conflict: the import must not overwrite it.
+    """
     already: set[str] = set()
-    problems: list[str] = []
+    conflicts: dict[str, str] = {}
     for line, item_id in to_store:
         if store is None or store.get_meta(item_id) is None:
             continue
@@ -1024,17 +1047,29 @@ def _find_conflicts(store, to_store, prog: str) -> Optional[set[str]]:
         if same:
             already.add(item_id)
         else:
-            problems.append(
+            conflicts[item_id] = (
                 f"{line.name}: vault item {item_id} already exists with different "
                 "contents; choose another --prefix"
             )
-    for problem in problems:
+    return already, conflicts
+
+
+def _find_conflicts(store, to_store, prog: str) -> Optional[set[str]]:
+    """Item ids already holding the same value, or None after reporting conflicts."""
+    already, conflicts = find_import_conflicts(store, to_store)
+    for problem in conflicts.values():
         _err(prog, problem)
-    return None if problems else already
+    return None if conflicts else already
 
 
-def _store_new_items(store, to_store, already: set[str], path: Path, prog: str) -> Optional[int]:
-    """Store the items not already present; the count, or None after reporting a failure."""
+def store_imported_items(
+    store, to_store, already: set[str], path: Path
+) -> tuple[int, Optional[str]]:
+    """Store the items not already present: ``(count stored, failure message or None)``.
+
+    Stops at the first failure; items stored before it are kept. The message
+    names the variable and the error type, never a value.
+    """
     stored = 0
     for line, item_id in to_store:
         if item_id in already:
@@ -1047,10 +1082,18 @@ def _store_new_items(store, to_store, already: set[str], path: Path, prog: str) 
                 item_id=item_id,
             )
         except Exception as exc:  # noqa: BLE001 - the type is safe; a message may not be
-            _err(prog, f"storing {line.name} failed ({type(exc).__name__}); {path} is unchanged")
-            _err(prog, "items stored so far are kept; re-running the import reuses them")
-            return None
+            return stored, f"storing {line.name} failed ({type(exc).__name__})"
         stored += 1
+    return stored, None
+
+
+def _store_new_items(store, to_store, already: set[str], path: Path, prog: str) -> Optional[int]:
+    """Store the items not already present; the count, or None after reporting a failure."""
+    stored, failure = store_imported_items(store, to_store, already, path)
+    if failure is not None:
+        _err(prog, f"{failure}; {path} is unchanged")
+        _err(prog, "items stored so far are kept; re-running the import reuses them")
+        return None
     return stored
 
 
