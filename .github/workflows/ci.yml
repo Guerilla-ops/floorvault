@@ -281,3 +281,28 @@ jobs:
           VAULT_CACERT: ${{ runner.temp }}/vault-tls/vault-ca.pem
           VAULT_TOKEN: fv-ci-token
         run: uv run pytest -q tests/test_vault_transit_live.py
+
+  # The platform legs install only the dev extra, so the window tests skip
+  # there. This job installs the gui extra and sets FLOORVAULT_REQUIRE_GUI_TESTS,
+  # which makes a missing Qt a failure: it cannot go green by skipping.
+  gui:
+    name: Desktop window tests (headless Qt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+        with:
+          python-version: "3.13"
+          version: "0.12.5"
+      - name: Install Qt's system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - name: Sync environment with the gui extra
+        run: uv sync --extra dev --extra gui
+      - name: Run the window and backend tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          FLOORVAULT_REQUIRE_GUI_TESTS: "1"
+        run: uv run --no-sync pytest -q -rs tests/test_gui_window.py tests/test_gui_backend.py
