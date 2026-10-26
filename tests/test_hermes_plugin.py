@@ -223,6 +223,170 @@ def test_store_written_by_the_plugin_opens_under_floorvault_run(tmp_path, monkey
         assert result.stdout.strip() == "sk-hermes"
 
 
+@pytest.fixture
+def plugin_cli():
+    sys.path.insert(0, str(ROOT / "plugins"))
+    from hermesvault import cli
+
+    return cli
+
+
+def test_doctor_resolves_without_printing_secrets(plugin_cli, vault_home, monkeypatch, capsys):
+    monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
+    monkeypatch.setattr(
+        plugin_cli,
+        "_secrets_cfg",
+        lambda: {"enabled": True, "env": {"TOKEN": "hv:vault_testopenai"}},
+    )
+    assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="doctor")) == 0
+    out = capsys.readouterr()
+    assert "1/1" in out.out
+    assert "sk-test-123" not in out.out + out.err
+
+
+@pytest.mark.parametrize(
+    "cfg,existing",
+    [
+        ({"enabled": False, "env": {"TOKEN": "hv:vault_testopenai"}}, False),
+        ({"enabled": True, "env": {"TOKEN": "hv:missing"}}, False),
+        ({"enabled": True, "env": {"TOKEN": "hv:vault_testopenai"}}, True),
+        ({"enabled": True, "env": {"HERMES_VAULT_KEY": "hv:vault_testopenai"}}, False),
+    ],
+)
+def test_doctor_reports_unusable_or_shadowed_mappings(
+    plugin_cli, vault_home, monkeypatch, capsys, cfg, existing
+):
+    monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
+    monkeypatch.setattr(plugin_cli, "_secrets_cfg", lambda: cfg)
+    if existing:
+        monkeypatch.setenv("TOKEN", "existing-secret")
+    assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="doctor")) == 1
+    out = capsys.readouterr()
+    assert "sk-test-123" not in out.out + out.err
+    assert "existing-secret" not in out.out + out.err
+
+
+def test_doctor_missing_store_does_not_create_it(plugin_cli, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        plugin_cli, "_secrets_cfg", lambda: {"enabled": True, "env": {"TOKEN": "hv:x"}}
+    )
+    assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="doctor")) == 1
+    assert not (tmp_path / "agent-vault").exists()
+    assert "does not exist" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "command,attrs",
+    [
+        ("env", {"item_id": "valid", "env_name": "BAD-NAME", "field": None}),
+        ("env", {"item_id": "bad\nitem", "env_name": "TOKEN", "field": None}),
+        ("show", {"ref": "hv:bad id", "reveal": False}),
+        ("add", {"label": "x", "fields": ["value=x"], "stdin": False, "item_id": "bad id"}),
+        ("put", {"item_id": "bad id", "field": "value"}),
+        ("rm", {"item_id": "bad id"}),
+    ],
+)
+def test_cli_rejects_invalid_identifiers_before_opening_store(
+    plugin_cli, monkeypatch, capsys, command, attrs
+):
+    calls = []
+    monkeypatch.setattr(plugin_cli, "_store", lambda: calls.append("opened"))
+    assert plugin_cli.hvault_command(SimpleNamespace(hvault_command=command, **attrs)) == 2
+    assert not calls
+
+
+def test_env_output_round_trips_yaml_special_fields(plugin_cli, capsys):
+    import yaml
+
+    field = 'token"\\suffix'
+    assert plugin_cli._cmd_env(SimpleNamespace(item_id="item", env_name="TOKEN", field=field)) == 0
+    assert (
+        yaml.safe_load(capsys.readouterr().out)["secrets"]["hermesvault"]["env"]["TOKEN"]
+        == f"hv:item:{field}"
+    )
+
+
+def test_cli_errors_never_echo_secret_input(plugin_cli, capsys, monkeypatch):
+    secret = "unique-sensitive-fixture"
+    args = SimpleNamespace(
+        hvault_command="add", label="x", fields=[secret], stdin=False, item_id=None
+    )
+    assert plugin_cli.hvault_command(args) == 2
+    assert secret not in str(capsys.readouterr())
+
+    def fail():
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(plugin_cli, "_store", fail)
+    assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="list")) == 1
+    assert secret not in str(capsys.readouterr())
+
+
+def test_config_load_errors_do_not_fall_back_to_default_store(plugin_cli, monkeypatch):
+    import types
+
+    module = types.ModuleType("hermes_cli.config")
+
+    def fail():
+        raise RuntimeError("private config payload")
+
+    module.load_config = fail
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+    with pytest.raises(ValueError, match="configuration"):
+        plugin_cli._secrets_cfg()
+
+
+def test_source_open_error_redacts_exception(monkeypatch, tmp_path):
+    import source
+
+    def fail(*args):
+        raise RuntimeError("private-key-payload")
+
+    monkeypatch.setattr(source, "_open_store", fail)
+    result = fetch(tmp_path, {"env": {"TOKEN": "hv:x"}})
+    assert not result.ok
+    assert "private-key-payload" not in result.error
+
+
+@pytest.mark.parametrize(
+    "cfg", [{"dir": 123}, {"token_env": ["KEY"]}, {"override_existing": "false"}]
+)
+def test_source_rejects_malformed_settings(vault_home, cfg):
+    result = fetch(vault_home, {"env": {"TOKEN": "hv:vault_testopenai"}, **cfg})
+    assert not result.ok and result.error_kind == ErrorKind.NOT_CONFIGURED
+
+
+def test_cli_rejects_bad_yaml_even_when_host_returns_defaults(plugin_cli, tmp_path, monkeypatch):
+    import types
+
+    config = tmp_path / "config.yaml"
+    config.write_text("secrets: [broken\n", encoding="utf-8")
+    module = types.ModuleType("hermes_cli.config")
+    module.get_config_path = lambda: config
+    module.load_config = lambda: {}
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+    with pytest.raises(ValueError, match="configuration"):
+        plugin_cli._secrets_cfg()
+
+
+def test_cli_rejects_host_fallback_config(plugin_cli, tmp_path, monkeypatch):
+    import types
+
+    config = tmp_path / "config.yaml"
+    config.write_text("agent: broken\nmax_turns: 4\n", encoding="utf-8")
+
+    class Fallback(dict):
+        read_error = ValueError("private config value")
+
+    module = types.ModuleType("hermes_cli.config")
+    module.get_config_path = lambda: config
+    module.load_config = lambda: Fallback()
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+    with pytest.raises(ValueError, match="configuration"):
+        plugin_cli._secrets_cfg()
+
+
 # --- review of pin 6fc8132e: scope, prompts, creation, error text ---------------
 
 

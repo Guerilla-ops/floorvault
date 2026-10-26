@@ -1105,17 +1105,87 @@ def _default_hermes_env_file(environ: Mapping[str, str]) -> Optional[Path]:
     return None
 
 
-def _config_maps(config_text: str, name: str, item_id: str) -> bool:
-    """Whether a line of config.yaml maps ``name`` to ``hv:<item_id>``.
+def _maps_item(env_map: Mapping, name: str, item_id: str) -> bool:
+    """Whether ``secrets.hermesvault.env`` maps ``name`` to the item's ``value``."""
+    return env_map.get(name) in (f"hv:{item_id}", f"hv:{item_id}:value")
 
-    A text check, not a YAML parse: it confirms the mapping line is present, not
-    that it sits under an enabled ``secrets.hermesvault`` block.
-    """
-    pattern = (
-        rf"^[ \t]+{re.escape(name)}:[ \t]*([\"']?)hv:{re.escape(item_id)}(?::value)?\1"
-        r"[ \t]*(?:#.*)?$"
+
+def _config_maps(config_text: str, name: str, item_id: str) -> bool:
+    """Whether the enabled YAML source maps this variable to the imported field."""
+    from .hermes_config import load_hermes_config
+
+    try:
+        cfg = load_hermes_config(config_text)
+    except ValueError:
+        return False
+    return _maps_item(cfg["env"], name, item_id)
+
+
+def _verify_hermes_removal(config_text, home, vault_dir, env_file, to_store):
+    """Check the plugin's store and prospective key route before removing plaintext."""
+    from .hermes_config import load_hermes_config
+
+    cfg = load_hermes_config(config_text)
+    missing = [
+        line.name for line, item_id in to_store if not _maps_item(cfg["env"], line.name, item_id)
+    ]
+    if missing:
+        raise ValueError(f"config.yaml does not map {', '.join(missing)} to the stored hv: items")
+    raw_dir = cfg.get("dir", "")
+    if not isinstance(raw_dir, str):
+        raise ValueError("secrets.hermesvault.dir must be a string")
+    directory = Path(raw_dir.strip()).expanduser() if raw_dir.strip() else Path("agent-vault")
+    if not directory.is_absolute():
+        directory = home / directory
+    if directory.resolve() != vault_dir.resolve():
+        raise ValueError(
+            "secrets.hermesvault.dir does not match the import store; use matching --vault"
+        )
+    if "override_existing" in cfg and not isinstance(cfg["override_existing"], bool):
+        raise ValueError("secrets.hermesvault.override_existing must be a boolean")
+    token_env = cfg.get("token_env", _HERMES_KEY_VAR)
+    if not isinstance(token_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
+        raise ValueError("secrets.hermesvault.token_env must be an environment variable name")
+    removed = {line.name for line, _ in to_store}
+    if token_env in removed:
+        raise ValueError("cannot remove the plugin bootstrap key from .env")
+    # Hermes loads the profile .env with override semantics before fetching.
+    environ = dict(os.environ)
+    environ.update(
+        {line.name: line.value for line in env_file.assignments() if line.name not in removed}
     )
-    return re.search(pattern, config_text, re.MULTILINE) is not None
+    # The plugin's key route (#92): token_env from the profile's environment, else
+    # the OS key store with no environment tier and no prompt. FLOOR_VAULT_KEY and
+    # VAULT_MASTER_KEY are not read, so they cannot certify a removal either.
+    key_hex = environ.get(token_env)
+    try:
+        from . import FloorVault
+        from .vaultkit import VaultStore
+
+        if key_hex:
+            plugin_store = VaultStore(
+                directory,
+                crypto=FloorVault(bytes.fromhex(key_hex.strip()), app_instance_id=APP_CONTEXT),
+            )
+        else:
+            from .providers.adaptive import AdaptiveKeyProvider
+
+            provider = AdaptiveKeyProvider(
+                service_name=SERVICE_NAME, fallback_dir=directory, environ={}, interactive=False
+            )
+            plugin_store = VaultStore(
+                directory,
+                crypto=FloorVault(
+                    provider.resolve_key(allow_create=False), app_instance_id=APP_CONTEXT
+                ),
+            )
+        for line, item_id in to_store:
+            if plugin_store.resolve_secret(item_id).get("value") != line.value:
+                raise ValueError("value mismatch")
+    except Exception:
+        raise ValueError(
+            "plugin key cannot decrypt the imported values; align token_env and import custody"
+        ) from None
 
 
 _HERMES_KEY_VAR = "HERMES_VAULT_KEY"  # the plugin's default token_env
@@ -1281,12 +1351,13 @@ def _cmd_import_hermes(args, prog: str) -> int:
         _err(prog, f"cannot read {config} ({type(exc).__name__}); add the mapping, then re-run")
         _err(prog, "nothing was removed from .env")
         return 2
-    missing = [
-        line.name for line, item_id in to_store if not _config_maps(config_text, line.name, item_id)
-    ]
-    if missing:
-        _err(prog, f"{config} does not map {', '.join(missing)} to the stored hv: items")
-        _err(prog, "add the mapping printed above, then re-run; nothing was removed from .env")
+    try:
+        _verify_hermes_removal(config_text, home, vault_dir, env_file, to_store)
+        if config.read_text(encoding="utf-8") != config_text:
+            raise ValueError("config.yaml changed during validation; retry")
+    except (ValueError, OSError) as exc:
+        _err(prog, str(exc) if isinstance(exc, ValueError) else "cannot re-read config.yaml")
+        _err(prog, "nothing was removed from .env")
         return 2
     data = render_env_file_without(env_file, [line.number for line, _ in to_store])
     try:
@@ -1303,9 +1374,9 @@ def _cmd_import_hermes(args, prog: str) -> int:
     )
     _err(
         prog,
-        f"checked that {config} has a mapping line for each key. Not checked: that "
-        "secrets.hermesvault.enabled is true, or that the Hermes process can reach the "
-        "same key (OS key store or token_env). Restart Hermes and confirm before relying on it.",
+        f"checked enabled YAML mappings in {config}, the store directory and plugin key decryption. "
+        "The running Hermes process may have a different environment or OS key-store session. "
+        "Restart Hermes and confirm before relying on it.",
     )
     _err(
         prog,

@@ -1523,9 +1523,16 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "HIM-2",
         "src/floorvault/agent_cli.py",
-        'rf"^[ \\t]+{re.escape(name)}:',
-        'rf"{re.escape(name)}:',
-        "A commented, unindented or longer-named config line counts as the mapping",
+        '    return env_map.get(name) in (f"hv:{item_id}", f"hv:{item_id}:value")\n',
+        "    return name in env_map  # MUTANT\n",
+        "A config.yaml that maps the variable to another item (or another field) counts as the mapping",
+    ),
+    Mutation(
+        "HIM-8",
+        "src/floorvault/agent_cli.py",
+        "                service_name=SERVICE_NAME, fallback_dir=directory, environ={}, interactive=False\n",
+        "                service_name=SERVICE_NAME, fallback_dir=directory, interactive=False  # MUTANT\n",
+        "The removal check reads $FLOOR_VAULT_KEY, which the plugin ignores, to certify deleting .env lines",
     ),
     Mutation(
         "HIM-3",
