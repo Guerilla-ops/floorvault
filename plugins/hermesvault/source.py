@@ -7,14 +7,26 @@ agent-secret vault — a floorvault store at ``<home>/agent-vault`` (or
 login vault at ``<home>/vault`` so no legacy migration ever conflates the two.
 
 The store's key comes from the variable named by ``token_env``, read from the
-fetch-scoped environment only, or else from the OS key store through
-floorvault's AdaptiveKeyProvider with no environment tier: the process-wide
-``FLOOR_VAULT_KEY`` / ``VAULT_MASTER_KEY`` are not accepted, so under the
-multiplex gateway another profile's launch environment cannot unlock this
-store. ``fetch`` never prompts and never creates anything (no Secret Service
-unlock, no key, no store); ``hermes hvault setup`` does that once, interactively.
-The bootstrap key name and floorvault's key variables are returned by
-``protected_env_vars`` so a vault-resolved secret never overwrites them.
+fetch-scoped environment only, or else from the custody the profile configures
+with ``custody``:
+
+* ``os`` (default): the OS key store through floorvault's AdaptiveKeyProvider
+  with no environment tier.
+* ``key_file``: the 64-hex key in the file named by ``key_file`` (an
+  orchestrator secret mount on a headless host), checked as floorvault's CLI
+  checks ``--key-file``.
+* ``systemd-creds``: the key sealed by ``systemd-creds encrypt --user`` beside
+  the store (``master.key.sdcred``), unsealed with ``systemd-creds decrypt``.
+  This is the only custody that starts a subprocess.
+
+The process-wide ``FLOOR_VAULT_KEY`` / ``VAULT_MASTER_KEY`` /
+``FLOOR_VAULT_KEY_FILE`` are never read, so under the multiplex gateway another
+profile's launch environment cannot unlock this store. A configured custody
+that fails is reported; nothing falls back to another one. ``fetch`` never
+prompts and never creates anything (no Secret Service unlock, no key, no
+credential, no store); ``hermes hvault setup`` does that once. The bootstrap key
+name and floorvault's key variables are returned by ``protected_env_vars`` so a
+vault-resolved secret never overwrites them.
 """
 
 from __future__ import annotations
@@ -45,6 +57,8 @@ def _import_floorvault():
 
 DEFAULT_DIR_NAME = "agent-vault"
 DEFAULT_TOKEN_ENV = "HERMES_VAULT_KEY"
+DEFAULT_CUSTODY = "os"
+CUSTODIES = ("os", "key_file", "systemd-creds")
 #: floorvault's own key variables. The plugin does not read them, but a mapped
 #: output must not overwrite them for anything else in the process that does.
 FLOORVAULT_KEY_ENV_NAMES = frozenset(
@@ -53,6 +67,8 @@ FLOORVAULT_KEY_ENV_NAMES = frozenset(
 _ITEM_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
 #: Must equal VaultStore's default custody so stores made either way open alike.
 _SERVICE_NAME = "floor-vault"
+#: floorvault.systemd_creds.CREDENTIAL_FILENAME, named here for floorvault 0.2.2.
+_SYSTEMD_CREDENTIAL_FILENAME = "master.key.sdcred"
 _APP_INSTANCE_ID = "floor-agent"
 
 
@@ -89,6 +105,22 @@ def validate_config(cfg: dict) -> None:
     for name in ("enabled", "override_existing"):
         if name in cfg and not isinstance(cfg[name], bool):
             raise ValueError(f"secrets.hermesvault.{name} must be a boolean")
+    custody = cfg.get("custody", DEFAULT_CUSTODY)
+    if custody not in CUSTODIES:
+        raise ValueError("secrets.hermesvault.custody must be one of: " + ", ".join(CUSTODIES))
+    key_file = cfg.get("key_file")
+    if custody == "key_file":
+        if not isinstance(key_file, str) or not key_file.strip():
+            raise ValueError("secrets.hermesvault.custody: key_file needs a key_file path")
+    elif key_file is not None:
+        # A key_file that is silently ignored would leave the store on another custody.
+        raise ValueError("secrets.hermesvault.key_file is used only with custody: key_file")
+
+
+def resolve_key_file(cfg: dict, home_path: Path) -> Path:
+    """``secrets.hermesvault.key_file``; a relative path is taken from the profile home."""
+    candidate = Path(str(cfg["key_file"]).strip()).expanduser()
+    return candidate if candidate.is_absolute() else Path(home_path) / candidate
 
 
 def resolve_base_dir(cfg: dict, home_path: Path) -> Path:
@@ -103,36 +135,68 @@ def resolve_base_dir(cfg: dict, home_path: Path) -> Path:
     return Path(home_path) / DEFAULT_DIR_NAME
 
 
-def _open_store(cfg: dict, home_path: Path, *, setup: bool = False):
+def _open_store(cfg: dict, home_path: Path, *, setup: bool = False, warnings=None):
     """Open the agent-secret vault at its resolved directory.
 
     The key is the ``token_env`` variable from the fetch-scoped environment
-    (per-profile under multiplex), else the OS key store. Without ``setup``
-    nothing is created and nothing prompts: a missing store, a missing key or a
-    locked Secret Service collection raises instead. ``setup=True`` (only
-    ``hermes hvault setup``) may unlock the collection and create the key and
-    the store. Legacy browser-vault files are never adopted.
+    (per-profile under multiplex), else the configured ``custody``. Without
+    ``setup`` nothing is created and nothing prompts: a missing store, a missing
+    key or credential, or a locked Secret Service collection raises instead.
+    ``setup=True`` (only ``hermes hvault setup``) may unlock the collection and
+    create the key (OS custody), the sealed credential (systemd-creds) and the
+    store. Legacy browser-vault files are never adopted. Warnings that name no
+    key material (a key file readable by others) are appended to ``warnings``.
     """
     validate_config(cfg)
     _import_floorvault()
     from floorvault import FloorVault
-    from floorvault.providers.adaptive import AdaptiveKeyProvider
-    from floorvault.providers.base import KeyProviderError
     from floorvault.vaultkit import VaultStore
 
     base = resolve_base_dir(cfg, home_path)
-    if not setup and not (base / "vault.db").is_file():
+    store_exists = (base / "vault.db").is_file()
+    if not setup and not store_exists:
         raise StoreNotSetUp(f"no store at {base}; run `hermes hvault setup` once")
     token_env = str(cfg.get("token_env") or DEFAULT_TOKEN_ENV)
     key_hex = get_source_environment().get(token_env)
     if key_hex:
-        crypto = FloorVault(bytes.fromhex(key_hex.strip()), app_instance_id=_APP_INSTANCE_ID)
-        return VaultStore(base, crypto=crypto)
+        key = bytes.fromhex(key_hex.strip())
+    else:
+        custody = cfg.get("custody", DEFAULT_CUSTODY)
+        if custody == "key_file":
+            key = _key_from_file(resolve_key_file(cfg, home_path), warnings)
+        elif custody == "systemd-creds":
+            key = _key_from_credential(base, setup=setup, store_exists=store_exists)
+        else:
+            key = _key_from_os(base, setup=setup)
+    return VaultStore(base, crypto=FloorVault(key, app_instance_id=_APP_INSTANCE_ID))
+
+
+def _newer_floorvault(custody: str) -> CustodyUnavailable:
+    return CustodyUnavailable(
+        f"custody: {custody} needs floorvault 0.2.8 or newer; upgrade the floorvault package"
+    )
+
+
+def _key_from_os(base: Path, *, setup: bool) -> bytes:
+    from floorvault.providers.adaptive import AdaptiveKeyProvider
+    from floorvault.providers.base import KeyProviderError
+
+    try:
+        (base / _SYSTEMD_CREDENTIAL_FILENAME).lstat()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise CustodyUnavailable(f"cannot check {base} for a systemd-creds credential") from None
+    else:
+        raise CustodyUnavailable(
+            f"{base} holds a systemd-creds credential; set "
+            "secrets.hermesvault.custody: systemd-creds to open it"
+        )
     try:
         provider = AdaptiveKeyProvider(
             service_name=_SERVICE_NAME,
             fallback_dir=base,
-            environ={},  # no environment tier: token_env above is the only key variable
+            environ={},  # no environment tier: token_env is the only key variable
             interactive=setup,
         )
     except TypeError:
@@ -142,10 +206,45 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False):
             "environ= and interactive=); upgrade the floorvault package"
         ) from None
     try:
-        key = provider.resolve_key(allow_create=setup)
+        return provider.resolve_key(allow_create=setup)
     except KeyProviderError as exc:
         raise CustodyUnavailable(str(exc)) from None
-    return VaultStore(base, crypto=FloorVault(key, app_instance_id=_APP_INSTANCE_ID))
+
+
+def _key_from_file(path: Path, warnings) -> bytes:
+    try:
+        from floorvault.key_file import KeyFileError, read_key_file
+    except ImportError:
+        raise _newer_floorvault("key_file") from None
+    try:
+        return read_key_file(path, warn=None if warnings is None else warnings.append)
+    except KeyFileError as exc:
+        raise CustodyUnavailable(str(exc)) from None
+
+
+def _key_from_credential(base: Path, *, setup: bool, store_exists: bool) -> bytes:
+    try:
+        from floorvault import systemd_creds
+    except ImportError:
+        raise _newer_floorvault("systemd-creds") from None
+    try:
+        if setup and not systemd_creds.credential_present(base):
+            if store_exists:
+                # The store already has a key elsewhere; a new one would fork it.
+                raise CustodyUnavailable(
+                    f"{base} already holds a store without a systemd-creds credential; "
+                    "setup seals the key of a new store only"
+                )
+            systemd_creds.create_credential(base)
+        key = systemd_creds.read_key(base)
+    except systemd_creds.SystemdCredsError as exc:
+        raise CustodyUnavailable(str(exc)) from None
+    if key is None:
+        raise StoreNotSetUp(
+            f"no systemd-creds credential at {systemd_creds.credential_path(base)}; "
+            "run `hermes hvault setup` once"
+        )
+    return key
 
 
 class HermesVaultSource(SecretSource):
@@ -162,8 +261,8 @@ class HermesVaultSource(SecretSource):
             "`hermes plugins enable hermesvault` so Hermes prepares its dependencies."
         ),
         ErrorKind.AUTH_FAILED: (
-            "No usable key custody: set {token_env}, or run `hermes hvault setup` to "
-            "unlock or create the OS key store entry."
+            "No usable key custody: set {token_env}, check secrets.hermesvault.custody, "
+            "or run `hermes hvault setup` to unlock or create the key."
         ),
     }
 
@@ -178,6 +277,15 @@ class HermesVaultSource(SecretSource):
             "token_env": {
                 "description": "Env var holding the vault master key (64 hex)",
                 "default": DEFAULT_TOKEN_ENV,
+            },
+            "custody": {
+                "description": "Where the key is kept when token_env is unset: "
+                "os, key_file or systemd-creds",
+                "default": DEFAULT_CUSTODY,
+            },
+            "key_file": {
+                "description": "With custody: key_file, the file holding the key (64 hex)",
+                "default": None,
             },
             "override_existing": {
                 "description": "May overwrite vars already set by .env/shell",
@@ -203,7 +311,7 @@ class HermesVaultSource(SecretSource):
         if not env_map:
             return result
         try:
-            store = _open_store(cfg, home_path)
+            store = _open_store(cfg, home_path, warnings=result.warnings)
         except StoreNotSetUp as error:
             return result.fail(str(error), ErrorKind.NOT_CONFIGURED)
         except CustodyUnavailable as error:

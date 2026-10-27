@@ -13,7 +13,7 @@ rotation, recovery, optional integrations, and build and release machinery.
 ## Supported versions
 
 Security fixes cover `main` and the latest release; earlier releases are
-unsupported. Current package metadata is `0.2.2` (Beta). Reports against development
+unsupported. Current package metadata is `0.2.8` (Beta). Reports against development
 commits are welcome; provide the exact revision. Branch names do not define release
 versions. Python 3.10 and newer is the declared interpreter range.
 
@@ -58,11 +58,16 @@ Its default agent-secret directory is separate from the browser-fill vault, and
 its read path disables legacy browser-vault migration. Distinct directories are
 not proof of independent keys or authorisation. Its secret source takes the key
 only from the `token_env` variable in the fetch-scoped environment, else from the
-OS key store; it does not read `FLOOR_VAULT_KEY` or `VAULT_MASTER_KEY`, so under
-Hermes' multiplex gateway one profile's launch environment cannot unlock another
-profile's store, and it protects those names from being overwritten by a mapped
-secret. The source never prompts and never creates a key or a store: a locked
-Linux Secret Service collection or a missing key is reported, and
+custody the profile configures (`custody`: the OS key store by default, a
+`key_file`, or a systemd-creds credential beside the store, unsealed by running
+the system's `systemd-creds decrypt --user`); a configured custody that fails is
+reported, never replaced by another. It does not read `FLOOR_VAULT_KEY`,
+`VAULT_MASTER_KEY` or `FLOOR_VAULT_KEY_FILE`, so under Hermes' multiplex gateway one
+profile's launch environment cannot unlock another profile's store, and it protects
+those names from being overwritten by a mapped secret. A `key_file` has the
+limits of `--key-file` below and systemd-creds those of `secrets init --custody
+systemd-creds`. The source never prompts and never creates a key, a credential or
+a store: a locked Linux Secret Service collection or a missing key is reported, and
 `hermes hvault setup` does the one-time unlock and creation. First-time creation
 of a Linux Secret Service key is serialized per service and attribute (one lock
 file per user, in `$XDG_RUNTIME_DIR/floorvault` or `~/.cache/floorvault`), and two

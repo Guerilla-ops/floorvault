@@ -519,3 +519,200 @@ def test_an_older_floorvault_fails_closed_with_a_clear_message(vault_home, monke
     monkeypatch.setattr(adaptive, "AdaptiveKeyProvider", Old)
     result = fetch(vault_home, {"env": {"A": "hv:vault_testopenai"}})
     assert not result.ok and "upgrade the floorvault package" in result.error
+
+
+# ------------------------------------------------- custody: key_file, systemd-creds
+
+linux_only = pytest.mark.skipif(sys.platform != "linux", reason="systemd-creds is Linux only")
+posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+OTHER_KEY = "11" * 32
+
+
+def _store_under(directory: Path, key_hex: str):
+    from floorvault.vaultkit import VaultStore
+
+    store = VaultStore(
+        directory,
+        crypto=floorvault.FloorVault(bytes.fromhex(key_hex), app_instance_id="floor-agent"),
+    )
+    store.add_item(kind="generic", label="k", secret={"value": "sk-file"}, item_id="vault_k")
+    return store
+
+
+@pytest.fixture()
+def file_home(tmp_path, monkeypatch):
+    """A profile whose store is keyed by a 0600 key file, with no key variable set."""
+    for name in ("HERMES_VAULT_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "FLOOR_VAULT_KEY_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    key_file = tmp_path / "secrets" / "vault.key"
+    key_file.parent.mkdir()
+    key_file.write_text(OTHER_KEY + "\n")
+    key_file.chmod(0o600)
+    _store_under(tmp_path / "agent-vault", OTHER_KEY)
+    return tmp_path
+
+
+def test_custody_key_file_opens_the_store_from_the_configured_file(file_home):
+    cfg = {"env": {"A": "hv:vault_k"}, "custody": "key_file", "key_file": "secrets/vault.key"}
+    result = fetch(file_home, cfg)
+    assert result.ok and result.secrets == {"A": "sk-file"} and result.warnings == []
+
+
+def test_custody_key_file_ignores_floor_vault_key_file(file_home, monkeypatch):
+    """The process-wide $FLOOR_VAULT_KEY_FILE never names the plugin's key."""
+    monkeypatch.setenv("FLOOR_VAULT_KEY_FILE", str(file_home / "secrets" / "vault.key"))
+    result = fetch(file_home, {"env": {"A": "hv:vault_k"}})  # custody: os (default)
+    assert not result.ok and result.secrets == {}
+
+
+@posix_only
+def test_custody_key_file_refuses_a_replaceable_file(file_home):
+    (file_home / "secrets" / "vault.key").chmod(0o620)
+    cfg = {"env": {"A": "hv:vault_k"}, "custody": "key_file", "key_file": "secrets/vault.key"}
+    result = fetch(file_home, cfg)
+    assert not result.ok and result.error_kind == ErrorKind.AUTH_FAILED
+    assert "writable by group or others" in result.error and OTHER_KEY not in result.error
+
+
+@posix_only
+def test_custody_key_file_readable_by_others_is_used_with_a_warning(file_home):
+    (file_home / "secrets" / "vault.key").chmod(0o644)
+    cfg = {"env": {"A": "hv:vault_k"}, "custody": "key_file", "key_file": "secrets/vault.key"}
+    result = fetch(file_home, cfg)
+    assert result.ok and result.secrets == {"A": "sk-file"}
+    assert any("readable by other users" in warning for warning in result.warnings)
+
+
+def test_custody_key_file_does_not_fall_back_when_the_file_is_missing(file_home, monkeypatch):
+    import floorvault.providers.adaptive as adaptive
+
+    def no_os_tier(*args, **kwargs):
+        raise AssertionError("a configured key file must not fall back to OS custody")
+
+    monkeypatch.setattr(adaptive, "AdaptiveKeyProvider", no_os_tier)
+    cfg = {"env": {"A": "hv:vault_k"}, "custody": "key_file", "key_file": "secrets/missing.key"}
+    result = fetch(file_home, cfg)
+    assert not result.ok and result.error_kind == ErrorKind.AUTH_FAILED
+    assert "cannot read" in result.error
+
+
+def test_the_scoped_token_env_key_wins_over_the_configured_custody(file_home):
+    from agent.secret_sources.base import reset_source_environment, set_source_environment
+
+    _store_under(file_home / "other-vault", KEY)
+    token = set_source_environment({"HERMES_VAULT_KEY": KEY})
+    try:
+        cfg = {"env": {"A": "hv:vault_k"}, "dir": "other-vault", "custody": "key_file",
+               "key_file": "secrets/vault.key"}  # fmt: skip
+        result = fetch(file_home, cfg)
+    finally:
+        reset_source_environment(token)
+    assert result.ok and result.secrets == {"A": "sk-file"}
+
+
+@pytest.mark.parametrize(
+    "cfg, message",
+    [
+        ({"custody": "vault"}, "custody must be one of"),
+        ({"custody": "key_file"}, "needs a key_file path"),
+        ({"custody": "key_file", "key_file": "  "}, "needs a key_file path"),
+        ({"key_file": "secrets/vault.key"}, "only with custody: key_file"),
+        ({"custody": "systemd-creds", "key_file": "x"}, "only with custody: key_file"),
+    ],
+)
+def test_custody_settings_are_validated(file_home, cfg, message):
+    result = fetch(file_home, {"env": {"A": "hv:vault_k"}, **cfg})
+    assert not result.ok and result.error_kind == ErrorKind.NOT_CONFIGURED
+    assert message in result.error
+
+
+def test_custody_without_floorvault_support_names_the_version(file_home, monkeypatch):
+    monkeypatch.setitem(sys.modules, "floorvault.key_file", None)  # an import of it fails
+    cfg = {"env": {"A": "hv:vault_k"}, "custody": "key_file", "key_file": "secrets/vault.key"}
+    result = fetch(file_home, cfg)
+    assert not result.ok and "floorvault 0.2.8 or newer" in result.error
+
+
+@pytest.fixture()
+def sdc_fake(tmp_path, monkeypatch):
+    from test_systemd_creds import Fake
+
+    import floorvault.systemd_creds as sdc
+
+    fake = Fake(tmp_path / "sdbin")
+    monkeypatch.setattr(sdc, "SEARCH_DIRS", (str(fake.dir),))
+    for name in ("HERMES_VAULT_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "FLOOR_VAULT_KEY_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    return fake
+
+
+def _hvault(monkeypatch, home, cfg, command, **extra):
+    sys.path.insert(0, str(ROOT / "plugins"))
+    from hermesvault import cli as hermesvault_cli
+
+    monkeypatch.setattr(hermesvault_cli, "get_hermes_home", lambda: str(home))
+    monkeypatch.setattr(hermesvault_cli, "_secrets_cfg", lambda: cfg)
+    return hermesvault_cli.hvault_command(SimpleNamespace(hvault_command=command, **extra))
+
+
+@linux_only
+def test_setup_seals_the_key_and_fetch_unseals_it_without_creating(
+    sdc_fake, tmp_path, monkeypatch, capsys
+):
+    cfg = {"enabled": True, "custody": "systemd-creds", "env": {"A": "hv:vault_a"}}
+    result = fetch(tmp_path, cfg)
+    assert not result.ok and "hermes hvault setup" in result.error
+    assert not (tmp_path / "agent-vault").exists() and sdc_fake.calls == []
+
+    assert _hvault(monkeypatch, tmp_path, cfg, "setup") == 0
+    out = capsys.readouterr()
+    assert "key: custody systemd-creds" in out.out and "Not checked" in out.err
+    credential = tmp_path / "agent-vault" / "master.key.sdcred"
+    assert credential.is_file() and (tmp_path / "agent-vault" / "vault.db").is_file()
+    assert _hvault(monkeypatch, tmp_path, cfg, "add", label="a", fields=["value=v-1"],
+                   stdin=False, item_id="vault_a") == 0  # fmt: skip
+
+    before = len(sdc_fake.calls)
+    result = fetch(tmp_path, cfg)
+    assert result.ok and result.secrets == {"A": "v-1"}
+    assert [call[0] for call in sdc_fake.calls[before:]] == ["--version", "decrypt"]
+
+
+@linux_only
+def test_fetch_never_creates_a_credential_for_an_existing_store(sdc_fake, vault_home, monkeypatch):
+    monkeypatch.delenv("HERMES_VAULT_KEY", raising=False)
+    cfg = {"custody": "systemd-creds", "env": {"A": "hv:vault_testopenai"}}
+    result = fetch(vault_home, cfg)
+    assert not result.ok and result.error_kind == ErrorKind.NOT_CONFIGURED
+    assert not (vault_home / "agent-vault" / "master.key.sdcred").exists()
+    assert sdc_fake.calls == []
+
+
+@linux_only
+def test_setup_does_not_seal_a_new_key_beside_an_existing_store(
+    sdc_fake, vault_home, monkeypatch, capsys
+):
+    monkeypatch.delenv("HERMES_VAULT_KEY", raising=False)
+    cfg = {"custody": "systemd-creds"}
+    assert _hvault(monkeypatch, vault_home, cfg, "setup") == 1
+    assert "setup seals the key of a new store only" in capsys.readouterr().err
+    assert not (vault_home / "agent-vault" / "master.key.sdcred").exists()
+    assert sdc_fake.calls == []
+
+
+@linux_only
+def test_an_unusable_credential_fails_closed(sdc_fake, tmp_path, monkeypatch):
+    cfg = {"custody": "systemd-creds", "env": {"A": "hv:vault_a"}}
+    assert _hvault(monkeypatch, tmp_path, cfg, "setup") == 0
+    sdc_fake.configure(mode="decrypt-fails")
+    result = fetch(tmp_path, cfg)
+    assert not result.ok and result.error_kind == ErrorKind.AUTH_FAILED
+
+
+@linux_only
+def test_os_custody_on_a_sealed_store_names_the_custody_setting(sdc_fake, tmp_path, monkeypatch):
+    cfg = {"custody": "systemd-creds", "env": {"A": "hv:vault_a"}}
+    assert _hvault(monkeypatch, tmp_path, cfg, "setup") == 0
+    result = fetch(tmp_path, {"env": {"A": "hv:vault_a"}})
+    assert not result.ok and result.error_kind == ErrorKind.AUTH_FAILED
+    assert "custody: systemd-creds" in result.error

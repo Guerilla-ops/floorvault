@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
 import re
 import shlex
@@ -60,6 +61,8 @@ from .agentenv import (
     render_env_file_without,
     resolve,
 )
+from .key_file import KeyFileError
+from .key_file import read_key_file as _read_key_file
 
 # The custody identity VaultStore and the hermesvault plugin use, so one store
 # opens the same way from Hermes and from these commands.
@@ -114,57 +117,19 @@ def _is_regular_file(path: Path) -> bool:
 
 
 KEY_FILE_ENV = "FLOOR_VAULT_KEY_FILE"
-_MAX_KEY_FILE_BYTES = 4096
 
 
 def read_key_file(path: Path) -> bytes:
     """Read a 64-hex master key from ``path``, such as an orchestrator secret mount.
 
-    Symlinks are followed (Kubernetes mounts secrets through ``..data`` links),
-    but the target must be a regular file and, on POSIX, owned by this user or
-    root and not writable by group or others: a replaceable key file would let someone else
-    choose the key new items are sealed under. A file readable by others is
-    used with a warning. Errors name the path, never the content.
+    The checks live in :mod:`floorvault.key_file`, shared with the Hermes
+    plugin's ``custody: key_file``. A file readable by others is used with a
+    warning on stderr. Errors name the path, never the content.
     """
-    path = Path(path).expanduser()
-    # Open once and check that handle, so the file cannot be swapped between
-    # the checks and the read. O_NONBLOCK keeps a FIFO from hanging the open.
-    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
     try:
-        fd = os.open(path.resolve(strict=True), flags)
-    except (OSError, RuntimeError) as exc:
-        raise StoreUnavailable(f"key file {path}: cannot read ({type(exc).__name__})") from None
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise StoreUnavailable(f"key file {path} is not a regular file")
-        handle = os.fdopen(fd, "rb")
-    except BaseException:
-        os.close(fd)
-        raise
-    with handle:
-        return _key_from_handle(path, handle, st)
-
-
-def _key_from_handle(path: Path, handle, st: os.stat_result) -> bytes:
-    if os.name != "nt":
-        if st.st_uid not in (os.geteuid(), 0):
-            raise StoreUnavailable(f"key file {path} is owned by another user")
-        if st.st_mode & 0o022:
-            raise StoreUnavailable(
-                f"key file {path} is writable by group or others; run chmod go-w on it"
-            )
-        if st.st_mode & 0o004:
-            _err("floorvault", f"warning: key file {path} is readable by other users")
-    if st.st_size > _MAX_KEY_FILE_BYTES:
-        raise StoreUnavailable(f"key file {path} is too large to hold a key")
-    try:
-        raw = handle.read(_MAX_KEY_FILE_BYTES + 1).decode("ascii").strip()
-    except (OSError, UnicodeDecodeError) as exc:
-        raise StoreUnavailable(f"key file {path}: cannot read ({type(exc).__name__})") from None
-    if not _HEX_KEY.fullmatch(raw):
-        raise StoreUnavailable(f"key file {path} must hold 64 hexadecimal characters")
-    return bytes.fromhex(raw)
+        return _read_key_file(path, warn=lambda message: _err("floorvault", f"warning: {message}"))
+    except KeyFileError as exc:
+        raise StoreUnavailable(str(exc)) from None
 
 
 def _key_file_from(args, environ: Mapping[str, str]) -> Optional[Path]:
@@ -1333,6 +1298,7 @@ def _verify_hermes_removal(config_text, home, vault_dir, env_file, to_store):
     token_env = cfg.get("token_env", _HERMES_KEY_VAR)
     if not isinstance(token_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
         raise ValueError("secrets.hermesvault.token_env must be an environment variable name")
+    custody = _hermes_custody(cfg)
     removed = {line.name for line, _ in to_store}
     if token_env in removed:
         raise ValueError("cannot remove the plugin bootstrap key from .env")
@@ -1341,31 +1307,34 @@ def _verify_hermes_removal(config_text, home, vault_dir, env_file, to_store):
     environ.update(
         {line.name: line.value for line in env_file.assignments() if line.name not in removed}
     )
-    # The plugin's key route (#92): token_env from the profile's environment, else
-    # the OS key store with no environment tier and no prompt. FLOOR_VAULT_KEY and
-    # VAULT_MASTER_KEY are not read, so they cannot certify a removal either.
+    # The plugin's key route: token_env from the profile's environment, else the
+    # configured custody (OS key store with no environment tier and no prompt, the
+    # key_file, or the systemd-creds credential beside the store). FLOOR_VAULT_KEY,
+    # VAULT_MASTER_KEY and FLOOR_VAULT_KEY_FILE are not read, so they cannot certify
+    # a removal either.
     key_hex = environ.get(token_env)
+    if not key_hex and custody != "os":
+        _require_plugin_custody(home, custody)
     try:
         from . import FloorVault
         from .vaultkit import VaultStore
 
         if key_hex:
-            plugin_store = VaultStore(
-                directory,
-                crypto=FloorVault(bytes.fromhex(key_hex.strip()), app_instance_id=APP_CONTEXT),
-            )
+            key = bytes.fromhex(key_hex.strip())
+        elif custody == "key_file":
+            key = read_key_file(_hermes_key_file(cfg, home))
+        elif custody == "systemd-creds":
+            key = systemd_creds.read_key(directory)
+            if key is None:
+                raise ValueError("no credential")
         else:
             from .providers.adaptive import AdaptiveKeyProvider
 
             provider = AdaptiveKeyProvider(
                 service_name=SERVICE_NAME, fallback_dir=directory, environ={}, interactive=False
             )
-            plugin_store = VaultStore(
-                directory,
-                crypto=FloorVault(
-                    provider.resolve_key(allow_create=False), app_instance_id=APP_CONTEXT
-                ),
-            )
+            key = provider.resolve_key(allow_create=False)
+        plugin_store = VaultStore(directory, crypto=FloorVault(key, app_instance_id=APP_CONTEXT))
         for line, item_id in to_store:
             if plugin_store.resolve_secret(item_id).get("value") != line.value:
                 raise ValueError("value mismatch")
@@ -1376,6 +1345,58 @@ def _verify_hermes_removal(config_text, home, vault_dir, env_file, to_store):
 
 
 _HERMES_KEY_VAR = "HERMES_VAULT_KEY"  # the plugin's default token_env
+_HERMES_CUSTODIES = ("os", "key_file", "systemd-creds")
+#: The first hermesvault plugin release that reads ``custody`` other than os.
+_PLUGIN_CUSTODY_SINCE = (0, 2, 8)
+
+
+def _hermes_custody(cfg: dict) -> str:
+    """``secrets.hermesvault.custody``, checked as the plugin checks it."""
+    custody = cfg.get("custody", "os")
+    if custody not in _HERMES_CUSTODIES:
+        raise ValueError(
+            "secrets.hermesvault.custody must be one of: " + ", ".join(_HERMES_CUSTODIES)
+        )
+    key_file = cfg.get("key_file")
+    if custody == "key_file":
+        if not isinstance(key_file, str) or not key_file.strip():
+            raise ValueError("secrets.hermesvault.custody: key_file needs a key_file path")
+    elif key_file is not None:
+        raise ValueError("secrets.hermesvault.key_file is used only with custody: key_file")
+    return custody
+
+
+def _hermes_key_file(cfg: dict, home: Path) -> Path:
+    """The plugin's ``key_file``; a relative path is taken from the profile home."""
+    path = Path(cfg["key_file"].strip()).expanduser()
+    return path if path.is_absolute() else home / path
+
+
+def _require_plugin_custody(home: Path, custody: str) -> None:
+    """Refuse unless the plugin installed in this profile reads ``custody``.
+
+    An older plugin ignores the setting and opens the OS key store, so it could
+    not read what the removal check just decrypted another way.
+    """
+    manifest = home / "plugins" / "hermesvault" / "plugin.yaml"
+    try:
+        import yaml
+
+        data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+        parts = str(data["version"]).split(".")
+        version = tuple(int(part) for part in parts[:3])
+    except Exception:
+        raise ValueError(
+            f"custody: {custody} needs the hermesvault plugin "
+            f"{'.'.join(map(str, _PLUGIN_CUSTODY_SINCE))} or newer, and its version could "
+            f"not be read from {manifest}"
+        ) from None
+    if version < _PLUGIN_CUSTODY_SINCE:
+        raise ValueError(
+            f"custody: {custody} needs the hermesvault plugin "
+            f"{'.'.join(map(str, _PLUGIN_CUSTODY_SINCE))} or newer; {manifest} is "
+            f"{'.'.join(map(str, version))}. Update the plugin first"
+        )
 
 
 def _cmd_import_hermes(args, prog: str) -> int:
@@ -1422,29 +1443,17 @@ def _cmd_import_hermes(args, prog: str) -> int:
         # The plugin uses this variable's key directly when it is set.
         args.key_env = _HERMES_KEY_VAR
         _err(prog, f"using the key in ${_HERMES_KEY_VAR}, as the hermesvault plugin does")
-    env_key_file = args.key_env is None and (os.environ.get(KEY_FILE_ENV) or "").strip()
-    if args.key_file is not None or env_key_file:
-        source = "--key-file" if args.key_file is not None else f"${KEY_FILE_ENV}"
-        _err(
-            prog,
-            "the hermesvault plugin cannot read a key file, so Hermes could not open a store "
-            f"keyed by {source}. Nothing was stored and .env is unchanged. Use the OS key "
-            f"store (unset ${KEY_FILE_ENV} for this command), or --key-env / "
-            f"${_HERMES_KEY_VAR} with the plugin's token_env",
-        )
-        return 2
-    if args.key_env is None and systemd_creds.credential_present(
-        _vault_dir(args.vault, os.environ)
+    if (
+        args.key_env is None
+        and args.key_file is None
+        and (os.environ.get(KEY_FILE_ENV) or "").strip()
     ):
-        # The plugin opens its store with $HERMES_VAULT_KEY or the default provider, and
-        # the provider refuses a directory that holds a sealed credential. Storing here
-        # would work for the CLI and leave Hermes unable to read the keys it was moved from.
         _err(
             prog,
-            f"{_vault_dir(args.vault, os.environ)} holds a systemd-creds credential, which the "
-            "hermesvault plugin cannot open yet, so Hermes could not read what is imported. "
-            "Nothing was stored and .env is unchanged. Use a store opened by OS key custody or "
-            f"by ${_HERMES_KEY_VAR} (--vault DIR), or wait for plugin support",
+            f"the hermesvault plugin does not read ${KEY_FILE_ENV}, so Hermes could not open "
+            "a store keyed by it. Nothing was stored and .env is unchanged. Name the file "
+            "with --key-file (and set custody: key_file and key_file for the plugin), or "
+            f"unset ${KEY_FILE_ENV} for this command",
         )
         return 2
     try:
@@ -1465,18 +1474,29 @@ def _cmd_import_hermes(args, prog: str) -> int:
 
     vault_dir = _vault_dir(args.vault, os.environ)
     vault_exists = _is_regular_file(vault_dir / "vault.db")
-    if args.key_env is None:
+    sealed = args.key_env is None and systemd_creds.credential_present(vault_dir)
+    if sealed and args.key_file is not None:
+        # The credential holds this store's key; storing under the key file's would fork it.
+        _err(
+            prog,
+            f"{vault_dir} holds a systemd-creds credential, which is this store's key; "
+            "--key-file names another. Nothing was stored and .env is unchanged. Drop "
+            "--key-file to use the credential (custody: systemd-creds)",
+        )
+        return 2
+    if args.key_env is None and args.key_file is None:
         ignored = [name for name in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY") if os.environ.get(name)]
         if ignored:
             _err(
                 prog,
-                f"${ignored[0]} is ignored here: the hermesvault plugin does not read it, so "
-                f"the store is opened with the OS key store. Set ${_HERMES_KEY_VAR} (the "
-                "plugin's token_env) to use an explicit key",
+                f"${ignored[0]} is ignored here: the hermesvault plugin does not read it. "
+                f"Use ${_HERMES_KEY_VAR} (the plugin's token_env) or --key-file to name a key",
             )
-    # Open the store as the plugin will: its own key variable, or the OS key store
-    # with no environment tier ($FLOOR_VAULT_KEY and $VAULT_MASTER_KEY are not
-    # read), so nothing is stored under a key the plugin never uses.
+    # Open the store as the plugin will: its own key variable, a key file named on the
+    # command line (the plugin's custody: key_file), the sealed credential beside the
+    # store (custody: systemd-creds), or the OS key store with no environment tier.
+    # $FLOOR_VAULT_KEY and $VAULT_MASTER_KEY are not read and $FLOOR_VAULT_KEY_FILE is
+    # refused above, so nothing is stored under a key the plugin never uses.
     hermes_environ = None if args.key_env else {}
     store = (
         _store_for(args, create=args.write, provider_environ=hermes_environ)
@@ -1498,6 +1518,11 @@ def _cmd_import_hermes(args, prog: str) -> int:
     print("secrets:")
     print("  hermesvault:")
     print("    enabled: true")
+    if args.key_file is not None:
+        print("    custody: key_file")
+        print(f"    key_file: {json.dumps(str(args.key_file.expanduser()))}")
+    elif sealed:
+        print("    custody: systemd-creds")
     print("    env:")
     for line, item_id in to_store:
         print(f'      {line.name}: "hv:{item_id}"')

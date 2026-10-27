@@ -18,7 +18,8 @@ hermes plugins enable hermesvault
 
 Hermes asks for consent to install the plugin's Python dependencies, which come
 from PyPI:
-- `floorvault>=0.2.2,<0.3`;
+- `floorvault>=0.2.2,<0.3` (`custody: key_file` and `custody: systemd-creds` need
+  0.2.8 or newer; with 0.2.2 they report that and open nothing);
 - `secretstorage` on Linux;
 - `pyobjc-framework-Security` on macOS.
 
@@ -29,11 +30,12 @@ enabling the plugin, then create the store once per profile:
 hermes hvault setup
 ```
 
-`setup` creates the store and its key, and may show the OS key store's unlock
-prompt. Nothing else does: the secret source runs at Hermes startup and never
-prompts, unlocks, or creates a key or a store. If the store is missing, the key is
-missing, or the Linux Secret Service collection is locked, the source reports an
-error and Hermes starts without those variables.
+`setup` creates the store and its key (in the OS key store, where it may show the
+unlock prompt, or as a systemd-creds credential; see [Key custody](#key-custody)).
+Nothing else does: the secret source runs at Hermes startup and never prompts,
+unlocks, or creates a key, a credential or a store. If the store is missing, the
+key is missing, or the Linux Secret Service collection is locked, the source
+reports an error and Hermes starts without those variables.
 
 Check an install with `hermes plugins doctor hermesvault`.
 
@@ -49,6 +51,8 @@ secrets:
       DB_PASSWORD: hv:vault_db:password      # a named field
     # dir: agent-vault                       # default <profile-home>/agent-vault
     # token_env: HERMES_VAULT_KEY            # bootstrap key variable (64 hex chars)
+    # custody: os                            # os, key_file or systemd-creds
+    # key_file: /run/secrets/hermes-vault    # with custody: key_file
     # override_existing: false
 ```
 
@@ -78,9 +82,9 @@ provider; chat uses the vault key). See
 at a time with `hermes hvault` as above.
 
 The companion removal check requires `floorvault[hermes]` (PyYAML). The
-`floorvault secrets` command line is not in a published release yet (the plugin's
-`floorvault>=0.2.2` dependency does not include it); run it from a FloorVault
-source checkout until it is.
+`floorvault secrets` command line is in floorvault 0.2.8 and newer; the plugin's
+`floorvault>=0.2.2` dependency admits older releases that lack it, so install
+`floorvault[hermes]>=0.2.8` where you run the import.
 
 ## Manage items
 
@@ -126,32 +130,60 @@ skips plugin CLI commands; the secret source itself still works.
 The store's master key is the 64-hex-character key in the variable named by
 `token_env`, read from the environment Hermes gives this source for the profile
 being fetched (under the multiplex gateway, that profile's scope, not the launch
-environment). Without it, the key comes from the OS key store (macOS Keychain,
-Windows DPAPI, or Linux Secret Service) through FloorVault's `AdaptiveKeyProvider`,
-with its environment tier turned off: `FLOOR_VAULT_KEY` and `VAULT_MASTER_KEY` are
-not read, so a key in another profile's environment never unlocks this store. The
-source also declares `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY` and
-`FLOOR_VAULT_KEY_FILE`, besides `token_env`, as protected, so a mapped secret can
-never overwrite them.
+environment). Without it, the key comes from the custody the profile sets in
+`custody`:
 
-On Linux every store using default custody shares one Secret Service entry
+| `custody` | Where the key is | Use it for |
+|---|---|---|
+| `os` (default) | the OS key store (macOS Keychain, Windows DPAPI, Linux Secret Service) through FloorVault's `AdaptiveKeyProvider`, with its environment tier turned off | desktops and laptops |
+| `key_file` | the file named by `key_file` (absolute, or relative to the profile home), holding 64 hex characters | containers and servers with an orchestrator secret mount (Docker/Kubernetes secret on tmpfs) |
+| `systemd-creds` | `master.key.sdcred` beside the store, sealed by `systemd-creds encrypt --user` and unsealed with `systemd-creds decrypt --user` | Linux servers with systemd 256 or newer and no Secret Service |
+
+`FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY` and `FLOOR_VAULT_KEY_FILE` are never read,
+so a key in another profile's environment never unlocks this store. The source
+also declares them, besides `token_env`, as protected, so a mapped secret can
+never overwrite them. A configured custody that fails is reported and nothing
+falls back to another one; `key_file` is refused unless `custody: key_file`.
+
+**`key_file`.** The file is checked as `floorvault run --key-file` checks it:
+symlinks (Kubernetes `..data`) must lead to a regular file, owned by you or root
+and not writable by group or others. A file readable by others is used, with a
+warning. `hermes hvault setup` creates the store under that key; it never
+creates or changes the key file. The file is as strong as its permissions: on
+a host's disk it protects against other users, not against code running as you
+or against a copy of the disk.
+
+**`systemd-creds`.** `hermes hvault setup` creates a random key, seals it to this
+user and machine with `systemd-creds encrypt --user`, checks that it unseals,
+and creates the store. It does this for a new store only: beside an existing
+store it refuses, because a new key would fork the store's key. Setup does the
+same as `floorvault secrets init --custody systemd-creds`, so a store made either
+way opens either way. At startup the source runs `systemd-creds decrypt --user`
+(found only in system directories, with a minimal environment, the key passed
+through a pipe) and never creates a credential. Without systemd 256 or newer it
+fails closed. **Not checked on a real host:** unsealing from a service or a
+session with no login, which is how Hermes often runs. Restart Hermes and run
+`hermes hvault doctor` in the same kind of session before relying on it. See
+FloorVault's [docs/USAGE.md](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md)
+for what systemd's automatic key selection does and does not protect.
+
+On Linux every store using `os` custody shares one Secret Service entry
 (`floor-vault` / `default-v1`). The first key for it is created under a per-user
 lock (`$XDG_RUNTIME_DIR/floorvault`, else `~/.cache/floorvault`), so two stores set
 up at the same time get the same key; if two entries with different keys exist
 anyway (for example made by an older version), opening is refused rather than one
-being picked, and no entry is overwritten or removed.
+being picked, and no entry is overwritten or removed. On a host with no usable OS
+key store and no `token_env` key, `os` custody fails closed; use `key_file` or
+`systemd-creds` there. A store holding a systemd-creds credential is refused
+under `os` custody with a message naming `custody: systemd-creds`.
 
-On a host with no usable OS key store and no `token_env` key (for example a
-headless Linux box without Secret Service), opening the store fails closed: the
-source reports an error and sets nothing. It never downgrades to a weaker tier.
-A store created with `floorvault secrets init --custody systemd-creds` (its key
-sealed in `master.key.sdcred`) cannot be opened by this plugin yet: the plugin
-does not read the credential, and FloorVault's default key provider refuses to
-create a different key beside it, so the source fails closed. Use `token_env` or
-the OS key store for a Hermes store until the plugin supports it.
-`floorvault secrets import --hermes` refuses such a store for the same reason
-(nothing is stored and `.env` is left alone), unless `$HERMES_VAULT_KEY` or
-`--key-env` names the key the plugin will use.
+`floorvault secrets import --hermes` stores under the same key: `$HERMES_VAULT_KEY`
+(or `--key-env`), else `--key-file` (then set `custody: key_file` and `key_file`
+to that file), else a credential beside the store (`custody: systemd-creds`),
+else the OS key store; the mapping it prints includes the `custody` lines. With
+`--remove-from-env` it deletes the `.env` lines only after opening the store the
+way the plugin will, and, for `key_file` or `systemd-creds`, only if the plugin
+installed in the profile (`<profile-home>/plugins/hermesvault`) is 0.2.8 or newer.
 Keep the same custody settings and the `floor-agent` application context when
 reopening an existing store. See FloorVault's
 [SECURITY.md](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md)
@@ -166,8 +198,9 @@ other.
 - **Reads** a FloorVault store under `<profile-home>/agent-vault` (or
   `secrets.hermesvault.dir`) at startup, and only reads. `hermes hvault` commands
   write to it; `hermes hvault setup` creates it.
-- **Reads its own master key** from the OS key store (service `floor-vault`), or
-  the `token_env` variable. It never reads other tools' credential stores, `.env`
+- **Reads its own master key** from the `token_env` variable, else from the custody
+  configured in `custody`: the OS key store (service `floor-vault`, the default),
+  the file named by `key_file`, or the systemd-creds credential beside the store. It never reads other tools' credential stores, `.env`
   files or Hermes' `auth.json`. Any other FloorVault `VaultStore` on the same
   account that uses default custody (for example an app built on
   `floorvault.vaultkit`, whose default store is `~/.floor/vault`) uses the same
@@ -176,6 +209,10 @@ other.
   Hermes' own browser-fill vault is a separate implementation with its own key.
 - **Returns plaintext secrets** to Hermes, which places them in the agent's
   environment. Hermes applies them; the plugin never writes `os.environ`.
+- **Starts one subprocess, only with `custody: systemd-creds`:** the system's own
+  `systemd-creds` (`decrypt --user` at startup; `encrypt` and `decrypt` during
+  `hermes hvault setup`), as an argument list with no shell and a minimal
+  environment. Otherwise no subprocesses.
 - **No network calls**, no shell commands, no background processes, no telemetry.
 
 ## Develop

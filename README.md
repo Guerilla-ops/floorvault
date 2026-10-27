@@ -44,7 +44,6 @@ python -m pip install floorvault
 | `libsql` | Synchronous libSQL driver |
 | `postgres` | Psycopg driver |
 | `mysql` | MySQL Connector/Python driver |
-| `gui` | `floorvault-gui` desktop window (PySide6-Essentials) — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#desktop-window-beta) |
 | `dev` | Development and verification tools |
 
 For example, `python -m pip install "floorvault[linux]"`. The base install does

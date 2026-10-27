@@ -246,11 +246,10 @@ floorvault run -e OPENAI_API_KEY=fv:openai -- python agent.py
 - **No second key.** With a credential beside it, the default key provider
   (`AdaptiveKeyProvider`, which the Hermes plugin uses) refuses to create an OS or
   file key for that directory instead of forking it. An explicit key
-  (`FLOOR_VAULT_KEY`, `--key-env`) is still honoured. The Hermes plugin does not
-  read the credential yet, so it cannot open such a store, and
-  `floorvault secrets import --hermes` therefore refuses one (exit 2, nothing
-  stored, `.env` unchanged) unless `$HERMES_VAULT_KEY` or `--key-env` names the key
-  the plugin will use.
+  (`FLOOR_VAULT_KEY`, `--key-env`) is still honoured. The Hermes plugin opens such
+  a store with `secrets.hermesvault.custody: systemd-creds` (plugin 0.2.8, with
+  floorvault 0.2.8); its `hermes hvault setup` can also create the credential for
+  a new store.
 
 **Checked and not checked.** Tested against a stand-in for `systemd-creds` that
 enforces the documented command contract (`--user`, the credential name,
@@ -402,12 +401,15 @@ floorvault secrets import --hermes --write --skip DEBUG --remove-from-env
    (a `DEBUG` flag, a model name) in `.env` with `--skip NAME` or `--only NAME`.
 2. **`--write`** stores each value as a generic item in the plugin's store,
    `<home>/agent-vault` (pass `--vault DIR` when `secrets.hermesvault.dir` names
-   another), under the plugin's custody: the key in `$HERMES_VAULT_KEY` when that
-   variable is set (or the variable `--key-env` names), else the OS key store, as
-   the plugin does. `$FLOOR_VAULT_KEY` and `$VAULT_MASTER_KEY` are ignored here
-   (the plugin does not read them, so a store keyed by them would be unreadable to
-   Hermes), and `--key-file` is refused, since the plugin cannot read a key file.
-   It does not touch `.env`. Re-running reuses items
+   another), under a key the plugin can use: the key in `$HERMES_VAULT_KEY` when
+   that variable is set (or the variable `--key-env` names), else `--key-file`
+   (the plugin's `custody: key_file`), else the systemd-creds credential beside the
+   store (`custody: systemd-creds`), else the OS key store (`custody: os`). The
+   printed block includes the `custody` and `key_file` lines to match.
+   `$FLOOR_VAULT_KEY`, `$VAULT_MASTER_KEY` and `$FLOOR_VAULT_KEY_FILE` are ignored
+   here (the plugin does not read them, so a store keyed by them would be
+   unreadable to Hermes), and `--key-file` beside a sealed credential is refused,
+   since it would create the store under a second key. It does not touch `.env`. Re-running reuses items
    that already hold the same value and stops on one that differs.
 3. **`--write --remove-from-env`** deletes the imported lines from `.env`, but
    only after it has re-read each item, parsed `config.yaml` beside the `.env`,
@@ -436,9 +438,14 @@ Relative `secrets.hermesvault.dir` paths resolve under the profile home.
 
 The key check overlays the remaining profile `.env` values on the importing
 process environment, then takes the plugin's own route: `token_env` (default
-`HERMES_VAULT_KEY`), else the OS key store with no environment tier and no prompt.
-`$FLOOR_VAULT_KEY` and `$VAULT_MASTER_KEY` are not read, as the plugin does not
-read them. A custom `token_env` must remain available; it cannot itself be
+`HERMES_VAULT_KEY`), else `secrets.hermesvault.custody`: the OS key store with no
+environment tier and no prompt (`os`), the file `key_file` names (relative paths
+from the profile home), or the systemd-creds credential beside the store.
+`$FLOOR_VAULT_KEY`, `$VAULT_MASTER_KEY` and `$FLOOR_VAULT_KEY_FILE` are not read,
+as the plugin does not read them. For `key_file` and `systemd-creds` it also reads
+the version of the plugin installed in the profile
+(`<home>/plugins/hermesvault/plugin.yaml`) and refuses removal unless it is 0.2.8
+or newer: an older plugin ignores `custody` and could not open the store. A custom `token_env` must remain available; it cannot itself be
 removed. The check verifies decryption, not just matching variable names.
 A changed config detected before replacement also prevents removal.
 
@@ -521,63 +528,6 @@ floorvault secrets allow github-pat --clear   # unbind: resolves for any command
 - **Who enforces it:** only `floorvault run` from this release on. Older
   `floorvault` versions and the Hermes plugin ignore bindings.
 
-## Desktop window (beta)
-
-`floorvault-gui` is a desktop window over the same store as `floorvault
-secrets`. Install it with the `gui` extra (PySide6-Essentials):
-
-```bash
-python -m pip install "floorvault[gui]"
-floorvault-gui                       # ~/.floorvault/agent-vault, key from the OS key store
-floorvault-gui --vault DIR --key-file /run/secrets/fv-key
-floorvault-gui --key-env FLOOR_VAULT_KEY
-```
-
-It lists items, adds generic items, sets and replaces fields, copies `fv:`
-references, manages `secrets allow` bindings, deletes items and imports a
-project `.env` with a preview first.
-
-**Key source.** The window enforces the source you pick, which differs from
-the CLI's default in one case:
-
-| Choice | Uses |
-| --- | --- |
-| OS key store only | Keychain, Secret Service or DPAPI. Refuses to open, or to create a store, while `FLOOR_VAULT_KEY` or `VAULT_MASTER_KEY` is set, and never uses a disk key file. The CLI's default would adopt those variables instead. |
-| Key file | The named file, or `$FLOOR_VAULT_KEY_FILE`. |
-| Environment variable | The named variable (default `FLOOR_VAULT_KEY`). |
-
-The status line names the source actually in use.
-
-It keeps the CLI's rules:
-
-- **No stored value is shown or copied.** Fields read *Set* or *Empty*; copy
-  buttons copy references. Values are typed into masked inputs, and the
-  clipboard is cleared on save if it still holds the value just entered.
-- **Opening never creates a store or key.** Only the first *Add item* or
-  *Import* on a directory without a store creates one.
-- **A new item bound to a command is created bound.** The item and its
-  binding are written in one transaction: a failure leaves no item rather
-  than an unbound one.
-- **Removing the last bound command line is refused.** *Allow any command* is
-  the separate, confirmed action that clears a binding.
-- **An import writes exactly what its preview showed.** Changing the path or
-  prefix withdraws the preview; the write runs the previewed plan, and stops
-  if the file or the resulting references changed.
-- **The window locks after five minutes** without keyboard or mouse input.
-  Locking also clears and closes any open dialog, prompt or confirmation; a
-  confirmation closed this way counts as "no".
-
-**Command lines** are split with shell rules on macOS and Linux, and on
-Windows with the rules the Microsoft C runtime uses to build `sys.argv`
-(so `--name="two words"` is one argument), except that an unclosed quote is
-an error. The confirmation lists each argument on its own line.
-
-Not in this release: login, payment and address items (they are listed and
-can be deleted, but not created or edited), Hermes `.env` imports (use
-`floorvault secrets import --hermes`), key rotation and recovery bundles. The
-window holds the same trust boundary as the CLI: code running as your user can
-read the key from your key store.
-
 ## Hermes Agent integration
 
 The optional plugin in [`plugins/hermesvault`](../plugins/hermesvault) resolves local
@@ -597,7 +547,8 @@ from PyPI after asking for consent. The library wheel does not include or regist
 the plugin. See the [plugin README](../plugins/hermesvault/README.md) for
 configuration, the `hermes hvault` commands and what the plugin reads and writes.
 Run `hermes hvault setup` once per profile: it creates the store and its key and
-may unlock the OS key store (a prompt). The secret source itself never prompts
+may unlock the OS key store (a prompt), or, with `custody: systemd-creds`, seals a
+new key beside a new store; with `custody: key_file` it uses the existing file. The secret source itself never prompts
 and never creates anything, so Hermes startup cannot block on it; a missing store,
 a missing key or a locked Secret Service collection is reported and startup goes
 on without those variables.

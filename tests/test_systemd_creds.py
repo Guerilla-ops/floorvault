@@ -553,22 +553,31 @@ def test_the_default_store_is_unchanged_without_a_credential(tmp_path, cli, vaul
     assert ran.returncode == 0 and json.loads(ran.stdout)["A"] == "v"
 
 
-# ----------------------------------------- Hermes import into a store the plugin cannot open
+# ----------------------------------------------- Hermes import into a sealed store
 
 HERMES_ENV_TEXT = "OPENAI_API_KEY=sk-test-openai\nDEBUG=1\n"
 HERMES_MAPPING = 'secrets:\n  hermesvault:\n    enabled: true\n    env:\n      OPENAI_API_KEY: "hv:openai_api_key"\n'
+SEALED_MAPPING = HERMES_MAPPING.replace(
+    "enabled: true\n", "enabled: true\n    custody: systemd-creds\n"
+)
 
 
-def _sealed_hermes_home(tmp_path, cli):
+def _sealed_hermes_home(tmp_path, cli, config=HERMES_MAPPING):
     home = tmp_path / "hermes-home"
     home.mkdir()
     (home / "state.db").write_bytes(b"")
-    (home / "config.yaml").write_text(HERMES_MAPPING, encoding="utf-8")
+    (home / "config.yaml").write_text(config, encoding="utf-8")
     (home / ".env").write_text(HERMES_ENV_TEXT, encoding="utf-8")
     store = home / "agent-vault"
     made = cli(["secrets", "init", "--custody", "systemd-creds", "--vault", str(store)])
     assert made.returncode == 0, made.stderr
     return home, store
+
+
+def _plugin_manifest(home, version):
+    directory = home / "plugins" / "hermesvault"
+    directory.mkdir(parents=True)
+    (directory / "plugin.yaml").write_text(f'version: "{version}"\n', encoding="utf-8")
 
 
 def _tree(path: Path) -> dict:
@@ -578,23 +587,49 @@ def _tree(path: Path) -> dict:
 
 
 @linux_only
-@pytest.mark.parametrize("flags", [[], ["--write"], ["--write", "--remove-from-env"]])
-def test_hermes_import_refuses_a_sealed_store_and_changes_nothing(tmp_path, cli, flags):
+def test_hermes_import_stores_under_the_sealed_key_and_suggests_its_custody(tmp_path, cli):
     home, store = _sealed_hermes_home(tmp_path, cli)
-    before = _tree(home)
-    result = cli(["secrets", "import", "--hermes", str(home / ".env"), *flags])
-    assert result.returncode == 2, result.stderr
-    assert "systemd-creds credential" in result.stderr
-    assert "Nothing was stored and .env is unchanged" in result.stderr
-    assert "sk-test-openai" not in result.stdout + result.stderr
-    assert _tree(home) == before
+    flags = [str(home / ".env"), "--only", "OPENAI_API_KEY"]
+    dry = cli(["secrets", "import", "--hermes", *flags])
+    assert dry.returncode == 0, dry.stderr
+    assert "    custody: systemd-creds\n" in dry.stdout
     assert not (store / "vault.db").exists()
+    written = cli(["secrets", "import", "--hermes", *flags, "--write"])
+    assert written.returncode == 0, written.stderr
+    assert (home / ".env").read_text() == HERMES_ENV_TEXT
+    # $FLOOR_VAULT_KEY is set in the fixture; the store opens under the sealed key.
+    shown = cli(["secrets", "list", "--vault", str(store)])
+    assert shown.returncode == 0 and "openai_api_key" in shown.stdout
 
 
 @linux_only
-def test_hermes_import_into_a_sealed_store_is_refused_with_an_explicit_vault_and_key_file(
-    tmp_path, cli
+@pytest.mark.parametrize(
+    "config, version, message",
+    [
+        (SEALED_MAPPING, "0.2.8", None),
+        (SEALED_MAPPING, "0.2.1", "Update the plugin first"),
+        (HERMES_MAPPING, "0.2.8", "plugin key cannot decrypt"),
+    ],
+)
+def test_hermes_remove_from_a_sealed_store_follows_the_plugin_custody(
+    tmp_path, cli, config, version, message
 ):
+    home, store = _sealed_hermes_home(tmp_path, cli, config=config)
+    _plugin_manifest(home, version)
+    result = cli(
+        ["secrets", "import", "--hermes", str(home / ".env"), "--only", "OPENAI_API_KEY",
+         "--write", "--remove-from-env"]
+    )  # fmt: skip
+    if message is None:
+        assert result.returncode == 0, result.stderr
+        assert (home / ".env").read_text() == "DEBUG=1\n"
+    else:
+        assert result.returncode == 2 and message in result.stderr
+        assert (home / ".env").read_text() == HERMES_ENV_TEXT
+
+
+@linux_only
+def test_hermes_import_refuses_a_key_file_beside_a_sealed_credential(tmp_path, cli):
     home, store = _sealed_hermes_home(tmp_path, cli)
     key_file = tmp_path / "k"
     key_file.write_text("ab" * 32 + "\n")
@@ -606,7 +641,7 @@ def test_hermes_import_into_a_sealed_store_is_refused_with_an_explicit_vault_and
             "--vault", str(store), "--key-file", str(key_file),
         ]
     )  # fmt: skip
-    assert result.returncode == 2 and "cannot read a key file" in result.stderr
+    assert result.returncode == 2 and "--key-file names another" in result.stderr
     assert "Nothing was stored and .env is unchanged" in result.stderr
     assert _tree(home) == before
 
