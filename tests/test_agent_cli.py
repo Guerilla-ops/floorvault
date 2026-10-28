@@ -1018,6 +1018,10 @@ HERMES_ENV = (
 )
 
 
+# The same file without its HERMES_VAULT_KEY line, for tests of the shell-variable route.
+HERMES_ENV_NO_KEY = HERMES_ENV.replace(b"HERMES_VAULT_KEY=" + b"ab" * 32 + b"\r\n", b"")
+
+
 def _hermes_home(tmp_path, *, env_bytes=HERMES_ENV, config="model: x\n"):
     home = tmp_path / "hermes-home"
     home.mkdir()
@@ -1067,7 +1071,7 @@ def test_hermes_dry_run_changes_nothing_and_prints_the_mapping(tmp_path, base_en
 
 
 def test_hermes_write_stores_items_and_leaves_the_env_alone(tmp_path, base_env):
-    home, env_file = _hermes_home(tmp_path)
+    home, env_file = _hermes_home(tmp_path, env_bytes=HERMES_ENV_NO_KEY)
     before = env_file.read_bytes()
     result = _hermes_import([str(env_file), "--only", "OPENAI_API_KEY", "--write"], base_env)
     assert result.returncode == 0, result.stderr
@@ -1231,13 +1235,16 @@ def test_hermes_conflicting_item_stops_the_import(tmp_path, base_env):
 
 
 def test_hermes_uses_the_plugins_token_env_key_when_it_is_set(tmp_path, base_env):
-    home, env_file = _hermes_home(tmp_path)
+    home, env_file = _hermes_home(tmp_path, env_bytes=HERMES_ENV_NO_KEY)
     env = {k: v for k, v in base_env.items() if k != "FLOOR_VAULT_KEY"}
     # A key of its own, not the one base_env holds in FLOOR_VAULT_KEY.
     env["HERMES_VAULT_KEY"] = os.urandom(32).hex()
     result = _hermes_import([str(env_file), "--only", "OPENAI_API_KEY", "--write"], env)
     assert result.returncode == 0, result.stderr
-    assert "using the key in $HERMES_VAULT_KEY, as the hermesvault plugin does" in result.stderr
+    assert (
+        "using the key in $HERMES_VAULT_KEY from the environment, as the hermesvault plugin does"
+        in result.stderr
+    )
     ran = fv(
         ["run", "--vault", str(home / "agent-vault"), "--key-env", "HERMES_VAULT_KEY"]
         + ["-e", "A=hv:openai_api_key", "--"]
@@ -1320,15 +1327,38 @@ def test_hermes_remove_requires_nested_plugin_config(tmp_path, base_env, config)
     assert env_file.read_bytes() == before
 
 
-def test_hermes_remove_rejects_different_dotenv_bootstrap_key(tmp_path, base_env):
-    _, env_file = _hermes_home(tmp_path, config=MAPPING)
+def test_hermes_import_uses_the_bootstrap_key_hermes_loads_from_dotenv(tmp_path, base_env):
+    """SEC-14: the .env's HERMES_VAULT_KEY wins over the shell's, as it does in Hermes."""
+    home, env_file = _hermes_home(tmp_path, config=MAPPING)
+    # base_env sets HERMES_VAULT_KEY (via _hermes_import) to a different key than the .env.
     result = _hermes_import(
         [str(env_file), "--only", "OPENAI_API_KEY", "--write", "--remove-from-env"], base_env
     )
-    assert result.returncode == 2
-    assert "plugin key" in result.stderr
-    assert env_file.read_bytes() == HERMES_ENV
+    assert result.returncode == 0, result.stderr
+    assert "using the key in $HERMES_VAULT_KEY from .env" in result.stderr
+    remaining = env_file.read_bytes()
+    assert b"OPENAI_API_KEY" not in remaining
+    assert b"HERMES_VAULT_KEY=" + b"ab" * 32 in remaining
     assert "sk-hermes-openai" not in result.stdout + result.stderr
+    # The item is under the .env's key, the one the plugin will use, not the shell's.
+    env = {**base_env, "HERMES_VAULT_KEY": "ab" * 32}
+    ran = fv(
+        ["run", "--vault", str(home / "agent-vault"), "--key-env", "HERMES_VAULT_KEY"]
+        + ["-e", "A=hv:openai_api_key", "--"]
+        + _dump_env(tmp_path),
+        env,
+    )
+    assert json.loads(ran.stdout)["A"] == "sk-hermes-openai", ran.stderr
+
+
+def test_hermes_import_ignores_a_shell_key_the_dotenv_clears(tmp_path, base_env):
+    """SEC-14: `HERMES_VAULT_KEY=` in .env clears the shell's value for Hermes."""
+    env_bytes = HERMES_ENV.replace(b"HERMES_VAULT_KEY=" + b"ab" * 32, b"HERMES_VAULT_KEY=")
+    _, env_file = _hermes_home(tmp_path, env_bytes=env_bytes)
+    result = _hermes_import([str(env_file), "--only", "OPENAI_API_KEY"], base_env)
+    assert result.returncode == 0, result.stderr
+    assert "$HERMES_VAULT_KEY is empty in .env" in result.stderr
+    assert "using the key in" not in result.stderr
 
 
 def test_hermes_remove_accepts_flow_yaml_and_custom_key(tmp_path, base_env):
@@ -1400,9 +1430,11 @@ def test_hermes_remove_refuses_when_the_profile_env_clears_the_plugin_key(tmp_pa
     result = _hermes_import(
         [str(env_file), "--only", "OPENAI_API_KEY", "--write", "--remove-from-env"], env
     )
-    assert result.returncode == 2, result.stderr
+    # Since SEC-14 the import itself takes the plugin's route (OS custody, absent
+    # here), so it stops before storing rather than at the removal check.
+    assert result.returncode != 0, result.stderr
+    assert "$HERMES_VAULT_KEY is empty in .env" in result.stderr
     assert env_file.read_bytes() == original
-    assert "plugin key cannot decrypt the imported values" in result.stderr
 
 
 def test_hermes_remove_is_not_certified_by_floor_vault_key(tmp_path, monkeypatch):
@@ -1455,7 +1487,9 @@ def test_hermes_remove_refuses_known_host_config_fallback(tmp_path, base_env):
 )
 def test_hermes_import_does_not_use_floor_vault_key(tmp_path, base_env):
     """The plugin ignores $FLOOR_VAULT_KEY, so the import must not store under it."""
-    home, env_file = _hermes_home(tmp_path, config="model: x\n" + MAPPING)
+    home, env_file = _hermes_home(
+        tmp_path, config="model: x\n" + MAPPING, env_bytes=HERMES_ENV_NO_KEY
+    )
     before = env_file.read_bytes()
     env = {k: v for k, v in base_env.items() if not k.startswith(("DISPLAY", "WAYLAND", "DBUS"))}
     flags = [str(env_file), "--only", "OPENAI_API_KEY"]

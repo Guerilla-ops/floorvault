@@ -682,13 +682,14 @@ def _split_target(text: str) -> tuple[Optional[str], Optional[str]]:
     return item_id, (field or None)
 
 
-def _store_for(args, *, create: bool = False, provider_environ=None):
+def _store_for(args, *, create: bool = False, provider_environ=None, environ=None):
     """Open the store; with ``create``, create it (and a key) only if there is none.
 
     An existing store is never opened in create mode, so a missing key is an
     error rather than a new key, and the key is checked against the items
     already there before any command writes: a store sealed under two keys
-    can no longer be listed.
+    can no longer be listed. ``environ`` is where ``--key-env`` is read (default:
+    the process environment).
     """
     _check_key_options(args)
     vault_dir = _vault_dir(args.vault, os.environ)
@@ -698,6 +699,7 @@ def _store_for(args, *, create: bool = False, provider_environ=None):
         key_env=args.key_env,
         key_bytes=_custody_key(args, os.environ, vault_dir),
         create=create and not existed,
+        environ=environ,
         provider_environ=provider_environ,
     )
     if existed:
@@ -1108,8 +1110,12 @@ def plan_env_import(
     return to_store, left, problems
 
 
-def _import_plan(args, env_file: EnvFile, prog: str):
-    """Split a file's assignments into (to_store, left_as_is), or None on error."""
+def _import_plan(args, env_file: EnvFile, prog: str, *, environ=None):
+    """Split a file's assignments into (to_store, left_as_is), or None on error.
+
+    ``environ`` is where key values are looked up to leave copies of them in the
+    file (default: the process environment).
+    """
     to_store, left, problems = plan_env_import(
         env_file,
         only=args.only,
@@ -1117,6 +1123,7 @@ def _import_plan(args, env_file: EnvFile, prog: str):
         prefix=args.prefix,
         key_env=args.key_env,
         key_file=_key_file_from(args, os.environ),
+        environ=environ,
     )
     for problem in problems:
         _err(prog, problem)
@@ -1345,6 +1352,18 @@ def _verify_hermes_removal(config_text, home, vault_dir, env_file, to_store):
 
 
 _HERMES_KEY_VAR = "HERMES_VAULT_KEY"  # the plugin's default token_env
+
+
+def _hermes_environ(env_file: EnvFile, environ: Mapping[str, str]) -> dict[str, str]:
+    """The environment the plugin sees: ``environ`` with the profile ``.env`` loaded over it.
+
+    Hermes loads ``<home>/.env`` with override before secret sources run, and a
+    later line wins over an earlier one, as in python-dotenv.
+    """
+    view = dict(environ)
+    for line in env_file.assignments():
+        view[line.name] = line.value
+    return view
 _HERMES_CUSTODIES = ("os", "key_file", "systemd-creds")
 #: The first hermesvault plugin release that reads ``custody`` other than os.
 _PLUGIN_CUSTODY_SINCE = (0, 2, 8)
@@ -1439,10 +1458,33 @@ def _cmd_import_hermes(args, prog: str) -> int:
             )
             return 2
         args.vault = home / "agent-vault"
-    if args.key_env is None and args.key_file is None and os.environ.get(_HERMES_KEY_VAR):
-        # The plugin uses this variable's key directly when it is set.
-        args.key_env = _HERMES_KEY_VAR
-        _err(prog, f"using the key in ${_HERMES_KEY_VAR}, as the hermesvault plugin does")
+    try:
+        env_file = read_env_file(path)
+    except AgentEnvError as exc:
+        for problem in exc.problems:
+            _err(prog, problem)
+        return 2
+    # Hermes loads this .env with override before the plugin fetches, so a
+    # HERMES_VAULT_KEY line here, even an empty one, decides the key the plugin
+    # sees, not the importing shell's environment.
+    hermes_environ_view = _hermes_environ(env_file, os.environ)
+    if args.key_env is None and args.key_file is None:
+        in_file = any(line.name == _HERMES_KEY_VAR for line in env_file.assignments())
+        if hermes_environ_view.get(_HERMES_KEY_VAR):
+            # The plugin uses this variable's key directly when it is set.
+            args.key_env = _HERMES_KEY_VAR
+            where = path.name if in_file else "the environment"
+            _err(
+                prog,
+                f"using the key in ${_HERMES_KEY_VAR} from {where}, as the hermesvault plugin does",
+            )
+        elif in_file and os.environ.get(_HERMES_KEY_VAR):
+            _err(
+                prog,
+                f"${_HERMES_KEY_VAR} is empty in {path.name}, which Hermes loads over the "
+                "environment, so the plugin does not use it; the store is opened with the "
+                "plugin's custody instead",
+            )
     if (
         args.key_env is None
         and args.key_file is None
@@ -1456,13 +1498,7 @@ def _cmd_import_hermes(args, prog: str) -> int:
             f"unset ${KEY_FILE_ENV} for this command",
         )
         return 2
-    try:
-        env_file = read_env_file(path)
-    except AgentEnvError as exc:
-        for problem in exc.problems:
-            _err(prog, problem)
-        return 2
-    plan = _import_plan(args, env_file, prog)
+    plan = _import_plan(args, env_file, prog, environ=hermes_environ_view)
     if plan is None:
         return 2
     to_store, left = plan
@@ -1498,8 +1534,11 @@ def _cmd_import_hermes(args, prog: str) -> int:
     # $FLOOR_VAULT_KEY and $VAULT_MASTER_KEY are not read and $FLOOR_VAULT_KEY_FILE is
     # refused above, so nothing is stored under a key the plugin never uses.
     hermes_environ = None if args.key_env else {}
+    key_environ = hermes_environ_view if args.key_env == _HERMES_KEY_VAR else None
     store = (
-        _store_for(args, create=args.write, provider_environ=hermes_environ)
+        _store_for(
+            args, create=args.write, provider_environ=hermes_environ, environ=key_environ
+        )
         if (args.write or vault_exists)
         else None
     )
