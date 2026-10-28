@@ -1556,8 +1556,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "HIM-5",
         "src/floorvault/agent_cli.py",
-        "    if args.key_env is None and args.key_file is None and os.environ.get(_HERMES_KEY_VAR):",
-        "    if False:  # MUTANT",
+        "        if hermes_environ_view.get(_HERMES_KEY_VAR):",
+        "        if False:  # MUTANT",
         "A store set up with the plugin's token_env key is written under a different key",
     ),
     Mutation(
