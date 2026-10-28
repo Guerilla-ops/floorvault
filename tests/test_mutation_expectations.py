@@ -145,10 +145,10 @@ def test_platform_overrides_are_declared_explicitly():
 
     Every mutant that relaxes its expectation on Windows has to say so in the
     declaration; a silent default would hide an unkillable mutant rather than
-    documenting it.
+    documenting it. Mutants of Windows-only guards are listed the same way.
     """
     module = _load()
-    relaxed = [mutant.id for mutant in module.MUTATIONS if mutant.expect_on_windows is not None]
+    relaxed = [mutant.id for mutant in module.MUTATIONS if mutant.expect_on_windows == "survived"]
     # AUD-2 (CLI audit): like BIND-7, only a symlink test can kill it.
     assert relaxed == [
         "DS-5",
@@ -161,10 +161,21 @@ def test_platform_overrides_are_declared_explicitly():
         "HIM-4",
         "AUD-2",
     ], f"unexpected set of platform-relaxed mutants: {relaxed}"
+    # The reverse: a guard that exists only on Windows is dead code elsewhere,
+    # so its mutant is equivalent off Windows and must be killed on Windows.
+    # AUD-12 / AUD-13 (CLI audit RUN-10 / RUN-11).
+    windows_only = [m.id for m in module.MUTATIONS if m.expect_on_windows == "killed"]
+    assert windows_only == ["AUD-12", "AUD-13"], (
+        f"unexpected set of Windows-only mutants: {windows_only}"
+    )
     for mutant in module.MUTATIONS:
-        assert mutant.expect_on_windows in (None, "survived"), (
-            f"{mutant.id} declares a Windows expectation other than 'survived'"
+        assert mutant.expect_on_windows in (None, "survived", "killed"), (
+            f"{mutant.id} declares an unknown Windows expectation"
         )
+        if mutant.expect_on_windows == "killed":
+            assert mutant.expect == "survived", (
+                f"{mutant.id}: a Windows-only kill is declared on a mutant POSIX kills anyway"
+            )
 
 
 def test_posix_default_is_unchanged_for_every_other_mutant():

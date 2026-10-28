@@ -77,6 +77,10 @@ class Mutation:
     #: unrelated to the code under test. Declaring the platform-specific
     #: expectation keeps the POSIX kill (which is the point of the mutant)
     #: instead of deleting the mutant to make Windows green.
+    #:
+    #: The reverse also exists: a guard that runs only on Windows is dead code
+    #: elsewhere, so its mutant declares ``expect="survived"`` with
+    #: ``expect_on_windows="killed"``.
     expect_on_windows: str | None = None
 
 
