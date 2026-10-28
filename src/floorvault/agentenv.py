@@ -385,6 +385,7 @@ def collect(
     *,
     inherit_refs: bool = True,
     key_env: Optional[str] = None,
+    fold_case: Optional[bool] = None,
 ) -> tuple[dict[str, str], dict[str, SecretRef]]:
     """Merge the three reference sources into a child environment plan.
 
@@ -392,7 +393,17 @@ def collect(
     explicit ``-e`` pairs. Returns ``(environment, refs)``: ``environment`` is
     the child's environment with custody variables removed and references not
     yet filled in; ``refs`` maps each variable to resolve onto its reference.
+
+    ``fold_case`` (default: on Windows) merges names case-insensitively, as
+    Windows reads them: every name is upper-cased, so ``Path`` from an env file
+    replaces the inherited ``PATH`` instead of reaching the child beside it.
     """
+    if fold_case is None:
+        fold_case = os.name == "nt"
+
+    def fold(name: str) -> str:
+        return name.upper() if fold_case else name
+
     custody = _custody_names(key_env)
     refused = _custody_names(key_env, _REFUSED_TARGETS)
     # Values of the key variables, so a copy under another name is caught too.
@@ -406,7 +417,7 @@ def collect(
     pointers = {n.upper() for n in KEY_POINTER_ENV_NAMES}
     removed = custody | pointers
     env: dict[str, str] = {
-        name: value for name, value in inherited.items() if name.upper() not in removed
+        fold(name): value for name, value in inherited.items() if name.upper() not in removed
     }
     pending: dict[str, str] = {}
     if inherit_refs:
@@ -415,6 +426,7 @@ def collect(
         pending.update({name: value for name, value in env.items() if value.startswith("fv:")})
     for file_values in env_files:
         for name, value in file_values.items():
+            name = fold(name)
             if name.upper() in custody and not is_ref_like(value):
                 # A vault key in an env file never reaches the child either.
                 if len(value.strip()) >= 32:
@@ -427,7 +439,7 @@ def collect(
             else:
                 pending.pop(name, None)
                 env[name] = value
-    pending.update(_parse_explicit(explicit))
+    pending.update({fold(name): value for name, value in _parse_explicit(explicit).items()})
 
     refs: dict[str, SecretRef] = {}
     problems: list[str] = []

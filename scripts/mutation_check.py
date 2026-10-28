@@ -1839,6 +1839,40 @@ MUTATIONS: tuple[Mutation, ...] = (
         "A refused secrets add leaves an empty store directory and the library's wording (SEC-17)",
     ),
     Mutation(
+        "AUD-11",
+        "src/floorvault/agent_cli.py",
+        "        if not directory:\n            continue\n",
+        "        if False:  # MUTANT\n            continue\n",
+        "An empty Windows PATH entry (a trailing ';') searches the working directory (RUN-10)",
+    ),
+    Mutation(
+        "AUD-12",
+        "src/floorvault/agent_cli.py",
+        '        if os.name == "nt":\n            # Not os.defpath',
+        "        if False:  # MUTANT\n            # Not os.defpath",
+        "run on Windows finds a node.exe in the working directory before PATH (RUN-10; "
+        "the branch is dead off Windows, so this mutant is equivalent there)",
+        expect="survived",
+        expect_on_windows="killed",
+    ),
+    Mutation(
+        "AUD-13",
+        "src/floorvault/agent_cli.py",
+        "            previous = signal.signal(sigbreak, signal.SIG_IGN)\n",
+        "            previous = signal.getsignal(sigbreak)  # MUTANT\n",
+        "Ctrl+Break ends run on Windows and leaves its child running (RUN-11; "
+        "SIGBREAK exists only on Windows, so this mutant is equivalent elsewhere)",
+        expect="survived",
+        expect_on_windows="killed",
+    ),
+    Mutation(
+        "AUD-14",
+        "src/floorvault/agentenv.py",
+        "        return name.upper() if fold_case else name\n",
+        "        return name  # MUTANT\n",
+        "On Windows an env file's Path= reaches the child beside the inherited PATH (RUN-12)",
+    ),
+    Mutation(
         "PKG-1",
         "scripts/verify_wheel.py",
         "        if missing:",

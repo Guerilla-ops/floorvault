@@ -284,18 +284,51 @@ def _run_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: What Windows uses when PATHEXT is unset (as in ``shutil``).
+_WINDOWS_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC"
+
+
+def _windows_which(command: str, search_path: str, pathext: Optional[str]) -> Optional[str]:
+    """Find ``command`` on a Windows ``PATH``, searching only the entries it lists.
+
+    ``shutil.which`` on Windows also searches the current directory first (always
+    before Python 3.12, and on 3.12+ unless NoDefaultCurrentDirectoryInExePath is
+    set), so a ``node.exe`` in the working directory would receive the secrets
+    (audit RUN-10). Empty entries, such as a trailing ``;``, are skipped for the
+    same reason; an explicit ``.`` entry is the operator's choice and is kept.
+    """
+    extensions = [ext for ext in (pathext or _WINDOWS_DEFAULT_PATHEXT).split(";") if ext]
+    lowered = command.lower()
+    names = [command] if any(lowered.endswith(ext.lower()) for ext in extensions) else []
+    names += [command + ext for ext in extensions]
+    for directory in search_path.split(";"):
+        if not directory:
+            continue
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
 def _find_command(command: str, env: Mapping[str, str]) -> tuple[Optional[str], int]:
     """Locate ``command`` on ``env``'s PATH: (path, 0) or (None, 126/127)."""
     seps = {os.sep, os.altsep} - {None}
     try:
-        if any(sep in command for sep in seps):
+        # A drive-qualified name ("C:node.exe") is a path relative to that
+        # drive's working directory, never a name to join onto PATH entries.
+        if any(sep in command for sep in seps) or os.path.splitdrive(command)[0]:
             path = Path(command)
             if not path.exists():
                 return None, 127
             if path.is_dir() or not os.access(path, os.X_OK):
                 return None, 126
             return str(path), 0
-        found = shutil.which(command, path=env.get("PATH", os.defpath))
+        if os.name == "nt":
+            # Not os.defpath: on Windows it starts with the current directory.
+            found = _windows_which(command, env.get("PATH", ""), env.get("PATHEXT"))
+        else:
+            found = shutil.which(command, path=env.get("PATH", os.defpath))
     except PermissionError:
         return None, 126
     except (OSError, ValueError):  # e.g. a name too long for the filesystem
@@ -419,22 +452,37 @@ def _spawn_and_wait(path: str, argv: Sequence[str], env: Mapping[str, str]) -> i
     Used on Windows, where ``os.exec*`` starts a new process and exits the
     caller at once, which an MCP client reads as the server exiting. The child
     shares this console, so Ctrl+C and Ctrl+Break reach it directly; this
-    process keeps waiting for it to finish.
+    process keeps waiting for it to finish: Ctrl+C raises KeyboardInterrupt,
+    which is caught, and SIGBREAK is ignored until the child exits (audit
+    RUN-11), since by default Ctrl+Break would end this process and leave the
+    child running without it.
     """
     # Starting the operator's own command is this function's purpose; the
     # argv is passed as a list, never through a shell.
+    import signal
     import subprocess  # nosec B404
 
-    try:
-        proc = subprocess.Popen([path, *argv[1:]], env=dict(env))  # nosec B603
-    except OSError as exc:
-        _err("floorvault run", f"cannot start {argv[0]}: {type(exc).__name__}")
-        return 126
-    while True:
+    sigbreak = getattr(signal, "SIGBREAK", None)
+    previous = None
+    if sigbreak is not None:
         try:
-            return proc.wait()
-        except KeyboardInterrupt:
-            continue
+            previous = signal.signal(sigbreak, signal.SIG_IGN)
+        except ValueError:  # not the main thread: keep the default
+            sigbreak = None
+    try:
+        try:
+            proc = subprocess.Popen([path, *argv[1:]], env=dict(env))  # nosec B603
+        except OSError as exc:
+            _err("floorvault run", f"cannot start {argv[0]}: {type(exc).__name__}")
+            return 126
+        while True:
+            try:
+                return proc.wait()
+            except KeyboardInterrupt:
+                continue
+    finally:
+        if sigbreak is not None:
+            signal.signal(sigbreak, signal.SIG_DFL if previous is None else previous)
 
 
 def _launch(path: str, argv: Sequence[str], env: dict) -> int:
