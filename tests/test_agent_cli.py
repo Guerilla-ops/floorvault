@@ -559,6 +559,36 @@ def test_import_refuses_to_rewrite_a_hermes_env(tmp_path, base_env, kind):
     assert not _leaks(dry.stdout, dry.stderr, write.stdout, write.stderr)
 
 
+def test_import_refuses_a_hermes_env_named_in_another_case(tmp_path, base_env):
+    """SEC-13: on a case-insensitive filesystem `.ENV` is Hermes' `.env`.
+
+    A hard link stands in for that filesystem here: both names are one file.
+    """
+    env, target = _hermes_case(tmp_path, base_env, "markers")
+    upper = target.with_name(".ENV")
+    try:
+        os.link(target, upper)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable here ({type(exc).__name__})")
+    before = target.read_bytes()
+    write = fv(["secrets", "import", str(upper), "--write"], env)
+    assert write.returncode == 2, write.stderr
+    assert "refusing to rewrite it" in write.stderr
+    assert target.read_bytes() == before
+    assert not Path(env["FLOOR_VAULT_DIR"]).exists()
+
+
+def test_a_different_file_named_in_another_case_is_not_a_hermes_env(tmp_path, base_env):
+    env, target = _hermes_case(tmp_path, base_env, "markers")
+    other = target.with_name(".ENV")
+    if other.exists():  # case-insensitive filesystem: both names are one file
+        pytest.skip("this filesystem does not tell .ENV from .env")
+    other.write_bytes(b"A=fixture\n")
+    dry = fv(["secrets", "import", str(other)], env)
+    assert dry.returncode == 0, dry.stderr
+    assert "is a Hermes Agent .env" not in dry.stderr
+
+
 def test_import_says_the_rewritten_file_needs_run(tmp_path, base_env):
     path = _env_file(tmp_path, b"A=fixture\n")
     dry = fv(["secrets", "import", str(path)], base_env)

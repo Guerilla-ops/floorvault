@@ -1153,12 +1153,17 @@ def _is_hermes_env_file(path: Path, environ: Mapping[str, str]) -> bool:
     Hermes reads that file itself and lets it override the environment, so
     rewriting it to ``fv:`` references would break Hermes.
     """
-    if path.name != ".env":
-        return False
     try:
         directory = path.resolve().parent
     except (OSError, RuntimeError):
         return False
+    if path.name != ".env":
+        # On a case-insensitive filesystem (macOS, Windows) `.ENV` is Hermes' `.env`.
+        try:
+            if not os.path.samefile(path, directory / ".env"):
+                return False
+        except OSError:
+            return False
     candidates = {directory}
     if directory.parent.name == "profiles":
         candidates.add(directory.parent.parent)
@@ -1364,6 +1369,8 @@ def _hermes_environ(env_file: EnvFile, environ: Mapping[str, str]) -> dict[str, 
     for line in env_file.assignments():
         view[line.name] = line.value
     return view
+
+
 _HERMES_CUSTODIES = ("os", "key_file", "systemd-creds")
 #: The first hermesvault plugin release that reads ``custody`` other than os.
 _PLUGIN_CUSTODY_SINCE = (0, 2, 8)
@@ -1536,9 +1543,7 @@ def _cmd_import_hermes(args, prog: str) -> int:
     hermes_environ = None if args.key_env else {}
     key_environ = hermes_environ_view if args.key_env == _HERMES_KEY_VAR else None
     store = (
-        _store_for(
-            args, create=args.write, provider_environ=hermes_environ, environ=key_environ
-        )
+        _store_for(args, create=args.write, provider_environ=hermes_environ, environ=key_environ)
         if (args.write or vault_exists)
         else None
     )
