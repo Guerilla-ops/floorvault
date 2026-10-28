@@ -293,13 +293,18 @@ failures never look like the command's `1` or `2`.
 **Behaviour.** `run` writes nothing to stdout, which belongs to the command
 (MCP servers speak JSON-RPC there). On Linux and macOS it replaces itself with
 the command. On Windows it starts the command, waits, and exits with its
-status; the command shares the console, so Ctrl+C reaches it directly. Because
+status; the command shares the console, so Ctrl+C and Ctrl+Break reach it
+directly while `run` ignores them and keeps waiting. Because
 `run` stays alive on Windows, the resolved values remain in its memory until
 the command exits (Python strings cannot be wiped). A bare name such as `npx`
-finds `npx.cmd` through `PATHEXT`; Windows runs `.cmd` and `.bat` files through
+finds `npx.cmd` through `PATHEXT`. Only the `PATH` entries are searched, never
+the current directory first (unlike `shutil.which` and `cmd.exe`), and empty
+entries are skipped. Windows runs `.cmd` and `.bat` files through
 `cmd.exe`, whose quoting rules differ from a normal program's, so pass such
-commands only arguments you wrote yourself. If nothing needs resolving, no
-vault is opened.
+commands only arguments you wrote yourself. Windows variable names are not
+case-sensitive, so `run` merges them that way there: `Path=` in an env file
+replaces the inherited `PATH` (the command sees it upper-cased). If nothing
+needs resolving, no vault is opened.
 
 **Store and key.** The store is `--vault DIR`, else `$FLOOR_VAULT_DIR`, else
 `~/.floorvault/agent-vault`. The key comes from the first of these that applies:
@@ -519,9 +524,13 @@ floorvault secrets allow github-pat --clear   # unbind: resolves for any command
   fetches the package when it runs, and a script can be edited. Give scripts as
   absolute paths; `secrets allow` warns about relative ones, which resolve
   against whatever directory the command starts in.
-- **Not a boundary against your own user.** The binding is sealed with the
-  item, so it cannot be edited or moved to another item undetected, but code
-  running as you can still clear it, read the key from your key store, or read
+- **Not a boundary against your own user, or against anyone who can write
+  `vault.db`.** The binding is sealed under the item's id, so it cannot be moved
+  to another item or replaced with new command lines without the key. It can,
+  however, be removed without the key (an item whose binding column is empty
+  counts as unbound), or rolled back to an older sealed binding of the same
+  item ([#97](https://github.com/Guerilla-ops/floorvault/issues/97)). Code
+  running as you can also clear it, read the key from your key store, or read
   the started command's environment. It protects against mistakes and against
   a configuration that names an item for a command you did not choose. It does
   not fix which variable the value lands in.

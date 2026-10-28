@@ -896,8 +896,11 @@ class VaultStore:
 
         Each entry is an argv list whose first element is an absolute program
         path. The list is sealed under the item's id, so it cannot be moved to
-        another item or edited undetected; a value that fails authentication
-        or does not decode is an error, never "unbound".
+        another item or replaced without the key; a value that fails
+        authentication or does not decode is an error, never "unbound". A NULL
+        column is read as unbound without any check, so whoever can write the
+        database can remove a binding, or restore an older sealed one, without
+        the key (#97).
         """
         with self._connect() as conn:
             row = conn.execute(
