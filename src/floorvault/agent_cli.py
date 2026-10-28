@@ -186,12 +186,13 @@ def open_store(
     from .core import FloorVault
     from .memory import HardenedMemoryKey
     from .providers.adaptive import AdaptiveKeyProvider
-    from .providers.base import KeyProviderError
+    from .providers.base import KeyProviderError, NoCustodyError
     from .vaultkit.vault import VaultError, VaultStore
 
     environ = os.environ if environ is None else environ
     if not create and not _is_regular_file(vault_dir / "vault.db"):
         raise StoreUnavailable(f"no vault at {vault_dir}; create one with `floorvault secrets add`")
+    provider = None
     try:
         if key_bytes is not None:
             crypto = FloorVault(HardenedMemoryKey(key_bytes), app_instance_id=APP_CONTEXT)
@@ -204,8 +205,9 @@ def open_store(
                 raise StoreUnavailable(f"{key_env} must hold 64 hexadecimal characters")
             crypto = FloorVault(HardenedMemoryKey(bytes.fromhex(raw)), app_instance_id=APP_CONTEXT)
             return VaultStore(vault_dir, crypto=crypto)
-        if create and provider_environ is None:
-            return VaultStore(vault_dir)
+        # VaultStore's own default custody, resolved here before VaultStore creates
+        # the store directory, so a refusal leaves nothing behind and can be
+        # explained in terms of this CLI's options.
         provider = AdaptiveKeyProvider(
             service_name=SERVICE_NAME, fallback_dir=vault_dir, environ=provider_environ
         )
@@ -213,6 +215,16 @@ def open_store(
         return VaultStore(vault_dir, crypto=FloorVault(key, app_instance_id=APP_CONTEXT))
     except StoreUnavailable:
         raise
+    except NoCustodyError:
+        reason = getattr(provider, "keychain_unavailable_reason", None)
+        raise StoreUnavailable(
+            f"cannot open vault at {vault_dir}: no key is available here"
+            + (f" (OS key store: {reason})" if reason else "")
+            + ". Give one with --key-file PATH or $FLOOR_VAULT_KEY_FILE, or --key-env NAME; "
+            "seal a new one with `floorvault secrets init --custody systemd-creds` "
+            "(Linux, systemd 256 or newer); or install floorvault[linux] or "
+            "floorvault[macos] to use the OS key store"
+        ) from None
     except (KeyProviderError, VaultError, ValueError, OSError, sqlite3.Error) as exc:
         raise StoreUnavailable(f"cannot open vault at {vault_dir}: {exc}") from None
 

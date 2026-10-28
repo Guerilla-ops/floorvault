@@ -1803,6 +1803,42 @@ MUTATIONS: tuple[Mutation, ...] = (
         "secrets add under another key writes to an existing store, leaving it sealed under two keys",
     ),
     Mutation(
+        "AUD-6",
+        "src/floorvault/agent_cli.py",
+        '            if not os.path.samefile(path, directory / ".env"):\n',
+        "            if False:  # MUTANT\n",
+        "Any .ENV beside a Hermes .env counts as Hermes' file, even a different one (SEC-13)",
+    ),
+    Mutation(
+        "AUD-7",
+        "src/floorvault/agent_cli.py",
+        '            if not os.path.samefile(path, directory / ".env"):\n',
+        "            if True:  # MUTANT\n",
+        "Import rewrites Hermes' .env when it is named .ENV on a case-insensitive disk (SEC-13)",
+    ),
+    Mutation(
+        "AUD-8",
+        "src/floorvault/agent_cli.py",
+        "        view[line.name] = line.value\n",
+        "        pass  # MUTANT\n",
+        "Hermes import takes $HERMES_VAULT_KEY from the shell, not the .env Hermes loads (SEC-14)",
+    ),
+    Mutation(
+        "AUD-9",
+        "src/floorvault/agent_cli.py",
+        "    except NoCustodyError:\n",
+        "    except NoCustodyError if False else ():  # MUTANT\n",
+        "With no custody, the CLI shows the library's refusal instead of its own key options (SEC-17)",
+    ),
+    Mutation(
+        "AUD-10",
+        "src/floorvault/agent_cli.py",
+        "        # VaultStore's own default custody, resolved here before VaultStore creates\n",
+        "        if create and provider_environ is None:  # MUTANT\n"
+        "            return VaultStore(vault_dir)\n",
+        "A refused secrets add leaves an empty store directory and the library's wording (SEC-17)",
+    ),
+    Mutation(
         "PKG-1",
         "scripts/verify_wheel.py",
         "        if missing:",

@@ -377,6 +377,47 @@ def test_sec_12_duplicate_id_gets_a_clear_message(base_env, store):
     assert "item one already exists" in result.stderr
 
 
+def _no_key_env(base_env, tmp_path, vault):
+    env = {k: v for k, v in base_env.items() if k != "FLOOR_VAULT_KEY"}
+    env = {k: v for k, v in env.items() if not k.startswith(("DISPLAY", "WAYLAND", "DBUS"))}
+    env["FLOOR_VAULT_DIR"] = str(vault)
+    return env
+
+
+def test_sec_17_no_custody_names_cli_options_and_leaves_no_directory(tmp_path, base_env):
+    from floorvault.providers import adaptive
+    from floorvault.providers.base import NoCustodyError
+
+    vault = tmp_path / "a" / "b" / "vault"
+    env = _no_key_env(base_env, tmp_path, vault)
+
+    def no_custody(self, *, allow_create=True):
+        raise NoCustodyError("Refusing headless fallback (library wording)")
+
+    with mock.patch.object(adaptive.AdaptiveKeyProvider, "resolve_key", no_custody):
+        result = fv(["secrets", "add", "T", "--id", "t", "--stdin"], env, stdin="value=v\n")
+    assert result.returncode == 1
+    for hint in ("--key-file", "$FLOOR_VAULT_KEY_FILE", "--key-env", "--custody systemd-creds"):
+        assert hint in result.stderr
+    assert "AdaptiveKeyProvider(" not in result.stderr
+    assert not (tmp_path / "a").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="needs a host without OS custody: the stripped environment has no Secret "
+    "Service on Linux, while macOS and Windows have a key store",
+)
+def test_sec_17_on_a_host_without_os_custody(tmp_path, base_env):
+    vault = tmp_path / "vault"
+    env = _no_key_env(base_env, tmp_path, vault)
+    result = fv(["secrets", "add", "T", "--id", "t", "--stdin"], env, stdin="value=v\n")
+    assert result.returncode == 1
+    assert "no key is available here" in result.stderr
+    assert "AdaptiveKeyProvider(" not in result.stderr
+    assert not vault.exists()
+
+
 # -------------------------------------------------------------------- inspect
 
 
