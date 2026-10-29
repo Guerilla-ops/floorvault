@@ -1837,9 +1837,9 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AUD-10",
         "src/floorvault/agent_cli.py",
-        "        # VaultStore's own default custody, resolved here before VaultStore creates\n",
-        "        if create and provider_environ is None:  # MUTANT\n"
-        "            return VaultStore(vault_dir)\n",
+        "            # VaultStore's own default custody, resolved here before VaultStore\n",
+        "            if create and provider_environ is None:  # MUTANT\n"
+        "                return VaultStore(vault_dir)\n",
         "A refused secrets add leaves an empty store directory and the library's wording (SEC-17)",
     ),
     Mutation(
