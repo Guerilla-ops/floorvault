@@ -337,6 +337,14 @@ store's directory, so each store has its own key. The command is looked up
 on `run`'s own `PATH`; a `PATH` set in an env file or with `-e` reaches the
 command but does not choose which binary starts.
 
+**Rotated stores.** There is no `secrets rotate` command; a store is rotated
+through the library (`rotate_vault_store`). Once a rotation has finished, put
+the new key where `run` and `secrets` read it (OS key store, `--key-file`,
+`--key-env`) and they open the store as before. A rotation that stopped
+part-way leaves items under both keys, which no single key opens: every command
+refuses such a store, says so, and changes nothing. Finish the rotation with the
+library first.
+
 The commands use the existing `vault.db` format (schema version 3, unchanged
 since 0.2.1), so a store shared with the Hermes plugin stays readable by both.
 

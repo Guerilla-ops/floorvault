@@ -1877,6 +1877,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "On Windows an env file's Path= reaches the child beside the inherited PATH (RUN-12)",
     ),
     Mutation(
+        "AUD-15",
+        "src/floorvault/agent_cli.py",
+        "    if target is not None:\n        # Part of the store",
+        "    if False:  # MUTANT\n        # Part of the store",
+        "A half-finished rotation is opened with one key and reported as the wrong key (SEC-16)",
+    ),
+    Mutation(
         "PKG-1",
         "scripts/verify_wheel.py",
         "        if missing:",
