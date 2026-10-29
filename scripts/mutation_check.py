@@ -1807,6 +1807,27 @@ MUTATIONS: tuple[Mutation, ...] = (
         "secrets add under another key writes to an existing store, leaving it sealed under two keys",
     ),
     Mutation(
+        "AUD-16",
+        "src/floorvault/inspector.py",
+        "        master_key = explicit_key(args, os.environ, key_dir)\n",
+        "        master_key = None  # MUTANT\n",
+        "inspect ignores --key-env / --key-file / --key-dir and uses default custody (INS-8)",
+    ),
+    Mutation(
+        "AUD-17",
+        "src/floorvault/inspector.py",
+        "                schema_id=args.schema_id,\n",
+        "",
+        "inspect ignores --schema-id: a record under another schema cannot be read (INS-7)",
+    ),
+    Mutation(
+        "AUD-18",
+        "src/floorvault/inspector.py",
+        "                schema_version=args.schema_version,\n",
+        "",
+        "inspect ignores --schema-version (INS-7)",
+    ),
+    Mutation(
         "AUD-6",
         "src/floorvault/agent_cli.py",
         '            if not os.path.samefile(path, directory / ".env"):\n',
