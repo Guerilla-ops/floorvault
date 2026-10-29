@@ -1644,8 +1644,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "SDC-12",
         "src/floorvault/agent_cli.py",
-        "    if sealed is not None:\n        return sealed\n",
-        "    if False:  # MUTANT\n        return sealed\n",
+        "        if sealed is not None:\n            return sealed\n",
+        "        if False:  # MUTANT\n            return sealed\n",
         "A store with a sealed key ignores it and takes the key from $FLOOR_VAULT_KEY_FILE or default custody",
     ),
     Mutation(
