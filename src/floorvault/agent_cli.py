@@ -281,6 +281,14 @@ def _run_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not resolve fv: values already in the inherited environment",
     )
+    parser.add_argument(
+        "--require-binding",
+        action="store_true",
+        help=(
+            "refuse items with no command binding, so one cleared in vault.db "
+            "blocks the item instead of releasing it (default: $FLOOR_VAULT_REQUIRE_BINDING)"
+        ),
+    )
     return parser
 
 
@@ -340,8 +348,26 @@ def _format_command(argv: Sequence[str]) -> str:
     return shlex.join(argv)
 
 
-def _check_bindings(store, refs, env, command_line, prog: str) -> bool:
-    """Enforce per-item command allowlists. Returns False after reporting."""
+REQUIRE_BINDING_ENV = "FLOOR_VAULT_REQUIRE_BINDING"
+
+
+def _binding_required(args, environ: Mapping[str, str]) -> bool:
+    """--require-binding, or $FLOOR_VAULT_REQUIRE_BINDING set to 1/true/yes."""
+    if getattr(args, "require_binding", False):
+        return True
+    return (environ.get(REQUIRE_BINDING_ENV) or "").strip().lower() in ("1", "true", "yes")
+
+
+def _check_bindings(
+    store, refs, env, command_line, prog: str, *, require_binding: bool = False
+) -> bool:
+    """Enforce per-item command allowlists. Returns False after reporting.
+
+    With ``require_binding`` an item with no binding is refused too. A binding
+    lives in vault.db, so whoever can write it can clear one without the key
+    (#97); the requirement lives outside the store, so clearing it blocks the
+    item instead of releasing it.
+    """
     by_item: dict[str, list[str]] = {}
     for name, ref in refs.items():
         by_item.setdefault(ref.item_id, []).append(name)
@@ -359,6 +385,14 @@ def _check_bindings(store, refs, env, command_line, prog: str) -> bool:
             )
             continue
         if allowed is None:
+            if require_binding:
+                for name in sorted(by_item[item_id]):
+                    problems.append(
+                        f"{name}: vault item {item_id} has no command binding, and "
+                        f"bindings are required (--require-binding or "
+                        f"${REQUIRE_BINDING_ENV}). Bind it with "
+                        f"`floorvault secrets allow {item_id} -- <command line>`"
+                    )
             continue
         bound.append(item_id)
         if command_line is not None and not command_allowed(command_line, allowed):
@@ -430,7 +464,14 @@ def _prepare_environment(
         _err(prog, f"cannot open vault ({type(exc).__name__})")
         return None, RUN_FAILED
     try:
-        if not _check_bindings(store, refs, env, command_line, prog):
+        if not _check_bindings(
+            store,
+            refs,
+            env,
+            command_line,
+            prog,
+            require_binding=_binding_required(args, os.environ),
+        ):
             return None, RUN_FAILED
         values = resolve(store, refs)
     except AgentEnvError as exc:

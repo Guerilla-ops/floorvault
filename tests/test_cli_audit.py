@@ -381,6 +381,41 @@ def test_run_12_later_env_file_wins_whatever_the_spelling(tmp_path, base_env):
     assert result.stdout.strip() == "second"
 
 
+def test_run_9_require_binding_refuses_an_unbound_item(tmp_path, base_env, store):
+    command = _printenv(tmp_path, "X")
+    for args, env in (
+        (["run", "--require-binding"], base_env),
+        (["run"], {**base_env, "FLOOR_VAULT_REQUIRE_BINDING": "1"}),
+    ):
+        result = fv([*args, "-e", "X=fv:one", "--", *command], env)
+        assert result.returncode == 125
+        assert "vault item one has no command binding, and bindings are required" in (result.stderr)
+        assert SECRET not in result.stdout + result.stderr
+    assert fv(["secrets", "allow", "one", "--", *command], base_env).returncode == 0
+    bound = fv(["run", "--require-binding", "-e", "X=fv:one", "--", *command], base_env)
+    assert bound.returncode == 0, bound.stderr
+    assert bound.stdout.strip() == f"X={SECRET}"
+
+
+def test_run_9_a_binding_cleared_in_vault_db_blocks_the_item_when_required(
+    tmp_path, base_env, store
+):
+    command = _printenv(tmp_path, "X")
+    assert fv(["secrets", "allow", "one", "--", *command], base_env).returncode == 0
+    other = [sys.executable, "-c", "import os; print('stolen=' + os.environ['X'])"]
+    assert fv(["run", "-e", "X=fv:one", "--", *other], base_env).returncode == 125
+    # Someone who can write vault.db, but has no key, clears the binding.
+    with contextlib.closing(sqlite3.connect(store / "vault.db")) as db:
+        db.execute("UPDATE vault_items SET allowed_commands = NULL WHERE id = 'one'")
+        db.commit()
+    released = fv(["run", "-e", "X=fv:one", "--", *other], base_env)
+    assert released.returncode == 0  # the documented limit without the requirement
+    required = fv(["run", "--require-binding", "-e", "X=fv:one", "--", *other], base_env)
+    assert required.returncode == 125
+    assert "vault item one has no command binding" in required.stderr
+    assert SECRET not in required.stdout + required.stderr
+
+
 # -------------------------------------------------------------------- secrets
 
 
