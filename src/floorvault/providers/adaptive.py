@@ -24,7 +24,13 @@ from ..platform_support import (
     is_windows,
 )
 from . import passphrase_store
-from .base import CustodyDowngradeError, KeyProvider, KeyProviderError, MissingKeyError
+from .base import (
+    CustodyDowngradeError,
+    KeyProvider,
+    KeyProviderError,
+    MissingKeyError,
+    NoCustodyError,
+)
 from .linux_keyring import LinuxSecretServiceKeyProvider
 from .platform_custody import (
     ProtectedStoreError,
@@ -583,7 +589,7 @@ class AdaptiveKeyProvider(KeyProvider):
         it actually holds.
         """
         if self.strict or not self.allow_disk_fallback:
-            raise KeyProviderError(self._disk_fallback_refusal())
+            raise NoCustodyError(self._disk_fallback_refusal())
 
         key_file = self.fallback_dir / "master.key"
         wrapped_file = self.fallback_dir / WRAPPED_KEY_FILENAME

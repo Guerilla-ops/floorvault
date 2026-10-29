@@ -77,6 +77,10 @@ class Mutation:
     #: unrelated to the code under test. Declaring the platform-specific
     #: expectation keeps the POSIX kill (which is the point of the mutant)
     #: instead of deleting the mutant to make Windows green.
+    #:
+    #: The reverse also exists: a guard that runs only on Windows is dead code
+    #: elsewhere, so its mutant declares ``expect="survived"`` with
+    #: ``expect_on_windows="killed"``.
     expect_on_windows: str | None = None
 
 
@@ -1556,8 +1560,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "HIM-5",
         "src/floorvault/agent_cli.py",
-        "    if args.key_env is None and args.key_file is None and os.environ.get(_HERMES_KEY_VAR):",
-        "    if False:  # MUTANT",
+        "        if hermes_environ_view.get(_HERMES_KEY_VAR):",
+        "        if False:  # MUTANT",
         "A store set up with the plugin's token_env key is written under a different key",
     ),
     Mutation(
@@ -1801,6 +1805,76 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        _check_store_key(store, vault_dir)\n",
         "        pass  # MUTANT\n",
         "secrets add under another key writes to an existing store, leaving it sealed under two keys",
+    ),
+    Mutation(
+        "AUD-6",
+        "src/floorvault/agent_cli.py",
+        '            if not os.path.samefile(path, directory / ".env"):\n',
+        "            if False:  # MUTANT\n",
+        "Any .ENV beside a Hermes .env counts as Hermes' file, even a different one (SEC-13)",
+    ),
+    Mutation(
+        "AUD-7",
+        "src/floorvault/agent_cli.py",
+        '            if not os.path.samefile(path, directory / ".env"):\n',
+        "            if True:  # MUTANT\n",
+        "Import rewrites Hermes' .env when it is named .ENV on a case-insensitive disk (SEC-13)",
+    ),
+    Mutation(
+        "AUD-8",
+        "src/floorvault/agent_cli.py",
+        "        view[line.name] = line.value\n",
+        "        pass  # MUTANT\n",
+        "Hermes import takes $HERMES_VAULT_KEY from the shell, not the .env Hermes loads (SEC-14)",
+    ),
+    Mutation(
+        "AUD-9",
+        "src/floorvault/agent_cli.py",
+        "    except NoCustodyError:\n",
+        "    except NoCustodyError if False else ():  # MUTANT\n",
+        "With no custody, the CLI shows the library's refusal instead of its own key options (SEC-17)",
+    ),
+    Mutation(
+        "AUD-10",
+        "src/floorvault/agent_cli.py",
+        "        # VaultStore's own default custody, resolved here before VaultStore creates\n",
+        "        if create and provider_environ is None:  # MUTANT\n"
+        "            return VaultStore(vault_dir)\n",
+        "A refused secrets add leaves an empty store directory and the library's wording (SEC-17)",
+    ),
+    Mutation(
+        "AUD-11",
+        "src/floorvault/agent_cli.py",
+        "        if not directory:\n            continue\n",
+        "        if False:  # MUTANT\n            continue\n",
+        "An empty Windows PATH entry (a trailing ';') searches the working directory (RUN-10)",
+    ),
+    Mutation(
+        "AUD-12",
+        "src/floorvault/agent_cli.py",
+        '        if os.name == "nt":\n            # Not os.defpath',
+        "        if False:  # MUTANT\n            # Not os.defpath",
+        "run on Windows finds a node.exe in the working directory before PATH (RUN-10; "
+        "the branch is dead off Windows, so this mutant is equivalent there)",
+        expect="survived",
+        expect_on_windows="killed",
+    ),
+    Mutation(
+        "AUD-13",
+        "src/floorvault/agent_cli.py",
+        "            previous = signal.signal(sigbreak, signal.SIG_IGN)\n",
+        "            previous = signal.getsignal(sigbreak)  # MUTANT\n",
+        "Ctrl+Break ends run on Windows and leaves its child running (RUN-11; "
+        "SIGBREAK exists only on Windows, so this mutant is equivalent elsewhere)",
+        expect="survived",
+        expect_on_windows="killed",
+    ),
+    Mutation(
+        "AUD-14",
+        "src/floorvault/agentenv.py",
+        "        return name.upper() if fold_case else name\n",
+        "        return name  # MUTANT\n",
+        "On Windows an env file's Path= reaches the child beside the inherited PATH (RUN-12)",
     ),
     Mutation(
         "PKG-1",

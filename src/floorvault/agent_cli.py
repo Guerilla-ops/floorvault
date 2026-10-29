@@ -186,12 +186,13 @@ def open_store(
     from .core import FloorVault
     from .memory import HardenedMemoryKey
     from .providers.adaptive import AdaptiveKeyProvider
-    from .providers.base import KeyProviderError
+    from .providers.base import KeyProviderError, NoCustodyError
     from .vaultkit.vault import VaultError, VaultStore
 
     environ = os.environ if environ is None else environ
     if not create and not _is_regular_file(vault_dir / "vault.db"):
         raise StoreUnavailable(f"no vault at {vault_dir}; create one with `floorvault secrets add`")
+    provider = None
     try:
         if key_bytes is not None:
             crypto = FloorVault(HardenedMemoryKey(key_bytes), app_instance_id=APP_CONTEXT)
@@ -204,8 +205,9 @@ def open_store(
                 raise StoreUnavailable(f"{key_env} must hold 64 hexadecimal characters")
             crypto = FloorVault(HardenedMemoryKey(bytes.fromhex(raw)), app_instance_id=APP_CONTEXT)
             return VaultStore(vault_dir, crypto=crypto)
-        if create and provider_environ is None:
-            return VaultStore(vault_dir)
+        # VaultStore's own default custody, resolved here before VaultStore creates
+        # the store directory, so a refusal leaves nothing behind and can be
+        # explained in terms of this CLI's options.
         provider = AdaptiveKeyProvider(
             service_name=SERVICE_NAME, fallback_dir=vault_dir, environ=provider_environ
         )
@@ -213,6 +215,16 @@ def open_store(
         return VaultStore(vault_dir, crypto=FloorVault(key, app_instance_id=APP_CONTEXT))
     except StoreUnavailable:
         raise
+    except NoCustodyError:
+        reason = getattr(provider, "keychain_unavailable_reason", None)
+        raise StoreUnavailable(
+            f"cannot open vault at {vault_dir}: no key is available here"
+            + (f" (OS key store: {reason})" if reason else "")
+            + ". Give one with --key-file PATH or $FLOOR_VAULT_KEY_FILE, or --key-env NAME; "
+            "seal a new one with `floorvault secrets init --custody systemd-creds` "
+            "(Linux, systemd 256 or newer); or install floorvault[linux] or "
+            "floorvault[macos] to use the OS key store"
+        ) from None
     except (KeyProviderError, VaultError, ValueError, OSError, sqlite3.Error) as exc:
         raise StoreUnavailable(f"cannot open vault at {vault_dir}: {exc}") from None
 
@@ -272,18 +284,51 @@ def _run_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: What Windows uses when PATHEXT is unset (as in ``shutil``).
+_WINDOWS_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC"
+
+
+def _windows_which(command: str, search_path: str, pathext: Optional[str]) -> Optional[str]:
+    """Find ``command`` on a Windows ``PATH``, searching only the entries it lists.
+
+    ``shutil.which`` on Windows also searches the current directory first (always
+    before Python 3.12, and on 3.12+ unless NoDefaultCurrentDirectoryInExePath is
+    set), so a ``node.exe`` in the working directory would receive the secrets
+    (audit RUN-10). Empty entries, such as a trailing ``;``, are skipped for the
+    same reason; an explicit ``.`` entry is the operator's choice and is kept.
+    """
+    extensions = [ext for ext in (pathext or _WINDOWS_DEFAULT_PATHEXT).split(";") if ext]
+    lowered = command.lower()
+    names = [command] if any(lowered.endswith(ext.lower()) for ext in extensions) else []
+    names += [command + ext for ext in extensions]
+    for directory in search_path.split(";"):
+        if not directory:
+            continue
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
 def _find_command(command: str, env: Mapping[str, str]) -> tuple[Optional[str], int]:
     """Locate ``command`` on ``env``'s PATH: (path, 0) or (None, 126/127)."""
     seps = {os.sep, os.altsep} - {None}
     try:
-        if any(sep in command for sep in seps):
+        # A drive-qualified name ("C:node.exe") is a path relative to that
+        # drive's working directory, never a name to join onto PATH entries.
+        if any(sep in command for sep in seps) or os.path.splitdrive(command)[0]:
             path = Path(command)
             if not path.exists():
                 return None, 127
             if path.is_dir() or not os.access(path, os.X_OK):
                 return None, 126
             return str(path), 0
-        found = shutil.which(command, path=env.get("PATH", os.defpath))
+        if os.name == "nt":
+            # Not os.defpath: on Windows it starts with the current directory.
+            found = _windows_which(command, env.get("PATH", ""), env.get("PATHEXT"))
+        else:
+            found = shutil.which(command, path=env.get("PATH", os.defpath))
     except PermissionError:
         return None, 126
     except (OSError, ValueError):  # e.g. a name too long for the filesystem
@@ -407,22 +452,37 @@ def _spawn_and_wait(path: str, argv: Sequence[str], env: Mapping[str, str]) -> i
     Used on Windows, where ``os.exec*`` starts a new process and exits the
     caller at once, which an MCP client reads as the server exiting. The child
     shares this console, so Ctrl+C and Ctrl+Break reach it directly; this
-    process keeps waiting for it to finish.
+    process keeps waiting for it to finish: Ctrl+C raises KeyboardInterrupt,
+    which is caught, and SIGBREAK is ignored until the child exits (audit
+    RUN-11), since by default Ctrl+Break would end this process and leave the
+    child running without it.
     """
     # Starting the operator's own command is this function's purpose; the
     # argv is passed as a list, never through a shell.
+    import signal
     import subprocess  # nosec B404
 
-    try:
-        proc = subprocess.Popen([path, *argv[1:]], env=dict(env))  # nosec B603
-    except OSError as exc:
-        _err("floorvault run", f"cannot start {argv[0]}: {type(exc).__name__}")
-        return 126
-    while True:
+    sigbreak = getattr(signal, "SIGBREAK", None)
+    previous = None
+    if sigbreak is not None:
         try:
-            return proc.wait()
-        except KeyboardInterrupt:
-            continue
+            previous = signal.signal(sigbreak, signal.SIG_IGN)
+        except ValueError:  # not the main thread: keep the default
+            sigbreak = None
+    try:
+        try:
+            proc = subprocess.Popen([path, *argv[1:]], env=dict(env))  # nosec B603
+        except OSError as exc:
+            _err("floorvault run", f"cannot start {argv[0]}: {type(exc).__name__}")
+            return 126
+        while True:
+            try:
+                return proc.wait()
+            except KeyboardInterrupt:
+                continue
+    finally:
+        if sigbreak is not None:
+            signal.signal(sigbreak, signal.SIG_DFL if previous is None else previous)
 
 
 def _launch(path: str, argv: Sequence[str], env: dict) -> int:
@@ -682,13 +742,14 @@ def _split_target(text: str) -> tuple[Optional[str], Optional[str]]:
     return item_id, (field or None)
 
 
-def _store_for(args, *, create: bool = False, provider_environ=None):
+def _store_for(args, *, create: bool = False, provider_environ=None, environ=None):
     """Open the store; with ``create``, create it (and a key) only if there is none.
 
     An existing store is never opened in create mode, so a missing key is an
     error rather than a new key, and the key is checked against the items
     already there before any command writes: a store sealed under two keys
-    can no longer be listed.
+    can no longer be listed. ``environ`` is where ``--key-env`` is read (default:
+    the process environment).
     """
     _check_key_options(args)
     vault_dir = _vault_dir(args.vault, os.environ)
@@ -698,6 +759,7 @@ def _store_for(args, *, create: bool = False, provider_environ=None):
         key_env=args.key_env,
         key_bytes=_custody_key(args, os.environ, vault_dir),
         create=create and not existed,
+        environ=environ,
         provider_environ=provider_environ,
     )
     if existed:
@@ -1108,8 +1170,12 @@ def plan_env_import(
     return to_store, left, problems
 
 
-def _import_plan(args, env_file: EnvFile, prog: str):
-    """Split a file's assignments into (to_store, left_as_is), or None on error."""
+def _import_plan(args, env_file: EnvFile, prog: str, *, environ=None):
+    """Split a file's assignments into (to_store, left_as_is), or None on error.
+
+    ``environ`` is where key values are looked up to leave copies of them in the
+    file (default: the process environment).
+    """
     to_store, left, problems = plan_env_import(
         env_file,
         only=args.only,
@@ -1117,6 +1183,7 @@ def _import_plan(args, env_file: EnvFile, prog: str):
         prefix=args.prefix,
         key_env=args.key_env,
         key_file=_key_file_from(args, os.environ),
+        environ=environ,
     )
     for problem in problems:
         _err(prog, problem)
@@ -1146,12 +1213,17 @@ def _is_hermes_env_file(path: Path, environ: Mapping[str, str]) -> bool:
     Hermes reads that file itself and lets it override the environment, so
     rewriting it to ``fv:`` references would break Hermes.
     """
-    if path.name != ".env":
-        return False
     try:
         directory = path.resolve().parent
     except (OSError, RuntimeError):
         return False
+    if path.name != ".env":
+        # On a case-insensitive filesystem (macOS, Windows) `.ENV` is Hermes' `.env`.
+        try:
+            if not os.path.samefile(path, directory / ".env"):
+                return False
+        except OSError:
+            return False
     candidates = {directory}
     if directory.parent.name == "profiles":
         candidates.add(directory.parent.parent)
@@ -1345,6 +1417,20 @@ def _verify_hermes_removal(config_text, home, vault_dir, env_file, to_store):
 
 
 _HERMES_KEY_VAR = "HERMES_VAULT_KEY"  # the plugin's default token_env
+
+
+def _hermes_environ(env_file: EnvFile, environ: Mapping[str, str]) -> dict[str, str]:
+    """The environment the plugin sees: ``environ`` with the profile ``.env`` loaded over it.
+
+    Hermes loads ``<home>/.env`` with override before secret sources run, and a
+    later line wins over an earlier one, as in python-dotenv.
+    """
+    view = dict(environ)
+    for line in env_file.assignments():
+        view[line.name] = line.value
+    return view
+
+
 _HERMES_CUSTODIES = ("os", "key_file", "systemd-creds")
 #: The first hermesvault plugin release that reads ``custody`` other than os.
 _PLUGIN_CUSTODY_SINCE = (0, 2, 8)
@@ -1439,10 +1525,33 @@ def _cmd_import_hermes(args, prog: str) -> int:
             )
             return 2
         args.vault = home / "agent-vault"
-    if args.key_env is None and args.key_file is None and os.environ.get(_HERMES_KEY_VAR):
-        # The plugin uses this variable's key directly when it is set.
-        args.key_env = _HERMES_KEY_VAR
-        _err(prog, f"using the key in ${_HERMES_KEY_VAR}, as the hermesvault plugin does")
+    try:
+        env_file = read_env_file(path)
+    except AgentEnvError as exc:
+        for problem in exc.problems:
+            _err(prog, problem)
+        return 2
+    # Hermes loads this .env with override before the plugin fetches, so a
+    # HERMES_VAULT_KEY line here, even an empty one, decides the key the plugin
+    # sees, not the importing shell's environment.
+    hermes_environ_view = _hermes_environ(env_file, os.environ)
+    if args.key_env is None and args.key_file is None:
+        in_file = any(line.name == _HERMES_KEY_VAR for line in env_file.assignments())
+        if hermes_environ_view.get(_HERMES_KEY_VAR):
+            # The plugin uses this variable's key directly when it is set.
+            args.key_env = _HERMES_KEY_VAR
+            where = path.name if in_file else "the environment"
+            _err(
+                prog,
+                f"using the key in ${_HERMES_KEY_VAR} from {where}, as the hermesvault plugin does",
+            )
+        elif in_file and os.environ.get(_HERMES_KEY_VAR):
+            _err(
+                prog,
+                f"${_HERMES_KEY_VAR} is empty in {path.name}, which Hermes loads over the "
+                "environment, so the plugin does not use it; the store is opened with the "
+                "plugin's custody instead",
+            )
     if (
         args.key_env is None
         and args.key_file is None
@@ -1456,13 +1565,7 @@ def _cmd_import_hermes(args, prog: str) -> int:
             f"unset ${KEY_FILE_ENV} for this command",
         )
         return 2
-    try:
-        env_file = read_env_file(path)
-    except AgentEnvError as exc:
-        for problem in exc.problems:
-            _err(prog, problem)
-        return 2
-    plan = _import_plan(args, env_file, prog)
+    plan = _import_plan(args, env_file, prog, environ=hermes_environ_view)
     if plan is None:
         return 2
     to_store, left = plan
@@ -1498,8 +1601,9 @@ def _cmd_import_hermes(args, prog: str) -> int:
     # $FLOOR_VAULT_KEY and $VAULT_MASTER_KEY are not read and $FLOOR_VAULT_KEY_FILE is
     # refused above, so nothing is stored under a key the plugin never uses.
     hermes_environ = None if args.key_env else {}
+    key_environ = hermes_environ_view if args.key_env == _HERMES_KEY_VAR else None
     store = (
-        _store_for(args, create=args.write, provider_environ=hermes_environ)
+        _store_for(args, create=args.write, provider_environ=hermes_environ, environ=key_environ)
         if (args.write or vault_exists)
         else None
     )

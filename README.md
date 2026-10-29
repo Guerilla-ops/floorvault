@@ -44,6 +44,7 @@ python -m pip install floorvault
 | `libsql` | Synchronous libSQL driver |
 | `postgres` | Psycopg driver |
 | `mysql` | MySQL Connector/Python driver |
+| `hermes` | PyYAML, for `floorvault secrets import --hermes --remove-from-env` |
 | `dev` | Development and verification tools |
 
 For example, `python -m pip install "floorvault[linux]"`. The base install does

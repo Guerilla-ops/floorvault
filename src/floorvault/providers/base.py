@@ -15,6 +15,15 @@ class MissingKeyError(KeyProviderError):
     """Raised when an existing key cannot be found and creation is disallowed."""
 
 
+class NoCustodyError(KeyProviderError):
+    """Raised when no key source is usable here and disk fallback is not enabled.
+
+    No explicit key was given, the OS key store is unusable or absent, and the
+    plaintext disk fallback was not opted into. Callers with their own key
+    options (a CLI) catch this to say which of those options to use.
+    """
+
+
 class CustodyDowngradeError(KeyProviderError):
     """Raised when a stronger custody tier is present but unusable.
 

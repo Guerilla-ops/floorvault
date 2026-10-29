@@ -219,6 +219,168 @@ def test_run_8_help_goes_to_stderr(base_env):
     assert "floorvault run" in result.stderr
 
 
+WINDOWS = pytest.mark.skipif(os.name != "nt", reason="Windows-only behaviour")
+
+
+def _exe(directory: Path, name: str) -> Path:
+    """An empty file standing in for an executable.
+
+    Fixtures carry PATHEXT's upper-case extensions: Windows matches names
+    case-insensitively, the Linux and macOS runners of these tests do not.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_bytes(b"")
+    return path
+
+
+def test_run_10_windows_lookup_never_searches_the_current_directory(tmp_path, monkeypatch):
+    from floorvault.agent_cli import _windows_which
+
+    cwd, bin_dir = tmp_path / "cwd", tmp_path / "bin"
+    _exe(cwd, "node.EXE")
+    bin_dir.mkdir()
+    monkeypatch.chdir(cwd)
+    # Not on PATH: not found, even though the working directory holds one.
+    assert _windows_which("node", str(bin_dir), ".COM;.EXE") is None
+    # Empty entries (a trailing ';') do not stand for the working directory either.
+    assert _windows_which("node", f";{bin_dir};", ".COM;.EXE") is None
+    found = _exe(bin_dir, "node.EXE")
+    assert _windows_which("node", f";{bin_dir};", ".COM;.EXE") == str(found)
+
+
+def test_run_10_windows_lookup_follows_path_order_and_pathext(tmp_path):
+    from floorvault.agent_cli import _windows_which
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    _exe(second, "tool.EXE")
+    cmd = _exe(first, "tool.CMD")
+    path = f"{first};{second}"
+    # PATH order wins over PATHEXT order, as in Windows' own search.
+    assert _windows_which("tool", path, ".EXE;.CMD") == str(cmd)
+    # A name that already carries a PATHEXT extension is tried as given.
+    assert _windows_which("tool.EXE", path, ".EXE;.CMD") == str(second / "tool.EXE")
+    # Without PATHEXT, the Windows default list applies.
+    assert _windows_which("tool", str(second), None) == str(second / "tool.EXE")
+    # An extension outside PATHEXT is not run directly.
+    _exe(first, "tool.py")
+    assert _windows_which("tool.py", str(first), ".EXE") is None
+
+
+@WINDOWS
+def test_run_10_working_directory_executable_is_not_found_on_windows(tmp_path, monkeypatch):
+    from floorvault.agent_cli import _find_command
+
+    _exe(tmp_path, "fvcwdprobe.exe")
+    monkeypatch.chdir(tmp_path)
+    environ = {"PATH": os.environ.get("SystemRoot", r"C:\Windows"), "PATHEXT": ".EXE"}
+    assert _find_command("fvcwdprobe", environ) == (None, 127)
+    # Naming it as a path is the operator's explicit choice.
+    path, code = _find_command(r".\fvcwdprobe.exe", environ)
+    assert code == 0 and Path(path).name == "fvcwdprobe.exe"
+
+
+@WINDOWS
+def test_run_10_drive_relative_command_is_a_path_on_windows(tmp_path, monkeypatch):
+    from floorvault.agent_cli import _find_command
+
+    _exe(tmp_path, "fvdriveprobe.exe")
+    monkeypatch.chdir(tmp_path)
+    drive = os.path.splitdrive(str(tmp_path))[0]
+    environ = {"PATH": os.environ.get("SystemRoot", r"C:\Windows"), "PATHEXT": ".EXE"}
+    # "C:fvdriveprobe.exe" names a file in the drive's working directory: it is
+    # looked up as a path, never joined onto PATH entries.
+    path, code = _find_command(f"{drive}fvdriveprobe.exe", environ)
+    assert code == 0 and Path(path).name == "fvdriveprobe.exe"
+    assert _find_command(f"{drive}fvdriveprobe", environ) == (None, 127)
+
+
+@pytest.mark.skipif(not hasattr(__import__("signal"), "SIGBREAK"), reason="Windows SIGBREAK")
+def test_run_11_ctrl_break_is_ignored_while_waiting(monkeypatch):
+    import signal
+
+    from floorvault import agent_cli
+
+    seen = []
+
+    class Child:
+        def wait(self):
+            seen.append(signal.getsignal(signal.SIGBREAK))
+            return 3
+
+    before = signal.getsignal(signal.SIGBREAK)
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: Child())
+    assert agent_cli._spawn_and_wait("x", ["x"], {}) == 3
+    assert seen == [signal.SIG_IGN]
+    assert signal.getsignal(signal.SIGBREAK) == before
+
+
+@WINDOWS
+def test_run_11_ctrl_break_does_not_end_run_before_its_child(tmp_path, base_env):
+    import signal
+    import time
+
+    go = tmp_path / "go"
+    child = (
+        "import os, signal, sys, time\n"
+        "signal.signal(signal.SIGBREAK, signal.SIG_IGN)\n"
+        "print('ready', flush=True)\n"
+        "deadline = time.monotonic() + 60\n"
+        f"while not os.path.exists({str(go)!r}) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.05)\n"
+        "sys.exit(7)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _LAUNCH, "run", "--", sys.executable, "-c", child],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=base_env,
+        cwd=ROOT,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+    try:
+        assert proc.stdout.readline().strip() == "ready"
+        os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+        time.sleep(1)
+        assert proc.poll() is None, "Ctrl+Break ended run while its child kept running"
+        go.write_text("")
+        assert proc.wait(timeout=60) == 7
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def test_run_12_names_fold_to_one_variable_on_windows():
+    from floorvault.agentenv import collect
+
+    inherited = {"PATH": "inherited", "API_KEY": "plain"}
+    env, refs = collect(inherited, [{"Path": "from-file"}], ["Api_Key=fv:item"], fold_case=True)
+    assert env == {"PATH": "from-file"}
+    assert set(refs) == {"API_KEY"}
+    # POSIX names are case-sensitive: both spellings stay.
+    env, refs = collect(inherited, [{"Path": "from-file"}], ["Api_Key=fv:item"], fold_case=False)
+    assert env == {"PATH": "inherited", "Path": "from-file", "API_KEY": "plain"}
+    assert set(refs) == {"Api_Key"}
+
+
+@WINDOWS
+def test_run_12_later_env_file_wins_whatever_the_spelling(tmp_path, base_env):
+    # Python 3.11+ keeps the last-inserted of names that differ only in case;
+    # the second file updates the inherited name in place, so without folding
+    # the first file's spelling (inserted later) reached the child instead.
+    first, second = tmp_path / "first.env", tmp_path / "second.env"
+    first.write_text("Fv_Case_Probe=first\n")
+    second.write_text("FV_CASE_PROBE=second\n")
+    env = {**base_env, "FV_CASE_PROBE": "inherited"}
+    probe = "import os; print(os.environ['FV_CASE_PROBE'])"
+    files = ["--env-file", str(first), "--env-file", str(second)]
+    result = fv(["run", *files, "--", sys.executable, "-c", probe], env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "second"
+
+
 # -------------------------------------------------------------------- secrets
 
 
@@ -375,6 +537,47 @@ def test_sec_12_duplicate_id_gets_a_clear_message(base_env, store):
     result = fv(["secrets", "add", "Again", "value=v", "--id", "one"], base_env)
     assert result.returncode == 1
     assert "item one already exists" in result.stderr
+
+
+def _no_key_env(base_env, tmp_path, vault):
+    env = {k: v for k, v in base_env.items() if k != "FLOOR_VAULT_KEY"}
+    env = {k: v for k, v in env.items() if not k.startswith(("DISPLAY", "WAYLAND", "DBUS"))}
+    env["FLOOR_VAULT_DIR"] = str(vault)
+    return env
+
+
+def test_sec_17_no_custody_names_cli_options_and_leaves_no_directory(tmp_path, base_env):
+    from floorvault.providers import adaptive
+    from floorvault.providers.base import NoCustodyError
+
+    vault = tmp_path / "a" / "b" / "vault"
+    env = _no_key_env(base_env, tmp_path, vault)
+
+    def no_custody(self, *, allow_create=True):
+        raise NoCustodyError("Refusing headless fallback (library wording)")
+
+    with mock.patch.object(adaptive.AdaptiveKeyProvider, "resolve_key", no_custody):
+        result = fv(["secrets", "add", "T", "--id", "t", "--stdin"], env, stdin="value=v\n")
+    assert result.returncode == 1
+    for hint in ("--key-file", "$FLOOR_VAULT_KEY_FILE", "--key-env", "--custody systemd-creds"):
+        assert hint in result.stderr
+    assert "AdaptiveKeyProvider(" not in result.stderr
+    assert not (tmp_path / "a").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="needs a host without OS custody: the stripped environment has no Secret "
+    "Service on Linux, while macOS and Windows have a key store",
+)
+def test_sec_17_on_a_host_without_os_custody(tmp_path, base_env):
+    vault = tmp_path / "vault"
+    env = _no_key_env(base_env, tmp_path, vault)
+    result = fv(["secrets", "add", "T", "--id", "t", "--stdin"], env, stdin="value=v\n")
+    assert result.returncode == 1
+    assert "no key is available here" in result.stderr
+    assert "AdaptiveKeyProvider(" not in result.stderr
+    assert not vault.exists()
 
 
 # -------------------------------------------------------------------- inspect
