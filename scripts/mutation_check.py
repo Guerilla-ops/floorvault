@@ -1776,6 +1776,27 @@ MUTATIONS: tuple[Mutation, ...] = (
         "LD_PRELOAD=fv:x no longer blocks a bound item: the reference sets the variable unchecked",
     ),
     Mutation(
+        "AUD-19",
+        "src/floorvault/agent_cli.py",
+        "    if sealed_listing and cleartext_rows and not migrate_listing:\n",
+        "    if False:  # MUTANT\n",
+        "Asserted sealed listing opens a store turned back to cleartext (SEC-15)",
+    ),
+    Mutation(
+        "AUD-20",
+        "src/floorvault/agent_cli.py",
+        '        "seal_listing_metadata": bool(sealed_listing or sealed_rows or migrate_listing),\n',
+        '        "seal_listing_metadata": bool(sealed_listing or migrate_listing),  # MUTANT\n',
+        "The CLI cannot open a store with sealed listing metadata again (SEC-15)",
+    ),
+    Mutation(
+        "AUD-21",
+        "src/floorvault/agent_cli.py",
+        "    store = _store_for(args)  # the key must open every item before anything changes\n",
+        "    store = None  # MUTANT\n",
+        "secrets seal-listing converts a store before checking the key opens it (SEC-15)",
+    ),
+    Mutation(
         "AUD-2",
         "src/floorvault/agent_cli.py",
         "    return _launch(command_line[0], command, env)",

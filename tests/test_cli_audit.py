@@ -668,3 +668,86 @@ def test_ins_7_id_column_and_revision(base_env, table_db):
     )
     assert by_uid.returncode == 0, by_uid.stderr
     assert "by-uid" in by_uid.stdout
+
+
+# ------------------------------------------------- sealed listing metadata (#98)
+
+
+def _listing_types(vault_dir):
+    with contextlib.closing(sqlite3.connect(vault_dir / "vault.db")) as db:
+        return db.execute(
+            "SELECT id, typeof(kind), typeof(has_otp) FROM vault_items ORDER BY id"
+        ).fetchall()
+
+
+def _sealed_library_store(vault_dir, key_hex):
+    from floorvault.core import FloorVault
+    from floorvault.memory import HardenedMemoryKey
+    from floorvault.vaultkit.vault import VaultStore
+
+    crypto = FloorVault(HardenedMemoryKey(bytes.fromhex(key_hex)), app_instance_id="floor-agent")
+    store = VaultStore(vault_dir, crypto=crypto, seal_listing_metadata=True)
+    store.add_item(kind="generic", label="Sealed", secret={"value": SECRET}, item_id="sealed")
+    return store
+
+
+def test_sec_15_a_sealed_listing_store_opens_without_options(tmp_path, base_env, key):
+    vault = Path(base_env["FLOOR_VAULT_DIR"])
+    _sealed_library_store(vault, key)
+    listed = fv(["secrets", "list"], base_env)
+    assert listed.returncode == 0, listed.stderr
+    assert listed.stdout.split("\t")[:2] == ["sealed", "generic"]
+    assert fv(["secrets", "show", "sealed"], base_env).returncode == 0
+    added = fv(["secrets", "add", "more", "--id", "more", "--stdin"], base_env, stdin="value=v\n")
+    assert added.returncode == 0, added.stderr
+    assert {t[1:] for t in _listing_types(vault)} == {("blob", "blob")}
+    result = fv(["run", "-e", "X=fv:sealed", "--", *_printenv(tmp_path, "X")], base_env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"X={SECRET}"
+
+
+def test_sec_15_seal_listing_converts_and_the_assertion_refuses_cleartext(
+    tmp_path, base_env, store
+):
+    asserted = {**base_env, "FLOOR_VAULT_SEALED_LISTING": "1"}
+    refused = fv(["secrets", "list"], asserted)
+    assert refused.returncode == 1
+    assert "has cleartext listing metadata, but sealed listing metadata was asserted" in (
+        refused.stderr
+    )
+    run = fv(
+        ["run", "--sealed-listing", "-e", "X=fv:one", "--", *_printenv(tmp_path, "X")], base_env
+    )
+    assert run.returncode == 125
+    assert SECRET not in run.stdout + run.stderr
+
+    converted = fv(["secrets", "seal-listing"], base_env)
+    assert converted.returncode == 0, converted.stderr
+    assert "sealed the listing metadata of 2 item(s)" in converted.stdout
+    assert "FLOOR_VAULT_SEALED_LISTING=1" in converted.stderr
+    assert {t[1:] for t in _listing_types(store)} == {("blob", "blob")}
+    assert fv(["secrets", "list"], asserted).returncode == 0
+    again = fv(["secrets", "seal-listing"], base_env)
+    assert again.returncode == 0
+    assert "already sealed; nothing was changed" in again.stdout
+
+    # Someone who can write vault.db turns every row back to cleartext.
+    with contextlib.closing(sqlite3.connect(store / "vault.db")) as db:
+        db.execute("UPDATE vault_items SET kind = 'generic', has_otp = 0")
+        db.commit()
+    assert fv(["secrets", "list"], asserted).returncode == 1
+    assert fv(["secrets", "list", "--sealed-listing"], base_env).returncode == 1
+
+
+def test_sec_15_seal_listing_checks_the_key_first(base_env, store):
+    before = _listing_types(store)
+    wrong = fv(["secrets", "seal-listing"], {**base_env, "FLOOR_VAULT_KEY": "ab" * 32})
+    assert wrong.returncode == 1
+    assert _listing_types(store) == before
+
+
+def test_sec_15_an_asserted_new_store_is_sealed_from_the_first_item(base_env):
+    asserted = {**base_env, "FLOOR_VAULT_SEALED_LISTING": "yes"}
+    added = fv(["secrets", "add", "first", "--id", "first", "--stdin"], asserted, stdin="v=1\n")
+    assert added.returncode == 0, added.stderr
+    assert _listing_types(Path(base_env["FLOOR_VAULT_DIR"])) == [("first", "blob", "blob")]

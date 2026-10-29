@@ -28,6 +28,7 @@ Rules this module keeps:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import json
 import os
@@ -172,6 +173,8 @@ def open_store(
     create: bool = False,
     environ: Optional[Mapping[str, str]] = None,
     provider_environ: Optional[Mapping[str, str]] = None,
+    sealed_listing: bool = False,
+    migrate_listing: bool = False,
 ):
     """Open the agent-secret store at ``vault_dir``.
 
@@ -182,6 +185,12 @@ def open_store(
     ``provider_environ`` is where the default provider reads key variables
     (``{}``: none, as the Hermes plugin does); ``None`` is the process
     environment.
+
+    Listing metadata (#98): a store whose ``kind``/``has_otp`` are sealed is
+    opened in sealed mode. ``sealed_listing=True`` asserts that mode, so a
+    store holding cleartext rows (never converted, or turned back by someone
+    who can write ``vault.db``) is refused. ``migrate_listing`` converts the
+    store (``secrets seal-listing``).
     """
     from .core import FloorVault
     from .memory import HardenedMemoryKey
@@ -192,11 +201,23 @@ def open_store(
     environ = os.environ if environ is None else environ
     if not create and not _is_regular_file(vault_dir / "vault.db"):
         raise StoreUnavailable(f"no vault at {vault_dir}; create one with `floorvault secrets add`")
+    sealed_rows, cleartext_rows = _listing_rows(vault_dir)
+    if sealed_listing and cleartext_rows and not migrate_listing:
+        raise StoreUnavailable(
+            f"the vault at {vault_dir} has cleartext listing metadata, but sealed listing "
+            f"metadata was asserted ({SEALED_LISTING_HINT}); nothing was changed. Convert "
+            "it with `floorvault secrets seal-listing`; if it was converted before, "
+            "someone who can write vault.db has turned it back"
+        )
+    listing = {
+        "seal_listing_metadata": bool(sealed_listing or sealed_rows or migrate_listing),
+        "migrate_listing_metadata": migrate_listing,
+    }
     provider = None
     try:
         if key_bytes is not None:
             crypto = FloorVault(HardenedMemoryKey(key_bytes), app_instance_id=APP_CONTEXT)
-            return VaultStore(vault_dir, crypto=crypto)
+            return VaultStore(vault_dir, crypto=crypto, **listing)
         if key_env:
             raw = (environ.get(key_env) or "").strip()
             if not raw:
@@ -204,7 +225,7 @@ def open_store(
             if not _HEX_KEY.fullmatch(raw):
                 raise StoreUnavailable(f"{key_env} must hold 64 hexadecimal characters")
             crypto = FloorVault(HardenedMemoryKey(bytes.fromhex(raw)), app_instance_id=APP_CONTEXT)
-            return VaultStore(vault_dir, crypto=crypto)
+            return VaultStore(vault_dir, crypto=crypto, **listing)
         # VaultStore's own default custody, resolved here before VaultStore creates
         # the store directory, so a refusal leaves nothing behind and can be
         # explained in terms of this CLI's options.
@@ -212,7 +233,7 @@ def open_store(
             service_name=SERVICE_NAME, fallback_dir=vault_dir, environ=provider_environ
         )
         key = provider.resolve_key(allow_create=create)
-        return VaultStore(vault_dir, crypto=FloorVault(key, app_instance_id=APP_CONTEXT))
+        return VaultStore(vault_dir, crypto=FloorVault(key, app_instance_id=APP_CONTEXT), **listing)
     except StoreUnavailable:
         raise
     except NoCustodyError:
@@ -227,6 +248,45 @@ def open_store(
         ) from None
     except (KeyProviderError, VaultError, ValueError, OSError, sqlite3.Error) as exc:
         raise StoreUnavailable(f"cannot open vault at {vault_dir}: {exc}") from None
+
+
+SEALED_LISTING_ENV = "FLOOR_VAULT_SEALED_LISTING"
+SEALED_LISTING_HINT = f"--sealed-listing or ${SEALED_LISTING_ENV}=1"
+
+
+def _sealed_listing_asserted(args, environ: Mapping[str, str]) -> bool:
+    """--sealed-listing, or $FLOOR_VAULT_SEALED_LISTING set to 1/true/yes."""
+    if getattr(args, "sealed_listing", False):
+        return True
+    return (environ.get(SEALED_LISTING_ENV) or "").strip().lower() in ("1", "true", "yes")
+
+
+def _listing_rows(vault_dir: Path) -> tuple[int, int]:
+    """How many items have sealed and how many cleartext listing metadata.
+
+    Read-only and before any key is used, so the mode can be chosen; the
+    library then refuses a store mixing both (#98).
+    """
+    import urllib.parse
+
+    db = vault_dir / "vault.db"
+    if not _is_regular_file(db):
+        return 0, 0
+    uri = f"file:{urllib.parse.quote(db.as_posix(), safe='/')}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            row = conn.execute(
+                "SELECT "
+                "COALESCE(SUM(typeof(kind) = 'blob' OR typeof(has_otp) = 'blob'), 0), "
+                "COALESCE(SUM(typeof(kind) != 'blob' AND typeof(has_otp) != 'blob'), 0) "
+                "FROM vault_items"
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0, 0  # no items table yet, or not a database: VaultStore reports it
+    return int(row[0]), int(row[1])
 
 
 # --------------------------------------------------------------------------- run
@@ -422,7 +482,12 @@ def _prepare_environment(
         key_bytes = _custody_key(args, os.environ, vault_dir)
         if key_bytes is not None:
             key_hex = key_bytes.hex()
-        store = open_store(vault_dir, key_env=args.key_env, key_bytes=key_bytes)
+        store = open_store(
+            vault_dir,
+            key_env=args.key_env,
+            key_bytes=key_bytes,
+            sealed_listing=_sealed_listing_asserted(args, os.environ),
+        )
     except StoreUnavailable as exc:
         _err(prog, str(exc))
         return None, RUN_FAILED
@@ -557,6 +622,14 @@ def _add_store_options(parser: argparse.ArgumentParser) -> None:
             "secret mount, instead of OS custody (default: $FLOOR_VAULT_KEY_FILE)"
         ),
     )
+    parser.add_argument(
+        "--sealed-listing",
+        action="store_true",
+        help=(
+            "refuse a store whose item kinds are not sealed, and seal them in a new "
+            "store (default: $FLOOR_VAULT_SEALED_LISTING)"
+        ),
+    )
 
 
 def add_secrets_parser(subparsers) -> None:
@@ -645,6 +718,12 @@ def add_secrets_parser(subparsers) -> None:
 
     rm = sub.add_parser("rm", parents=[common], help="Delete an item")
     rm.add_argument("item_id")
+
+    sub.add_parser(
+        "seal-listing",
+        parents=[common],
+        help="Seal each item's kind and OTP flag, so vault.db reveals only ids",
+    )
 
     ref = sub.add_parser("ref", parents=[common], help="Print the fv: reference for an item")
     ref.add_argument("item_id")
@@ -761,6 +840,7 @@ def _store_for(args, *, create: bool = False, provider_environ=None, environ=Non
         create=create and not existed,
         environ=environ,
         provider_environ=provider_environ,
+        sealed_listing=_sealed_listing_asserted(args, os.environ),
     )
     if existed:
         _check_store_key(store, vault_dir)
@@ -994,6 +1074,45 @@ def _print_bindings(item_id: str, allowed: Optional[list]) -> None:
     print(f"{item_id}: bound to {len(allowed)} command line(s):")
     for entry in allowed:
         print(f"  {_format_command(entry)}")
+
+
+def _cmd_seal_listing(args, prog: str) -> int:
+    """Convert the store to sealed listing metadata (#98), after checking the key."""
+    vault_dir = _vault_dir(args.vault, os.environ)
+    store = _store_for(args)  # the key must open every item before anything changes
+    sealed_rows, cleartext_rows = _listing_rows(vault_dir)
+    if not cleartext_rows:
+        if sealed_rows:
+            print(f"listing metadata in {vault_dir} is already sealed; nothing was changed")
+        else:
+            print(
+                f"{vault_dir} holds no items; nothing was changed. New items are sealed "
+                f"when sealed listing is asserted ({SEALED_LISTING_HINT})"
+            )
+        return 0
+    with contextlib.closing(sqlite3.connect(vault_dir / "vault.db")) as conn:
+        active = conn.execute(
+            "SELECT active FROM vault_rotation_state WHERE singleton = 1"
+        ).fetchone()
+    if active is not None and bool(active[0]):
+        _err(prog, "a key rotation of this store is in progress; finish it first")
+        return 1
+    del store
+    sealed = open_store(
+        vault_dir,
+        key_env=args.key_env,
+        key_bytes=_custody_key(args, os.environ, vault_dir),
+        migrate_listing=True,
+    )
+    count = len(sealed.list_items())  # authenticates every sealed row
+    print(f"sealed the listing metadata of {count} item(s) in {vault_dir}")
+    _err(
+        prog,
+        f"note: set ${SEALED_LISTING_ENV}=1 where floorvault runs (or pass --sealed-listing) "
+        "so a store turned back to cleartext is refused. floorvault 0.2.8 and earlier, and "
+        "the hermesvault plugin, cannot open a sealed store",
+    )
+    return 0
 
 
 def _cmd_rm(args, prog: str) -> int:
@@ -1806,6 +1925,7 @@ _SECRETS_COMMANDS = {
     "init": _cmd_init,
     "allow": _cmd_allow,
     "rm": _cmd_rm,
+    "seal-listing": _cmd_seal_listing,
     "ref": _cmd_ref,
     "import": _cmd_import,
 }
