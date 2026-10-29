@@ -1828,6 +1828,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         "inspect ignores --schema-version (INS-7)",
     ),
     Mutation(
+        "AUD-22",
+        "src/floorvault/inspector.py",
+        "        # A usage error whatever the record holds, so before the lookup.\n"
+        "        _check_key_options(args)\n",
+        "        pass  # MUTANT\n",
+        "inspect accepts --key-env with --key-file when the record is missing or not ciphertext",
+    ),
+    Mutation(
         "AUD-6",
         "src/floorvault/agent_cli.py",
         '            if not os.path.samefile(path, directory / ".env"):\n',

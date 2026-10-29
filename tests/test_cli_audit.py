@@ -710,6 +710,14 @@ def test_ins_8_inspect_key_option_errors(tmp_path, base_env, table_db, key):
     missing = _inspect([*row, "--key-file", str(tmp_path / "absent")], env)
     assert missing.returncode == 1
     assert "Traceback" not in missing.stderr
+    # A usage error whatever the record holds: also for a missing record and
+    # for a value that is not ciphertext.
+    for target in (
+        [str(table_db), "Users", "absent", "secret"],
+        [str(table_db), "Users", "1", "uid"],
+    ):
+        conflict = _inspect([*target, "--key-env", "K", "--key-file", str(tmp_path / "k")], env)
+        assert conflict.returncode == 2, conflict.stdout
 
 
 def test_ins_8_inspect_never_creates_a_key(tmp_path, base_env, table_db):
@@ -731,6 +739,7 @@ def test_ins_8_inspect_never_creates_a_key(tmp_path, base_env, table_db):
         _no_default_key(base_env),
     )
     assert result.returncode == 1
+    assert "Traceback" not in result.stderr
     assert list(key_dir.iterdir()) == []
     assert sorted(home.rglob("*")) == before
 

@@ -12,6 +12,7 @@ from pathlib import Path
 from .core import DecryptionVerificationError, FloorVault
 from .providers.adaptive import AdaptiveKeyProvider
 from .providers.base import KeyProviderError
+from .providers.platform_custody import ProtectedStoreError
 from .sqlite_adapter import _fold_sqlite, _quoted_identifier, _safe_column, _safe_identifier
 
 
@@ -161,6 +162,14 @@ def main(argv: list[str] | None = None) -> int:
 
 def _inspect_record(args, db_path: Path) -> int:
     """Read one encrypted field read-only and report whether it authenticates."""
+    from .agent_cli import KeyOptionsConflict, StoreUnavailable, _check_key_options, explicit_key
+
+    try:
+        # A usage error whatever the record holds, so before the lookup.
+        _check_key_options(args)
+    except KeyOptionsConflict as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     for label, value in (
         ("table", args.table),
         ("column", args.column),
@@ -228,8 +237,6 @@ def _inspect_record(args, db_path: Path) -> int:
     # Keychain/Secret-Service/file entry for any typo'd --service-name
     # before decryption ever ran. allow_create=False turns an absent
     # key into a plain error instead.
-    from .agent_cli import KeyOptionsConflict, StoreUnavailable, explicit_key
-
     key_dir = args.key_dir.expanduser() if args.key_dir is not None else None
     try:
         master_key = explicit_key(args, os.environ, key_dir)
@@ -247,7 +254,8 @@ def _inspect_record(args, db_path: Path) -> int:
             provider_kwargs["fallback_dir"] = key_dir
         try:
             master_key = AdaptiveKeyProvider(**provider_kwargs).resolve_key(allow_create=False)
-        except KeyProviderError as exc:
+        except (KeyProviderError, ProtectedStoreError) as exc:
+            # ProtectedStoreError: e.g. a --key-dir outside the Windows user profile.
             print(f"Error: {exc}", file=sys.stderr)
             return 1
     vault_kwargs = {"app_instance_id": args.app_instance} if args.app_instance is not None else {}
