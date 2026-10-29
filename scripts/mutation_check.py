@@ -1792,9 +1792,27 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AUD-21",
         "src/floorvault/agent_cli.py",
-        "    store = _store_for(args)  # the key must open every item before anything changes\n",
+        "    store = _store_for(args, assert_listing=False)\n",
         "    store = None  # MUTANT\n",
         "secrets seal-listing converts a store before checking the key opens it (SEC-15)",
+    ),
+    Mutation(
+        "AUD-23",
+        "src/floorvault/vaultkit/vault.py",
+        "            if active is not None and bool(active[0]):\n"
+        "                raise VaultError(\n"
+        '                    "vault rotation is in progress; listing metadata was not converted"\n',
+        "            if False:  # MUTANT\n"
+        "                raise VaultError(\n"
+        '                    "vault rotation is in progress; listing metadata was not converted"\n',
+        "Listing metadata is converted while a key rotation is in progress (#98 review)",
+    ),
+    Mutation(
+        "AUD-24",
+        "src/floorvault/agent_cli.py",
+        "    except sqlite3.Error as exc:\n        # The mode is unknown, so nothing may be assumed about it.\n",
+        "    except sqlite3.Error as exc:  # MUTANT\n        return 0, 0\n",
+        "An unreadable listing is taken as an unsealed, empty one (#98 review)",
     ),
     Mutation(
         "AUD-2",

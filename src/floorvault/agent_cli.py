@@ -271,11 +271,15 @@ def _listing_rows(vault_dir: Path) -> tuple[int, int]:
 
     db = vault_dir / "vault.db"
     if not _is_regular_file(db):
-        return 0, 0
+        return 0, 0  # a store being created
     uri = f"file:{urllib.parse.quote(db.as_posix(), safe='/')}?mode=ro"
     try:
         conn = sqlite3.connect(uri, uri=True)
         try:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vault_items'"
+            ).fetchone():
+                return 0, 0  # created, but no items table yet
             row = conn.execute(
                 "SELECT "
                 "COALESCE(SUM(typeof(kind) = 'blob' OR typeof(has_otp) = 'blob'), 0), "
@@ -284,8 +288,11 @@ def _listing_rows(vault_dir: Path) -> tuple[int, int]:
             ).fetchone()
         finally:
             conn.close()
-    except sqlite3.Error:
-        return 0, 0  # no items table yet, or not a database: VaultStore reports it
+    except sqlite3.Error as exc:
+        # The mode is unknown, so nothing may be assumed about it.
+        raise StoreUnavailable(
+            f"cannot read the listing metadata of {db}: {type(exc).__name__}: {exc}"
+        ) from None
     return int(row[0]), int(row[1])
 
 
@@ -821,7 +828,9 @@ def _split_target(text: str) -> tuple[Optional[str], Optional[str]]:
     return item_id, (field or None)
 
 
-def _store_for(args, *, create: bool = False, provider_environ=None, environ=None):
+def _store_for(
+    args, *, create: bool = False, provider_environ=None, environ=None, assert_listing=True
+):
     """Open the store; with ``create``, create it (and a key) only if there is none.
 
     An existing store is never opened in create mode, so a missing key is an
@@ -840,7 +849,7 @@ def _store_for(args, *, create: bool = False, provider_environ=None, environ=Non
         create=create and not existed,
         environ=environ,
         provider_environ=provider_environ,
-        sealed_listing=_sealed_listing_asserted(args, os.environ),
+        sealed_listing=assert_listing and _sealed_listing_asserted(args, os.environ),
     )
     if existed:
         _check_store_key(store, vault_dir)
@@ -1079,7 +1088,9 @@ def _print_bindings(item_id: str, allowed: Optional[list]) -> None:
 def _cmd_seal_listing(args, prog: str) -> int:
     """Convert the store to sealed listing metadata (#98), after checking the key."""
     vault_dir = _vault_dir(args.vault, os.environ)
-    store = _store_for(args)  # the key must open every item before anything changes
+    # The key must open every item before anything changes. The assertion is
+    # not applied here: converting is how a store comes to satisfy it.
+    store = _store_for(args, assert_listing=False)
     sealed_rows, cleartext_rows = _listing_rows(vault_dir)
     if not cleartext_rows:
         if sealed_rows:

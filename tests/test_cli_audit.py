@@ -739,6 +739,21 @@ def test_sec_15_seal_listing_converts_and_the_assertion_refuses_cleartext(
     assert fv(["secrets", "list", "--sealed-listing"], base_env).returncode == 1
 
 
+def test_sec_15_seal_listing_works_with_the_assertion_already_set(base_env, store):
+    asserted = {**base_env, "FLOOR_VAULT_SEALED_LISTING": "1"}
+    converted = fv(["secrets", "seal-listing"], asserted)
+    assert converted.returncode == 0, converted.stderr
+    assert {t[1:] for t in _listing_types(store)} == {("blob", "blob")}
+    assert fv(["secrets", "list"], asserted).returncode == 0
+
+
+def test_sec_15_an_unreadable_listing_is_an_error_not_an_empty_store(base_env, store):
+    (store / "vault.db").write_bytes(b"SQLite format 3\x00" + b"\xff" * 200)
+    result = fv(["secrets", "list"], base_env)
+    assert result.returncode == 1
+    assert "cannot read the listing metadata" in result.stderr
+
+
 def test_sec_15_seal_listing_checks_the_key_first(base_env, store):
     before = _listing_types(store)
     wrong = fv(["secrets", "seal-listing"], {**base_env, "FLOOR_VAULT_KEY": "ab" * 32})
