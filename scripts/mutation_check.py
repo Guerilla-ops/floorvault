@@ -1837,9 +1837,9 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AUD-10",
         "src/floorvault/agent_cli.py",
-        "        # VaultStore's own default custody, resolved here before VaultStore creates\n",
-        "        if create and provider_environ is None:  # MUTANT\n"
-        "            return VaultStore(vault_dir)\n",
+        "            # VaultStore's own default custody, resolved here before VaultStore\n",
+        "            if create and provider_environ is None:  # MUTANT\n"
+        "                return VaultStore(vault_dir)\n",
         "A refused secrets add leaves an empty store directory and the library's wording (SEC-17)",
     ),
     Mutation(
@@ -1875,6 +1875,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        return name.upper() if fold_case else name\n",
         "        return name  # MUTANT\n",
         "On Windows an env file's Path= reaches the child beside the inherited PATH (RUN-12)",
+    ),
+    Mutation(
+        "AUD-15",
+        "src/floorvault/agent_cli.py",
+        "    if target is not None:\n        # Part of the store",
+        "    if False:  # MUTANT\n        # Part of the store",
+        "A half-finished rotation is opened with one key and reported as the wrong key (SEC-16)",
     ),
     Mutation(
         "PKG-1",
