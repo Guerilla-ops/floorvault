@@ -862,6 +862,18 @@ mismatching is an error, never "not retired".
   re-seals under the new key with `key_id = new_key_id`, re-seals tombstones,
   verifies every item and tombstone through `KeyRing({new_key_id:
   new_vault})`, then clears the journal and barrier atomically.
+- Outside a rotation, `VaultStore` labels every record it writes (payload,
+  sealed metadata, tombstones) with `key_id = target_key_id`: 0 for a store
+  never rotated, and after a completed rotation the generation every record is
+  sealed under. `target_key_id` is read when the store is opened. A write
+  through a `VaultStore` whose opening value differs from the current one (the
+  store was rotated since it was opened) is refused, so an old-key record is
+  never sealed under the new label. The column is not authenticated: a forged
+  value mislabels new records, which a ring read then refuses (§4.5).
+  Writers before this rule (releases up to 0.2.8) labelled post-rotation writes
+  0, so a store they wrote to after a rotation can hold one key's records under
+  two labels; the source ring for its next rotation must map both labels to
+  that key.
 
 ### 12.5 Schema migration behavior
 
