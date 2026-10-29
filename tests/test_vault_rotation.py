@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -445,6 +446,8 @@ def test_commitment_rejected_when_record_ids_match_across_stores(tmp_path):
 # ---------------------------------------------------------------------------
 
 THIRD = bytes.fromhex("53" * 32)
+#: An absolute program path on every platform, as a binding requires.
+BOUND = sys.executable
 
 
 def _key_ids(store_db: Path, item_id: str) -> set[int]:
@@ -469,7 +472,7 @@ def test_writes_after_a_rotation_are_labelled_with_the_new_generation(tmp_path):
     rotated = VaultStore(tmp_path / "vault", crypto=_crypto(NEW))
     new = rotated.add_item("generic", "New", {"value": "two"})
     assert rotated.update_generic_field(old.id, "note", "changed")
-    rotated.set_allowed_commands(new.id, [["/usr/bin/true"]])
+    rotated.set_allowed_commands(new.id, [[BOUND]])
     rotated.retire_legacy_id("legacy-1", new.id)
     db = tmp_path / "vault" / "vault.db"
     assert _key_ids(db, old.id) == {1}
@@ -482,7 +485,7 @@ def test_writes_after_a_rotation_are_labelled_with_the_new_generation(tmp_path):
     assert result == {"migrated": 2, "verified": 2, "retirements": 1}
     third = VaultStore(tmp_path / "vault", crypto=_crypto(THIRD))
     assert third.resolve_secret(old.id) == {"note": "changed"}
-    assert third.get_allowed_commands(new.id) == [["/usr/bin/true"]]
+    assert third.get_allowed_commands(new.id) == [[BOUND]]
     assert third.retired_modern_id("legacy-1") == new.id
     assert _key_ids(db, old.id) == _key_ids(db, new.id) == {2}
 
@@ -504,7 +507,7 @@ def test_a_store_opened_before_a_rotation_refuses_to_write_after_it(tmp_path):
     for write in (
         lambda s: s.add_item("generic", "Late", {"value": "x"}),
         lambda s: s.update_generic_field(item.id, "value", "x"),
-        lambda s: s.set_allowed_commands(item.id, [["/usr/bin/true"]]),
+        lambda s: s.set_allowed_commands(item.id, [[BOUND]]),
         lambda s: s.delete_item(item.id),
         lambda s: s.retire_legacy_id("legacy-1", item.id),
     ):
