@@ -342,8 +342,10 @@ through the library (`rotate_vault_store`). Once a rotation has finished, put
 the new key where `run` and `secrets` read it (OS key store, `--key-file`,
 `--key-env`) and they open the store as before. A rotation that stopped
 part-way leaves items under both keys, which no single key opens: every command
-refuses such a store, says so, and changes nothing. Finish the rotation with the
-library first.
+that opens the store (`run` with references, and the `secrets` commands that
+read or change items) refuses it, says so, and changes nothing. `run` with no
+references opens no store and starts the command as usual. Finish the rotation
+with the library first.
 
 The commands use the existing `vault.db` format (schema version 3, unchanged
 since 0.2.1), so a store shared with the Hermes plugin stays readable by both.
