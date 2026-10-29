@@ -743,6 +743,7 @@ def test_sec_15_seal_listing_checks_the_key_first(base_env, store):
     before = _listing_types(store)
     wrong = fv(["secrets", "seal-listing"], {**base_env, "FLOOR_VAULT_KEY": "ab" * 32})
     assert wrong.returncode == 1
+    assert "this key does not open the vault" in wrong.stderr
     assert _listing_types(store) == before
 
 
