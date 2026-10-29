@@ -580,6 +580,82 @@ def test_sec_17_on_a_host_without_os_custody(tmp_path, base_env):
     assert not vault.exists()
 
 
+def _agent_vault(key_hex):
+    from floorvault.core import FloorVault
+    from floorvault.memory import HardenedMemoryKey
+
+    return FloorVault(HardenedMemoryKey(bytes.fromhex(key_hex)), app_instance_id="floor-agent")
+
+
+def _rotate(vault_dir, old_key, new_key, *, items=None):
+    """Rotate the store to generation 1; with ``items``, stop after those (a crash)."""
+    from floorvault.keyring import KeyRing
+    from floorvault.vault_rotation import rotate_vault_store
+    from floorvault.vaultkit.vault import VaultStore
+
+    store = VaultStore(vault_dir, crypto=_agent_vault(old_key))
+    source = KeyRing({0: _agent_vault(old_key)}, default_key_id=0)
+    if items is None:
+        rotate_vault_store(store, source_ring=source, new_vault=_agent_vault(new_key), new_key_id=1)
+        return
+    store.begin_rotation(1, target_vault=_agent_vault(new_key))
+    columns = ("payload", *(f"meta:{c}" for c in store._SEALED_META_COLUMNS))
+    for item_id in items:
+        store.write_sealed_item(
+            item_id,
+            store.read_sealed_item(item_id, source),
+            new_vault=_agent_vault(new_key),
+            key_id=1,
+            journal_rows=[("item", item_id, column) for column in columns],
+        )
+
+
+def _rows(vault_dir):
+    """Every item row and the rotation state, to show a refused command changed nothing."""
+    with contextlib.closing(sqlite3.connect(vault_dir / "vault.db")) as db:
+        return (
+            db.execute("SELECT * FROM vault_items ORDER BY id").fetchall(),
+            db.execute("SELECT * FROM vault_rotation_state").fetchall(),
+            db.execute("SELECT * FROM vault_rotation_journal ORDER BY 1, 2, 3").fetchall(),
+        )
+
+
+def test_sec_16_a_completed_rotation_opens_with_the_new_key(tmp_path, base_env, store, key):
+    new_key = os.urandom(32).hex()
+    _rotate(store, key, new_key)
+    env = {**base_env, "FLOOR_VAULT_KEY": new_key}
+    listed = fv(["secrets", "list"], env)
+    assert listed.returncode == 0, listed.stderr
+    assert [line.split("\t")[0] for line in listed.stdout.splitlines()] == ["multi", "one"]
+    result = fv(["run", "-e", "X=fv:one", "--", *_printenv(tmp_path, "X")], env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"X={SECRET}"
+    added = fv(["secrets", "add", "new", "--id", "new", "--stdin"], env, stdin="value=v\n")
+    assert added.returncode == 0, added.stderr
+    # The old key no longer opens it.
+    assert fv(["secrets", "list"], base_env).returncode == 1
+
+
+@pytest.mark.parametrize("which", ["old", "new"])
+def test_sec_16_a_half_finished_rotation_is_refused_by_name(tmp_path, base_env, store, key, which):
+    new_key = os.urandom(32).hex()
+    _rotate(store, key, new_key, items=["one"])
+    env = {**base_env, "FLOOR_VAULT_KEY": key if which == "old" else new_key}
+    before = _rows(store)
+    for args, code, stdin in (
+        (["secrets", "list"], 1, None),
+        (["secrets", "show", "one"], 1, None),
+        (["secrets", "add", "new", "--id", "new", "--stdin"], 1, "value=v\n"),
+        (["run", "-e", "X=fv:one", "--", *_printenv(tmp_path, "X")], 125, None),
+    ):
+        result = fv(args, env, stdin=stdin)
+        assert result.returncode == code, (args, result.stderr)
+        assert "part-way through a key rotation (to key generation 1)" in result.stderr
+        assert "Use the key the store was created with" not in result.stderr
+        assert SECRET not in result.stdout + result.stderr
+    assert _rows(store) == before
+
+
 # -------------------------------------------------------------------- inspect
 
 
