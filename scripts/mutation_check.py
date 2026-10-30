@@ -683,6 +683,27 @@ MUTATIONS: tuple[Mutation, ...] = (
         "Legacy active rotation without a commitment loses its explicit fail-closed refusal",
     ),
     Mutation(
+        "ROT-7",
+        "src/floorvault/vaultkit/vault.py",
+        '            column=f"meta:{column}",\n            key_id=self._write_key_id,\n',
+        '            column=f"meta:{column}",\n',
+        "Metadata written after a rotation is labelled key id 0 again (#103)",
+    ),
+    Mutation(
+        "ROT-8",
+        "src/floorvault/vaultkit/vault.py",
+        '            column="payload",\n            key_id=self._write_key_id,\n',
+        '            column="payload",\n',
+        "A new item's payload after a rotation is labelled key id 0 again (#103)",
+    ),
+    Mutation(
+        "ROT-9",
+        "src/floorvault/vaultkit/vault.py",
+        "        if generation != self._write_key_id:\n",
+        "        if False:  # MUTANT\n",
+        "A VaultStore opened before a rotation writes old-key records under the new label (#103)",
+    ),
+    Mutation(
         "VS-1",
         "src/floorvault/vaultkit/vault.py",
         "            if user_version > self._SCHEMA_VERSION:",
