@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "/absolute/path/to/floorvault",
+      "args": ["run", "--", "npx", "-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "fv:github-pat",
+        "PATH": "/usr/local/bin:/usr/bin:/bin"
+      }
+    }
+  }
+}
