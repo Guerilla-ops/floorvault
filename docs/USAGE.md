@@ -350,7 +350,17 @@ with the library first.
 The commands use the existing `vault.db` format (schema version 3, unchanged
 since 0.2.1), so a store shared with the Hermes plugin stays readable by both.
 
-**Managing items.** `floorvault secrets add | put | list | show | rm | ref | import | allow | init`.
+**Sealed listing metadata.** By default `vault.db` shows each item's kind and
+OTP flag in cleartext. `floorvault secrets seal-listing` seals them (after
+checking the key opens every item), so the file shows only item ids. The
+commands open a sealed store without options. To have them also refuse a store
+whose kinds are cleartext again, which anyone who can write `vault.db` can do,
+set `FLOOR_VAULT_SEALED_LISTING=1` or pass `--sealed-listing`; with it, a new
+store is sealed from its first item. floorvault 0.2.8 and earlier, and the
+`hermesvault` plugin, cannot open a sealed store, so do not seal a store the
+plugin uses.
+
+**Managing items.** `floorvault secrets add | put | list | show | rm | ref | import | allow | init | seal-listing`.
 `put` prompts for the value. `show` reports how many fields are set, or whether one named field is set. `ref` prints
 the reference to paste (`--env NAME` prints `NAME=fv:…`), and only one `run` can
 resolve: for an item with several fields it asks for `--field`, and it refuses a
