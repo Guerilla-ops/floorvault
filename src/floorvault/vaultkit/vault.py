@@ -283,6 +283,10 @@ class VaultStore:
         # the lock for the whole transaction makes in-process ordering
         # deterministic while SQLite still guards cross-process writers.
         self._io_lock = threading.Lock()
+        # The key generation this store's own writes are labelled with: the
+        # target of the last completed rotation (0 for a store never rotated).
+        # Read from the database in _init_db; see _write_generation.
+        self._write_key_id = 0
 
         if crypto is not None:
             self._crypto = crypto
@@ -361,6 +365,9 @@ class VaultStore:
                 VALUES (1, 0, 0)
                 ON CONFLICT(singleton) DO NOTHING
             """)
+            generation = self._write_generation(conn)
+            if generation is not None:
+                self._write_key_id = generation
             self._migrate_plaintext_metadata(conn)
             self._remove_origin_index(conn)
             self._ensure_allowed_commands_column(conn)
@@ -575,6 +582,7 @@ class VaultStore:
             table="vault_items",
             record_id=item_id,
             column=f"meta:{column}",
+            key_id=self._write_key_id,
         )
 
     def _decrypt_metadata(self, item_id: str, column: str, value: Any) -> Optional[str]:
@@ -589,10 +597,37 @@ class VaultStore:
             column=f"meta:{column}",
         )
 
+    @staticmethod
+    def _write_generation(conn: sqlite3.Connection) -> Optional[int]:
+        """The key generation new records are labelled with, or None mid-rotation.
+
+        After ``clear_rotation_journal`` the rotation's ``target_key_id`` stays in
+        ``vault_rotation_state``: it names the generation every record is now
+        sealed under, so writes carry that label rather than 0 (#103). The
+        column is not authenticated; a forged value only mislabels new records,
+        which a ``KeyRing`` read then refuses rather than misreads.
+        """
+        row = conn.execute(
+            "SELECT active, target_key_id FROM vault_rotation_state WHERE singleton = 1"
+        ).fetchone()
+        if row is None:
+            return 0
+        if bool(row[0]):
+            return None
+        return int(row[1])
+
     def _assert_writes_allowed(self, conn: sqlite3.Connection) -> None:
-        row = conn.execute("SELECT active FROM vault_rotation_state WHERE singleton = 1").fetchone()
-        if row is not None and bool(row[0]):
+        generation = self._write_generation(conn)
+        if generation is None:
             raise VaultError("vault rotation is in progress; write refused")
+        if generation != self._write_key_id:
+            # Rotated (by this or another process) since this VaultStore was
+            # opened: its key is the old generation's, so a write would seal
+            # an old-key record under the new label.
+            raise VaultError(
+                f"vault was rotated to key generation {generation} after this "
+                "VaultStore was opened; write refused. Open it again with the new key"
+            )
 
     def begin_rotation(self, target_key_id: int, *, target_vault: FloorVault) -> None:
         """Persist the rotation write barrier before taking a source snapshot.
@@ -765,6 +800,7 @@ class VaultStore:
             table="vault_items",
             record_id=item_id,
             column="payload",
+            key_id=self._write_key_id,
         )
 
         with self._connect() as conn:
@@ -867,6 +903,7 @@ class VaultStore:
                 table="vault_items",
                 record_id=item_id,
                 column="payload",
+                key_id=self._write_key_id,
             )
             cursor = conn.execute(
                 "UPDATE vault_items SET payload_cipher = ? WHERE id = ?",
@@ -1307,7 +1344,7 @@ class VaultStore:
 
     def retire_legacy_id(self, legacy_id: str, modern_id: str) -> None:
         """Permanently retire ``legacy_id``, mapping it to ``modern_id``."""
-        self._write_tombstone(legacy_id, modern_id, vault=self._crypto)
+        self._write_tombstone(legacy_id, modern_id, vault=self._crypto, key_id=self._write_key_id)
 
     def retired_modern_id(self, legacy_id: str) -> Optional[str]:
         """Return the modern id for a retired ``legacy_id``, or ``None``.
