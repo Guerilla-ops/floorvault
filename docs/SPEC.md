@@ -874,6 +874,11 @@ mismatching is an error, never "not retired".
   0, so a store they wrote to after a rotation can hold one key's records under
   two labels; the source ring for its next rotation must map both labels to
   that key.
+- Before its first write, a `VaultStore` authenticates one existing item's
+  sealed `meta:label` with its own key and refuses to write if that fails, so
+  a store opened with another key (for example the old one after a rotation)
+  cannot seal new records under a key the existing records are not sealed
+  under. A store with no sealed item has nothing to check against.
 
 ### 12.5 Schema migration behavior
 

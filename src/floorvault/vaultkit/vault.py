@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
-from ..core import FloorVault, FloorVaultError
+from ..core import DecryptionVerificationError, FloorVault, FloorVaultError
 from ..keyring import KeyRing
 from ..providers.adaptive import AdaptiveKeyProvider
 from ..providers.platform_custody import _mkdir_owner_only
@@ -287,6 +287,9 @@ class VaultStore:
         # target of the last completed rotation (0 for a store never rotated).
         # Read from the database in _init_db; see _write_generation.
         self._write_key_id = 0
+        # Whether this store's key was shown to open an existing record; checked
+        # once, before the first write (#109).
+        self._key_verified = False
 
         if crypto is not None:
             self._crypto = crypto
@@ -643,6 +646,31 @@ class VaultStore:
                 f"vault was rotated to key generation {generation} after this "
                 "VaultStore was opened; write refused. Open it again with the new key"
             )
+        if not self._key_verified:
+            self._verify_key(conn)
+            self._key_verified = True
+
+    def _verify_key(self, conn: sqlite3.Connection) -> None:
+        """Refuse to write under a key that does not open the store's records (#109).
+
+        Nothing else ties a ``VaultStore``'s key to the store: opened with
+        another key (for example the old one after a rotation), it would seal
+        new records under that key beside records it cannot read. One existing
+        item's sealed label is authenticated before the first write; a store
+        with no sealed item has nothing to check against.
+        """
+        row = conn.execute(
+            "SELECT id, label FROM vault_items WHERE typeof(label) = 'blob' LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return
+        try:
+            self._decrypt_metadata(row[0], "label", row[1])
+        except DecryptionVerificationError:
+            raise VaultError(
+                "this VaultStore's key does not open the vault's existing items; "
+                "write refused. Open it with the key the store is sealed under"
+            ) from None
 
     def begin_rotation(self, target_key_id: int, *, target_vault: FloorVault) -> None:
         """Persist the rotation write barrier before taking a source snapshot.
