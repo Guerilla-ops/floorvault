@@ -57,6 +57,11 @@ floorvault secrets allow github-pat -- "$(command -v npx)" -y @modelcontextproto
 
 `run` then refuses to hand `github-pat` to any other command line.
 
+An item with no binding still reaches any command. To refuse those too, set
+`FLOOR_VAULT_REQUIRE_BINDING=1` in the `env` block of [`mcp.json`](mcp.json),
+or pass `run --require-binding`. The requirement lives outside the store, so a
+binding cleared in the store file blocks the item instead of releasing it.
+
 ## What this protects, and what it does not
 
 - **Protected:** the values at rest. Configs, `.env` files and their copies hold
