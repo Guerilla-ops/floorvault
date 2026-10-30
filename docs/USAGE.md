@@ -337,6 +337,16 @@ store's directory, so each store has its own key. The command is looked up
 on `run`'s own `PATH`; a `PATH` set in an env file or with `-e` reaches the
 command but does not choose which binary starts.
 
+**Rotated stores.** There is no `secrets rotate` command; a store is rotated
+through the library (`rotate_vault_store`). Once a rotation has finished, put
+the new key where `run` and `secrets` read it (OS key store, `--key-file`,
+`--key-env`) and they open the store as before. A rotation that stopped
+part-way leaves items under both keys, which no single key opens: every command
+that opens the store (`run` with references, and the `secrets` commands that
+read or change items) refuses it, says so, and changes nothing. `run` with no
+references opens no store and starts the command as usual. Finish the rotation
+with the library first.
+
 The commands use the existing `vault.db` format (schema version 3, unchanged
 since 0.2.1), so a store shared with the Hermes plugin stays readable by both.
 
@@ -658,9 +668,18 @@ selected field. Output is redacted unless `--reveal` is supplied (a binary value
 is then printed as hex). Match the original custody service and application
 context; inspection creates no missing key. It tries the table and column names
 as given and then ASCII-lower-cased, as `EncryptedSQLiteTable` binds them;
-`--id-column` names the record id column (default `id`) and `--revision` the
-revision a record was written at. It refuses qualified column names and an id
+`--id-column` names the record id column (default `id`), `--revision` the
+revision a record was written at, and `--schema-id` / `--schema-version` a
+non-default schema coordinate. It refuses qualified column names and an id
 that more than one row holds.
+
+The key comes from the same options as `run` and `secrets`, in the same order:
+`--key-env NAME`, `--key-file PATH` (default `$FLOOR_VAULT_KEY_FILE`), or
+`--key-dir DIR`, the directory holding a systemd-creds credential sealed by
+`secrets init --custody systemd-creds` (for an agent-secret store, its store
+directory). Without a credential there, the default custody for
+`--service-name` is used, with `DIR` as its key-file directory. Giving both
+`--key-env` and `--key-file` exits 2.
 
 ## Compatibility
 

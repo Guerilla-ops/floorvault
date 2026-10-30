@@ -683,6 +683,27 @@ MUTATIONS: tuple[Mutation, ...] = (
         "Legacy active rotation without a commitment loses its explicit fail-closed refusal",
     ),
     Mutation(
+        "ROT-7",
+        "src/floorvault/vaultkit/vault.py",
+        '            column=f"meta:{column}",\n            key_id=self._write_key_id,\n',
+        '            column=f"meta:{column}",\n',
+        "Metadata written after a rotation is labelled key id 0 again (#103)",
+    ),
+    Mutation(
+        "ROT-8",
+        "src/floorvault/vaultkit/vault.py",
+        '            column="payload",\n            key_id=self._write_key_id,\n',
+        '            column="payload",\n',
+        "A new item's payload after a rotation is labelled key id 0 again (#103)",
+    ),
+    Mutation(
+        "ROT-9",
+        "src/floorvault/vaultkit/vault.py",
+        "        if generation != self._write_key_id:\n",
+        "        if False:  # MUTANT\n",
+        "A VaultStore opened before a rotation writes old-key records under the new label (#103)",
+    ),
+    Mutation(
         "VS-1",
         "src/floorvault/vaultkit/vault.py",
         "            if user_version > self._SCHEMA_VERSION:",
@@ -1644,8 +1665,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "SDC-12",
         "src/floorvault/agent_cli.py",
-        "    if sealed is not None:\n        return sealed\n",
-        "    if False:  # MUTANT\n        return sealed\n",
+        "        if sealed is not None:\n            return sealed\n",
+        "        if False:  # MUTANT\n            return sealed\n",
         "A store with a sealed key ignores it and takes the key from $FLOOR_VAULT_KEY_FILE or default custody",
     ),
     Mutation(
@@ -1814,6 +1835,35 @@ MUTATIONS: tuple[Mutation, ...] = (
         "secrets add under another key writes to an existing store, leaving it sealed under two keys",
     ),
     Mutation(
+        "AUD-16",
+        "src/floorvault/inspector.py",
+        "        master_key = explicit_key(args, os.environ, key_dir)\n",
+        "        master_key = None  # MUTANT\n",
+        "inspect ignores --key-env / --key-file / --key-dir and uses default custody (INS-8)",
+    ),
+    Mutation(
+        "AUD-17",
+        "src/floorvault/inspector.py",
+        "                schema_id=args.schema_id,\n",
+        "",
+        "inspect ignores --schema-id: a record under another schema cannot be read (INS-7)",
+    ),
+    Mutation(
+        "AUD-18",
+        "src/floorvault/inspector.py",
+        "                schema_version=args.schema_version,\n",
+        "",
+        "inspect ignores --schema-version (INS-7)",
+    ),
+    Mutation(
+        "AUD-22",
+        "src/floorvault/inspector.py",
+        "        # A usage error whatever the record holds, so before the lookup.\n"
+        "        _check_key_options(args)\n",
+        "        pass  # MUTANT\n",
+        "inspect accepts --key-env with --key-file when the record is missing or not ciphertext",
+    ),
+    Mutation(
         "AUD-6",
         "src/floorvault/agent_cli.py",
         '            if not os.path.samefile(path, directory / ".env"):\n',
@@ -1844,9 +1894,9 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AUD-10",
         "src/floorvault/agent_cli.py",
-        "        # VaultStore's own default custody, resolved here before VaultStore creates\n",
-        "        if create and provider_environ is None:  # MUTANT\n"
-        "            return VaultStore(vault_dir)\n",
+        "            # VaultStore's own default custody, resolved here before VaultStore\n",
+        "            if create and provider_environ is None:  # MUTANT\n"
+        "                return VaultStore(vault_dir)\n",
         "A refused secrets add leaves an empty store directory and the library's wording (SEC-17)",
     ),
     Mutation(
@@ -1882,6 +1932,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        return name.upper() if fold_case else name\n",
         "        return name  # MUTANT\n",
         "On Windows an env file's Path= reaches the child beside the inherited PATH (RUN-12)",
+    ),
+    Mutation(
+        "AUD-15",
+        "src/floorvault/agent_cli.py",
+        "    if target is not None:\n        # Part of the store",
+        "    if False:  # MUTANT\n        # Part of the store",
+        "A half-finished rotation is opened with one key and reported as the wrong key (SEC-16)",
     ),
     Mutation(
         "PKG-1",

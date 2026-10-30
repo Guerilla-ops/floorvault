@@ -615,6 +615,82 @@ def test_sec_17_on_a_host_without_os_custody(tmp_path, base_env):
     assert not vault.exists()
 
 
+def _agent_vault(key_hex):
+    from floorvault.core import FloorVault
+    from floorvault.memory import HardenedMemoryKey
+
+    return FloorVault(HardenedMemoryKey(bytes.fromhex(key_hex)), app_instance_id="floor-agent")
+
+
+def _rotate(vault_dir, old_key, new_key, *, items=None):
+    """Rotate the store to generation 1; with ``items``, stop after those (a crash)."""
+    from floorvault.keyring import KeyRing
+    from floorvault.vault_rotation import rotate_vault_store
+    from floorvault.vaultkit.vault import VaultStore
+
+    store = VaultStore(vault_dir, crypto=_agent_vault(old_key))
+    source = KeyRing({0: _agent_vault(old_key)}, default_key_id=0)
+    if items is None:
+        rotate_vault_store(store, source_ring=source, new_vault=_agent_vault(new_key), new_key_id=1)
+        return
+    store.begin_rotation(1, target_vault=_agent_vault(new_key))
+    columns = ("payload", *(f"meta:{c}" for c in store._SEALED_META_COLUMNS))
+    for item_id in items:
+        store.write_sealed_item(
+            item_id,
+            store.read_sealed_item(item_id, source),
+            new_vault=_agent_vault(new_key),
+            key_id=1,
+            journal_rows=[("item", item_id, column) for column in columns],
+        )
+
+
+def _rows(vault_dir):
+    """Every item row and the rotation state, to show a refused command changed nothing."""
+    with contextlib.closing(sqlite3.connect(vault_dir / "vault.db")) as db:
+        return (
+            db.execute("SELECT * FROM vault_items ORDER BY id").fetchall(),
+            db.execute("SELECT * FROM vault_rotation_state").fetchall(),
+            db.execute("SELECT * FROM vault_rotation_journal ORDER BY 1, 2, 3").fetchall(),
+        )
+
+
+def test_sec_16_a_completed_rotation_opens_with_the_new_key(tmp_path, base_env, store, key):
+    new_key = os.urandom(32).hex()
+    _rotate(store, key, new_key)
+    env = {**base_env, "FLOOR_VAULT_KEY": new_key}
+    listed = fv(["secrets", "list"], env)
+    assert listed.returncode == 0, listed.stderr
+    assert [line.split("\t")[0] for line in listed.stdout.splitlines()] == ["multi", "one"]
+    result = fv(["run", "-e", "X=fv:one", "--", *_printenv(tmp_path, "X")], env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"X={SECRET}"
+    added = fv(["secrets", "add", "new", "--id", "new", "--stdin"], env, stdin="value=v\n")
+    assert added.returncode == 0, added.stderr
+    # The old key no longer opens it.
+    assert fv(["secrets", "list"], base_env).returncode == 1
+
+
+@pytest.mark.parametrize("which", ["old", "new"])
+def test_sec_16_a_half_finished_rotation_is_refused_by_name(tmp_path, base_env, store, key, which):
+    new_key = os.urandom(32).hex()
+    _rotate(store, key, new_key, items=["one"])
+    env = {**base_env, "FLOOR_VAULT_KEY": key if which == "old" else new_key}
+    before = _rows(store)
+    for args, code, stdin in (
+        (["secrets", "list"], 1, None),
+        (["secrets", "show", "one"], 1, None),
+        (["secrets", "add", "new", "--id", "new", "--stdin"], 1, "value=v\n"),
+        (["run", "-e", "X=fv:one", "--", *_printenv(tmp_path, "X")], 125, None),
+    ):
+        result = fv(args, env, stdin=stdin)
+        assert result.returncode == code, (args, result.stderr)
+        assert "part-way through a key rotation (to key generation 1)" in result.stderr
+        assert "Use the key the store was created with" not in result.stderr
+        assert SECRET not in result.stdout + result.stderr
+    assert _rows(store) == before
+
+
 # -------------------------------------------------------------------- inspect
 
 
@@ -703,3 +779,100 @@ def test_ins_7_id_column_and_revision(base_env, table_db):
     )
     assert by_uid.returncode == 0, by_uid.stderr
     assert "by-uid" in by_uid.stdout
+
+
+# --------------------------------------------- inspect: key options, schema (#100)
+
+
+def _no_default_key(base_env):
+    return {k: v for k, v in base_env.items() if k.upper() not in CUSTODY}
+
+
+def test_ins_8_inspect_takes_the_same_key_options_as_run(tmp_path, base_env, table_db, key):
+    env = {**_no_default_key(base_env), "MY_KEY": key}
+    row = [str(table_db), "Users", "1", "secret", "--reveal"]
+    by_env = _inspect([*row, "--key-env", "MY_KEY"], env)
+    assert by_env.returncode == 0, by_env.stderr
+    assert f"Decrypted value: {SECRET}" in by_env.stdout
+
+    key_file = tmp_path / "key.hex"
+    key_file.write_text(key + "\n")
+    os.chmod(key_file, 0o600)
+    by_file = _inspect([*row, "--key-file", str(key_file)], env)
+    assert by_file.returncode == 0, by_file.stderr
+    by_variable = _inspect(row, {**env, "FLOOR_VAULT_KEY_FILE": str(key_file)})
+    assert by_variable.returncode == 0, by_variable.stderr
+    assert f"Decrypted value: {SECRET}" in by_variable.stdout
+
+    wrong = _inspect([*row, "--key-env", "OTHER"], {**env, "OTHER": "ab" * 32})
+    assert wrong.returncode == 1
+    assert SECRET not in wrong.stdout + wrong.stderr
+
+
+def test_ins_8_inspect_key_option_errors(tmp_path, base_env, table_db, key):
+    env = _no_default_key(base_env)
+    row = [str(table_db), "Users", "1", "secret"]
+    both = _inspect([*row, "--key-env", "K", "--key-file", str(tmp_path / "k")], env)
+    assert both.returncode == 2
+    assert "not both" in both.stderr
+    unset = _inspect([*row, "--key-env", "NOT_SET_ANYWHERE"], env)
+    assert unset.returncode == 1
+    assert "--key-env NOT_SET_ANYWHERE is not set" in unset.stderr
+    missing = _inspect([*row, "--key-file", str(tmp_path / "absent")], env)
+    assert missing.returncode == 1
+    assert "Traceback" not in missing.stderr
+    # A usage error whatever the record holds: also for a missing record and
+    # for a value that is not ciphertext.
+    for target in (
+        [str(table_db), "Users", "absent", "secret"],
+        [str(table_db), "Users", "1", "uid"],
+    ):
+        conflict = _inspect([*target, "--key-env", "K", "--key-file", str(tmp_path / "k")], env)
+        assert conflict.returncode == 2, conflict.stdout
+
+
+def test_ins_8_inspect_never_creates_a_key(tmp_path, base_env, table_db):
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+    home = Path(base_env["HOME"])
+    before = sorted(home.rglob("*"))
+    result = _inspect(
+        [
+            str(table_db),
+            "Users",
+            "1",
+            "secret",
+            "--key-dir",
+            str(key_dir),
+            "--service-name",
+            f"fv-test-{os.urandom(4).hex()}",
+        ],
+        _no_default_key(base_env),
+    )
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert list(key_dir.iterdir()) == []
+    assert sorted(home.rglob("*")) == before
+
+
+def test_ins_7_schema_id_and_version_select_the_record_identity(tmp_path, base_env, key):
+    from floorvault import FloorVault
+
+    path = tmp_path / "s.db"
+    with contextlib.closing(sqlite3.connect(path)) as conn:
+        conn.execute("CREATE TABLE t (id TEXT, c BLOB)")
+        cipher = FloorVault(bytes.fromhex(key)).encrypt(
+            SECRET, table="t", record_id="1", column="c", schema_id="app.v2", schema_version=3
+        )
+        conn.execute("INSERT INTO t VALUES ('1', ?)", (cipher,))
+        conn.commit()
+    row = [str(path), "t", "1", "c", "--reveal"]
+    assert _inspect(row, base_env).returncode == 1
+    assert _inspect([*row, "--schema-id", "app.v2"], base_env).returncode == 1
+    assert _inspect([*row, "--schema-version", "3"], base_env).returncode == 1
+    both = _inspect([*row, "--schema-id", "app.v2", "--schema-version", "3"], base_env)
+    assert both.returncode == 0, both.stderr
+    assert f"Decrypted value: {SECRET}" in both.stdout
+    empty = _inspect([*row, "--schema-id", " "], base_env)
+    assert empty.returncode == 1
+    assert "--schema-id must not be empty" in empty.stderr

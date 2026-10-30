@@ -142,7 +142,7 @@ def _key_file_from(args, environ: Mapping[str, str]) -> Optional[Path]:
     return Path(raw) if raw else None
 
 
-def _custody_key(args, environ: Mapping[str, str], vault_dir: Path) -> Optional[bytes]:
+def _custody_key(args, environ: Mapping[str, str], vault_dir: Optional[Path]) -> Optional[bytes]:
     """The master key from a file or a sealed credential, or None for ``--key-env`` / default custody.
 
     Order: ``--key-env`` (None here, ``open_store`` reads it), ``--key-file``,
@@ -154,14 +154,40 @@ def _custody_key(args, environ: Mapping[str, str], vault_dir: Path) -> Optional[
         return None
     if getattr(args, "key_file", None) is not None:
         return read_key_file(args.key_file)
-    try:
-        sealed = systemd_creds.read_key(vault_dir)
-    except systemd_creds.SystemdCredsError as exc:
-        raise StoreUnavailable(str(exc)) from None
-    if sealed is not None:
-        return sealed
+    if vault_dir is not None:
+        try:
+            sealed = systemd_creds.read_key(vault_dir)
+        except systemd_creds.SystemdCredsError as exc:
+            raise StoreUnavailable(str(exc)) from None
+        if sealed is not None:
+            return sealed
     key_file = _key_file_from(args, environ)
     return read_key_file(key_file) if key_file is not None else None
+
+
+def _env_key(key_env: str, environ: Mapping[str, str]) -> bytes:
+    """The 64-hex master key held in the variable ``key_env``, as ``open_store`` reads it."""
+    raw = (environ.get(key_env) or "").strip()
+    if not raw:
+        raise StoreUnavailable(f"--key-env {key_env} is not set")
+    if not _HEX_KEY.fullmatch(raw):
+        raise StoreUnavailable(f"{key_env} must hold 64 hexadecimal characters")
+    return bytes.fromhex(raw)
+
+
+def explicit_key(args, environ: Mapping[str, str], key_dir: Optional[Path]) -> Optional[bytes]:
+    """The master key the CLI's key options name, or None for default custody.
+
+    The same options and order as ``run`` and ``secrets``: ``--key-env``,
+    ``--key-file``, the systemd-creds credential in ``key_dir`` (when given),
+    then ``$FLOOR_VAULT_KEY_FILE``. Used by ``inspect`` (#100). Raises
+    ``KeyOptionsConflict`` for both key options, ``StoreUnavailable`` for a
+    key that cannot be read.
+    """
+    _check_key_options(args)
+    if getattr(args, "key_env", None):
+        return _env_key(args.key_env, environ)
+    return _custody_key(args, environ, key_dir)
 
 
 def open_store(
@@ -196,23 +222,25 @@ def open_store(
     try:
         if key_bytes is not None:
             crypto = FloorVault(HardenedMemoryKey(key_bytes), app_instance_id=APP_CONTEXT)
-            return VaultStore(vault_dir, crypto=crypto)
-        if key_env:
+            store = VaultStore(vault_dir, crypto=crypto)
+        elif key_env:
             raw = (environ.get(key_env) or "").strip()
             if not raw:
                 raise StoreUnavailable(f"--key-env {key_env} is not set")
             if not _HEX_KEY.fullmatch(raw):
                 raise StoreUnavailable(f"{key_env} must hold 64 hexadecimal characters")
             crypto = FloorVault(HardenedMemoryKey(bytes.fromhex(raw)), app_instance_id=APP_CONTEXT)
-            return VaultStore(vault_dir, crypto=crypto)
-        # VaultStore's own default custody, resolved here before VaultStore creates
-        # the store directory, so a refusal leaves nothing behind and can be
-        # explained in terms of this CLI's options.
-        provider = AdaptiveKeyProvider(
-            service_name=SERVICE_NAME, fallback_dir=vault_dir, environ=provider_environ
-        )
-        key = provider.resolve_key(allow_create=create)
-        return VaultStore(vault_dir, crypto=FloorVault(key, app_instance_id=APP_CONTEXT))
+            store = VaultStore(vault_dir, crypto=crypto)
+        else:
+            # VaultStore's own default custody, resolved here before VaultStore
+            # creates the store directory, so a refusal leaves nothing behind and
+            # can be explained in terms of this CLI's options.
+            provider = AdaptiveKeyProvider(
+                service_name=SERVICE_NAME, fallback_dir=vault_dir, environ=provider_environ
+            )
+            key = provider.resolve_key(allow_create=create)
+            store = VaultStore(vault_dir, crypto=FloorVault(key, app_instance_id=APP_CONTEXT))
+        target = store.rotation_in_progress()
     except StoreUnavailable:
         raise
     except NoCustodyError:
@@ -227,6 +255,17 @@ def open_store(
         ) from None
     except (KeyProviderError, VaultError, ValueError, OSError, sqlite3.Error) as exc:
         raise StoreUnavailable(f"cannot open vault at {vault_dir}: {exc}") from None
+    if target is not None:
+        # Part of the store is under the old key generation and part under the
+        # new one; this CLI holds a single key, so it would open some items and
+        # report the rest as sealed under "another key" (audit SEC-16, #99).
+        raise StoreUnavailable(
+            f"the vault at {vault_dir} is part-way through a key rotation (to key "
+            f"generation {target}), so no single key opens all of it; nothing was "
+            "changed. Finish the rotation with floorvault.rotate_vault_store and a "
+            "KeyRing holding both keys, then use the new key"
+        )
+    return store
 
 
 # --------------------------------------------------------------------------- run
