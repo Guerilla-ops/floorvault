@@ -1797,6 +1797,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "LD_PRELOAD=fv:x no longer blocks a bound item: the reference sets the variable unchecked",
     ),
     Mutation(
+        "AUD-25",
+        "src/floorvault/agent_cli.py",
+        "            if require_binding:\n",
+        "            if False:  # MUTANT\n",
+        "With --require-binding, an item whose binding was cleared in vault.db is still released (RUN-9)",
+    ),
+    Mutation(
         "AUD-19",
         "src/floorvault/agent_cli.py",
         "    if sealed_listing and cleartext_rows and not migrate_listing:\n",

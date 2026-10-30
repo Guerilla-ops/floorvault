@@ -554,6 +554,14 @@ floorvault secrets allow github-pat --clear   # unbind: resolves for any command
   the started command's environment. It protects against mistakes and against
   a configuration that names an item for a command you did not choose. It does
   not fix which variable the value lands in.
+- **Requiring a binding.** `floorvault run --require-binding`, or
+  `FLOOR_VAULT_REQUIRE_BINDING=1` where `run` starts (for example in an MCP
+  client's `env` block), refuses every item that has no binding. A binding
+  cleared in `vault.db` then blocks the item instead of releasing it. The
+  requirement lives outside the store, which is why it holds; a stored flag
+  could be cleared the same way. It does not stop an older, wider binding of the
+  same item being written back; only a record of the store kept outside it
+  (`floorvault.freshness`) detects that.
 - **Who enforces it:** only `floorvault run` from this release on. Older
   `floorvault` versions and the Hermes plugin ignore bindings.
 
