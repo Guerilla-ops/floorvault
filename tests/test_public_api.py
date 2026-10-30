@@ -85,6 +85,9 @@ VAULT_STORE_METHODS = {
     "resolve_secret": "(self, item_id: 'str') -> 'dict[str, Any]'",
     "retire_legacy_id": "(self, legacy_id: 'str', modern_id: 'str') -> 'None'",
     "retired_modern_id": "(self, legacy_id: 'str') -> 'Optional[str]'",
+    # Read-only rotation state, so a single-key reader can refuse a half-rotated
+    # store with a clear message (#99).
+    "rotation_in_progress": "(self) -> 'Optional[int]'",
     "rotation_journal": "(self) -> 'dict[tuple[str, str, str], tuple[int, str]]'",
     "set_allowed_commands": "(self, item_id: 'str', commands: 'Optional[Sequence[Sequence[str]]]') -> 'bool'",
     # Read-change-write of a binding under one write lock (`secrets allow`).
