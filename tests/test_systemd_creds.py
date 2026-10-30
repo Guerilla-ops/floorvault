@@ -671,3 +671,31 @@ def test_hermes_import_without_a_credential_is_unaffected(tmp_path, cli):
     )
     assert result.returncode == 0, result.stderr
     assert "dry run: nothing changed" in result.stdout
+
+
+@linux_only
+def test_inspect_reads_the_key_from_a_credential_in_key_dir(
+    fake, vault, tmp_path, monkeypatch, capsys
+):
+    """`inspect --key-dir` uses a sealed credential, as run and secrets do (#100)."""
+    import sqlite3
+
+    from floorvault import FloorVault
+    from floorvault.inspector import main
+
+    sdc.create_credential(vault, binary=str(fake.binary))
+    key = sdc.read_key(vault, binary=str(fake.binary))
+    db = tmp_path / "app.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE t (id TEXT, c BLOB)")
+        conn.execute(
+            "INSERT INTO t VALUES ('1', ?)",
+            (FloorVault(key).encrypt("sealed-secret", table="t", record_id="1", column="c"),),
+        )
+    for name in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "FLOOR_VAULT_KEY_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(sdc, "SEARCH_DIRS", (str(fake.dir),))
+    code = main(["inspect", str(db), "t", "1", "c", "--key-dir", str(vault), "--reveal"])
+    out = capsys.readouterr()
+    assert code == 0, out.err
+    assert "Decrypted value: sealed-secret" in out.out

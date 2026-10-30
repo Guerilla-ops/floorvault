@@ -142,7 +142,7 @@ def _key_file_from(args, environ: Mapping[str, str]) -> Optional[Path]:
     return Path(raw) if raw else None
 
 
-def _custody_key(args, environ: Mapping[str, str], vault_dir: Path) -> Optional[bytes]:
+def _custody_key(args, environ: Mapping[str, str], vault_dir: Optional[Path]) -> Optional[bytes]:
     """The master key from a file or a sealed credential, or None for ``--key-env`` / default custody.
 
     Order: ``--key-env`` (None here, ``open_store`` reads it), ``--key-file``,
@@ -154,14 +154,40 @@ def _custody_key(args, environ: Mapping[str, str], vault_dir: Path) -> Optional[
         return None
     if getattr(args, "key_file", None) is not None:
         return read_key_file(args.key_file)
-    try:
-        sealed = systemd_creds.read_key(vault_dir)
-    except systemd_creds.SystemdCredsError as exc:
-        raise StoreUnavailable(str(exc)) from None
-    if sealed is not None:
-        return sealed
+    if vault_dir is not None:
+        try:
+            sealed = systemd_creds.read_key(vault_dir)
+        except systemd_creds.SystemdCredsError as exc:
+            raise StoreUnavailable(str(exc)) from None
+        if sealed is not None:
+            return sealed
     key_file = _key_file_from(args, environ)
     return read_key_file(key_file) if key_file is not None else None
+
+
+def _env_key(key_env: str, environ: Mapping[str, str]) -> bytes:
+    """The 64-hex master key held in the variable ``key_env``, as ``open_store`` reads it."""
+    raw = (environ.get(key_env) or "").strip()
+    if not raw:
+        raise StoreUnavailable(f"--key-env {key_env} is not set")
+    if not _HEX_KEY.fullmatch(raw):
+        raise StoreUnavailable(f"{key_env} must hold 64 hexadecimal characters")
+    return bytes.fromhex(raw)
+
+
+def explicit_key(args, environ: Mapping[str, str], key_dir: Optional[Path]) -> Optional[bytes]:
+    """The master key the CLI's key options name, or None for default custody.
+
+    The same options and order as ``run`` and ``secrets``: ``--key-env``,
+    ``--key-file``, the systemd-creds credential in ``key_dir`` (when given),
+    then ``$FLOOR_VAULT_KEY_FILE``. Used by ``inspect`` (#100). Raises
+    ``KeyOptionsConflict`` for both key options, ``StoreUnavailable`` for a
+    key that cannot be read.
+    """
+    _check_key_options(args)
+    if getattr(args, "key_env", None):
+        return _env_key(args.key_env, environ)
+    return _custody_key(args, environ, key_dir)
 
 
 def open_store(

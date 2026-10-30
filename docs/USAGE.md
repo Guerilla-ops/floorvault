@@ -660,9 +660,18 @@ selected field. Output is redacted unless `--reveal` is supplied (a binary value
 is then printed as hex). Match the original custody service and application
 context; inspection creates no missing key. It tries the table and column names
 as given and then ASCII-lower-cased, as `EncryptedSQLiteTable` binds them;
-`--id-column` names the record id column (default `id`) and `--revision` the
-revision a record was written at. It refuses qualified column names and an id
+`--id-column` names the record id column (default `id`), `--revision` the
+revision a record was written at, and `--schema-id` / `--schema-version` a
+non-default schema coordinate. It refuses qualified column names and an id
 that more than one row holds.
+
+The key comes from the same options as `run` and `secrets`, in the same order:
+`--key-env NAME`, `--key-file PATH` (default `$FLOOR_VAULT_KEY_FILE`), or
+`--key-dir DIR`, the directory holding a systemd-creds credential sealed by
+`secrets init --custody systemd-creds` (for an agent-secret store, its store
+directory). Without a credential there, the default custody for
+`--service-name` is used, with `DIR` as its key-file directory. Giving both
+`--key-env` and `--key-file` exits 2.
 
 ## Compatibility
 

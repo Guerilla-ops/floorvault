@@ -1665,8 +1665,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "SDC-12",
         "src/floorvault/agent_cli.py",
-        "    if sealed is not None:\n        return sealed\n",
-        "    if False:  # MUTANT\n        return sealed\n",
+        "        if sealed is not None:\n            return sealed\n",
+        "        if False:  # MUTANT\n            return sealed\n",
         "A store with a sealed key ignores it and takes the key from $FLOOR_VAULT_KEY_FILE or default custody",
     ),
     Mutation(
@@ -1826,6 +1826,35 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        _check_store_key(store, vault_dir)\n",
         "        pass  # MUTANT\n",
         "secrets add under another key writes to an existing store, leaving it sealed under two keys",
+    ),
+    Mutation(
+        "AUD-16",
+        "src/floorvault/inspector.py",
+        "        master_key = explicit_key(args, os.environ, key_dir)\n",
+        "        master_key = None  # MUTANT\n",
+        "inspect ignores --key-env / --key-file / --key-dir and uses default custody (INS-8)",
+    ),
+    Mutation(
+        "AUD-17",
+        "src/floorvault/inspector.py",
+        "                schema_id=args.schema_id,\n",
+        "",
+        "inspect ignores --schema-id: a record under another schema cannot be read (INS-7)",
+    ),
+    Mutation(
+        "AUD-18",
+        "src/floorvault/inspector.py",
+        "                schema_version=args.schema_version,\n",
+        "",
+        "inspect ignores --schema-version (INS-7)",
+    ),
+    Mutation(
+        "AUD-22",
+        "src/floorvault/inspector.py",
+        "        # A usage error whatever the record holds, so before the lookup.\n"
+        "        _check_key_options(args)\n",
+        "        pass  # MUTANT\n",
+        "inspect accepts --key-env with --key-file when the record is missing or not ciphertext",
     ),
     Mutation(
         "AUD-6",

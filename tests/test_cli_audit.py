@@ -744,3 +744,100 @@ def test_ins_7_id_column_and_revision(base_env, table_db):
     )
     assert by_uid.returncode == 0, by_uid.stderr
     assert "by-uid" in by_uid.stdout
+
+
+# --------------------------------------------- inspect: key options, schema (#100)
+
+
+def _no_default_key(base_env):
+    return {k: v for k, v in base_env.items() if k.upper() not in CUSTODY}
+
+
+def test_ins_8_inspect_takes_the_same_key_options_as_run(tmp_path, base_env, table_db, key):
+    env = {**_no_default_key(base_env), "MY_KEY": key}
+    row = [str(table_db), "Users", "1", "secret", "--reveal"]
+    by_env = _inspect([*row, "--key-env", "MY_KEY"], env)
+    assert by_env.returncode == 0, by_env.stderr
+    assert f"Decrypted value: {SECRET}" in by_env.stdout
+
+    key_file = tmp_path / "key.hex"
+    key_file.write_text(key + "\n")
+    os.chmod(key_file, 0o600)
+    by_file = _inspect([*row, "--key-file", str(key_file)], env)
+    assert by_file.returncode == 0, by_file.stderr
+    by_variable = _inspect(row, {**env, "FLOOR_VAULT_KEY_FILE": str(key_file)})
+    assert by_variable.returncode == 0, by_variable.stderr
+    assert f"Decrypted value: {SECRET}" in by_variable.stdout
+
+    wrong = _inspect([*row, "--key-env", "OTHER"], {**env, "OTHER": "ab" * 32})
+    assert wrong.returncode == 1
+    assert SECRET not in wrong.stdout + wrong.stderr
+
+
+def test_ins_8_inspect_key_option_errors(tmp_path, base_env, table_db, key):
+    env = _no_default_key(base_env)
+    row = [str(table_db), "Users", "1", "secret"]
+    both = _inspect([*row, "--key-env", "K", "--key-file", str(tmp_path / "k")], env)
+    assert both.returncode == 2
+    assert "not both" in both.stderr
+    unset = _inspect([*row, "--key-env", "NOT_SET_ANYWHERE"], env)
+    assert unset.returncode == 1
+    assert "--key-env NOT_SET_ANYWHERE is not set" in unset.stderr
+    missing = _inspect([*row, "--key-file", str(tmp_path / "absent")], env)
+    assert missing.returncode == 1
+    assert "Traceback" not in missing.stderr
+    # A usage error whatever the record holds: also for a missing record and
+    # for a value that is not ciphertext.
+    for target in (
+        [str(table_db), "Users", "absent", "secret"],
+        [str(table_db), "Users", "1", "uid"],
+    ):
+        conflict = _inspect([*target, "--key-env", "K", "--key-file", str(tmp_path / "k")], env)
+        assert conflict.returncode == 2, conflict.stdout
+
+
+def test_ins_8_inspect_never_creates_a_key(tmp_path, base_env, table_db):
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+    home = Path(base_env["HOME"])
+    before = sorted(home.rglob("*"))
+    result = _inspect(
+        [
+            str(table_db),
+            "Users",
+            "1",
+            "secret",
+            "--key-dir",
+            str(key_dir),
+            "--service-name",
+            f"fv-test-{os.urandom(4).hex()}",
+        ],
+        _no_default_key(base_env),
+    )
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert list(key_dir.iterdir()) == []
+    assert sorted(home.rglob("*")) == before
+
+
+def test_ins_7_schema_id_and_version_select_the_record_identity(tmp_path, base_env, key):
+    from floorvault import FloorVault
+
+    path = tmp_path / "s.db"
+    with contextlib.closing(sqlite3.connect(path)) as conn:
+        conn.execute("CREATE TABLE t (id TEXT, c BLOB)")
+        cipher = FloorVault(bytes.fromhex(key)).encrypt(
+            SECRET, table="t", record_id="1", column="c", schema_id="app.v2", schema_version=3
+        )
+        conn.execute("INSERT INTO t VALUES ('1', ?)", (cipher,))
+        conn.commit()
+    row = [str(path), "t", "1", "c", "--reveal"]
+    assert _inspect(row, base_env).returncode == 1
+    assert _inspect([*row, "--schema-id", "app.v2"], base_env).returncode == 1
+    assert _inspect([*row, "--schema-version", "3"], base_env).returncode == 1
+    both = _inspect([*row, "--schema-id", "app.v2", "--schema-version", "3"], base_env)
+    assert both.returncode == 0, both.stderr
+    assert f"Decrypted value: {SECRET}" in both.stdout
+    empty = _inspect([*row, "--schema-id", " "], base_env)
+    assert empty.returncode == 1
+    assert "--schema-id must not be empty" in empty.stderr

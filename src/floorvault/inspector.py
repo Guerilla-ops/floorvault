@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 import urllib.parse
@@ -11,6 +12,7 @@ from pathlib import Path
 from .core import DecryptionVerificationError, FloorVault
 from .providers.adaptive import AdaptiveKeyProvider
 from .providers.base import KeyProviderError
+from .providers.platform_custody import ProtectedStoreError
 from .sqlite_adapter import _fold_sqlite, _quoted_identifier, _safe_column, _safe_identifier
 
 
@@ -80,6 +82,41 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="revision the record was written at, when it was written with one",
     )
+    inspect_parser.add_argument(
+        "--schema-id",
+        default="floor.vault.v1",
+        help="schema id the record was written under (default: floor.vault.v1)",
+    )
+    inspect_parser.add_argument(
+        "--schema-version",
+        type=int,
+        default=1,
+        help="schema version the record was written under (default: 1)",
+    )
+    # Key options, as for `run` and `secrets` (#100). Without one, the key
+    # comes from default custody for --service-name, read-only.
+    inspect_parser.add_argument(
+        "--key-env",
+        default=None,
+        metavar="NAME",
+        help="read the master key (64 hex) from this variable instead of OS custody",
+    )
+    inspect_parser.add_argument(
+        "--key-file",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="read the master key (64 hex) from this file instead of OS custody "
+        "(default: $FLOOR_VAULT_KEY_FILE)",
+    )
+    inspect_parser.add_argument(
+        "--key-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="directory holding the key: a systemd-creds credential sealed by "
+        "`secrets init --custody systemd-creds`, or default custody's key files",
+    )
 
     from .agent_cli import split_allow_argv
 
@@ -125,11 +162,20 @@ def main(argv: list[str] | None = None) -> int:
 
 def _inspect_record(args, db_path: Path) -> int:
     """Read one encrypted field read-only and report whether it authenticates."""
+    from .agent_cli import KeyOptionsConflict, StoreUnavailable, _check_key_options, explicit_key
+
+    try:
+        # A usage error whatever the record holds, so before the lookup.
+        _check_key_options(args)
+    except KeyOptionsConflict as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     for label, value in (
         ("table", args.table),
         ("column", args.column),
         ("record id", args.record_id),
         ("id column", args.id_column),
+        ("schema id", args.schema_id),
     ):
         try:
             value.encode("utf-8")
@@ -147,6 +193,9 @@ def _inspect_record(args, db_path: Path) -> int:
         return 1
     if args.app_instance is not None and not args.app_instance.strip():
         print("Error: --app-instance must not be empty", file=sys.stderr)
+        return 1
+    if not args.schema_id.strip():
+        print("Error: --schema-id must not be empty", file=sys.stderr)
         return 1
 
     db_uri = f"file:{urllib.parse.quote(db_path.as_posix(), safe='/')}?mode=ro"
@@ -188,13 +237,28 @@ def _inspect_record(args, db_path: Path) -> int:
     # Keychain/Secret-Service/file entry for any typo'd --service-name
     # before decryption ever ran. allow_create=False turns an absent
     # key into a plain error instead.
-    provider_kwargs = {"service_name": args.service_name} if args.service_name is not None else {}
-    vault_kwargs = {"app_instance_id": args.app_instance} if args.app_instance is not None else {}
+    key_dir = args.key_dir.expanduser() if args.key_dir is not None else None
     try:
-        master_key = AdaptiveKeyProvider(**provider_kwargs).resolve_key(allow_create=False)
-    except KeyProviderError as exc:
+        master_key = explicit_key(args, os.environ, key_dir)
+    except KeyOptionsConflict as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    except StoreUnavailable as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    if master_key is None:
+        provider_kwargs: dict = {}
+        if args.service_name is not None:
+            provider_kwargs["service_name"] = args.service_name
+        if key_dir is not None:
+            provider_kwargs["fallback_dir"] = key_dir
+        try:
+            master_key = AdaptiveKeyProvider(**provider_kwargs).resolve_key(allow_create=False)
+        except (KeyProviderError, ProtectedStoreError) as exc:
+            # ProtectedStoreError: e.g. a --key-dir outside the Windows user profile.
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+    vault_kwargs = {"app_instance_id": args.app_instance} if args.app_instance is not None else {}
     try:
         crypto = FloorVault(master_key, **vault_kwargs)
     except ValueError as exc:
@@ -215,6 +279,8 @@ def _inspect_record(args, db_path: Path) -> int:
                 table=bound_table,
                 record_id=args.record_id,
                 column=bound_column,
+                schema_id=args.schema_id,
+                schema_version=args.schema_version,
                 revision=args.revision,
             )
         except DecryptionVerificationError as exc:
