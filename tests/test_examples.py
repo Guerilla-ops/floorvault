@@ -3,21 +3,23 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from floorvault.agentenv import is_ref_like, parse_env_file, parse_ref
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "agent-secrets"
-# Names that hold secrets by convention ("PAT" only as a word: PATH is not one).
-SECRET_NAME = re.compile(r"KEY|TOKEN|PASSWORD|SECRET|(?:^|_)PAT(?:_|$)", re.IGNORECASE)
+#: The only plain values the examples may hold. Every other value must be an fv:
+#: reference: a list of secret-looking names would miss DATABASE_URL and the like.
+PLAIN_SETTINGS = {"LOG_LEVEL", "PATH"}
 
 
 def _assert_secrets_are_references(values: dict[str, str], where: str) -> None:
     for name, value in values.items():
-        if SECRET_NAME.search(name):
-            assert is_ref_like(value), f"{where}: {name} holds a value, not an fv: reference"
-            assert parse_ref(value) is not None, f"{where}: {name} is not a valid reference"
+        if name in PLAIN_SETTINGS:
+            assert not is_ref_like(value), f"{where}: {name} is meant to be a plain setting"
+            continue
+        assert is_ref_like(value), f"{where}: {name} holds a value, not an fv: reference"
+        assert parse_ref(value) is not None, f"{where}: {name} is not a valid reference"
 
 
 def test_the_example_env_file_holds_only_references_for_secrets():

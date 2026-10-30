@@ -94,8 +94,9 @@ echo 'OPENAI_API_KEY=fv:openai' > .env
 floorvault run --env-file .env -- python agent.py
 ```
 
-`floorvault secrets import .env` moves an existing file's values into the store,
-and `floorvault secrets allow` binds an item to the command lines it may reach.
+`floorvault secrets import .env` previews moving an existing file's values into
+the store; add `--write` to store them and rewrite the file to references.
+`floorvault secrets allow` binds an item to the command lines it may reach.
 The [walkthrough](https://github.com/Guerilla-ops/floorvault/tree/main/examples/agent-secrets)
 has a references-only `.env`, an MCP client config, and what this does and does
 not protect: the started command, and code running as you, can still read the
