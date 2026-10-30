@@ -217,23 +217,27 @@ def open_store(
     try:
         if key_bytes is not None:
             crypto = FloorVault(HardenedMemoryKey(key_bytes), app_instance_id=APP_CONTEXT)
-            return VaultStore(vault_dir, crypto=crypto, **listing)
-        if key_env:
+            store = VaultStore(vault_dir, crypto=crypto, **listing)
+        elif key_env:
             raw = (environ.get(key_env) or "").strip()
             if not raw:
                 raise StoreUnavailable(f"--key-env {key_env} is not set")
             if not _HEX_KEY.fullmatch(raw):
                 raise StoreUnavailable(f"{key_env} must hold 64 hexadecimal characters")
             crypto = FloorVault(HardenedMemoryKey(bytes.fromhex(raw)), app_instance_id=APP_CONTEXT)
-            return VaultStore(vault_dir, crypto=crypto, **listing)
-        # VaultStore's own default custody, resolved here before VaultStore creates
-        # the store directory, so a refusal leaves nothing behind and can be
-        # explained in terms of this CLI's options.
-        provider = AdaptiveKeyProvider(
-            service_name=SERVICE_NAME, fallback_dir=vault_dir, environ=provider_environ
-        )
-        key = provider.resolve_key(allow_create=create)
-        return VaultStore(vault_dir, crypto=FloorVault(key, app_instance_id=APP_CONTEXT), **listing)
+            store = VaultStore(vault_dir, crypto=crypto, **listing)
+        else:
+            # VaultStore's own default custody, resolved here before VaultStore
+            # creates the store directory, so a refusal leaves nothing behind and
+            # can be explained in terms of this CLI's options.
+            provider = AdaptiveKeyProvider(
+                service_name=SERVICE_NAME, fallback_dir=vault_dir, environ=provider_environ
+            )
+            key = provider.resolve_key(allow_create=create)
+            store = VaultStore(
+                vault_dir, crypto=FloorVault(key, app_instance_id=APP_CONTEXT), **listing
+            )
+        target = store.rotation_in_progress()
     except StoreUnavailable:
         raise
     except NoCustodyError:
@@ -248,6 +252,17 @@ def open_store(
         ) from None
     except (KeyProviderError, VaultError, ValueError, OSError, sqlite3.Error) as exc:
         raise StoreUnavailable(f"cannot open vault at {vault_dir}: {exc}") from None
+    if target is not None:
+        # Part of the store is under the old key generation and part under the
+        # new one; this CLI holds a single key, so it would open some items and
+        # report the rest as sealed under "another key" (audit SEC-16, #99).
+        raise StoreUnavailable(
+            f"the vault at {vault_dir} is part-way through a key rotation (to key "
+            f"generation {target}), so no single key opens all of it; nothing was "
+            "changed. Finish the rotation with floorvault.rotate_vault_store and a "
+            "KeyRing holding both keys, then use the new key"
+        )
+    return store
 
 
 SEALED_LISTING_ENV = "FLOOR_VAULT_SEALED_LISTING"

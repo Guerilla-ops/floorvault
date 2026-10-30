@@ -1075,6 +1075,21 @@ class VaultStore:
                 (kind, record_id, column, target_key_id),
             )
 
+    def rotation_in_progress(self) -> Optional[int]:
+        """The target key generation of an unfinished rotation, or ``None``.
+
+        Between ``begin_rotation`` and ``clear_rotation_journal`` the store holds
+        records under two key generations and refuses writes, so a reader with
+        a single key can open only part of it.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT active, target_key_id FROM vault_rotation_state WHERE singleton = 1"
+            ).fetchone()
+        if row is None or not bool(row[0]):
+            return None
+        return int(row[1])
+
     def rotation_journal(self) -> dict[tuple[str, str, str], tuple[int, str]]:
         """Current rotation progress: ``(kind, record_id, column) -> (key_id, state)``."""
         with self._connect() as conn:
