@@ -446,6 +446,7 @@ class VaultStore:
         the cleartext column, and ``kind`` must be a known kind.
         """
         rows = conn.execute("SELECT id, kind, has_otp, payload_cipher FROM vault_items").fetchall()
+        migrated = False
         for item_id, kind, has_otp, payload_cipher in rows:
             kind_sealed = isinstance(kind, bytes)
             otp_sealed = isinstance(has_otp, bytes)
@@ -481,6 +482,20 @@ class VaultStore:
                     item_id,
                 ),
             )
+            migrated = True
+        if migrated:
+            # Checked after the first write, inside the same transaction: this
+            # connection now holds the write lock, so a rotation either began
+            # before it (seen here, and the conversion rolls back) or waits
+            # until it commits. Checked first, one could start in between and
+            # have fields sealed under the old key mid-rotation (#98 review).
+            active = conn.execute(
+                "SELECT active FROM vault_rotation_state WHERE singleton = 1"
+            ).fetchone()
+            if active is not None and bool(active[0]):
+                raise VaultError(
+                    "vault rotation is in progress; listing metadata was not converted"
+                )
 
     def _seal_kind(self, item_id: str, kind: str) -> Optional[bytes]:
         # Pad to one width so the envelope length does not reveal the kind

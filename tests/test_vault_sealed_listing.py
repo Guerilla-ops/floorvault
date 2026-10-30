@@ -235,3 +235,18 @@ def test_default_mode_is_unchanged(tmp_path):
         1,
     )
     assert [(m.kind, m.has_otp) for m in classic.list_items()] == [("login", True)]
+
+
+def test_listing_migration_is_refused_while_a_rotation_is_in_progress(tmp_path):
+    """The check runs after the first write, so a rotation cannot start in between (#98)."""
+    plain = VaultStore(tmp_path, crypto=_crypto())
+    item = plain.add_item("generic", "Item", {"value": "v"})
+    plain.begin_rotation(1, target_vault=_crypto(b"\x08" * 32))
+    with sqlite3.connect(tmp_path / "vault.db") as conn:
+        before = conn.execute("SELECT kind, has_otp FROM vault_items").fetchall()
+    with pytest.raises(VaultError, match="rotation is in progress; listing metadata was not"):
+        _sealed(tmp_path, migrate_listing_metadata=True)
+    with sqlite3.connect(tmp_path / "vault.db") as conn:
+        assert conn.execute("SELECT kind, has_otp FROM vault_items").fetchall() == before
+    assert before == [("generic", 0)]
+    assert item.id
