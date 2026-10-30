@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -438,3 +439,81 @@ def test_commitment_rejected_when_record_ids_match_across_stores(tmp_path):
             new_vault=_crypto(NEW),
             new_key_id=1,
         )
+
+
+# ---------------------------------------------------------------------------
+# Writes after a rotation carry the store's generation (#103)
+# ---------------------------------------------------------------------------
+
+THIRD = bytes.fromhex("53" * 32)
+#: An absolute program path on every platform, as a binding requires.
+BOUND = sys.executable
+
+
+def _key_ids(store_db: Path, item_id: str) -> set[int]:
+    """The envelope key ids of an item's payload and every sealed metadata column."""
+    from floorvault.core import envelope_header
+
+    columns = ("payload_cipher", *VaultStore._SEALED_META_COLUMNS)
+    with sqlite3.connect(store_db) as conn:
+        row = conn.execute(
+            f"SELECT {', '.join(columns)} FROM vault_items WHERE id = ?", (item_id,)
+        ).fetchone()
+    return {envelope_header(bytes(value))["key_id"] for value in row if value is not None}
+
+
+def test_writes_after_a_rotation_are_labelled_with_the_new_generation(tmp_path):
+    store = _store(tmp_path)
+    old = store.add_item("generic", "Old", {"note": "one"})
+    rotate_vault_store(
+        store, source_ring=KeyRing({0: _crypto(OLD)}), new_vault=_crypto(NEW), new_key_id=1
+    )
+
+    rotated = VaultStore(tmp_path / "vault", crypto=_crypto(NEW))
+    new = rotated.add_item("generic", "New", {"value": "two"})
+    assert rotated.update_generic_field(old.id, "note", "changed")
+    rotated.set_allowed_commands(new.id, [[BOUND]])
+    rotated.retire_legacy_id("legacy-1", new.id)
+    db = tmp_path / "vault" / "vault.db"
+    assert _key_ids(db, old.id) == {1}
+    assert _key_ids(db, new.id) == {1}
+
+    # So the natural ring for the next rotation holds only generation 1.
+    result = rotate_vault_store(
+        rotated, source_ring=KeyRing({1: _crypto(NEW)}), new_vault=_crypto(THIRD), new_key_id=2
+    )
+    assert result == {"migrated": 2, "verified": 2, "retirements": 1}
+    third = VaultStore(tmp_path / "vault", crypto=_crypto(THIRD))
+    assert third.resolve_secret(old.id) == {"note": "changed"}
+    assert third.get_allowed_commands(new.id) == [[BOUND]]
+    assert third.retired_modern_id("legacy-1") == new.id
+    assert _key_ids(db, old.id) == _key_ids(db, new.id) == {2}
+
+
+def test_a_store_never_rotated_still_writes_key_id_0(tmp_path):
+    store = _store(tmp_path)
+    item = store.add_item("generic", "Item", {"value": "v"})
+    assert _key_ids(tmp_path / "vault" / "vault.db", item.id) == {0}
+
+
+def test_a_store_opened_before_a_rotation_refuses_to_write_after_it(tmp_path):
+    store = _store(tmp_path)
+    item = store.add_item("generic", "Item", {"value": "v"})
+    stale = VaultStore(tmp_path / "vault", crypto=_crypto(OLD))  # e.g. another process
+    rotate_vault_store(
+        store, source_ring=KeyRing({0: _crypto(OLD)}), new_vault=_crypto(NEW), new_key_id=1
+    )
+    before = _key_ids(tmp_path / "vault" / "vault.db", item.id)
+    for write in (
+        lambda s: s.add_item("generic", "Late", {"value": "x"}),
+        lambda s: s.update_generic_field(item.id, "value", "x"),
+        lambda s: s.set_allowed_commands(item.id, [[BOUND]]),
+        lambda s: s.delete_item(item.id),
+        lambda s: s.retire_legacy_id("legacy-1", item.id),
+    ):
+        for old_store in (stale, store):
+            with pytest.raises(VaultError, match="rotated to key generation 1 after this"):
+                write(old_store)
+    assert _key_ids(tmp_path / "vault" / "vault.db", item.id) == before == {1}
+    # Opened again with the new key, writes go through.
+    VaultStore(tmp_path / "vault", crypto=_crypto(NEW)).add_item("generic", "Now", {"value": "y"})
