@@ -1873,8 +1873,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AUD-29",
         "src/floorvault/agent_cli.py",
-        "    if getattr(args, \"require_binding\", False) or _env_flag(environ, REQUIRE_BINDING_ENV):\n",
-        "    if getattr(args, \"require_binding\", False):  # MUTANT\n",
+        '    if getattr(args, "require_binding", False) or _env_flag(environ, REQUIRE_BINDING_ENV):\n',
+        '    if getattr(args, "require_binding", False):  # MUTANT\n',
         "$FLOOR_VAULT_REQUIRE_BINDING no longer overrides --allow-unbound (RUN-9)",
     ),
     Mutation(
