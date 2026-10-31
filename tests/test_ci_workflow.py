@@ -1,96 +1,360 @@
-"""The CI workflow's shape: required check names survive, shards cannot drop mutants.
+"""Pin PR/expanded compatibility coverage and the shared CI security checks.
 
-Branch protection names checks, and the mutation controls are split across
-parallel jobs behind aggregator jobs that keep the old names. These tests pin the
-parts of that arrangement that fail silently: a renamed required check never
-reports, and a shard count that disagrees with the shard list skips mutants.
+The matrix script emits the same JSON consumed by Actions, so tests can exercise
+both event policies without adding a YAML parser dependency.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
-import pytest
+ROOT = Path(__file__).resolve().parent.parent
+WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+PYPROJECT = ROOT / "pyproject.toml"
 
-yaml = pytest.importorskip("yaml")
-
-ROOT = Path(__file__).resolve().parents[1]
-CI = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
-CFLITE = yaml.safe_load((ROOT / ".github" / "workflows" / "cflite.yml").read_text(encoding="utf-8"))
-CELLS = (
-    ("ubuntu-latest", "3.10"),
-    ("ubuntu-latest", "3.14"),
-    ("macos-latest", "3.13"),
-    ("windows-latest", "3.13"),
-)
+TEXT = WORKFLOW.read_text(encoding="utf-8")
+CLASSIFIER = re.compile(r"Programming Language :: Python :: (\d+\.\d+)")
 
 
-def _required_contexts() -> list[str]:
-    text = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
-    block = text.split("```text", 1)[1].split("```", 1)[0]
-    return [line.strip() for line in block.strip().splitlines()]
+def _job(job_id: str) -> str:
+    """The text of one job: from its key to the next job's key."""
+    start = TEXT.index(f"\n  {job_id}:\n") + 1
+    following = re.search(r"\n  [A-Za-z][\w-]*:\n", TEXT[start:])
+    return TEXT[start : start + following.start()] if following else TEXT[start:]
 
 
-def _static_names() -> set[str]:
-    names = set()
-    for job in CI["jobs"].values():
-        name = job.get("name", "")
-        if name == "${{ matrix.os }} / py${{ matrix.python }}":
-            names |= {f"{os_} / py{py}" for os_, py in CELLS}
-        elif "${{" not in name:
-            names.add(name)
-    for os_ in ("ubuntu-latest", "macos-latest", "windows-latest"):
-        names.add(f"Dependency CVE audit (all extras) ({os_})")
-    return names
+def _cells(*, expanded: bool = False) -> list[tuple[str, str]]:
+    command = [sys.executable, str(ROOT / "scripts" / "ci_matrix.py")]
+    if expanded:
+        command.append("--expanded")
+    result = subprocess.run(command, capture_output=True, text=True, check=True)
+    return [(cell["os"], cell["python"]) for cell in json.loads(result.stdout)["include"]]
 
 
-def test_every_required_context_is_still_produced():
-    produced = _static_names() | {"fuzz (code-change)"}
-    missing = [name for name in _required_contexts() if name not in produced]
-    assert not missing, f"no job reports these required checks any more: {missing}"
+def _declared_versions() -> set[str]:
+    """Versions the package claims to support, from its own classifiers."""
+    return set(CLASSIFIER.findall(PYPROJECT.read_text(encoding="utf-8")))
 
 
-def test_the_fuzz_check_runs_in_a_merge_queue_under_the_same_name():
-    assert "merge_group" in CI[True] and "merge_group" in CFLITE[True]
-    name = CFLITE["jobs"]["fuzz"]["name"]
-    assert '"merge_group"' in name and "'code-change'" in name
+def _floor() -> str:
+    match = re.search(
+        r'requires-python\s*=\s*">=\s*([\d.]+)"', PYPROJECT.read_text(encoding="utf-8")
+    )
+    assert match, "could not read requires-python from pyproject.toml"
+    return match.group(1)
 
 
-def test_shard_jobs_read_their_count_from_one_place():
-    jobs = CI["jobs"]
-    for job_id, count in (
-        ("mutation-shards", "linux_count"),
-        ("platform-mutations", "platform_count"),
+def test_pr_matrix_has_only_the_four_approved_cells():
+    assert set(_cells()) == {
+        ("ubuntu-latest", "3.10"),
+        ("ubuntu-latest", "3.14"),
+        ("macos-latest", "3.13"),
+        ("windows-latest", "3.13"),
+    }
+    assert len(_cells()) == 4
+
+
+def test_all_supported_operating_systems_are_covered():
+    systems = {os_name for os_name, _ in _cells()}
+    for required in ("ubuntu-latest", "macos-latest", "windows-latest"):
+        assert required in systems, f"{required} is missing from the CI matrix"
+
+
+def test_every_supported_python_version_is_tested_somewhere():
+    tested = {version for _, version in _cells(expanded=True)}
+    declared = _declared_versions()
+    assert declared, "no Python version classifiers found in pyproject.toml"
+    missing = declared - tested
+    assert not missing, f"declared as supported but never tested: {sorted(missing)}"
+
+
+def test_every_operating_system_tests_the_declared_python_floor():
+    """macOS and Windows initially ran only the newest interpreter.
+
+    A platform-specific code path can pass on 3.13 and fail on the 3.10 floor
+    that pyproject.toml declares, which is precisely the class of defect this
+    matrix exists to find. Asking for both ends of the range on every OS is
+    deliberate.
+    """
+    floor = _floor()
+    cells = _cells(expanded=True)
+    for os_name in sorted({os_name for os_name, _ in cells}):
+        versions = {version for cell_os, version in cells if cell_os == os_name}
+        assert floor in versions, (
+            f"{os_name} does not test the declared floor {floor}: it tests {sorted(versions)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Release artifacts
+#
+# The gate builds a wheel and sdist and verifies their shape, then discards
+# them. Nothing recorded which artifact a given run produced, so a build from
+# source could not be compared against another runner's or against a published
+# download - reproducibility was unprovable rather than merely unproven.
+# ---------------------------------------------------------------------------
+
+
+def _upload_step() -> str:
+    """The whole upload-artifact step, including its condition and inputs.
+
+    Walks out to the YAML list-item boundaries rather than slicing from the
+    ``uses:`` line, so the step's ``if:`` and ``with:`` are included regardless
+    of the order the keys are written in.
+    """
+    lines = TEXT.splitlines()
+    marker = next((i for i, text in enumerate(lines) if "actions/upload-artifact@" in text), None)
+    assert marker is not None, "the workflow does not upload the built artifacts"
+    start = marker
+    while start > 0 and not re.match(r"\s*- ", lines[start]):
+        start -= 1
+    end = marker + 1
+    while end < len(lines) and not re.match(r"\s*- ", lines[end]):
+        end += 1
+    return "\n".join(lines[start:end])
+
+
+def test_the_built_artifacts_are_published_by_ci():
+    step = _upload_step()
+    assert ".whl" in step, "the wheel is not among the published artifacts"
+    assert ".tar.gz" in step, "the sdist is not among the published artifacts"
+
+
+def test_publishing_is_fail_closed_when_no_artifact_was_built():
+    """An upload step that silently publishes nothing is worse than none."""
+    assert "if-no-files-found" in _upload_step(), (
+        "upload-artifact defaults to warning when its path matches nothing"
+    )
+    assert re.search(r"if-no-files-found:\s*error", _upload_step()), (
+        "a missing artifact must fail the job, not warn"
+    )
+
+
+def test_build_and_upload_run_once_outside_the_test_matrix():
+    build = _job("build")
+    assert "matrix." not in build
+    assert "uv build" in build
+    assert "actions/upload-artifact@" in build
+
+
+# ---------------------------------------------------------------------------
+# The secret scan
+#
+# The gitleaks ACTION requires a licence for organization-owned repositories. The
+# repository moved into the `vaultfloor` organization, so the Action began failing
+# with "License key is required", and because the workflow cancels in-progress
+# runs, that single failure cancelled five other legs. The comment above the job
+# had asserted the licence was unnecessary - true when written, false after the
+# move, and the kind of stale claim that turns into a red build.
+#
+# The OSS CLI has no such gate and runs exactly the command the local gate runs,
+# so CI and the local run now agree on what the scan is.
+# ---------------------------------------------------------------------------
+
+
+def test_the_secret_scan_does_not_use_the_license_gated_action():
+    assert "gitleaks/gitleaks-action@" not in TEXT, (
+        "the gitleaks Action needs a licence for organization-owned repos; use the CLI"
+    )
+    assert "gitleaks git" in TEXT, "CI does not run the same scan command as the local gate"
+
+
+def test_the_secret_scanner_is_pinned_and_its_checksum_verified():
+    """The scanner is part of the gate, so its provenance is part of the gate."""
+    assert re.search(r"VERSION=\d+\.\d+\.\d+", TEXT), "the scanner version is not pinned"
+    assert re.search(r"SHA256=[0-9a-f]{64}", TEXT), "no pinned checksum for the download"
+    assert "sha256sum -c -" in TEXT, "the downloaded scanner is not verified before use"
+
+
+def test_the_secret_scan_still_runs_over_full_history():
+    """A shallow checkout would make a history scan meaningless."""
+    assert "fetch-depth: 0" in TEXT
+
+
+# ---------------------------------------------------------------------------
+# Third-party assurance tooling
+#
+# Bandit, Semgrep CE, OpenSSF Scorecard and ClusterFuzzLite are external checks
+# on the repository. Each is only worth its green tick if it runs the command the
+# local gate runs, against pinned inputs, with no more token scope than it needs.
+# ---------------------------------------------------------------------------
+
+WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+GATE = (ROOT / "scripts" / "security-check.sh").read_text(encoding="utf-8")
+USES = re.compile(r"^\s*-?\s*uses:\s*(\S+)", re.MULTILINE)
+
+
+def _workflow(name: str) -> str:
+    return (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+
+
+def test_every_action_in_every_workflow_is_pinned_to_a_commit():
+    """A tag can be moved; a 40-hex commit cannot. Covers every workflow file."""
+    unpinned = [
+        f"{path.name}: {ref}"
+        for path in WORKFLOWS
+        for ref in USES.findall(path.read_text(encoding="utf-8"))
+        if not re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", ref)
+    ]
+    assert not unpinned, f"actions not pinned to a full commit SHA: {unpinned}"
+
+
+def test_sast_job_runs_the_gates_own_commands():
+    for command in (
+        "bandit -q -r src/ scripts/ fuzz/",
+        "semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/",
     ):
-        job = jobs[job_id]
-        shards = job["strategy"]["matrix"]["shard"]
-        assert shards == "${{ fromJSON(needs.changes.outputs.%s) }}" % (
-            count.replace("count", "shards")
-        )
-        run = " ".join(step.get("run", "") for step in job["steps"])
-        assert re.search(
-            r"--shard \$\{\{ matrix\.shard \}\}/\$\{\{ needs\.changes\.outputs\.%s \}\}" % count,
-            run,
-        ), (job_id, run)
-        # No hard-coded denominator anywhere in the job.
-        assert not re.search(r"--shard \S*/\d", run), job_id
-    shard_step = next(s for s in jobs["changes"]["steps"] if s.get("id") == "shards")["run"]
-    for name in ("linux", "platform"):
-        assert f"{name}_count=$" in shard_step and f"{name}_shards=$(list" in shard_step
+        assert command in GATE, f"the gate no longer runs: {command}"
+        assert command in TEXT, f"the sast job does not run the gate's command: {command}"
 
 
-def test_aggregators_keep_the_required_names_and_always_run():
-    jobs = CI["jobs"]
-    assert jobs["mutations"]["name"] == "Full mutation controls (Linux)"
-    assert jobs["gates"]["name"] == "${{ matrix.os }} / py${{ matrix.python }}"
-    for job_id, needed in (("mutations", "mutation-shards"), ("gates", "platform-mutations")):
-        assert jobs[job_id]["if"] == "always()", job_id
-        assert needed in jobs[job_id]["needs"], job_id
-    assert "tests" in jobs["gates"]["needs"]
-    # The shard jobs themselves are not required checks and must not reuse a required name.
-    for job_id in ("mutation-shards", "platform-mutations", "tests"):
-        assert jobs[job_id]["name"] not in _required_contexts()
-        assert not jobs[job_id]["name"].startswith(
-            ("ubuntu-latest /", "macos-latest /", "windows-latest /")
-        )
+def test_semgrep_is_version_pinned_and_skipped_on_the_matrix_legs():
+    assert re.search(r"SEMGREP_VERSION=\d+\.\d+\.\d+", TEXT), "Semgrep version is not pinned"
+    assert "semgrep==${SEMGREP_VERSION}" in TEXT
+    tests_job = TEXT.split("\n  gates:", 1)[1].split("\n  build:", 1)[0]
+    assert "semgrep" not in tests_job
+    assert "scripts/security-check.sh" not in tests_job
+
+
+def test_scorecard_runs_read_only_and_publishes_the_public_repo():
+    """The repo is public: results go to the public Scorecard API and SARIF.
+
+    ``publish_results: false`` was the private-repo setting; on a public repo
+    it would hide the scorecard from securityscorecards.dev for no benefit.
+    Top-level permissions stay read-only regardless.
+    """
+    scorecard = _workflow("scorecard.yml")
+    assert re.search(r"^permissions:\s*read-all\s*$", scorecard, re.MULTILINE)
+    assert "publish_results: true" in scorecard
+    assert "persist-credentials: false" in scorecard
+    assert "upload-sarif" in scorecard, "Scorecard findings never reach code scanning"
+
+
+def test_clusterfuzzlite_builds_and_runs_with_the_token_a_private_repo_needs():
+    cflite = _workflow("cflite.yml")
+    assert "clusterfuzzlite/actions/build_fuzzers@" in cflite
+    assert "clusterfuzzlite/actions/run_fuzzers@" in cflite
+    prune = _workflow("cflite-prune.yml")
+    assert (cflite + prune).count("github-token: ${{ secrets.GITHUB_TOKEN }}") == 4, (
+        "every cflite step (fuzz build/run + weekly prune build/run) needs the token"
+    )
+    assert "language: python" in cflite
+    assert "pull_request" in cflite, "a crash introduced by a PR would not fail the PR"
+
+
+def test_clusterfuzzlite_batch_mode_keeps_and_bounds_the_corpus():
+    """Without a storage repo, corpora persist as per-run artifacts; the weekly
+    schedule must also prune or the persisted corpus grows unboundedly."""
+    cflite = _workflow("cflite.yml")
+    assert "actions: read" in cflite, "corpus artifacts from previous runs are unreadable"
+    prune = _workflow("cflite-prune.yml")
+    assert "mode: prune" in prune, "batch fuzzing without pruning grows the corpus forever"
+    assert "github.event.workflow_run.event == 'schedule'" in prune
+
+
+def test_clusterfuzzlite_does_not_discard_a_crash_it_cannot_reproduce():
+    """The first run found a real crash, timed out reproducing it, and went green."""
+    assert "report-unreproducible-crashes: true" in _workflow("cflite.yml")
+
+
+def test_corpus_pruning_follows_the_completed_trusted_weekly_batch():
+    path = ROOT / ".github" / "workflows" / "cflite-prune.yml"
+    assert path.is_file(), "pruning needs a separate post-batch workflow and artifact namespace"
+    prune = path.read_text(encoding="utf-8")
+    assert "workflow_run:" in prune
+    assert "workflows: [ClusterFuzzLite]" in prune
+    assert "types: [completed]" in prune
+    assert "workflow_dispatch:" in prune
+    condition = (
+        "      github.event_name == 'workflow_dispatch' ||\n"
+        "      (github.event.workflow_run.event == 'schedule' &&\n"
+        "       github.event.workflow_run.conclusion == 'success' &&\n"
+        "       github.event.workflow_run.head_branch == 'main' &&\n"
+        "       github.event.workflow_run.head_repository.full_name == github.repository)"
+    )
+    assert condition in prune, "automatic pruning must follow a successful trusted main batch"
+    assert "\n  prune:" not in _workflow("cflite.yml"), "same-run corpus uploads would collide"
+    assert "mode: prune" in prune
+    assert "contents: read" in prune and "actions: read" in prune
+    assert "write" not in prune
+
+
+def test_ci_audits_the_full_optional_dependency_surface():
+    """A dependency-audit leg must cover the extras, not just the dev env.
+
+    The matrix legs sync ``--extra dev`` only, so a pip-audit run inside them
+    never sees the sqlalchemy/libsql/macos/linux resolution - an optional
+    extra can pull a vulnerable transitive dep while every cell reports the
+    audit as passed. The dedicated leg syncs ``--all-extras`` and audits that.
+    """
+    assert "dep-audit" in TEXT, "ci.yml has no dedicated dependency-audit job"
+    assert "--all-extras" in TEXT, "the audit leg must resolve every optional extra"
+    assert "pip-audit" in TEXT, "the audit leg must run pip-audit"
+
+
+def test_dep_audit_runs_without_resync():
+    """`uv run` re-synchronizes the environment to the default extras before
+    executing, silently dropping the optional extras the dep-audit leg exists
+    to scan - the audit must run with ``--no-sync``."""
+    assert "--no-sync pip-audit" in TEXT, (
+        "the dep-audit leg must run `uv run --no-sync pip-audit` so the "
+        "--all-extras sync is still in effect when the scan runs"
+    )
+
+
+def test_expanded_matrix_keeps_all_nine_existing_cells():
+    assert len(_cells(expanded=True)) == 9
+    assert set(_cells()) <= set(_cells(expanded=True))
+
+
+def test_expanded_ci_is_scheduled_and_available_before_releases():
+    assert "schedule:" in TEXT
+    assert "tags:" in TEXT and "v*" in TEXT
+    assert "workflow_dispatch:" in TEXT
+    assert "github.event_name == 'schedule'" in TEXT
+    assert "inputs.expanded" in TEXT
+    assert "scripts/ci_matrix.py" in TEXT
+    assert "fromJSON(needs.matrix.outputs.matrix)" in TEXT
+
+
+def test_platform_tests_keep_the_full_suite_and_native_windows_coverage():
+    # The test job runs the suite on every cell; the platform mutation roster runs
+    # in its own sharded job on macOS and Windows; the required gate for each cell
+    # (which keeps the cell's name) passes only when both did.
+    tests_job = _job("tests")
+    assert "pytest -q tests/" in tests_job
+    assert "scripts/realworld_exercise.py" in tests_job
+    platform_job = _job("platform-mutations")
+    assert "--scope platform" in platform_job
+    assert "macos-latest" in platform_job and "windows-latest" in platform_job
+    gate_job = _job("gates")
+    assert "needs.tests.result" in gate_job
+    assert "needs.platform-mutations.result" in gate_job
+    assert "matrix.os != 'ubuntu-latest'" in gate_job
+    assert (ROOT / "tests/test_windows_dpapi_live.py").is_file()
+    assert not (ROOT / ".github/workflows/verify.yml").exists()
+
+
+def test_full_mutations_run_once_on_linux():
+    # The whole roster runs on Linux once, split into shards of one matrix
+    # dimension (the shard), and the required check passes only if every shard did.
+    shards = _job("mutation-shards")
+    assert "runs-on: ubuntu-latest" in shards
+    assert "os:" not in shards and "python:" not in shards
+    assert "scripts/mutation_check.py --mode curated" in shards
+    assert "--scope" not in shards
+    gate = _job("mutations")
+    assert "runs-on: ubuntu-latest" in gate
+    assert "needs.mutation-shards.result" in gate
+
+
+def test_dependency_audit_covers_platform_marked_extras():
+    audit = TEXT.split("\n  dep-audit:", 1)[1].split("\n  vault-live:", 1)[0]
+    for system in ("ubuntu-latest", "macos-latest", "windows-latest"):
+        assert system in audit
+    assert "uv sync --all-extras" in audit
+    assert "uv run --no-sync pip-audit" in audit
