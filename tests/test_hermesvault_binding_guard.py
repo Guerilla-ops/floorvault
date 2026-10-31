@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shlex
 import sqlite3
 import sys
 from pathlib import Path
@@ -108,7 +109,8 @@ def test_a_bound_item_may_not_be_resolved_for_another_command(store, monkeypatch
     lines = hermes_command_lines()
     problem = binding_problem(store, ITEM, lines, False)
     assert problem is not None and "bound to other command lines" in problem
-    assert f"{HERMES} chat" in problem and "floorvault secrets allow" in problem
+    # shlex.join quotes a Windows path, as `floorvault run` does when it names a command.
+    assert shlex.join([HERMES, "chat"]) in problem and "floorvault secrets allow" in problem
     assert "sk-test-123" not in problem
     for argv in ([HERMES], [HERMES, "gateway"], [HERMES, "gateway", "run", "--debug"]):
         assert binding_problem(store, ITEM, [argv], False) is not None, argv

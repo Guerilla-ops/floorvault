@@ -9,6 +9,7 @@ installed/editable package or this repo's ``src`` via pytest pythonpath.
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -768,7 +769,7 @@ def test_a_bound_item_is_not_resolved_for_another_command(vault_home, monkeypatc
     assert result.secrets == {"ALSO": "tok-abc"}
     (warning,) = result.warnings
     assert warning.startswith("Skipped OPENAI_API_KEY: vault item vault_testopenai is bound to ")
-    assert f"{HERMES} chat" in warning and "floorvault secrets allow" in warning
+    assert shlex.join([HERMES, "chat"]) in warning and "floorvault secrets allow" in warning
     assert "sk-test-123" not in warning
 
 
@@ -909,5 +910,5 @@ def test_hvault_show_prints_the_bindings(plugin_cli, vault_home, monkeypatch, ca
     assert plugin_cli.hvault_command(show) == 0
     out = capsys.readouterr().out
     assert "bindings: 1 command line(s); resolved only when Hermes was started as:" in out
-    assert f"  {HERMES} gateway run" in out
+    assert f"  {shlex.join([HERMES, 'gateway', 'run'])}" in out
     assert "sk-test-123" not in out
