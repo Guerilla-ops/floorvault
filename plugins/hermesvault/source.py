@@ -20,7 +20,7 @@ with ``custody``:
   This is the only custody that starts a subprocess.
 
 Command bindings set with ``floorvault secrets allow`` are enforced against the
-command line Hermes itself was started with (see ``_hermes_command_lines``): a
+command line Hermes itself was started with (see ``binding_guard``): a
 bound item is resolved only when that line is one of its bindings, and
 ``require_binding: true`` also refuses items that have none. This process has
 already started, so unlike ``floorvault run`` the plugin cannot check variables
@@ -38,12 +38,9 @@ vault-resolved secret never overwrites them.
 
 from __future__ import annotations
 
-import os
 import re
-import shlex
-import sys
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Tuple
 
 from agent.secret_sources.base import (
     ErrorKind,
@@ -52,6 +49,11 @@ from agent.secret_sources.base import (
     get_source_environment,
     is_valid_env_name,
 )
+
+try:
+    from .binding_guard import binding_problem, hermes_command_lines
+except ImportError:  # imported as a top-level module, with this directory on sys.path
+    from binding_guard import binding_problem, hermes_command_lines
 
 
 def _import_floorvault():
@@ -125,69 +127,6 @@ def validate_config(cfg: dict) -> None:
     elif key_file is not None:
         # A key_file that is silently ignored would leave the store on another custody.
         raise ValueError("secrets.hermesvault.key_file is used only with custody: key_file")
-
-
-def _hermes_command_lines() -> list[list[str]]:
-    """The command lines this process was started with, as ``secrets allow`` records them.
-
-    A binding is the program's absolute path, then its arguments. Hermes started
-    through its script (``hermes gateway run``) is ``[<path of hermes>, gateway,
-    run]``, which is ``sys.argv`` with the program made absolute. Started with the
-    interpreter (``python -m hermes_cli gateway run``) it is ``[<python>, -m,
-    hermes_cli, gateway, run]``, which is ``sys.orig_argv`` with the interpreter
-    made absolute. Either line may be the one an operator bound.
-    """
-    lines: list[list[str]] = []
-    argv = list(getattr(sys, "argv", None) or [])
-    if argv and argv[0]:
-        lines.append([os.path.abspath(argv[0]), *argv[1:]])
-    original = list(getattr(sys, "orig_argv", None) or [])
-    if len(original) > 1 and sys.executable:
-        interpreted = [os.path.abspath(sys.executable), *original[1:]]
-        if interpreted not in lines:
-            lines.append(interpreted)
-    return lines
-
-
-def _binding_problem(
-    store, item_id: str, command_lines: Sequence[Sequence[str]], require_binding: bool
-) -> Optional[str]:
-    """Why ``item_id`` may not be resolved for this process, or None when it may.
-
-    Fails closed: a binding that cannot be read or compared is a reason to skip
-    the item, never a reason to release it. A binding lives in vault.db, so
-    whoever can write that file can clear one without the key (#97); only
-    ``require_binding``, which lives in Hermes' configuration, turns a cleared
-    binding into a refusal.
-    """
-    getter = getattr(store, "get_allowed_commands", None)
-    if getter is None:
-        # floorvault before 0.2.8 cannot hold or read bindings.
-        if require_binding:
-            return "cannot be checked for a command binding: floorvault is older than 0.2.8"
-        return None
-    try:
-        allowed = getter(item_id)
-    except Exception:
-        return "has a command binding that cannot be read"
-    if allowed is None:
-        if require_binding:
-            return (
-                "has no command binding, and secrets.hermesvault.require_binding is set; "
-                f"bind it with `floorvault secrets allow {item_id} -- <command line>`"
-            )
-        return None
-    try:
-        from floorvault.agentenv import command_allowed
-    except ImportError:
-        return "has a command binding that this floorvault cannot compare"
-    if any(command_allowed(line, allowed) for line in command_lines):
-        return None
-    seen = shlex.join(command_lines[0]) if command_lines else "an unknown command line"
-    return (
-        "is bound to other command lines than the one Hermes was started with "
-        f"({seen}); bind that with `floorvault secrets allow {item_id} -- <command line>`"
-    )
 
 
 def resolve_key_file(cfg: dict, home_path: Path) -> Path:
@@ -406,7 +345,7 @@ class HermesVaultSource(SecretSource):
                 "check the profile directory and key custody",
                 ErrorKind.AUTH_FAILED,
             )
-        command_lines = _hermes_command_lines()
+        command_lines = hermes_command_lines()
         require_binding = bool(cfg.get("require_binding", False))
         if not hasattr(store, "get_allowed_commands"):
             result.warnings.append(
@@ -420,7 +359,7 @@ class HermesVaultSource(SecretSource):
             if item_id is None:
                 result.warnings.append(f"Skipped {name}: ref must be hv:<item_id>[:<field>]")
                 continue
-            problem = _binding_problem(store, item_id, command_lines, require_binding)
+            problem = binding_problem(store, item_id, command_lines, require_binding)
             if problem is not None:
                 result.warnings.append(f"Skipped {name}: vault item {item_id} {problem}")
                 continue
