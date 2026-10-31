@@ -1,5 +1,5 @@
 name: hermesvault
-version: 0.2.8
+version: 0.2.9
 description: "FloorVault secret source: resolves secrets.hermesvault.env refs (hv:<item>[:field]) from the local FloorVault AES-256-SIV store with configured key custody. Agent credentials only — the browser-fill login vault is untouched."
 author: "Scott Lee"
 license: MIT
