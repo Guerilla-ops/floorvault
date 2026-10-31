@@ -1,10 +1,10 @@
 <p>
-  <img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/groundwork-v0.2.0.png" width="100%" alt="FloorVault Groundwork v0.2.0 — stronger foundations, safer data. Keep the original key. Detect restored data. Refuse ambiguous updates.">
+  <img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/floorvault-v0.2.8.webp" width="100%" alt="FloorVault v0.2.8: encrypt the field, bind it in place. Ciphertext moved to another row, column, table or app does not decrypt. Four parts: context binding, the AES-256-SIV envelope engine, key custody, and agent secrets.">
 </p>
 
 # FloorVault
 
-**Encrypt application data. Bind each field to its context.**
+**Encrypt the field. Bind it in place.**
 
 <p>
   <a href="https://pypi.org/project/floorvault/"><img src="https://img.shields.io/pypi/v/floorvault.svg" alt="PyPI version"></a>
@@ -14,16 +14,15 @@
   <a href="https://github.com/Guerilla-ops/floorvault/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-FloorVault is a Python library for field encryption in existing databases and
-local credential stores. It uses AES-256-SIV with authenticated context to detect
-ciphertext moved to the wrong record, column, table, schema or application.
+FloorVault is a Python library that encrypts individual fields in the database
+you already have, and keeps local credential stores. Every value is bound to
+where it belongs: ciphertext moved to another row, column, table, schema or
+application does not decrypt.
 
-Keep your database engine and choose which fields to protect. Use OS-backed key
-custody, an explicit key source, or an explicitly enabled passphrase-wrapped file.
-
-[Install](#install) · [Quickstart](#quickstart) · [Agent secrets](#keep-agent-secrets-out-of-env) ·
-[Context binding](#context-binding) ·
-[Features](#features) · [Limits](#security-boundaries) · [Documentation](#documentation)
+[Install](#install) · [Quickstart](#quickstart) · [Context binding](#01--context-binding) ·
+[Envelope engine](#02--envelope-engine) · [Key custody](#03--key-custody) ·
+[Agent secrets](#04--agent-secrets) · [Limits](#security-boundaries) ·
+[Documentation](#documentation)
 
 **Beta.** No completed independent code audit or security certification is claimed.
 Read [SECURITY.md](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md)
@@ -82,11 +81,76 @@ with FloorVault(token_bytes(32), app_instance_id="example-app") as crypto:
         raise AssertionError("Wrong-context ciphertext was accepted")
 ```
 
-## Keep agent secrets out of `.env`
+<a id="features"></a>
+<a id="context-binding"></a>
 
-`floorvault run` starts any command, such as an agent, an MCP server or a
-script, with `fv:` references filled in from the encrypted store. Configs and
-`.env` files then hold only references, which are safe to sync or commit:
+## 01 / Context binding
+
+**Bound data.** Every encrypted field is authenticated together with its
+coordinates: application instance, table, record, column, schema ID and schema
+version. Decryption rebuilds them from what the caller expects, so a value moved
+to another row or column fails with `DecryptionVerificationError`, even under the
+right key.
+
+<img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/context-binding.svg" width="100%" alt="The same key and record context return plaintext. With the same key but a different record ID, authentication fails. Context is caller-supplied data, not proof of permission.">
+
+Binding alone does not catch an old value written back to the same place.
+Opt-in revisions and external freshness anchors detect that rollback, given state
+kept outside the attacker's reach.
+
+> **Context is not permission.** Your application chooses the expected coordinates
+> and decides who may read them.
+
+[Context binding and freshness](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#context-binding-and-freshness)
+
+## 02 / Envelope engine
+
+**AES-256-SIV.** A misuse-resistant AEAD (RFC 5297) in a versioned `FLV2`
+envelope. HKDF-SHA256 derives a separate subkey for each purpose (field
+encryption, search beacons, libSQL file encryption, freshness anchors) from one
+32-byte master key. The coordinates, the envelope header and the nonce are all
+authenticated as associated data.
+
+- **Database adapters:** SQLite, libSQL, PostgreSQL, MySQL and SQLAlchemy table
+  integrations, plus opt-in libSQL page encryption.
+- **Checked against:** the RFC 5297 test vectors, Project Wycheproof's AES-SIV
+  vectors, fixed wire-format vectors, and fuzzing in CI.
+- **`floorvault inspect`** checks one encrypted SQLite field from the command line.
+
+[Protocol specification](https://github.com/Guerilla-ops/floorvault/blob/main/docs/SPEC.md) ·
+[Database adapters](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#database-adapters)
+
+## 03 / Key custody
+
+**Keep the key.** The master key comes from a custody provider and is never
+stored in the database it protects:
+
+| Source | Notes |
+| --- | --- |
+| macOS Keychain | `macos` extra |
+| Windows DPAPI | Bound to the Windows account |
+| Linux Secret Service | `linux` extra |
+| HashiCorp Vault Transit | Wraps the master key remotely; encryption stays local |
+| Environment or an explicit key | `FLOOR_VAULT_KEY`, or bytes you supply |
+| Local file | Off by default; can be passphrase-wrapped |
+
+A configured key source that fails is an error, never a silent downgrade to a
+weaker one. Key material is held in buffers that can be wiped after use.
+
+> **Lose the key, lose the data.** Keep recovery material backed up, and reopen a
+> store with the same key, service and application context it was created with.
+
+[Key custody](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#key-custody) ·
+[Vault Transit guide](https://github.com/Guerilla-ops/floorvault/blob/main/docs/VAULT-TRANSIT.md)
+
+<a id="keep-agent-secrets-out-of-env"></a>
+
+## 04 / Agent secrets
+
+**No secrets in `.env`.** `floorvault run` starts any command, such as an agent,
+an MCP server or a script, with `fv:` references filled in from an encrypted local
+store. Configs and `.env` files then hold only references, which are safe to sync
+or commit:
 
 ```bash
 read -rs KEY && printf 'value=%s\n' "$KEY" | floorvault secrets add "OpenAI" --id openai --stdin; unset KEY
@@ -94,41 +158,28 @@ echo 'OPENAI_API_KEY=fv:openai' > .env
 floorvault run --env-file .env -- python agent.py
 ```
 
-`floorvault secrets import .env` previews moving an existing file's values into
-the store; add `--write` to store them and rewrite the file to references.
-`floorvault secrets allow` binds an item to the command lines it may reach,
-and `run --require-binding` refuses items that have no binding.
+- `floorvault secrets import .env` previews moving an existing file's values into
+  the store; add `--write` to store them and rewrite the file to references.
+- `floorvault secrets allow` binds an item to the command lines it may reach, and
+  `run --require-binding` refuses items that have no binding.
+- The store is `VaultStore`, a local credential database with optional sealed
+  listing metadata, also usable directly from Python.
+- A [Hermes Agent plugin](https://github.com/Guerilla-ops/floorvault/tree/main/plugins/hermesvault)
+  in this repository loads vault items into Hermes' environment at startup.
+
+> **The process you start sees plaintext,** and so can other code running as you.
+
 The [walkthrough](https://github.com/Guerilla-ops/floorvault/tree/main/examples/agent-secrets)
 has a references-only `.env`, an MCP client config, and what this does and does
-not protect: the started command, and code running as you, can still read the
-values.
+not protect.
 
-## Context binding
-
-<img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/context-binding.svg" width="100%" alt="The same key and record context return plaintext. With the same key but a different record ID, authentication fails. Context is caller-supplied data, not proof of permission.">
-
-Every encrypted field carries its expected coordinates — application, table,
-record, column and schema version. Decryption authenticates them: a ciphertext
-moved to a different row or column fails verification even under the right key.
-
-Context is caller-supplied data, not identity or permission. Your application
-chooses the expected coordinates and authorises access. Details, freshness
-options and replay limits live in the
-[usage guide](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#context-binding-and-freshness).
-
-## Features
-
-| Surface | What it provides |
-| --- | --- |
-| Field encryption | AES-256-SIV `FLV2` envelopes with authenticated context; details in [SPEC.md](https://github.com/Guerilla-ops/floorvault/blob/main/docs/SPEC.md) |
-| Database adapters | SQLite, libSQL, PostgreSQL, MySQL and SQLAlchemy table integrations; opt-in libSQL page encryption — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#database-adapters) |
-| Credential stores | `VaultStore` local credential database with opt-in sealed listing metadata and legacy migration — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#credential-stores) |
-| Key custody | Environment, macOS Keychain, Windows DPAPI, Linux Secret Service, opt-in file custody, Vault Transit — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#key-custody) |
-| Command line | `floorvault run` fills `fv:` references into a command's environment; `floorvault secrets` manages items, bindings and `.env` imports; `floorvault inspect` checks one encrypted SQLite field — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#run-any-command-with-vault-secrets) |
-| Hermes Agent | Optional plugin resolving vault items into host environment variables — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#hermes-agent-integration) |
-| Freshness | Opt-in revisions and external anchors for rollback detection — [usage](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#context-binding-and-freshness) |
+[Run any command with vault secrets](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#run-any-command-with-vault-secrets) ·
+[Credential stores](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#credential-stores) ·
+[Hermes Agent](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#hermes-agent-integration)
 
 ## Security boundaries
+
+Beta, unaudited, no policy broker, and search beacons leak equality. In detail:
 
 | Property | Limit |
 | --- | --- |
