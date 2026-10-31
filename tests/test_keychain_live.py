@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+from uuid import uuid4
 
 import pytest
 
@@ -28,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_keychain_live_round_trip():
+def test_keychain_live_round_trip(tmp_path):
     try:
         import Security
     except ImportError as exc:
@@ -39,28 +40,29 @@ def test_keychain_live_round_trip():
 
     from floorvault.providers.adaptive import AdaptiveKeyProvider
 
-    service = "floorvault-selftest-live"
+    service = f"floorvault-selftest-live-{uuid4().hex}"
     account = "selftest-v1"
 
     def delete_item() -> None:
-        Security.SecItemDelete(
+        status = Security.SecItemDelete(
             {
                 Security.kSecClass: Security.kSecClassGenericPassword,
                 Security.kSecAttrService: service,
                 Security.kSecAttrAccount: account,
             }
         )
+        assert status in (0, -25300), f"Keychain test item cleanup failed: {status}"
 
-    delete_item()
     try:
+        # Keep custody markers out of the user's home and fresh on every run.
         created = AdaptiveKeyProvider(
-            service_name=service, account_name=account
+            service_name=service, account_name=account, fallback_dir=tmp_path
         )._resolve_from_system_keyring(allow_create=True)
         assert created is not None, "Keychain tier did not create an item"
         assert len(created.get_bytes()) == 32
 
         reread = AdaptiveKeyProvider(
-            service_name=service, account_name=account
+            service_name=service, account_name=account, fallback_dir=tmp_path
         )._resolve_from_system_keyring(allow_create=False)
         assert reread is not None, "Keychain tier could not read its own item back"
         assert reread.get_bytes() == created.get_bytes(), (
