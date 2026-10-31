@@ -88,6 +88,9 @@ cleanup() {
 trap cleanup EXIT
 chmod 700 "$WORK"
 VAULT="$WORK/vault"
+# floorvault 0.3.0 keeps a record of each store's bindings in a state
+# directory; keep this throwaway store's record with it, not in yours.
+export FLOOR_VAULT_STATE_DIR="$WORK/state"
 
 echo "== Setup (throwaway store in $WORK)"
 if ! "$FV" secrets init --vault "$VAULT" --custody systemd-creds; then
@@ -96,9 +99,15 @@ if ! "$FV" secrets init --vault "$VAULT" --custody systemd-creds; then
 fi
 EXPECTED="fv-check-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 printf 'value=%s\n' "$EXPECTED" | "$FV" secrets add "systemd-creds host check" --id check --vault "$VAULT" --stdin >/dev/null
+# Bind the item to the probe's command line: from 0.3.0 `run` refuses an
+# unbound item, and a binding is what a real setup should have anyway.
+"$FV" secrets allow check --vault "$VAULT" -- /usr/bin/env printenv FV_CHECK >/dev/null
 echo
 
-PROBE=("$FV" run --vault "$VAULT" -e FV_CHECK=fv:check -- /usr/bin/env printenv FV_CHECK)
+# env carries the state directory into the contexts that start with an empty
+# environment; the command `run` starts (and checks the binding of) is unchanged.
+PROBE=(/usr/bin/env "FLOOR_VAULT_STATE_DIR=$WORK/state"
+    "$FV" run --vault "$VAULT" -e FV_CHECK=fv:check -- /usr/bin/env printenv FV_CHECK)
 FAILS=0
 report() {  # name, status, detail
     printf '%-7s %-5s %s\n' "$1" "$2" "$3"
