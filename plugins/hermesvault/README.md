@@ -208,7 +208,10 @@ hermes hvault show hv:service_token          # lists what it is bound to
 - **What is compared.** `hermes gateway run` is `[<path of hermes>, gateway, run]`;
   `python -m hermes_cli gateway run` is `[<path of python>, -m, hermes_cli,
   gateway, run]`. Either spelling can be the one you bound, and the warning for a
-  mismatch prints what Hermes saw. An item bound to several lines resolves for any
+  mismatch prints what Hermes saw. Only an absolute program path can match: after
+  startup the plugin can no longer tell which directory a relative `./hermes` was
+  relative to, so start Hermes with its absolute path (a systemd unit's
+  `ExecStart` already is one). An item bound to several lines resolves for any
   of them. Every Hermes command that loads secrets (`gateway run`, `chat`, ...)
   has its own line, so bind the ones that need the item.
 - **`require_binding: true`** also skips items that have no binding. A binding is
