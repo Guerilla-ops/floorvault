@@ -45,6 +45,10 @@ def base_env(tmp_path, key):
             "PYTHONPATH": str(ROOT / "src"),
             "FLOOR_VAULT_KEY": key,
             "FLOOR_VAULT_DIR": str(tmp_path / "vault"),
+            # The binding record stays out of the real state directory. Unbound
+            # items resolve here; tests of the default refusal drop this.
+            "FLOOR_VAULT_STATE_DIR": str(tmp_path / "state"),
+            "FLOOR_VAULT_ALLOW_UNBOUND": "1",
         }
     )
     return env

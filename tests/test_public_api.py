@@ -70,6 +70,8 @@ VAULT_STORE_METHODS = {
     # transaction that creates it; existing callers are unaffected.
     "add_item": "(self, kind: 'str', label: 'str', secret: 'dict[str, Any]', origin: 'Optional[str]' = None, *, item_id: 'Optional[str]' = None, allowed_commands: 'Optional[Sequence[Sequence[str]]]' = None) -> 'VaultItemMeta'",
     "begin_rotation": "(self, target_key_id: 'int', *, target_vault: 'FloorVault') -> 'None'",
+    # Added for RUN-9 (#97): lets a caller detect a binding changed without the key.
+    "binding_fingerprint": "(self, item_id: 'str') -> 'str'",
     "clear_rotation_journal": "(self) -> 'None'",
     "delete_item": "(self, item_id: 'str') -> 'bool'",
     "get_allowed_commands": "(self, item_id: 'str') -> 'Optional[list[list[str]]]'",
