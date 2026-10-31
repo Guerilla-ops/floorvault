@@ -16,8 +16,9 @@
 #   user     a user service (systemd-run --user); needs a user manager
 #   system   a system service running as you, outside any login session
 #            (sudo systemd-run --uid); only with --with-sudo
-#   cron     a real one-minute cron job; only with --with-cron, which adds a
-#            marked line to your crontab and removes it again
+#   cron     a real cron job running as you; only with --with-cron, which
+#            writes a one-line /etc/cron.d file through sudo and deletes it
+#            afterwards (your own crontab is never read or rewritten)
 #   ssh      a non-interactive `ssh HOST cmd` back into this machine (the
 #            store is local); only with --with-ssh [HOST], default localhost
 #
@@ -78,10 +79,13 @@ fi
 echo
 
 WORK="$(mktemp -d "$HOME/.fv-sdcreds-check.XXXXXX")"
-CRON_MARK="# fv-sdcreds-check $(basename "$WORK")"
+# Its own file, so no shared crontab is ever read and rewritten (a concurrent
+# edit of one could be lost). cron.d names are letters, digits, - and _ only.
+CRON_FILE="/etc/cron.d/fv-sdcreds-check-${WORK##*.}"
+CRON_WRITTEN=0
 cleanup() {
-    if [ "$WITH_CRON" = 1 ] && crontab -l >/dev/null 2>&1; then
-        crontab -l | grep -vF "$CRON_MARK" | crontab - || true
+    if [ "$CRON_WRITTEN" = 1 ]; then
+        sudo rm -f -- "$CRON_FILE" || echo "remove $CRON_FILE by hand" >&2
     fi
     rm -rf "$WORK"
 }
@@ -134,9 +138,19 @@ env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" SHELL=/bin/sh PATH=/usr
     setsid -w "${PROBE[@]}" </dev/null >"$WORK/bare.out" 2>&1
 judge bare "$WORK/bare.out" $?
 
-if systemctl --user is-system-running >/dev/null 2>&1 || [ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/private" ]; then
-    systemd-run --user --wait --pipe --quiet --collect "${PROBE[@]}" </dev/null >"$WORK/user.out" 2>&1
-    judge user "$WORK/user.out" $?
+# A shell entered with su can lack XDG_RUNTIME_DIR while linger keeps the user
+# manager running; systemd-run --user needs it to find the manager.
+RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if XDG_RUNTIME_DIR="$RUNTIME" systemctl --user is-system-running >/dev/null 2>&1 \
+        || [ -S "$RUNTIME/systemd/private" ]; then
+    XDG_RUNTIME_DIR="$RUNTIME" systemd-run --user --wait --pipe --quiet --collect \
+        "${PROBE[@]}" </dev/null >"$WORK/user.out" 2>&1
+    rc=$?
+    if grep -qE '^Failed to (connect to bus|create bus connection)' "$WORK/user.out"; then
+        report user SKIP "could not reach the user manager: $(head -n1 "$WORK/user.out")"
+    else
+        judge user "$WORK/user.out" "$rc"
+    fi
 else
     report user SKIP "no user manager for this session (enable linger, or run from a login)"
 fi
@@ -152,22 +166,31 @@ else
 fi
 
 if [ "$WITH_CRON" = 1 ]; then
-    if ! command -v crontab >/dev/null 2>&1; then
-        report cron SKIP "no crontab command"
+    # Every word, the two result paths included, is quoted for the /bin/sh
+    # that cron runs the line with, so $HOME cannot add words or commands.
+    printf -v CMD '%q ' "${PROBE[@]}"
+    printf -v OUT '%q' "$WORK/cron.out"
+    printf -v RC '%q' "$WORK/cron.rc"
+    CRON_LINE="* * * * * $(id -un) ${CMD}>${OUT} 2>&1; echo \$? >${RC}"
+    if [ ! -d /etc/cron.d ]; then
+        report cron SKIP "no /etc/cron.d on this host"
+    elif [[ "$CRON_LINE" == *%* ]]; then
+        # cron turns an unescaped % into a newline.
+        report cron SKIP "a path contains %, which cron rewrites; run from a \$HOME without one"
     else
-        printf -v CMD '%q ' "${PROBE[@]}"
-        { crontab -l 2>/dev/null || true
-          echo "* * * * * $CMD>$WORK/cron.out 2>&1; echo \$? >$WORK/cron.rc $CRON_MARK"
-        } | crontab -
-        for _ in $(seq 1 75); do [ -s "$WORK/cron.rc" ] && break; sleep 1; done
+        CRON_WRITTEN=1
+        printf '%s\n' "$CRON_LINE" | sudo tee -- "$CRON_FILE" >/dev/null
+        sudo chmod 0644 -- "$CRON_FILE"
+        # cron picks up a new cron.d file at its next minute check, then runs it.
+        for _ in $(seq 1 130); do [ -s "$WORK/cron.rc" ] && break; sleep 1; done
         if [ -s "$WORK/cron.rc" ]; then
             judge cron "$WORK/cron.out" "$(cat "$WORK/cron.rc")"
         else
-            report cron FAIL "the cron job did not run within 75 s (is cron running?)"
+            report cron FAIL "the cron job did not run within 130 s (is cron running?)"
         fi
     fi
 else
-    report cron SKIP "pass --with-cron (adds a marked crontab line for about a minute)"
+    report cron SKIP "pass --with-cron (a one-line /etc/cron.d file via sudo, removed afterwards)"
 fi
 
 if [ -n "$SSH_HOST" ]; then
