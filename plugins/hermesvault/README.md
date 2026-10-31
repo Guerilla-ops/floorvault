@@ -18,8 +18,9 @@ hermes plugins enable hermesvault
 
 Hermes asks for consent to install the plugin's Python dependencies, which come
 from PyPI:
-- `floorvault>=0.2.2,<0.3` (`custody: key_file` and `custody: systemd-creds` need
-  0.2.8 or newer; with 0.2.2 they report that and open nothing);
+- `floorvault>=0.2.8,<0.3` (0.2.8 is the first release that can hold and read
+  command bindings, which the plugin enforces; see
+  [Command bindings](#command-bindings));
 - `secretstorage` on Linux;
 - `pyobjc-framework-Security` on macOS.
 
@@ -54,6 +55,7 @@ secrets:
     # custody: os                            # os, key_file or systemd-creds
     # key_file: /run/secrets/hermes-vault    # with custody: key_file
     # override_existing: false
+    # require_binding: false                 # refuse items with no command binding
 ```
 
 A reference has the form `hv:<item_id>[:<field>]`. An item with several
@@ -82,9 +84,8 @@ provider; chat uses the vault key). See
 at a time with `hermes hvault` as above.
 
 The companion removal check requires `floorvault[hermes]` (PyYAML). The
-`floorvault secrets` command line is in floorvault 0.2.8 and newer; the plugin's
-`floorvault>=0.2.2` dependency admits older releases that lack it, so install
-`floorvault[hermes]>=0.2.8` where you run the import.
+`floorvault secrets` command line is in floorvault 0.2.8 and newer, which the
+plugin now requires; install `floorvault[hermes]` where you run the import.
 
 ## Manage items
 
@@ -94,7 +95,7 @@ hermes hvault add "Service token" --stdin    # field=value lines on stdin
 hermes hvault put <item_id> <field>          # prompts for the value
 hermes hvault list                           # metadata only
 hermes hvault doctor                         # check mappings, custody and precedence
-hermes hvault show hv:<item_id>              # field names and status; never plaintext
+hermes hvault show hv:<item_id>              # field names and status, and bindings; never plaintext
 hermes hvault env <item_id> SERVICE_TOKEN    # prints the config.yaml mapping
 hermes hvault rm <item_id>
 ```
@@ -189,9 +190,44 @@ reopening an existing store. See FloorVault's
 [SECURITY.md](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md)
 for the custody model and its limits.
 
-Command bindings set with `floorvault secrets allow` are enforced only by
-`floorvault run`. This plugin ignores them and resolves a bound item like any
-other.
+## Command bindings
+
+`floorvault secrets allow` binds an item to command lines. Inside Hermes the
+command is Hermes itself, so the plugin resolves a bound item only when the
+command line Hermes was started with is one of the item's bindings, and skips it
+with a warning otherwise. Other items in the same `env` map still resolve.
+
+```bash
+# Bind the item to how you start Hermes: the program's absolute path, then
+# exactly its arguments. Use the plugin's store and key (see "Key custody").
+floorvault secrets allow service_token --vault ~/.hermes/agent-vault \
+  --key-env HERMES_VAULT_KEY -- hermes gateway run
+hermes hvault show hv:service_token          # lists what it is bound to
+```
+
+- **What is compared.** `hermes gateway run` is `[<path of hermes>, gateway, run]`;
+  `python -m hermes_cli gateway run` is `[<path of python>, -m, hermes_cli,
+  gateway, run]`. Either spelling can be the one you bound, and the warning for a
+  mismatch prints what Hermes saw. An item bound to several lines resolves for any
+  of them. Every Hermes command that loads secrets (`gateway run`, `chat`, ...)
+  has its own line, so bind the ones that need the item.
+- **`require_binding: true`** also skips items that have no binding. A binding is
+  stored in `vault.db`, so whoever can write that file can clear one without the
+  key; the setting lives in Hermes' configuration, so a cleared binding then
+  blocks the item instead of releasing it. Without it, an unbound item resolves
+  for any command, as before.
+- **Not the same as `floorvault run`.** The plugin runs inside Hermes after it
+  started, so it cannot refuse variables that steer what Hermes loads
+  (`PYTHONPATH`, `LD_PRELOAD`), which `run` checks for bound items. It also has
+  no record of the bindings kept outside the store, so an older, wider binding
+  written back into `vault.db` is not detected. A binding guards against mistakes
+  and against another command using the same profile; it does not stop code
+  running as you, or anything that can start Hermes with the command you bound.
+- **A binding that cannot be read** (it fails authentication, or it was moved
+  from another item) skips the item; it is never taken as "unbound".
+- **floorvault older than 0.2.8** cannot read bindings. The plugin needs 0.2.8 or
+  newer; if an older package is installed anyway, it warns that bindings are not
+  enforced, and with `require_binding` it resolves nothing.
 
 ## What this plugin does on your machine
 

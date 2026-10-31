@@ -563,7 +563,9 @@ floorvault secrets allow github-pat --clear   # unbind: resolves for any command
   same item being written back; only a record of the store kept outside it
   (`floorvault.freshness`) detects that.
 - **Who enforces it:** only `floorvault run` from this release on. Older
-  `floorvault` versions and the Hermes plugin ignore bindings.
+  `floorvault` versions ignore bindings. The Hermes plugin enforces them
+  against the command line Hermes was started with
+  ([Command bindings](../plugins/hermesvault/README.md#command-bindings)).
 
 ## Hermes Agent integration
 
@@ -579,7 +581,7 @@ hermes plugins enable hermesvault
 ```
 
 The plugin directory is self-contained. Its `plugin.yaml` declares
-`floorvault>=0.2.2,<0.3` and the platform keyring packages, which Hermes installs
+`floorvault>=0.2.8,<0.3` and the platform keyring packages, which Hermes installs
 from PyPI after asking for consent. The library wheel does not include or register
 the plugin. See the [plugin README](../plugins/hermesvault/README.md) for
 configuration, the `hermes hvault` commands and what the plugin reads and writes.

@@ -19,6 +19,13 @@ with ``custody``:
   the store (``master.key.sdcred``), unsealed with ``systemd-creds decrypt``.
   This is the only custody that starts a subprocess.
 
+Command bindings set with ``floorvault secrets allow`` are enforced against the
+command line Hermes itself was started with (see ``_hermes_command_lines``): a
+bound item is resolved only when that line is one of its bindings, and
+``require_binding: true`` also refuses items that have none. This process has
+already started, so unlike ``floorvault run`` the plugin cannot check variables
+that steer what the command loads.
+
 The process-wide ``FLOOR_VAULT_KEY`` / ``VAULT_MASTER_KEY`` /
 ``FLOOR_VAULT_KEY_FILE`` are never read, so under the multiplex gateway another
 profile's launch environment cannot unlock this store. A configured custody
@@ -31,9 +38,12 @@ vault-resolved secret never overwrites them.
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 from agent.secret_sources.base import (
     ErrorKind,
@@ -102,7 +112,7 @@ def validate_config(cfg: dict) -> None:
     token = cfg.get("token_env", DEFAULT_TOKEN_ENV)
     if not isinstance(token, str) or not is_valid_env_name(token):
         raise ValueError("secrets.hermesvault.token_env must be an environment variable name")
-    for name in ("enabled", "override_existing"):
+    for name in ("enabled", "override_existing", "require_binding"):
         if name in cfg and not isinstance(cfg[name], bool):
             raise ValueError(f"secrets.hermesvault.{name} must be a boolean")
     custody = cfg.get("custody", DEFAULT_CUSTODY)
@@ -115,6 +125,69 @@ def validate_config(cfg: dict) -> None:
     elif key_file is not None:
         # A key_file that is silently ignored would leave the store on another custody.
         raise ValueError("secrets.hermesvault.key_file is used only with custody: key_file")
+
+
+def _hermes_command_lines() -> list[list[str]]:
+    """The command lines this process was started with, as ``secrets allow`` records them.
+
+    A binding is the program's absolute path, then its arguments. Hermes started
+    through its script (``hermes gateway run``) is ``[<path of hermes>, gateway,
+    run]``, which is ``sys.argv`` with the program made absolute. Started with the
+    interpreter (``python -m hermes_cli gateway run``) it is ``[<python>, -m,
+    hermes_cli, gateway, run]``, which is ``sys.orig_argv`` with the interpreter
+    made absolute. Either line may be the one an operator bound.
+    """
+    lines: list[list[str]] = []
+    argv = list(getattr(sys, "argv", None) or [])
+    if argv and argv[0]:
+        lines.append([os.path.abspath(argv[0]), *argv[1:]])
+    original = list(getattr(sys, "orig_argv", None) or [])
+    if len(original) > 1 and sys.executable:
+        interpreted = [os.path.abspath(sys.executable), *original[1:]]
+        if interpreted not in lines:
+            lines.append(interpreted)
+    return lines
+
+
+def _binding_problem(
+    store, item_id: str, command_lines: Sequence[Sequence[str]], require_binding: bool
+) -> Optional[str]:
+    """Why ``item_id`` may not be resolved for this process, or None when it may.
+
+    Fails closed: a binding that cannot be read or compared is a reason to skip
+    the item, never a reason to release it. A binding lives in vault.db, so
+    whoever can write that file can clear one without the key (#97); only
+    ``require_binding``, which lives in Hermes' configuration, turns a cleared
+    binding into a refusal.
+    """
+    getter = getattr(store, "get_allowed_commands", None)
+    if getter is None:
+        # floorvault before 0.2.8 cannot hold or read bindings.
+        if require_binding:
+            return "cannot be checked for a command binding: floorvault is older than 0.2.8"
+        return None
+    try:
+        allowed = getter(item_id)
+    except Exception:
+        return "has a command binding that cannot be read"
+    if allowed is None:
+        if require_binding:
+            return (
+                "has no command binding, and secrets.hermesvault.require_binding is set; "
+                f"bind it with `floorvault secrets allow {item_id} -- <command line>`"
+            )
+        return None
+    try:
+        from floorvault.agentenv import command_allowed
+    except ImportError:
+        return "has a command binding that this floorvault cannot compare"
+    if any(command_allowed(line, allowed) for line in command_lines):
+        return None
+    seen = shlex.join(command_lines[0]) if command_lines else "an unknown command line"
+    return (
+        "is bound to other command lines than the one Hermes was started with "
+        f"({seen}); bind that with `floorvault secrets allow {item_id} -- <command line>`"
+    )
 
 
 def resolve_key_file(cfg: dict, home_path: Path) -> Path:
@@ -291,6 +364,11 @@ class HermesVaultSource(SecretSource):
                 "description": "May overwrite vars already set by .env/shell",
                 "default": False,
             },
+            "require_binding": {
+                "description": "Also refuse items with no `floorvault secrets allow` "
+                "binding (a binding cleared in vault.db then blocks the item)",
+                "default": False,
+            },
             "timeout_seconds": {"description": "Fetch wall-clock budget", "default": 120},
         }
 
@@ -328,6 +406,12 @@ class HermesVaultSource(SecretSource):
                 "check the profile directory and key custody",
                 ErrorKind.AUTH_FAILED,
             )
+        command_lines = _hermes_command_lines()
+        require_binding = bool(cfg.get("require_binding", False))
+        if not hasattr(store, "get_allowed_commands"):
+            result.warnings.append(
+                "floorvault is older than 0.2.8: command bindings are not enforced"
+            )
         for name, ref in env_map.items():
             if not is_valid_env_name(name):
                 result.warnings.append(f"Skipped invalid env-var name {name!r}")
@@ -335,6 +419,10 @@ class HermesVaultSource(SecretSource):
             item_id, field = parse_ref(ref)
             if item_id is None:
                 result.warnings.append(f"Skipped {name}: ref must be hv:<item_id>[:<field>]")
+                continue
+            problem = _binding_problem(store, item_id, command_lines, require_binding)
+            if problem is not None:
+                result.warnings.append(f"Skipped {name}: vault item {item_id} {problem}")
                 continue
             try:
                 secret = store.resolve_secret(item_id)
