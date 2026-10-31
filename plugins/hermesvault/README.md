@@ -24,18 +24,27 @@ from PyPI:
 - `pyobjc-framework-Security` on macOS.
 
 The plugin directory contains no copy of FloorVault. Restart Hermes after
-enabling the plugin, then create the store once per profile:
+enabling the plugin, then bind your first secret:
 
 ```bash
-hermes hvault setup
+hermes hvault bind OPENAI_API_KEY
 ```
 
-`setup` creates the store and its key (in the OS key store, where it may show the
-unlock prompt, or as a systemd-creds credential; see [Key custody](#key-custody)).
-Nothing else does: the secret source runs at Hermes startup and never prompts,
-unlocks, or creates a key, a credential or a store. If the store is missing, the
-key is missing, or the Linux Secret Service collection is locked, the source
-reports an error and Hermes starts without those variables.
+`bind` does everything a first run needs: it creates the store and its key if
+they do not exist yet (in the OS key store, where it may show the unlock prompt,
+or as a systemd-creds credential; see [Key custody](#key-custody)), prompts for
+the value without echo, stores it as item `openai_api_key`, writes the
+`secrets.hermesvault.env` mapping into config.yaml and runs `doctor`. Restart
+Hermes and the variable is set. Where Hermes cannot write the configuration
+(older releases, managed configs, `--print-only`), `bind` prints the mapping to
+paste instead.
+
+`hermes hvault` with no command prints the store, custody and mapping status
+and the next step. Nothing but `bind` and `setup` ever creates or prompts: the
+secret source runs at Hermes startup and never prompts, unlocks, or creates a
+key, a credential or a store. If the store is missing, the key is missing, or
+the Linux Secret Service collection is locked, the source reports an error and
+Hermes starts without those variables.
 
 Check an install with `hermes plugins doctor hermesvault`.
 
@@ -89,14 +98,22 @@ The companion removal check requires `floorvault[hermes]` (PyYAML). The
 ## Manage items
 
 ```bash
-hermes hvault setup                          # once: create the store and key (may prompt)
-hermes hvault add "Service token" --stdin    # field=value lines on stdin
-hermes hvault put <item_id> <field>          # prompts for the value
+hermes hvault                                # status and next step
+hermes hvault bind SERVICE_TOKEN             # store a value and map it (creates the store if needed)
+hermes hvault bind DB_PASSWORD --id vault_db --field password   # a named field on a chosen item
 hermes hvault list                           # metadata only
 hermes hvault doctor                         # check mappings, custody and precedence
 hermes hvault show hv:<item_id>              # field names and status; never plaintext
-hermes hvault env <item_id> SERVICE_TOKEN    # prints the config.yaml mapping
 hermes hvault rm <item_id>
+```
+
+Advanced, for scripts and multi-field items:
+
+```bash
+hermes hvault setup                          # create the store and key without binding anything
+hermes hvault add "Service token" --stdin    # field=value lines on stdin
+hermes hvault put <item_id> <field>          # prompts for the value
+hermes hvault env <item_id> SERVICE_TOKEN    # prints the config.yaml mapping
 ```
 
 Prefer `--stdin` or `put` to `field=value` arguments, which show up in process
@@ -197,7 +214,11 @@ other.
 
 - **Reads** a FloorVault store under `<profile-home>/agent-vault` (or
   `secrets.hermesvault.dir`) at startup, and only reads. `hermes hvault` commands
-  write to it; `hermes hvault setup` creates it.
+  write to it; `hermes hvault setup` and a first `hermes hvault bind` create it.
+- **Writes one mapping to config.yaml**, only during `hermes hvault bind`, through
+  Hermes' own configuration writer, which merges into the existing file. Nothing
+  else in the plugin touches the configuration; `--print-only` turns the write
+  into printed YAML.
 - **Reads its own master key** from the `token_env` variable, else from the custody
   configured in `custody`: the OS key store (service `floor-vault`, the default),
   the file named by `key_file`, or the systemd-creds credential beside the store. It never reads other tools' credential stores, `.env`

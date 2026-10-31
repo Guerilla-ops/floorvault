@@ -1,6 +1,9 @@
 """``hermes hvault`` operator CLI: manage items in the agent-secret vault.
 
-Adds, lists, shows and removes ``generic`` items in the store backing
+``bind ENV_NAME`` is the one-step path: it creates the store on first use,
+prompts for the value, stores it and writes the ``secrets.hermesvault.env``
+mapping into config.yaml. With no command the CLI prints status and the next
+step. The remaining commands add, list, show and remove ``generic`` items in the store backing
 ``secrets.hermesvault.env`` refs. Values are never logged; ``put`` reads the
 value via getpass so it never appears on argv and updates its encrypted payload
 in a single SQLite transaction. ``add`` accepts
@@ -96,6 +99,28 @@ def _field_values(pairs, *, where: str = "argument", start: int = 1) -> dict:
 
 def register_cli(subparser) -> None:
     sub = subparser.add_subparsers(dest="hvault_command", metavar="<command>")
+
+    bind = sub.add_parser(
+        "bind",
+        help=(
+            "Store a secret and map it to an environment variable in one step "
+            "(creates the store on first use; the value is prompted, never argv)"
+        ),
+    )
+    bind.add_argument("env_name", help="Environment variable the agent reads, e.g. OPENAI_API_KEY")
+    bind.add_argument(
+        "--id",
+        dest="item_id",
+        default=None,
+        help="Item id (default: the variable name, lowercased)",
+    )
+    bind.add_argument("--field", default="value", help="Field to set on the item (default: value)")
+    bind.add_argument("--label", default=None, help="Human label (default: the variable name)")
+    bind.add_argument(
+        "--print-only",
+        action="store_true",
+        help="Do not edit config.yaml; print the mapping to paste instead",
+    )
 
     sub.add_parser(
         "setup",
@@ -279,6 +304,14 @@ def _cmd_list(_args) -> int:
     return 0
 
 
+def _print_mapping(env_name: str, ref: str) -> None:
+    print("secrets:")
+    print("  hermesvault:")
+    print("    enabled: true")
+    print("    env:")
+    print(f"      {json.dumps(env_name)}: {json.dumps(ref)}")
+
+
 def _cmd_env(args) -> int:
     _item_id(args.item_id)
     if not is_valid_env_name(args.env_name):
@@ -286,11 +319,115 @@ def _cmd_env(args) -> int:
     if args.field is not None:
         _field(args.field)
     field = f":{args.field}" if args.field else ""
-    print("secrets:")
-    print("  hermesvault:")
-    print("    enabled: true")
-    print("    env:")
-    print(f"      {json.dumps(args.env_name)}: {json.dumps(f'hv:{args.item_id}{field}')}")
+    _print_mapping(args.env_name, f"hv:{args.item_id}{field}")
+    return 0
+
+
+def _write_mapping(env_name: str, ref: str) -> bool:
+    """Merge one ``secrets.hermesvault.env`` entry (and ``enabled: true``) into the
+    profile's config.yaml through Hermes' own writer, the way Hermes' plugin
+    settings are saved: a partial document, deep-merged over the file on disk,
+    so no other section is rewritten. Returns False, writing nothing, when the
+    host offers no merging writer (older releases, managed installs); the caller
+    then prints the mapping for the operator to paste."""
+    try:
+        import inspect
+
+        from hermes_cli import config as config_mod
+
+        params = inspect.signature(config_mod.save_config).parameters
+        if "merge_existing" not in params or "preserve_keys" not in params:
+            return False
+        is_managed = getattr(config_mod, "is_managed", None)
+        if is_managed is not None and is_managed():
+            return False
+        # Fail closed on malformed YAML before a read-modify-write (as Hermes does).
+        raw_read = getattr(config_mod, "read_user_config_raw", None)
+        if raw_read is not None:
+            raw_read()
+        partial = {"secrets": {"hermesvault": {"enabled": True, "env": {env_name: ref}}}}
+        config_mod.save_config(
+            partial,
+            preserve_keys={
+                ("secrets", "hermesvault", "enabled"),
+                ("secrets", "hermesvault", "env", env_name),
+            },
+            merge_existing=True,
+        )
+    except Exception:  # noqa: BLE001 — any failure falls back to the paste path
+        return False
+    return True
+
+
+def _cmd_bind(args) -> int:
+    if not is_valid_env_name(args.env_name):
+        raise CLIInputError("invalid environment variable name")
+    item_id = _item_id(args.item_id if args.item_id is not None else args.env_name.lower())
+    field = _field(args.field)
+    label = args.label if args.label is not None else args.env_name
+    ref = f"hv:{item_id}" if field == "value" else f"hv:{item_id}:{field}"
+
+    cfg = _secrets_cfg()
+    home = Path(get_hermes_home())
+    created = not (resolve_base_dir(cfg, home) / "vault.db").is_file()
+    store = _store(setup=created)
+    if created:
+        print(f"store created at {resolve_base_dir(cfg, home)}")
+        print(_custody_line(cfg))
+
+    value = getpass.getpass(f"{args.env_name}: ")
+    if not value:
+        print("hvault bind: empty value; nothing stored", file=sys.stderr)
+        return 2
+    existing = store.get_meta(item_id)
+    if existing is None:
+        store.add_item(kind="generic", label=label, secret={field: value}, item_id=item_id)
+        print(f"stored {item_id}.{field}")
+    else:
+        if not store.update_generic_field(item_id, field, value):
+            print(f"hvault bind: item {item_id} vanished during update", file=sys.stderr)
+            return 1
+        print(f"updated {item_id}.{field}")
+    del value
+
+    if args.print_only or not _write_mapping(args.env_name, ref):
+        print("add this to config.yaml, then run `hermes hvault doctor`:")
+        _print_mapping(args.env_name, ref)
+        return 0
+    print(f"mapped {args.env_name} -> {ref} in config.yaml")
+    code = _cmd_doctor(args)
+    print("restart Hermes to apply")
+    return code
+
+
+def _cmd_status(_args) -> int:
+    """``hermes hvault`` with no command: where things stand and the next step.
+    Opens the store exactly as the secret source does — no prompt, nothing created."""
+    cfg = _secrets_cfg()
+    home = Path(get_hermes_home())
+    base = resolve_base_dir(cfg, home)
+    exists = (base / "vault.db").is_file()
+    env_map = cfg.get("env", {})
+    mappings = len(env_map) if isinstance(env_map, dict) else 0
+    enabled = cfg.get("enabled") is True
+
+    print(f"profile: {home}")
+    print(f"store: {base} ({'present' if exists else 'missing'})")
+    print(_custody_line(cfg))
+    print(f"source: {'enabled' if enabled else 'disabled'}, {mappings} mapping(s)")
+    if exists and enabled and mappings:
+        result = HermesVaultSource().fetch(cfg, home)
+        if result.ok:
+            print(f"resolved {len(result.secrets)}/{mappings} mapping(s); values are not displayed")
+        else:
+            print(f"resolve failed: {result.error}", file=sys.stderr)
+    if not mappings:
+        print("next: hermes hvault bind <ENV_NAME>   # stores a secret and maps it")
+    elif not enabled:
+        print("next: set secrets.hermesvault.enabled: true, or run `hermes hvault bind`")
+    else:
+        print("next: hermes hvault doctor   # full check; `bind` adds more")
+    print("commands: bind, list, doctor, show, rm; advanced: setup, add, put, env")
     return 0
 
 
@@ -368,6 +505,10 @@ def hvault_command(args) -> int:
 
     cmd = getattr(args, "hvault_command", None)
     try:
+        if cmd is None:
+            return _cmd_status(args)
+        if cmd == "bind":
+            return _cmd_bind(args)
         if cmd == "setup":
             return _cmd_setup(args)
         if cmd == "add":
@@ -397,5 +538,5 @@ def hvault_command(args) -> int:
             file=sys.stderr,
         )
         return 2 if isinstance(error, ValueError) else 1
-    print("usage: hermes hvault {setup|add|put|show|rm|list|env|doctor}", file=sys.stderr)
+    print("usage: hermes hvault {bind|list|doctor|show|rm|setup|add|put|env}", file=sys.stderr)
     return 2
