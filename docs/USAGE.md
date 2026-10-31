@@ -273,6 +273,18 @@ selection used on your host, and whether your cloud image offers a TPM2. Ubuntu 
 old. Try `init` and a `run` from the kind of session you will use before relying
 on it.
 
+[`scripts/check_systemd_creds_host.sh`](../scripts/check_systemd_creds_host.sh)
+does that for you, with a throwaway store under `$HOME` that it deletes on exit. It
+reports the systemd version, whether a TPM2 is usable and whether linger is on,
+then checks that the key unseals from your shell, from a cron-like bare
+environment, and from a user service. With `--with-sudo` it also tries a system
+service running as you outside any login session; with `--with-cron` a real cron
+job (a one-line `/etc/cron.d` file written through sudo and removed afterwards;
+your own crontab is not touched); and with `--with-ssh` a
+non-interactive `ssh localhost`. Run it as the user that will own the vault. It
+exits 0 when every context that ran passed, 1 when one failed, and 2 when the host
+cannot run the check.
+
 **References.** `fv:<item_id>[:<field>]`. In `-e` and env files `hv:` is
 accepted too, so a Hermes `secrets.hermesvault.env` mapping can be reused; in
 the inherited environment only `fv:` is filled in, because an `hv:` value there
@@ -588,9 +600,12 @@ floorvault secrets allow github-pat --accept  # trust a change made outside this
   command's environment. The binding protects against mistakes and against a
   configuration that names an item for a command you did not choose. It does
   not fix which variable the value lands in.
-- **Who enforces it:** only `floorvault run` (bindings since 0.2.8; refusing
-  unbound items and the binding record since 0.3.0). Older `floorvault`
-  versions and the Hermes plugin ignore bindings.
+- **Who enforces it:** `floorvault run` (bindings since 0.2.8; refusing unbound
+  items and the binding record since 0.3.0). Older `floorvault` versions ignore
+  bindings. The Hermes plugin enforces them against the command line Hermes was
+  started with ([Command bindings](../plugins/hermesvault/README.md#command-bindings)),
+  but keeps no binding record and, unless `require_binding` is set, resolves
+  unbound items.
 
 ## Hermes Agent integration
 
@@ -606,7 +621,7 @@ hermes plugins enable hermesvault
 ```
 
 The plugin directory is self-contained. Its `plugin.yaml` declares
-`floorvault>=0.2.2,<0.3` and the platform keyring packages, which Hermes installs
+`floorvault>=0.2.8,<0.3` and the platform keyring packages, which Hermes installs
 from PyPI after asking for consent. The library wheel does not include or register
 the plugin. See the [plugin README](../plugins/hermesvault/README.md) for
 configuration, the `hermes hvault` commands and what the plugin reads and writes.

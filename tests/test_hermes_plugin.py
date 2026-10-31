@@ -9,6 +9,7 @@ installed/editable package or this repo's ``src`` via pytest pythonpath.
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -718,3 +719,198 @@ def test_os_custody_on_a_sealed_store_names_the_custody_setting(sdc_fake, tmp_pa
     result = fetch(tmp_path, {"env": {"A": "hv:vault_a"}})
     assert not result.ok and result.error_kind == ErrorKind.AUTH_FAILED
     assert "custody: systemd-creds" in result.error
+
+
+# ------------------------------------------------------------ command bindings
+#
+# `floorvault secrets allow` binds an item to command lines. Inside Hermes the
+# command is Hermes itself, so the plugin compares what Hermes was started with
+# to the item's bindings. The environment variable below is the plugin's own
+# store key; the store lives in the `vault_home` fixture.
+
+HERMES = os.path.abspath("/opt/hermes/bin/hermes")
+
+
+def _as_started(monkeypatch, argv, orig_argv=None, executable="/usr/bin/python3"):
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(sys, "orig_argv", orig_argv or [executable, *argv], raising=False)
+    monkeypatch.setattr(sys, "executable", executable)
+
+
+def _bind(home, item_id, *lines):
+    store = floorvault.get_vault_store(home / "agent-vault", auto_migrate=False)
+    assert store.set_allowed_commands(item_id, [list(line) for line in lines])
+
+
+def _clear_binding_in_the_db(home, item_id):
+    import contextlib
+    import sqlite3
+
+    with contextlib.closing(sqlite3.connect(home / "agent-vault" / "vault.db")) as db:
+        db.execute("UPDATE vault_items SET allowed_commands = NULL WHERE id = ?", (item_id,))
+        db.commit()
+
+
+ENV = {"OPENAI_API_KEY": "hv:vault_testopenai", "ALSO": "hv:vault_multi:token"}
+
+
+def test_a_bound_item_is_resolved_for_the_command_hermes_was_started_with(vault_home, monkeypatch):
+    _as_started(monkeypatch, [HERMES, "gateway", "run"])
+    _bind(vault_home, "vault_testopenai", [HERMES, "gateway", "run"])
+    result = fetch(vault_home, {"env": ENV})
+    assert result.ok
+    assert result.secrets == {"OPENAI_API_KEY": "sk-test-123", "ALSO": "tok-abc"}
+    assert result.warnings == []
+
+
+def test_a_bound_item_is_not_resolved_for_another_command(vault_home, monkeypatch):
+    _as_started(monkeypatch, [HERMES, "chat"])
+    _bind(vault_home, "vault_testopenai", [HERMES, "gateway", "run"])
+    result = fetch(vault_home, {"env": ENV})
+    # Only the bound item is skipped; the unbound one still resolves.
+    assert result.secrets == {"ALSO": "tok-abc"}
+    (warning,) = result.warnings
+    assert warning.startswith("Skipped OPENAI_API_KEY: vault item vault_testopenai is bound to ")
+    assert shlex.join([HERMES, "chat"]) in warning and "floorvault secrets allow" in warning
+    assert "sk-test-123" not in warning
+
+
+def test_arguments_must_match_exactly(vault_home, monkeypatch):
+    _bind(vault_home, "vault_testopenai", [HERMES, "gateway", "run"])
+    for argv in ([HERMES], [HERMES, "gateway"], [HERMES, "gateway", "run", "--debug"]):
+        _as_started(monkeypatch, argv)
+        assert "OPENAI_API_KEY" not in fetch(vault_home, {"env": ENV}).secrets, argv
+
+
+def test_the_interpreter_command_line_can_be_what_was_bound(vault_home, monkeypatch):
+    python = os.path.abspath("/opt/hermes/venv/bin/python")
+    original = [python, "-m", "hermes_cli", "gateway", "run"]
+    _as_started(
+        monkeypatch,
+        ["/opt/hermes/lib/hermes_cli/__main__.py", "gateway", "run"],
+        orig_argv=original,
+        executable=python,
+    )
+    _bind(vault_home, "vault_testopenai", original)
+    assert fetch(vault_home, {"env": ENV}).secrets["OPENAI_API_KEY"] == "sk-test-123"
+    # Binding the module path instead of the interpreter line also works.
+    _bind(
+        vault_home, "vault_testopenai", ["/opt/hermes/lib/hermes_cli/__main__.py", "gateway", "run"]
+    )
+    assert fetch(vault_home, {"env": ENV}).secrets["OPENAI_API_KEY"] == "sk-test-123"
+
+
+def test_an_item_bound_to_several_lines_resolves_for_any_of_them(vault_home, monkeypatch):
+    _bind(vault_home, "vault_testopenai", [HERMES, "gateway", "run"], [HERMES, "chat"])
+    for argv in ([HERMES, "gateway", "run"], [HERMES, "chat"]):
+        _as_started(monkeypatch, argv)
+        assert "OPENAI_API_KEY" in fetch(vault_home, {"env": ENV}).secrets
+    _as_started(monkeypatch, [HERMES, "doctor"])
+    assert "OPENAI_API_KEY" not in fetch(vault_home, {"env": ENV}).secrets
+
+
+def test_unbound_items_resolve_unless_a_binding_is_required(vault_home, monkeypatch):
+    _as_started(monkeypatch, [HERMES, "chat"])
+    assert fetch(vault_home, {"env": ENV}).secrets == {
+        "OPENAI_API_KEY": "sk-test-123",
+        "ALSO": "tok-abc",
+    }
+    result = fetch(vault_home, {"env": ENV, "require_binding": True})
+    assert result.secrets == {}
+    assert len(result.warnings) == 2
+    assert all("require_binding" in w and "floorvault secrets allow" in w for w in result.warnings)
+    _bind(vault_home, "vault_testopenai", [HERMES, "chat"])
+    assert fetch(vault_home, {"env": ENV, "require_binding": True}).secrets == {
+        "OPENAI_API_KEY": "sk-test-123"
+    }
+
+
+def test_a_binding_cleared_in_vault_db_blocks_the_item_only_when_required(vault_home, monkeypatch):
+    _as_started(monkeypatch, [HERMES, "chat"])
+    _bind(vault_home, "vault_testopenai", [HERMES, "gateway", "run"])
+    assert "OPENAI_API_KEY" not in fetch(vault_home, {"env": ENV}).secrets
+    # Someone who can write vault.db clears the binding without the key (#97).
+    _clear_binding_in_the_db(vault_home, "vault_testopenai")
+    # Documented limit: unbound again, so it resolves ...
+    assert "OPENAI_API_KEY" in fetch(vault_home, {"env": ENV}).secrets
+    # ... unless Hermes' own configuration requires a binding.
+    assert "OPENAI_API_KEY" not in fetch(vault_home, {"env": ENV, "require_binding": True}).secrets
+
+
+def test_a_binding_that_cannot_be_read_blocks_the_item(vault_home, monkeypatch):
+    import contextlib
+    import sqlite3
+
+    _as_started(monkeypatch, [HERMES, "chat"])
+    _bind(vault_home, "vault_testopenai", [HERMES, "chat"])
+    with contextlib.closing(sqlite3.connect(vault_home / "agent-vault" / "vault.db")) as db:
+        db.execute(
+            "UPDATE vault_items SET allowed_commands = ? WHERE id = 'vault_testopenai'",
+            (b"not a sealed value",),
+        )
+        db.commit()
+    result = fetch(vault_home, {"env": ENV})
+    assert "OPENAI_API_KEY" not in result.secrets and result.secrets["ALSO"] == "tok-abc"
+    assert any("command binding that cannot be read" in w for w in result.warnings)
+
+
+def test_a_binding_moved_from_another_item_does_not_authenticate(vault_home, monkeypatch):
+    import contextlib
+    import sqlite3
+
+    _as_started(monkeypatch, [HERMES, "chat"])
+    _bind(vault_home, "vault_multi", [HERMES, "chat"])
+    _bind(vault_home, "vault_testopenai", [HERMES, "gateway", "run"])
+    with contextlib.closing(sqlite3.connect(vault_home / "agent-vault" / "vault.db")) as db:
+        (donor,) = db.execute(
+            "SELECT allowed_commands FROM vault_items WHERE id = 'vault_multi'"
+        ).fetchone()
+        db.execute(
+            "UPDATE vault_items SET allowed_commands = ? WHERE id = 'vault_testopenai'", (donor,)
+        )
+        db.commit()
+    # The sealed binding is tied to its item, so the copy fails authentication.
+    result = fetch(vault_home, {"env": ENV})
+    assert "OPENAI_API_KEY" not in result.secrets
+    assert any("cannot be read" in w for w in result.warnings)
+
+
+def test_an_older_floorvault_cannot_check_bindings_and_says_so(vault_home, monkeypatch):
+    from floorvault.vaultkit.vault import VaultStore
+
+    _as_started(monkeypatch, [HERMES, "chat"])
+    monkeypatch.delattr(VaultStore, "get_allowed_commands")
+    result = fetch(vault_home, {"env": ENV})
+    assert result.secrets["OPENAI_API_KEY"] == "sk-test-123"
+    assert any("older than 0.2.8: command bindings are not enforced" in w for w in result.warnings)
+    required = fetch(vault_home, {"env": ENV, "require_binding": True})
+    assert required.secrets == {}
+    assert all("older than 0.2.8" in w for w in required.warnings if w.startswith("Skipped"))
+
+
+def test_without_a_command_line_a_bound_item_is_refused(vault_home, monkeypatch):
+    _as_started(monkeypatch, [], orig_argv=[], executable="")
+    _bind(vault_home, "vault_testopenai", [HERMES, "chat"])
+    result = fetch(vault_home, {"env": ENV})
+    assert "OPENAI_API_KEY" not in result.secrets
+    assert any("an unknown command line" in w for w in result.warnings)
+
+
+def test_require_binding_must_be_a_boolean(vault_home):
+    for value in ("yes", 1, None):
+        result = fetch(vault_home, {"env": ENV, "require_binding": value})
+        assert not result.ok and "require_binding must be a boolean" in result.error
+
+
+def test_hvault_show_prints_the_bindings(plugin_cli, vault_home, monkeypatch, capsys):
+    monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
+    monkeypatch.setattr(plugin_cli, "_secrets_cfg", lambda: {"enabled": True})
+    show = SimpleNamespace(hvault_command="show", ref="vault_testopenai", reveal=False)
+    assert plugin_cli.hvault_command(show) == 0
+    assert "bindings: none; resolved for any command" in capsys.readouterr().out
+    _bind(vault_home, "vault_testopenai", [HERMES, "gateway", "run"])
+    assert plugin_cli.hvault_command(show) == 0
+    out = capsys.readouterr().out
+    assert "bindings: 1 command line(s); resolved only when Hermes was started as:" in out
+    assert f"  {shlex.join([HERMES, 'gateway', 'run'])}" in out
+    assert "sk-test-123" not in out

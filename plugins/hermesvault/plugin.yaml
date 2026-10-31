@@ -1,5 +1,5 @@
 name: hermesvault
-version: 0.2.8
+version: 0.2.9
 description: "FloorVault secret source: resolves secrets.hermesvault.env refs (hv:<item>[:field]) from the local FloorVault AES-256-SIV store with configured key custody. Agent credentials only — the browser-fill login vault is untouched."
 author: "Scott Lee"
 license: MIT
@@ -15,15 +15,17 @@ platforms:
   - macos
   - windows
 python_dependencies:
-  # 0.2.2 is the first release with AdaptiveKeyProvider(environ=, interactive=),
-  # which the secret source uses to read no ambient key variable and never
-  # prompt (0.2.1 added VaultStore.update_generic_field(), which
-  # `hermes hvault put` uses). custody: key_file and custody: systemd-creds
-  # need floorvault 0.2.8 (floorvault.key_file, floorvault.systemd_creds); with
-  # 0.2.2 they report that and open nothing, and custody: os works. Hermes
-  # installs PyPI requirements only, so this must name a published release;
-  # tests/test_hermes_plugin_packaging.py keeps it within the checkout's own
-  # version.
-  - "floorvault>=0.2.2,<0.3"
+  # 0.2.8 is the first release that can hold and read command bindings
+  # (VaultStore.get_allowed_commands, floorvault.agentenv.command_allowed), and
+  # the plugin enforces them against Hermes' own command line, so an older
+  # floorvault would resolve a bound item for any command. It is also the first
+  # with custody: key_file and custody: systemd-creds (floorvault.key_file,
+  # floorvault.systemd_creds). 0.2.2 added AdaptiveKeyProvider(environ=,
+  # interactive=), which the secret source uses to read no ambient key variable
+  # and never prompt, and 0.2.1 VaultStore.update_generic_field(), which
+  # `hermes hvault put` uses. Hermes installs PyPI requirements only, so this
+  # must name a published release; tests/test_hermes_plugin_packaging.py keeps
+  # it within the checkout's own version.
+  - "floorvault>=0.2.8,<0.3"
   - "pyobjc-framework-Security>=10.0,<13; sys_platform == 'darwin'"
   - "secretstorage>=3.3,<4; sys_platform == 'linux'"

@@ -19,6 +19,13 @@ with ``custody``:
   the store (``master.key.sdcred``), unsealed with ``systemd-creds decrypt``.
   This is the only custody that starts a subprocess.
 
+Command bindings set with ``floorvault secrets allow`` are enforced against the
+command line Hermes itself was started with (see ``binding_guard``): a
+bound item is resolved only when that line is one of its bindings, and
+``require_binding: true`` also refuses items that have none. This process has
+already started, so unlike ``floorvault run`` the plugin cannot check variables
+that steer what the command loads.
+
 The process-wide ``FLOOR_VAULT_KEY`` / ``VAULT_MASTER_KEY`` /
 ``FLOOR_VAULT_KEY_FILE`` are never read, so under the multiplex gateway another
 profile's launch environment cannot unlock this store. A configured custody
@@ -42,6 +49,11 @@ from agent.secret_sources.base import (
     get_source_environment,
     is_valid_env_name,
 )
+
+try:
+    from .binding_guard import binding_problem, hermes_command_lines
+except ImportError:  # imported as a top-level module, with this directory on sys.path
+    from binding_guard import binding_problem, hermes_command_lines
 
 
 def _import_floorvault():
@@ -102,7 +114,7 @@ def validate_config(cfg: dict) -> None:
     token = cfg.get("token_env", DEFAULT_TOKEN_ENV)
     if not isinstance(token, str) or not is_valid_env_name(token):
         raise ValueError("secrets.hermesvault.token_env must be an environment variable name")
-    for name in ("enabled", "override_existing"):
+    for name in ("enabled", "override_existing", "require_binding"):
         if name in cfg and not isinstance(cfg[name], bool):
             raise ValueError(f"secrets.hermesvault.{name} must be a boolean")
     custody = cfg.get("custody", DEFAULT_CUSTODY)
@@ -291,6 +303,11 @@ class HermesVaultSource(SecretSource):
                 "description": "May overwrite vars already set by .env/shell",
                 "default": False,
             },
+            "require_binding": {
+                "description": "Also refuse items with no `floorvault secrets allow` "
+                "binding (a binding cleared in vault.db then blocks the item)",
+                "default": False,
+            },
             "timeout_seconds": {"description": "Fetch wall-clock budget", "default": 120},
         }
 
@@ -328,6 +345,12 @@ class HermesVaultSource(SecretSource):
                 "check the profile directory and key custody",
                 ErrorKind.AUTH_FAILED,
             )
+        command_lines = hermes_command_lines()
+        require_binding = bool(cfg.get("require_binding", False))
+        if not hasattr(store, "get_allowed_commands"):
+            result.warnings.append(
+                "floorvault is older than 0.2.8: command bindings are not enforced"
+            )
         for name, ref in env_map.items():
             if not is_valid_env_name(name):
                 result.warnings.append(f"Skipped invalid env-var name {name!r}")
@@ -335,6 +358,10 @@ class HermesVaultSource(SecretSource):
             item_id, field = parse_ref(ref)
             if item_id is None:
                 result.warnings.append(f"Skipped {name}: ref must be hv:<item_id>[:<field>]")
+                continue
+            problem = binding_problem(store, item_id, command_lines, require_binding)
+            if problem is not None:
+                result.warnings.append(f"Skipped {name}: vault item {item_id} {problem}")
                 continue
             try:
                 secret = store.resolve_secret(item_id)
