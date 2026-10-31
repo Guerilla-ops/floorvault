@@ -7,6 +7,10 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  # A merge queue tests the PR merged onto main (and onto the PRs ahead of it)
+  # once, so nobody has to update branches by hand. Every required check must run
+  # on this event too, or the queue waits for it forever.
+  merge_group:
   schedule:
     - cron: "0 19 * * 0"
   workflow_dispatch:
@@ -24,6 +28,69 @@ permissions:
   contents: read
 
 jobs:
+  # Decides what the shared jobs run and how many shards the mutation roster is
+  # split into. The shard counts live here once: every shard job reads the same
+  # value, so no mutant can fall between shards.
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-latest
+    outputs:
+      heavy: ${{ steps.classify.outputs.heavy }}
+      linux_count: ${{ steps.shards.outputs.linux_count }}
+      linux_shards: ${{ steps.shards.outputs.linux_shards }}
+      platform_count: ${{ steps.shards.outputs.platform_count }}
+      platform_shards: ${{ steps.shards.outputs.platform_shards }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          # On a pull request this is the PR merged into its base: two parents.
+          fetch-depth: 2
+      - name: Do the changed files need the mutation controls?
+        id: classify
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          # Mutation results depend on code and tests only. A pull request that
+          # touches nothing but documentation, examples or repository templates
+          # skips the mutation jobs; anything else, and every other event (main,
+          # merge queue, tags, schedule), runs them. A path not listed here counts
+          # as code, so a new kind of file errs towards running everything.
+          heavy=true
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-only -z HEAD^1 HEAD > "$RUNNER_TEMP/changed"
+            if [ -s "$RUNNER_TEMP/changed" ]; then
+              heavy=false
+              while IFS= read -r -d '' file; do
+                case "$file" in
+                  *.md | docs/* | examples/* | LICENSE | .github/ISSUE_TEMPLATE/* \
+                    | .github/pull_request_template.md | .github/copilot-instructions.md) ;;
+                  *) heavy=true ;;
+                esac
+              done < "$RUNNER_TEMP/changed"
+            fi
+          fi
+          echo "heavy=$heavy" >> "$GITHUB_OUTPUT"
+          echo "mutation controls needed: $heavy"
+      - name: Shard counts
+        id: shards
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Linux mutants run about 1 minute each and macOS/Windows about 1.5, so
+          # these give 25 to 30 minute shards at the current roster. Raise them
+          # as the roster grows; the harness refuses more shards than mutants.
+          linux=10
+          platform=6
+          list() { python3 -c 'import json, sys; print(json.dumps(list(range(1, int(sys.argv[1]) + 1))))' "$1"; }
+          {
+            echo "linux_count=$linux"
+            echo "linux_shards=$(list "$linux")"
+            echo "platform_count=$platform"
+            echo "platform_shards=$(list "$platform")"
+          } >> "$GITHUB_OUTPUT"
+
   matrix:
     name: Select test matrix
     runs-on: ubuntu-latest
@@ -43,8 +110,8 @@ jobs:
             echo "matrix=$(python scripts/ci_matrix.py)" >> "$GITHUB_OUTPUT"
           fi
 
-  gates:
-    name: ${{ matrix.os }} / py${{ matrix.python }}
+  tests:
+    name: tests ${{ matrix.os }} / py${{ matrix.python }}
     needs: matrix
     runs-on: ${{ matrix.os }}
     strategy:
@@ -84,9 +151,89 @@ jobs:
         run: uv run --no-sync pytest -q tests/
       - name: Real-world exercise
         run: uv run --no-sync python scripts/realworld_exercise.py
-      - name: Platform mutation controls
-        if: matrix.os != 'ubuntu-latest' && matrix.python == '3.13'
-        run: uv run --no-sync python -u scripts/mutation_check.py --mode curated --scope platform
+
+  # The platform mutation controls: native custody, filesystem and memory
+  # mutants, run where their behaviour can differ. Sharded so a leg takes about
+  # 25 minutes, not two hours.
+  platform-mutations:
+    name: Platform mutants ${{ matrix.os }} ${{ matrix.shard }}/${{ needs.changes.outputs.platform_count }}
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        shard: ${{ fromJSON(needs.changes.outputs.platform_shards) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+        with:
+          enable-cache: true
+          python-version: "3.13"
+          version: "0.12.5"
+      # The mutation harness runs the whole test suite per mutant, so it needs the
+      # same restricted temporary directory the test job gives it on Windows.
+      - name: Restrict Windows test temporary directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $testTemp = Join-Path $env:LOCALAPPDATA ("Temp\floorvault-tests-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Path $testTemp -ErrorAction Stop | Out-Null
+          $acl = Get-Acl -LiteralPath $testTemp
+          $acl.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)")
+          Set-Acl -LiteralPath $testTemp -AclObject $acl -ErrorAction Stop
+          "TEMP=$testTemp" >> $env:GITHUB_ENV
+          "TMP=$testTemp" >> $env:GITHUB_ENV
+      - name: Sync environment
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            uv sync --extra dev --extra macos
+          else
+            uv sync --extra dev
+          fi
+      - name: Platform mutation controls (shard)
+        run: >
+          uv run --no-sync python -u scripts/mutation_check.py --mode curated --scope platform
+          --shard ${{ matrix.shard }}/${{ needs.changes.outputs.platform_count }}
+
+  # The required check for each platform cell. Branch protection names these
+  # contexts, so they keep their names: each one passes only when the test job
+  # and, on macOS and Windows, every platform mutant shard passed (or the shards
+  # were skipped on a change that cannot affect them).
+  gates:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    needs: [matrix, changes, tests, platform-mutations]
+    if: always()
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+    steps:
+      - name: Require this cell's controls
+        shell: bash
+        env:
+          TESTS: ${{ needs.tests.result }}
+          PLATFORM: ${{ needs.platform-mutations.result }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+          WANTS_PLATFORM: ${{ matrix.os != 'ubuntu-latest' && matrix.python == '3.13' }}
+        run: |
+          set -euo pipefail
+          echo "tests: $TESTS; platform mutants: $PLATFORM (needed: $WANTS_PLATFORM, heavy change: $HEAVY)"
+          if [ "$TESTS" != success ]; then
+            echo "::error::the test jobs did not all pass ($TESTS)"
+            exit 1
+          fi
+          if [ "$WANTS_PLATFORM" = true ]; then
+            if [ "$PLATFORM" = success ] || { [ "$PLATFORM" = skipped ] && [ "$HEAVY" = false ]; }; then
+              :
+            else
+              echo "::error::the platform mutation controls did not pass ($PLATFORM)"
+              exit 1
+            fi
+          fi
 
   build:
     name: Lint and build
@@ -117,15 +264,20 @@ jobs:
             dist/*.tar.gz
           if-no-files-found: error
 
-  mutations:
-    name: Full mutation controls (Linux)
+  # The curated roster, split across parallel jobs: each mutant runs the whole
+  # suite, so one job took 3.5 hours at 236 mutants (and 87 minutes at 165, with
+  # a 120 minute limit once cancelling it 13 mutants short). A shard takes about
+  # 25 minutes.
+  mutation-shards:
+    name: Linux mutants ${{ matrix.shard }}/${{ needs.changes.outputs.linux_count }}
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-latest
-    # The curated roster runs one mutant at a time and each one runs the whole
-    # suite, so the job grows with both: 87 min at 165 mutants, 109 min at 172,
-    # about 130 min at 177 (a 120 min limit cancelled it 13 mutants short), and
-    # past 180 min at 211 (cancelled on main at ef4cf15 and on #96 at 013f434,
-    # about 30 mutants short). GitHub's per-job ceiling is 360 min.
-    timeout-minutes: 300
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.changes.outputs.linux_shards) }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
@@ -134,8 +286,32 @@ jobs:
           version: "0.12.5"
       - name: Sync environment
         run: uv sync --extra dev
-      - name: Verify every curated mutant
-        run: uv run --no-sync python -u scripts/mutation_check.py --mode curated
+      - name: Verify this shard of the curated mutants
+        run: >
+          uv run --no-sync python -u scripts/mutation_check.py --mode curated
+          --shard ${{ matrix.shard }}/${{ needs.changes.outputs.linux_count }}
+
+  # The required check, under its old name: it passes only when every shard did,
+  # or when the shards were skipped on a change that cannot affect them.
+  mutations:
+    name: Full mutation controls (Linux)
+    needs: [changes, mutation-shards]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every shard
+        shell: bash
+        env:
+          SHARDS: ${{ needs.mutation-shards.result }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+        run: |
+          set -euo pipefail
+          echo "mutant shards: $SHARDS (heavy change: $HEAVY)"
+          if [ "$SHARDS" = success ] || { [ "$SHARDS" = skipped ] && [ "$HEAVY" = false ]; }; then
+            exit 0
+          fi
+          echo "::error::the Linux mutation shards did not all pass ($SHARDS)"
+          exit 1
 
   # History is identical on all platforms. Keep one pinned CLI scan.
 
