@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import getpass
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -261,7 +262,8 @@ def _cmd_show(args) -> int:
     if field is not None:
         _field(field)
     try:
-        secret = _store().resolve_secret(item_id)
+        store = _store()
+        secret = store.resolve_secret(item_id)
     except Exception:
         print(f"hvault show: item {item_id} not found", file=sys.stderr)
         return 1
@@ -279,7 +281,31 @@ def _cmd_show(args) -> int:
             empty_count = total - set_count
             print(f"{total} field(s): {set_count} set, {empty_count} empty")
         print("use --reveal to show masked value status", file=sys.stderr)
+    _print_binding(store, item_id)
     return 0
+
+
+def _print_binding(store, item_id: str) -> None:
+    """Show the command lines the plugin will resolve ``item_id`` for.
+
+    Command lines are not secret. A binding that cannot be read is said so: the
+    plugin skips such an item, so the operator should see why.
+    """
+    getter = getattr(store, "get_allowed_commands", None)
+    if getter is None:
+        print("bindings: not supported by this floorvault (older than 0.2.8)")
+        return
+    try:
+        allowed = getter(item_id)
+    except Exception:
+        print("bindings: cannot be read; the plugin will not resolve this item")
+        return
+    if not allowed:
+        print("bindings: none; resolved for any command (see secrets.hermesvault.require_binding)")
+        return
+    print(f"bindings: {len(allowed)} command line(s); resolved only when Hermes was started as:")
+    for line in allowed:
+        print(f"  {shlex.join(line)}")
 
 
 def _cmd_rm(args) -> int:

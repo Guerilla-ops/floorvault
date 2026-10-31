@@ -23,6 +23,7 @@ Design choices:
 
 Usage:
     python scripts/mutation_check.py                       # curated
+    python scripts/mutation_check.py --shard 3/10          # one tenth of curated (CI)
     python scripts/mutation_check.py --mode auto --list     # count mutants
     python scripts/mutation_check.py --mode auto --jobs 8
     python scripts/mutation_check.py --mode auto --limit 200
@@ -1850,6 +1851,48 @@ MUTATIONS: tuple[Mutation, ...] = (
         "An unreadable listing is taken as an unsealed, empty one (#98 review)",
     ),
     Mutation(
+        "BG-1",
+        "plugins/hermesvault/binding_guard.py",
+        "    if any(command_allowed(line, allowed) for line in command_lines):\n",
+        "    if True:  # MUTANT\n",
+        "The Hermes plugin resolves a bound item for a command it is not bound to",
+    ),
+    Mutation(
+        "BG-2",
+        "plugins/hermesvault/binding_guard.py",
+        '        if require_binding:\n            return (\n                "has no command binding, and',
+        '        if False:  # MUTANT\n            return (\n                "has no command binding, and',
+        "The Hermes plugin resolves an unbound item although require_binding is set",
+    ),
+    Mutation(
+        "BG-3",
+        "plugins/hermesvault/binding_guard.py",
+        '    except Exception:\n        return "has a command binding that cannot be read"\n',
+        "    except Exception:\n        return None  # MUTANT\n",
+        "The Hermes plugin resolves an item whose binding cannot be read as if it were unbound",
+    ),
+    Mutation(
+        "BG-4",
+        "plugins/hermesvault/binding_guard.py",
+        "    if argv and argv[0] and os.path.isabs(argv[0]):\n",
+        "    if argv and argv[0]:  # MUTANT\n",
+        "A relative program path is resolved against the current directory and can match a binding",
+    ),
+    Mutation(
+        "BG-5",
+        "plugins/hermesvault/binding_guard.py",
+        '        if require_binding:\n            return "cannot be checked for a command binding',
+        '        if False:  # MUTANT\n            return "cannot be checked for a command binding',
+        "require_binding resolves items even where floorvault cannot read bindings",
+    ),
+    Mutation(
+        "BG-6",
+        "plugins/hermesvault/binding_guard.py",
+        "    if len(original) > 1 and sys.executable and os.path.isabs(sys.executable):\n",
+        "    if len(original) > 1 and sys.executable:  # MUTANT\n",
+        "A relative interpreter path is resolved against the current directory and can match a binding",
+    ),
+    Mutation(
         "AUD-2",
         "src/floorvault/agent_cli.py",
         "    return _launch(command_line[0], command, env)",
@@ -2304,17 +2347,53 @@ def _run_auto(mutants: list[AutoMutant], jobs: int, report_path: Path | None = N
     return 0
 
 
-def curated_mutations(scope: str = "all") -> tuple[Mutation, ...]:
+def parse_shard(spec: str) -> tuple[int, int]:
+    """``"3/10"`` -> ``(3, 10)``: shard 3 of 10, counted from 1."""
+    try:
+        index_text, count_text = spec.split("/")
+        index, count = int(index_text), int(count_text)
+    except ValueError:
+        raise ValueError(f"shard must look like 3/10, not {spec!r}") from None
+    if count < 1 or not 1 <= index <= count:
+        raise ValueError(f"shard {spec!r} is out of range: need 1 <= index <= count")
+    return index, count
+
+
+def shard_mutations(
+    mutations: tuple[Mutation, ...], index: int, count: int
+) -> tuple[Mutation, ...]:
+    """The mutants shard ``index`` of ``count`` runs, in roster order.
+
+    Every mutant lands in exactly one shard (round-robin over the roster, so
+    each shard gets a similar mix), except the equivalent CANARY, which runs in
+    every shard: it is what shows a shard's harness can still tell a surviving
+    mutant from a killed one. CI derives ``count`` once and feeds the same value
+    to every shard, so no mutant can fall between shards.
+    """
+    canaries = {m.id for m in mutations if m.id == "CANARY"}
+    rest = [m for m in mutations if m.id not in canaries]
+    if count > len(rest):
+        raise ValueError(f"{count} shards for {len(rest)} mutants: some shard would be empty")
+    chosen = {m.id for m in rest[index - 1 :: count]} | canaries
+    return tuple(m for m in mutations if m.id in chosen)
+
+
+def curated_mutations(
+    scope: str = "all", shard: tuple[int, int] | None = None
+) -> tuple[Mutation, ...]:
     """Keep native custody, filesystem and memory mutants on the platform legs.
 
     Linux still runs every mutant. macOS/Windows repeat the controls whose runtime
     behavior can differ, including every declared platform override and the canary.
     Selecting by module also covers future mutants added to these surfaces.
     """
-    if scope == "all":
-        return MUTATIONS
-    if scope != "platform":
+    if scope not in ("all", "platform"):
         raise ValueError(f"unknown curated scope: {scope}")
+    selected = MUTATIONS if scope == "all" else _platform_mutations()
+    return selected if shard is None else shard_mutations(selected, *shard)
+
+
+def _platform_mutations() -> tuple[Mutation, ...]:
     platform_modules = {
         "platform_support.py",
         "memory.py",
@@ -2334,8 +2413,8 @@ def curated_mutations(scope: str = "all") -> tuple[Mutation, ...]:
     )
 
 
-def _run_curated(verbose: bool, *, scope: str = "all") -> int:
-    mutations = curated_mutations(scope)
+def _run_curated(verbose: bool, *, scope: str = "all", shard: tuple[int, int] | None = None) -> int:
+    mutations = curated_mutations(scope, shard)
     curated_tests = _curated_tests()
     with tempfile.TemporaryDirectory(prefix="fv-mut-curated-") as tmp:
         workdir = Path(tmp) / "repo"
@@ -2390,6 +2469,11 @@ def main() -> int:
     parser.add_argument(
         "--scope", choices=("all", "platform"), default="all", help="curated mutation scope"
     )
+    parser.add_argument(
+        "--shard",
+        metavar="INDEX/COUNT",
+        help="curated mode: run only shard INDEX of COUNT (from 1) of the roster",
+    )
     parser.add_argument("--paths", nargs="*", default=list(DEFAULT_PATHS))
     parser.add_argument("--list", action="store_true", help="count mutants and exit")
     parser.add_argument("--limit", type=int, default=0, help="cap the number of mutants")
@@ -2399,16 +2483,23 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.mode == "curated":
+        try:
+            shard = parse_shard(args.shard) if args.shard else None
+            mutations = curated_mutations(args.scope, shard)
+        except ValueError as exc:
+            parser.error(str(exc))
         if args.list:
-            mutations = curated_mutations(args.scope)
             for mutation in mutations:
                 print(f"{mutation.id} {mutation.path}")
-            print(f"TOTAL {len(mutations)} mutants ({args.scope})")
+            label = f"{args.scope}, shard {args.shard}" if shard else args.scope
+            print(f"TOTAL {len(mutations)} mutants ({label})")
             return 0
-        return _run_curated(args.verbose, scope=args.scope)
+        return _run_curated(args.verbose, scope=args.scope, shard=shard)
 
     if args.scope != "all":
         parser.error("--scope applies only to curated mode")
+    if args.shard:
+        parser.error("--shard applies only to curated mode")
 
     mutants = _collect_auto_mutants(tuple(args.paths))
     if args.list:
