@@ -81,6 +81,9 @@ with FloorVault(token_bytes(32), app_instance_id="example-app") as crypto:
         raise AssertionError("Wrong-context ciphertext was accepted")
 ```
 
+<a id="features"></a>
+<a id="context-binding"></a>
+
 ## 01 / Context binding
 
 **Bound data.** Every encrypted field is authenticated together with its
@@ -139,6 +142,8 @@ weaker one. Key material is held in buffers that can be wiped after use.
 
 [Key custody](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#key-custody) ·
 [Vault Transit guide](https://github.com/Guerilla-ops/floorvault/blob/main/docs/VAULT-TRANSIT.md)
+
+<a id="keep-agent-secrets-out-of-env"></a>
 
 ## 04 / Agent secrets
 
