@@ -704,6 +704,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "A VaultStore opened before a rotation writes old-key records under the new label (#103)",
     ),
     Mutation(
+        "ROT-10",
+        "src/floorvault/vaultkit/vault.py",
+        "        if not self._key_verified:\n            self._verify_key(conn)\n",
+        "        if False:  # MUTANT\n            self._verify_key(conn)\n",
+        "A VaultStore opened with the old key after a rotation writes under it (#109)",
+    ),
+    Mutation(
         "VS-1",
         "src/floorvault/vaultkit/vault.py",
         "            if user_version > self._SCHEMA_VERSION:",

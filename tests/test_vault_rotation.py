@@ -517,3 +517,44 @@ def test_a_store_opened_before_a_rotation_refuses_to_write_after_it(tmp_path):
     assert _key_ids(tmp_path / "vault" / "vault.db", item.id) == before == {1}
     # Opened again with the new key, writes go through.
     VaultStore(tmp_path / "vault", crypto=_crypto(NEW)).add_item("generic", "Now", {"value": "y"})
+
+
+# ---------------------------------------------------------------------------
+# A VaultStore's key must open the store before it writes (#109)
+# ---------------------------------------------------------------------------
+
+
+def test_the_old_key_cannot_write_after_a_rotation(tmp_path):
+    store = _store(tmp_path)
+    item = store.add_item("generic", "Item", {"value": "v"})
+    rotate_vault_store(
+        store, source_ring=KeyRing({0: _crypto(OLD)}), new_vault=_crypto(NEW), new_key_id=1
+    )
+    db = tmp_path / "vault" / "vault.db"
+    with sqlite3.connect(db) as conn:
+        before = conn.execute("SELECT * FROM vault_items ORDER BY id").fetchall()
+    old = VaultStore(tmp_path / "vault", crypto=_crypto(OLD))  # opened afresh: generation 1
+    for write in (
+        lambda s: s.add_item("generic", "Late", {"value": "x"}),
+        lambda s: s.update_generic_field(item.id, "value", "x"),
+        lambda s: s.delete_item(item.id),
+    ):
+        with pytest.raises(VaultError, match="key does not open the vault's existing items"):
+            write(old)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT * FROM vault_items ORDER BY id").fetchall() == before
+    VaultStore(tmp_path / "vault", crypto=_crypto(NEW)).add_item("generic", "Ok", {"value": "y"})
+
+
+def test_a_wrong_key_cannot_write_to_a_store_never_rotated(tmp_path):
+    _store(tmp_path).add_item("generic", "Item", {"value": "v"})
+    with pytest.raises(VaultError, match="key does not open the vault's existing items"):
+        VaultStore(tmp_path / "vault", crypto=_crypto(IMPOSTOR)).add_item(
+            "generic", "Other", {"value": "x"}
+        )
+
+
+def test_an_empty_store_has_nothing_to_check_a_key_against(tmp_path):
+    VaultStore(tmp_path / "vault", crypto=_crypto(IMPOSTOR)).add_item(
+        "generic", "First", {"value": "v"}
+    )
