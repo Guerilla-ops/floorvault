@@ -154,14 +154,16 @@ or commit:
 
 ```bash
 read -rs KEY && printf 'value=%s\n' "$KEY" | floorvault secrets add "OpenAI" --id openai --stdin; unset KEY
+floorvault secrets allow openai -- python ~/agent.py
 echo 'OPENAI_API_KEY=fv:openai' > .env
-floorvault run --env-file .env -- python agent.py
+floorvault run --env-file .env -- python ~/agent.py
 ```
 
 - `floorvault secrets import .env` previews moving an existing file's values into
   the store; add `--write` to store them and rewrite the file to references.
-- `floorvault secrets allow` binds an item to the command lines it may reach, and
-  `run --require-binding` refuses items that have no binding.
+- `floorvault secrets allow` binds an item to the command lines it may reach;
+  `run` refuses items with no binding, and one whose binding was changed in the
+  store behind its back.
 - The store is `VaultStore`, a local credential database with optional sealed
   listing metadata, also usable directly from Python.
 - A [Hermes Agent plugin](https://github.com/Guerilla-ops/floorvault/tree/main/plugins/hermesvault)

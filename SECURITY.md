@@ -257,7 +257,12 @@ proof of a plaintext-recovery attack.
   load, and older readers ignore it. The Hermes plugin resolves a bound item only
   when Hermes was started with one of its bound command lines (and, with
   `require_binding`, refuses unbound items), but it cannot check the variables that
-  steer what Hermes loads. `floorvault secrets` commands print no values, but `run` can
+  steer what Hermes loads; it keeps no binding record. From 0.3.0 `run`
+  refuses unbound items unless `--allow-unbound` is given, and refuses an item
+  whose stored binding no longer matches a fingerprint it keeps outside the
+  store, so a binding cleared or rolled back in `vault.db` without the key
+  blocks the item. That record is trusted on first use and holds only while it
+  is beyond the reach of whoever can write the store. `floorvault secrets` commands print no values, but `run` can
   start a command that does.
 - **Migration can write during listing.** The migration-aware `list_items()` path
   upgrades legacy items through metadata lookup. It can write modern records and
