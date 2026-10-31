@@ -21,7 +21,8 @@ ciphertext moved to the wrong record, column, table, schema or application.
 Keep your database engine and choose which fields to protect. Use OS-backed key
 custody, an explicit key source, or an explicitly enabled passphrase-wrapped file.
 
-[Install](#install) · [Quickstart](#quickstart) · [Context binding](#context-binding) ·
+[Install](#install) · [Quickstart](#quickstart) · [Agent secrets](#keep-agent-secrets-out-of-env) ·
+[Context binding](#context-binding) ·
 [Features](#features) · [Limits](#security-boundaries) · [Documentation](#documentation)
 
 **Beta.** No completed independent code audit or security certification is claimed.
@@ -80,6 +81,27 @@ with FloorVault(token_bytes(32), app_instance_id="example-app") as crypto:
     else:
         raise AssertionError("Wrong-context ciphertext was accepted")
 ```
+
+## Keep agent secrets out of `.env`
+
+`floorvault run` starts any command, such as an agent, an MCP server or a
+script, with `fv:` references filled in from the encrypted store. Configs and
+`.env` files then hold only references, which are safe to sync or commit:
+
+```bash
+read -rs KEY && printf 'value=%s\n' "$KEY" | floorvault secrets add "OpenAI" --id openai --stdin; unset KEY
+echo 'OPENAI_API_KEY=fv:openai' > .env
+floorvault run --env-file .env -- python agent.py
+```
+
+`floorvault secrets import .env` previews moving an existing file's values into
+the store; add `--write` to store them and rewrite the file to references.
+`floorvault secrets allow` binds an item to the command lines it may reach,
+and `run --require-binding` refuses items that have no binding.
+The [walkthrough](https://github.com/Guerilla-ops/floorvault/tree/main/examples/agent-secrets)
+has a references-only `.env`, an MCP client config, and what this does and does
+not protect: the started command, and code running as you, can still read the
+values.
 
 ## Context binding
 
