@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "floorvault"
-version = "0.2.8"
+version = "0.2.9"
 description = "Contextual, misuse-resistant field encryption and credential stores."
 readme = "README.md"
 license = "MIT"
