@@ -29,7 +29,7 @@ in exactly one shard, and the equivalent canary runs in all of them):
   `main`, merge queue run, tag and scheduled run, runs everything.
 - **Shard counts** (`linux`, `platform`) are set once, in the `Classify changes`
   job, and read by every shard job. Raise them as the roster grows: the harness
-  refuses more shards than mutants. `tests/test_ci_workflow.py` guards the names
+  refuses more shards than mutants. `tests/test_ci_sharding.py` guards the names
   and the single source of the counts.
 
 Windows test jobs set `TEMP` and `TMP` to a unique directory under the user's
