@@ -262,6 +262,18 @@ selection used on your host, and whether your cloud image offers a TPM2. Ubuntu 
 old. Try `init` and a `run` from the kind of session you will use before relying
 on it.
 
+[`scripts/check_systemd_creds_host.sh`](../scripts/check_systemd_creds_host.sh)
+does that for you, with a throwaway store under `$HOME` that it deletes on exit. It
+reports the systemd version, whether a TPM2 is usable and whether linger is on,
+then checks that the key unseals from your shell, from a cron-like bare
+environment, and from a user service. With `--with-sudo` it also tries a system
+service running as you outside any login session; with `--with-cron` a real cron
+job (a one-line `/etc/cron.d` file written through sudo and removed afterwards;
+your own crontab is not touched); and with `--with-ssh` a
+non-interactive `ssh localhost`. Run it as the user that will own the vault. It
+exits 0 when every context that ran passed, 1 when one failed, and 2 when the host
+cannot run the check.
+
 **References.** `fv:<item_id>[:<field>]`. In `-e` and env files `hv:` is
 accepted too, so a Hermes `secrets.hermesvault.env` mapping can be reused; in
 the inherited environment only `fv:` is filled in, because an `hv:` value there
