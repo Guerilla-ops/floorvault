@@ -254,7 +254,12 @@ proof of a plaintext-recovery attack.
   variable such as `LD_PRELOAD` or `NODE_OPTIONS`. The binding is sealed with
   the item but is a guardrail, not a boundary: code running as the same user
   can clear it, a bound interpreter or launcher runs whatever its arguments
-  load, and older readers and the Hermes plugin ignore it. `floorvault secrets` commands print no values, but `run` can
+  load, and older readers and the Hermes plugin ignore it. From 0.3.0 `run`
+  refuses unbound items unless `--allow-unbound` is given, and refuses an item
+  whose stored binding no longer matches a fingerprint it keeps outside the
+  store, so a binding cleared or rolled back in `vault.db` without the key
+  blocks the item. That record is trusted on first use and holds only while it
+  is beyond the reach of whoever can write the store. `floorvault secrets` commands print no values, but `run` can
   start a command that does.
 - **Migration can write during listing.** The migration-aware `list_items()` path
   upgrades legacy items through metadata lookup. It can write modern records and

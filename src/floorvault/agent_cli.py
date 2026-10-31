@@ -62,6 +62,7 @@ from .agentenv import (
     render_env_file_without,
     resolve,
 )
+from .binding_record import BindingRecord, BindingRecordError, default_state_dir
 from .key_file import KeyFileError
 from .key_file import read_key_file as _read_key_file
 
@@ -390,11 +391,19 @@ def _run_parser() -> argparse.ArgumentParser:
         help="do not resolve fv: values already in the inherited environment",
     )
     parser.add_argument(
+        "--allow-unbound",
+        action="store_true",
+        help=(
+            "also resolve items that have no command binding, for any command "
+            "(default: $FLOOR_VAULT_ALLOW_UNBOUND; without it, an unbound item is refused)"
+        ),
+    )
+    parser.add_argument(
         "--require-binding",
         action="store_true",
         help=(
-            "refuse items with no command binding, so one cleared in vault.db "
-            "blocks the item instead of releasing it (default: $FLOOR_VAULT_REQUIRE_BINDING)"
+            "refuse items with no command binding even when --allow-unbound or "
+            "$FLOOR_VAULT_ALLOW_UNBOUND is set (default: $FLOOR_VAULT_REQUIRE_BINDING)"
         ),
     )
     return parser
@@ -457,49 +466,99 @@ def _format_command(argv: Sequence[str]) -> str:
 
 
 REQUIRE_BINDING_ENV = "FLOOR_VAULT_REQUIRE_BINDING"
+ALLOW_UNBOUND_ENV = "FLOOR_VAULT_ALLOW_UNBOUND"
+
+
+def _env_flag(environ: Mapping[str, str], name: str) -> bool:
+    return (environ.get(name) or "").strip().lower() in ("1", "true", "yes")
 
 
 def _binding_required(args, environ: Mapping[str, str]) -> bool:
-    """--require-binding, or $FLOOR_VAULT_REQUIRE_BINDING set to 1/true/yes."""
-    if getattr(args, "require_binding", False):
+    """Whether `run` refuses items that have no command binding.
+
+    Yes by default (RUN-9, #97): a binding lives in vault.db, so whoever can
+    write it can clear one without the key, and a requirement kept outside the
+    store turns that into a refusal. --allow-unbound or $FLOOR_VAULT_ALLOW_UNBOUND
+    relax it; --require-binding or $FLOOR_VAULT_REQUIRE_BINDING (for example in
+    an MCP server's env block) restore it over both.
+    """
+    if getattr(args, "require_binding", False) or _env_flag(environ, REQUIRE_BINDING_ENV):
         return True
-    return (environ.get(REQUIRE_BINDING_ENV) or "").strip().lower() in ("1", "true", "yes")
+    if getattr(args, "allow_unbound", False) or _env_flag(environ, ALLOW_UNBOUND_ENV):
+        return False
+    return True
+
+
+def _binding_record(vault_dir: Path) -> BindingRecord:
+    """The record of this store's bindings, kept outside it (see binding_record)."""
+    return BindingRecord(vault_dir, default_state_dir(os.environ))
+
+
+def _binding_changed(item_id: str) -> str:
+    return (
+        f"vault item {item_id}: its command binding changed since floorvault last used "
+        "it: cleared, or replaced outside `floorvault secrets allow` (an older copy "
+        "written back into vault.db looks like this). Check it with `floorvault secrets "
+        f"show {item_id}`; if the change was yours, accept it with "
+        f"`floorvault secrets allow {item_id} --accept`"
+    )
 
 
 def _check_bindings(
-    store, refs, env, command_line, prog: str, *, require_binding: bool = False
+    store,
+    refs,
+    env,
+    command_line,
+    prog: str,
+    *,
+    require_binding: bool = True,
+    record: Optional[BindingRecord] = None,
 ) -> bool:
     """Enforce per-item command allowlists. Returns False after reporting.
 
-    With ``require_binding`` an item with no binding is refused too. A binding
-    lives in vault.db, so whoever can write it can clear one without the key
-    (#97); the requirement lives outside the store, so clearing it blocks the
-    item instead of releasing it.
+    A binding lives in vault.db, so whoever can write that file can clear it,
+    or write back an older sealed one, without the key (RUN-9, #97). Two checks
+    kept outside the store close that: with ``require_binding`` (the default)
+    an item with no binding is refused, and ``record`` refuses an item whose
+    stored binding differs from the one floorvault last saw.
     """
     by_item: dict[str, list[str]] = {}
     for name, ref in refs.items():
         by_item.setdefault(ref.item_id, []).append(name)
     bound: list[str] = []
     problems: list[str] = []
+    bindings: dict[str, Optional[list]] = {}
+    fingerprints: dict[str, str] = {}
     for item_id in sorted(by_item):
         try:
             if store.get_meta(item_id) is None:
                 continue  # resolve() reports the missing item
-            allowed = store.get_allowed_commands(item_id)
+            fingerprints[item_id] = store.binding_fingerprint(item_id)
+            bindings[item_id] = store.get_allowed_commands(item_id)
         except Exception as exc:  # noqa: BLE001 - fail closed; report the type only
+            fingerprints.pop(item_id, None)
             problems.append(
                 f"vault item {item_id}: its command binding cannot be read "
                 f"({type(exc).__name__}), so it is not resolved"
             )
-            continue
+    if record is not None and fingerprints:
+        try:
+            changed = record.check(fingerprints)
+        except BindingRecordError as exc:
+            _err(prog, str(exc))
+            return False
+        for item_id in changed:
+            problems.append(_binding_changed(item_id))
+            del bindings[item_id]
+    for item_id, allowed in bindings.items():
         if allowed is None:
             if require_binding:
                 for name in sorted(by_item[item_id]):
                     problems.append(
-                        f"{name}: vault item {item_id} has no command binding, and "
-                        f"bindings are required (--require-binding or "
-                        f"${REQUIRE_BINDING_ENV}). Bind it with "
-                        f"`floorvault secrets allow {item_id} -- <command line>`"
+                        f"{name}: vault item {item_id} has no command binding, and `run` "
+                        f"requires one. Bind it with `floorvault secrets allow {item_id} "
+                        "-- <command line>`, or pass --allow-unbound (or set "
+                        f"${ALLOW_UNBOUND_ENV}=1) to resolve unbound items for any command"
                     )
             continue
         bound.append(item_id)
@@ -564,13 +623,14 @@ def _prepare_environment(
         key_bytes = _custody_key(args, os.environ, vault_dir)
         if key_bytes is not None:
             key_hex = key_bytes.hex()
+        record = _binding_record(vault_dir)
         store = open_store(
             vault_dir,
             key_env=args.key_env,
             key_bytes=key_bytes,
             sealed_listing=_sealed_listing_asserted(args, os.environ),
         )
-    except StoreUnavailable as exc:
+    except (StoreUnavailable, BindingRecordError) as exc:
         _err(prog, str(exc))
         return None, RUN_FAILED
     except Exception as exc:  # noqa: BLE001 - the type is safe; a message may not be
@@ -584,6 +644,7 @@ def _prepare_environment(
             command_line,
             prog,
             require_binding=_binding_required(args, os.environ),
+            record=record,
         ):
             return None, RUN_FAILED
         values = resolve(store, refs)
@@ -785,7 +846,10 @@ def add_secrets_parser(subparsers) -> None:
         "allow",
         parents=[common],
         help="Bind an item to the exact command lines `run` may start with it",
-        usage="floorvault secrets allow [options] ITEM_ID [--clear | [--remove] -- PROGRAM [ARGS...]]",
+        usage=(
+            "floorvault secrets allow [options] ITEM_ID "
+            "[--clear | --accept | [--remove] -- PROGRAM [ARGS...]]"
+        ),
         description=(
             "Bind an item to command lines. Once bound, `floorvault run` resolves the "
             "item only when the command it starts is one of them: the program's absolute "
@@ -801,6 +865,14 @@ def add_secrets_parser(subparsers) -> None:
         help="remove every binding (the item resolves for any command)",
     )
     allow.add_argument("--remove", action="store_true", help="remove this one command line")
+    allow.add_argument(
+        "--accept",
+        action="store_true",
+        help=(
+            "print the item's binding as stored and trust it from now on: for a change "
+            "made outside this command, which `run` otherwise refuses"
+        ),
+    )
     # The command after `--` is split off before parsing (split_allow_argv):
     # argparse handles `--` after an option differently across Python versions.
     allow.set_defaults(allowed_argv=[])
@@ -1102,17 +1174,40 @@ def _cmd_allow(args, prog: str) -> int:
     if args.clear and (command or args.remove):
         _err(prog, "--clear takes no command and cannot be combined with --remove")
         return 2
-    if not args.clear and not command:
+    if args.accept and (command or args.remove or args.clear):
+        _err(prog, "--accept takes no command and cannot be combined with --clear or --remove")
+        return 2
+    if not args.clear and not args.accept and not command:
         _err(prog, "give the command after --, for example: -- npx -y @scope/server")
         return 2
     store = _store_for(args)
     if store.get_meta(args.item_id) is None:
         _err(prog, f"item {args.item_id} not found")
         return 1
-    if args.clear:
-        store.set_allowed_commands(args.item_id, None)
-        print(f"{args.item_id}: not bound; `run` resolves it for any command")
-        return 0
+    try:
+        record = _binding_record(_vault_dir(args.vault, os.environ))
+        if args.accept:
+            # Read (and authenticate) before trusting: a binding that does not
+            # open is an error here as everywhere, never accepted.
+            fingerprint = store.binding_fingerprint(args.item_id)
+            allowed = store.get_allowed_commands(args.item_id)
+            record.record(args.item_id, fingerprint)
+            _print_bindings(args.item_id, allowed)
+            print(f"{args.item_id}: this binding is trusted from now on")
+            return 0
+        if args.clear:
+            store.set_allowed_commands(args.item_id, None)
+            record.record(args.item_id, store.binding_fingerprint(args.item_id))
+            print(f"{args.item_id}: not bound; `run` resolves it for any command")
+            return 0
+        # Adding to or removing from a binding that was changed behind our back
+        # would make the changed one look trusted.
+        if record.check({args.item_id: store.binding_fingerprint(args.item_id)}):
+            _err(prog, _binding_changed(args.item_id))
+            return 1
+    except BindingRecordError as exc:
+        _err(prog, str(exc))
+        return 1
     path, code = _find_command(command[0], os.environ)
     if path is None:
         reason = "not found" if code == 127 else "not executable"
@@ -1149,6 +1244,11 @@ def _cmd_allow(args, prog: str) -> int:
         stored = store.update_allowed_commands(args.item_id, change)
     except _AllowRefused as exc:
         _err(prog, str(exc))
+        return 1
+    try:
+        record.record(args.item_id, store.binding_fingerprint(args.item_id))
+    except BindingRecordError as exc:
+        _err(prog, f"the binding was written, but {exc}")
         return 1
     _print_bindings(args.item_id, stored)
     return 0
@@ -1211,6 +1311,10 @@ def _cmd_seal_listing(args, prog: str) -> int:
 def _cmd_rm(args, prog: str) -> int:
     if _store_for(args).remove_item(args.item_id):
         print(f"removed {args.item_id}")
+        try:
+            _binding_record(_vault_dir(args.vault, os.environ)).forget(args.item_id)
+        except BindingRecordError as exc:
+            _err(prog, f"warning: {exc}")
         return 0
     _err(prog, f"item {args.item_id} not found")
     return 1
