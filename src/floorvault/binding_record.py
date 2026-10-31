@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import posixpath
 import sys
 from pathlib import Path
 from typing import Callable, Mapping, Optional, TypeVar
@@ -65,7 +66,8 @@ def default_state_dir(environ: Mapping[str, str], platform: str = sys.platform) 
     if platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "floorvault"
     xdg = environ.get("XDG_STATE_HOME") or ""
-    base = Path(xdg) if os.path.isabs(xdg) else Path.home() / ".local" / "state"
+    # XDG paths are POSIX paths; judge them so whatever host this runs on.
+    base = Path(xdg) if posixpath.isabs(xdg) else Path.home() / ".local" / "state"
     return base / "floorvault"
 
 
