@@ -20,6 +20,13 @@ TEXT = WORKFLOW.read_text(encoding="utf-8")
 CLASSIFIER = re.compile(r"Programming Language :: Python :: (\d+\.\d+)")
 
 
+def _job(job_id: str) -> str:
+    """The text of one job: from its key to the next job's key."""
+    start = TEXT.index(f"\n  {job_id}:\n") + 1
+    following = re.search(r"\n  [A-Za-z][\w-]*:\n", TEXT[start:])
+    return TEXT[start : start + following.start()] if following else TEXT[start:]
+
+
 def _cells(*, expanded: bool = False) -> list[tuple[str, str]]:
     command = [sys.executable, str(ROOT / "scripts" / "ci_matrix.py")]
     if expanded:
@@ -128,7 +135,7 @@ def test_publishing_is_fail_closed_when_no_artifact_was_built():
 
 
 def test_build_and_upload_run_once_outside_the_test_matrix():
-    build = TEXT.split("\n  build:", 1)[1].split("\n  secrets:", 1)[0]
+    build = _job("build")
     assert "matrix." not in build
     assert "uv build" in build
     assert "actions/upload-artifact@" in build
@@ -315,20 +322,34 @@ def test_expanded_ci_is_scheduled_and_available_before_releases():
 
 
 def test_platform_tests_keep_the_full_suite_and_native_windows_coverage():
-    tests_job = TEXT.split("\n  gates:", 1)[1].split("\n  build:", 1)[0]
+    # The test job runs the suite on every cell; the platform mutation roster runs
+    # in its own sharded job on macOS and Windows; the required gate for each cell
+    # (which keeps the cell's name) passes only when both did.
+    tests_job = _job("tests")
     assert "pytest -q tests/" in tests_job
     assert "scripts/realworld_exercise.py" in tests_job
-    assert "--scope platform" in tests_job
-    assert "matrix.os != 'ubuntu-latest'" in tests_job
+    platform_job = _job("platform-mutations")
+    assert "--scope platform" in platform_job
+    assert "macos-latest" in platform_job and "windows-latest" in platform_job
+    gate_job = _job("gates")
+    assert "needs.tests.result" in gate_job
+    assert "needs.platform-mutations.result" in gate_job
+    assert "matrix.os != 'ubuntu-latest'" in gate_job
     assert (ROOT / "tests/test_windows_dpapi_live.py").is_file()
     assert not (ROOT / ".github/workflows/verify.yml").exists()
 
 
 def test_full_mutations_run_once_on_linux():
-    mutations = TEXT.split("\n  mutations:", 1)[1].split("\n  secrets:", 1)[0]
-    assert "runs-on: ubuntu-latest" in mutations
-    assert "matrix:" not in mutations
-    assert "scripts/mutation_check.py --mode curated" in mutations
+    # The whole roster runs on Linux once, split into shards of one matrix
+    # dimension (the shard), and the required check passes only if every shard did.
+    shards = _job("mutation-shards")
+    assert "runs-on: ubuntu-latest" in shards
+    assert "os:" not in shards and "python:" not in shards
+    assert "scripts/mutation_check.py --mode curated" in shards
+    assert "--scope" not in shards
+    gate = _job("mutations")
+    assert "runs-on: ubuntu-latest" in gate
+    assert "needs.mutation-shards.result" in gate
 
 
 def test_dependency_audit_covers_platform_marked_extras():

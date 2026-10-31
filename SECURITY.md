@@ -13,7 +13,7 @@ rotation, recovery, optional integrations, and build and release machinery.
 ## Supported versions
 
 Security fixes cover `main` and the latest release; earlier releases are
-unsupported. Current package metadata is `0.2.8` (Beta). Reports against development
+unsupported. Current package metadata is `0.2.9` (Beta). Reports against development
 commits are welcome; provide the exact revision. Branch names do not define release
 versions. Python 3.10 and newer is the declared interpreter range.
 
@@ -254,7 +254,10 @@ proof of a plaintext-recovery attack.
   variable such as `LD_PRELOAD` or `NODE_OPTIONS`. The binding is sealed with
   the item but is a guardrail, not a boundary: code running as the same user
   can clear it, a bound interpreter or launcher runs whatever its arguments
-  load, and older readers and the Hermes plugin ignore it. `floorvault secrets` commands print no values, but `run` can
+  load, and older readers ignore it. The Hermes plugin resolves a bound item only
+  when Hermes was started with one of its bound command lines (and, with
+  `require_binding`, refuses unbound items), but it cannot check the variables that
+  steer what Hermes loads. `floorvault secrets` commands print no values, but `run` can
   start a command that does.
 - **Migration can write during listing.** The migration-aware `list_items()` path
   upgrades legacy items through metadata lookup. It can write modern records and
