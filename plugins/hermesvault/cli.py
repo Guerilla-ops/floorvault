@@ -379,10 +379,7 @@ def _cmd_bind(args) -> int:
     if not value:
         print("hvault bind: empty value; nothing stored", file=sys.stderr)
         return 2
-    try:
-        existing = store.get_meta(item_id)
-    except Exception:
-        existing = None
+    existing = store.get_meta(item_id)
     if existing is None:
         store.add_item(kind="generic", label=label, secret={field: value}, item_id=item_id)
         print(f"stored {item_id}.{field}")
