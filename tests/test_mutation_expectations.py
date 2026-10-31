@@ -212,3 +212,50 @@ def test_curated_scope_can_be_listed_without_running_mutations():
     assert "WD-1" in result.stdout
     assert "CR-1 " not in result.stdout
     assert "BASELINE" not in result.stdout
+
+
+def test_shards_partition_the_roster_and_each_carries_the_canary():
+    module = _load()
+    for scope in ("all", "platform"):
+        roster = module.curated_mutations(scope)
+        everything = {m.id for m in roster if m.id != "CANARY"}
+        for count in (1, 2, 7, 10, 12):
+            shards = [module.curated_mutations(scope, (i, count)) for i in range(1, count + 1)]
+            seen: list[str] = []
+            for shard in shards:
+                ids = [m.id for m in shard]
+                assert ids.count("CANARY") == 1, (scope, count)
+                seen.extend(i for i in ids if i != "CANARY")
+                # Roster order is kept inside a shard.
+                assert ids == [m.id for m in roster if m.id in set(ids)]
+            assert sorted(seen) == sorted(everything), (scope, count)  # every mutant, once
+            sizes = [len(s) for s in shards]
+            assert max(sizes) - min(sizes) <= 1, (scope, count, sizes)
+
+
+def test_shard_specs_are_validated():
+    module = _load()
+    assert module.parse_shard("3/10") == (3, 10)
+    for bad in ("", "3", "0/5", "6/5", "a/b", "1/0", "-1/3", "1/2/3"):
+        with pytest.raises(ValueError):
+            module.parse_shard(bad)
+    with pytest.raises(ValueError, match="empty"):
+        module.curated_mutations("all", (1, len(module.MUTATIONS) + 5))
+
+
+def test_a_shard_can_be_listed_without_running_mutations():
+    result = subprocess.run(
+        [sys.executable, str(MODULE_PATH), "--mode", "curated", "--shard", "2/10", "--list"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "CANARY" in result.stdout
+    assert "shard 2/10" in result.stdout.splitlines()[-1]
+    bad = subprocess.run(
+        [sys.executable, str(MODULE_PATH), "--mode", "auto", "--shard", "1/2", "--list"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert bad.returncode == 2

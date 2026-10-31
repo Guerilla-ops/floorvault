@@ -17,6 +17,8 @@ name: ClusterFuzzLite
 
 on:
   pull_request:
+  # A merge queue tests the merge result; the required check must run there too.
+  merge_group:
   push:
     branches: [main]
   schedule:
@@ -28,7 +30,7 @@ permissions:
 
 jobs:
   fuzz:
-    name: fuzz (${{ github.event_name == 'pull_request' && 'code-change' || 'batch' }})
+    name: fuzz (${{ contains(fromJSON('["pull_request","merge_group"]'), github.event_name) && 'code-change' || 'batch' }})
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -52,7 +54,9 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           sanitizer: address
           mode: ${{ github.event_name == 'pull_request' && 'code-change' || 'batch' }}
-          fuzz-seconds: ${{ github.event_name == 'pull_request' && 300 || 1800 }}
+          # A merge queue run uses batch mode (code-change mode needs a pull request
+          # event) but only the short pull request time.
+          fuzz-seconds: ${{ contains(fromJSON('["pull_request","merge_group"]'), github.event_name) && 300 || 1800 }}
           # Fail on a crash even when the reproduction step cannot confirm it.
           # Python fuzzer start-up is slow enough that reproduction can time out;
           # the first run of this workflow found a real crash, failed to
