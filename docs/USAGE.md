@@ -592,6 +592,21 @@ floorvault secrets allow github-pat --accept  # trust a change made outside this
   `%LOCALAPPDATA%\floorvault` on Windows, one file per store under `bindings/`.
   It is refused inside the store directory. It must be writable: `run` fails
   closed when it cannot read or update the record.
+- **The state directory must persist.** The record only works if it is still
+  there on the next run. In a container without a mounted volume, on a tmpfs or
+  on an ephemeral CI runner it is wiped between runs, every run is a first use,
+  and replay protection does nothing. To make that visible, the first record
+  `run` writes for a store also leaves a small marker file in the store
+  directory (`.floorvault-binding-record`). When `run` later finds the marker
+  but no record, it warns on stderr (`the binding record for this store is
+  missing`) and starts a new record, so the warning appears once per loss. Set
+  `FLOOR_VAULT_REQUIRE_RECORD=1`, for example in an MCP server's `env` block, to
+  refuse instead: nothing is resolved and no new record is started until you
+  unset it for one run. In a container, mount a volume and point
+  `FLOOR_VAULT_STATE_DIR` at it. The marker only notices an accident; whoever can
+  write the store directory can delete it, which is the same reach that defeats
+  the record. A store directory that `run` cannot write to gets no marker, so it
+  gets no notice either.
 - **What it does not stop.** An item `run` has not seen before is trusted as it
   is. The record holds against someone who can write or restore `vault.db` but
   not the state directory: a synced or shared store, a store-only backup.

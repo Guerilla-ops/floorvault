@@ -12,6 +12,7 @@ import pytest
 
 from floorvault import FloorVault
 from floorvault.binding_record import (
+    MARKER_NAME,
     STATE_DIR_ENV,
     BindingRecord,
     BindingRecordError,
@@ -123,3 +124,49 @@ def test_default_state_dir(tmp_path, monkeypatch):
     assert default_state_dir({"LOCALAPPDATA": str(tmp_path / "L")}, "win32") == (
         tmp_path / "L" / "floorvault"
     )
+
+
+def test_a_record_that_disappears_is_noticed_through_the_store_marker(tmp_path):
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    record = BindingRecord(vault_dir, tmp_path / "state")
+    marker = vault_dir / MARKER_NAME
+    assert record.marker_path == marker
+    # Nothing recorded yet: no marker, nothing lost, and an empty check adds neither.
+    assert not record.lost()
+    assert record.check({}) == []
+    assert not marker.exists() and not record.lost()
+    assert record.check({"a": "none"}) == []
+    assert marker.is_file() and not record.lost()
+    # The state directory is wiped (an ephemeral container): the marker stays.
+    record.path.unlink()
+    assert record.lost()
+    # The next check starts a new record, trusting items as they are, and the
+    # loss is over.
+    assert record.check({"a": "1" * 64}) == []
+    assert not record.lost()
+
+
+def test_the_marker_is_left_beside_a_record_that_already_exists(tmp_path):
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    record = BindingRecord(vault_dir, tmp_path / "state")
+    record.check({"a": "none"})
+    (vault_dir / MARKER_NAME).unlink()
+    assert not record.lost()  # no marker, so there is nothing to compare with
+    record.check({"a": "none"})  # nothing changed, but a record exists
+    assert (vault_dir / MARKER_NAME).is_file()
+    record.path.unlink()
+    assert record.lost()
+
+
+def test_only_a_regular_marker_counts_and_lost_never_raises(tmp_path):
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    record = BindingRecord(vault_dir, tmp_path / "state")
+    (vault_dir / MARKER_NAME).mkdir()
+    assert not record.lost()
+    record.check({"a": "none"})  # leaves the directory where it is
+    assert (vault_dir / MARKER_NAME).is_dir()
+    gone = BindingRecord(tmp_path / "nowhere", tmp_path / "state2")
+    assert not gone.lost()

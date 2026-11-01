@@ -21,6 +21,13 @@ Limits, stated where they are documented (USAGE, SECURITY):
   who can write or restore the store but not the state directory (a synced or
   shared store, a store-only backup). Someone who can roll both back together,
   or who runs code as you, can defeat it; such code can read the key anyway.
+- **The state directory must persist.** A marker file in the store directory
+  says a record was kept for the store before. If the record is gone while the
+  marker is not (a state directory wiped between runs: a container without a
+  volume, a tmpfs, an ephemeral CI runner), :meth:`BindingRecord.lost` says so,
+  and ``run`` warns, or with ``$FLOOR_VAULT_REQUIRE_RECORD`` refuses. The marker
+  only exists to notice an accident: whoever can write the store directory can
+  delete it, which is the same reach that defeats the record.
 - The fingerprint is of ciphertext, so the record reveals nothing about the
   bound command lines, and needs no key.
 """
@@ -31,6 +38,7 @@ import hashlib
 import json
 import os
 import posixpath
+import stat
 import sys
 from pathlib import Path
 from typing import Callable, Mapping, Optional, TypeVar
@@ -42,6 +50,10 @@ STATE_DIR_ENV = "FLOOR_VAULT_STATE_DIR"
 
 _FORMAT = "FVBR1"
 _CAS_RETRIES = 20
+
+#: Dropped in the store directory once a record exists for it (see ``lost``).
+MARKER_NAME = ".floorvault-binding-record"
+_MARKER_BODY = b"FVBM1\n"
 
 T = TypeVar("T")
 
@@ -87,6 +99,7 @@ class BindingRecord:
         self._name = hashlib.sha256(self._vault.encode("utf-8")).hexdigest()
         self._anchors = FileAnchorStore(state / "bindings")
         self.path = state / "bindings" / f"{self._name}.fvanchor"
+        self.marker_path = vault / MARKER_NAME
 
     def _parse(self, raw: Optional[bytes]) -> dict[str, str]:
         if raw is None:
@@ -122,8 +135,11 @@ class BindingRecord:
                 before = dict(items)
                 result = change(items)
                 if items == before:
+                    if raw is not None:
+                        self._ensure_marker()
                     return result
                 if self._anchors.compare_and_swap(self._name, raw, self._encode(items)):
+                    self._ensure_marker()
                     return result
         except OSError as exc:
             raise BindingRecordError(
@@ -131,6 +147,35 @@ class BindingRecord:
                 f"set ${STATE_DIR_ENV} to a writable directory outside the store"
             ) from None
         raise BindingRecordError(f"the binding record {self.path} kept changing; try again")
+
+    def _ensure_marker(self) -> None:
+        """Leave the marker that says this store has had a record. Best effort."""
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            if os.path.lexists(self.marker_path):
+                return
+            fd = os.open(self.marker_path, flags, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(_MARKER_BODY)
+        except OSError:
+            # A read-only store directory, or a racing writer: the record still
+            # works; only the lost-record notice is unavailable.
+            pass
+
+    def lost(self) -> bool:
+        """Whether a record was kept for this store before and is gone now.
+
+        True when the marker is in the store directory but the record file is
+        not in the state directory: the state directory was wiped, replaced or
+        pointed elsewhere since the last run. Every item is then trusted as it
+        is, as on a first use, and nothing else says so. Never raises.
+        """
+        try:
+            if not stat.S_ISREG(os.lstat(self.marker_path).st_mode):
+                return False
+            return self._anchors.load(self._name) is None
+        except OSError:
+            return False
 
     def check(self, current: Mapping[str, str]) -> list[str]:
         """Return the items whose binding differs from the record, sorted.

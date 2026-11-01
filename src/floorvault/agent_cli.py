@@ -62,7 +62,12 @@ from .agentenv import (
     render_env_file_without,
     resolve,
 )
-from .binding_record import BindingRecord, BindingRecordError, default_state_dir
+from .binding_record import (
+    STATE_DIR_ENV,
+    BindingRecord,
+    BindingRecordError,
+    default_state_dir,
+)
 from .key_file import KeyFileError
 from .key_file import read_key_file as _read_key_file
 
@@ -467,6 +472,7 @@ def _format_command(argv: Sequence[str]) -> str:
 
 REQUIRE_BINDING_ENV = "FLOOR_VAULT_REQUIRE_BINDING"
 ALLOW_UNBOUND_ENV = "FLOOR_VAULT_ALLOW_UNBOUND"
+REQUIRE_RECORD_ENV = "FLOOR_VAULT_REQUIRE_RECORD"
 
 
 def _env_flag(environ: Mapping[str, str], name: str) -> bool:
@@ -494,6 +500,31 @@ def _binding_record(vault_dir: Path) -> BindingRecord:
     return BindingRecord(vault_dir, default_state_dir(os.environ))
 
 
+def _record_lost_message(record: BindingRecord, *, refused: bool) -> str:
+    what = (
+        "so nothing is resolved"
+        if refused
+        else (
+            "so every item is trusted as it is on this run, and a binding cleared or "
+            "replayed in vault.db goes unnoticed"
+        )
+    )
+    advice = (
+        f"if the loss is expected (a new machine, a moved store, a state directory reset on "
+        f"purpose), unset ${REQUIRE_RECORD_ENV} for one run to start a new record"
+        if refused
+        else (
+            f"if ${STATE_DIR_ENV} is wiped between runs (a container without a volume, a "
+            f"tmpfs, an ephemeral CI runner), point it at a directory that persists; set "
+            f"${REQUIRE_RECORD_ENV}=1 to refuse instead"
+        )
+    )
+    return (
+        f"the binding record for this store is missing ({record.path}), although "
+        f"floorvault kept one for it before, {what}; {advice}"
+    )
+
+
 def _binding_changed(item_id: str) -> str:
     return (
         f"vault item {item_id}: its command binding changed since floorvault last used "
@@ -513,6 +544,7 @@ def _check_bindings(
     *,
     require_binding: bool = True,
     record: Optional[BindingRecord] = None,
+    require_record: bool = False,
 ) -> bool:
     """Enforce per-item command allowlists. Returns False after reporting.
 
@@ -542,6 +574,14 @@ def _check_bindings(
                 f"({type(exc).__name__}), so it is not resolved"
             )
     if record is not None and fingerprints:
+        if record.lost():
+            # Before check() starts a new record: a record that is gone while
+            # the store says it had one usually means a state directory that
+            # does not persist, where replay protection would silently stop.
+            if require_record:
+                _err(prog, _record_lost_message(record, refused=True))
+                return False
+            _err(prog, "warning: " + _record_lost_message(record, refused=False))
         try:
             changed = record.check(fingerprints)
         except BindingRecordError as exc:
@@ -645,6 +685,7 @@ def _prepare_environment(
             prog,
             require_binding=_binding_required(args, os.environ),
             record=record,
+            require_record=_env_flag(os.environ, REQUIRE_RECORD_ENV),
         ):
             return None, RUN_FAILED
         values = resolve(store, refs)

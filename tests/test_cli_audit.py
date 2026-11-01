@@ -11,6 +11,7 @@ import contextlib
 import getpass
 import io
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -514,6 +515,51 @@ def test_run_9_an_unreadable_binding_record_is_refused(tmp_path, base_env, store
     assert result.returncode == 125
     assert "is unreadable" in result.stderr
     assert SECRET not in result.stdout + result.stderr
+
+
+def test_run_9_a_wiped_state_directory_is_warned_about(tmp_path, base_env, store):
+    command = _printenv(tmp_path, "X")
+    first = fv(["run", "-e", "X=fv:one", "--", *command], base_env)
+    assert first.returncode == 0, first.stderr
+    # A first use, and an ordinary run after it, say nothing.
+    again = fv(["run", "-e", "X=fv:one", "--", *command], base_env)
+    assert again.returncode == 0 and "binding record" not in first.stderr + again.stderr
+    shutil.rmtree(tmp_path / "state")  # what an ephemeral container does
+    wiped = fv(["run", "-e", "X=fv:one", "--", *command], base_env)
+    assert wiped.returncode == 0, wiped.stderr
+    assert wiped.stdout.strip() == f"X={SECRET}"
+    assert "warning: the binding record for this store is missing" in wiped.stderr
+    assert "FLOOR_VAULT_STATE_DIR" in wiped.stderr and "FLOOR_VAULT_REQUIRE_RECORD" in wiped.stderr
+    assert SECRET not in wiped.stderr
+    # The run started a new record, so the next run is quiet again.
+    after = fv(["run", "-e", "X=fv:one", "--", *command], base_env)
+    assert after.returncode == 0 and "binding record" not in after.stderr
+
+
+def test_run_9_a_wiped_state_directory_can_be_refused(tmp_path, base_env, store):
+    command = _printenv(tmp_path, "X")
+    assert fv(["run", "-e", "X=fv:one", "--", *command], base_env).returncode == 0
+    shutil.rmtree(tmp_path / "state")
+    strict = {**base_env, "FLOOR_VAULT_REQUIRE_RECORD": "1"}
+    refused = fv(["run", "-e", "X=fv:one", "--", *command], strict)
+    assert refused.returncode == 125
+    assert "the binding record for this store is missing" in refused.stderr
+    assert "so nothing is resolved" in refused.stderr
+    assert "warning" not in refused.stderr
+    assert SECRET not in refused.stdout + refused.stderr
+    # Refusing starts no record, so it keeps refusing until the owner decides.
+    assert not (tmp_path / "state" / "bindings").exists()
+    assert fv(["run", "-e", "X=fv:one", "--", *command], strict).returncode == 125
+    # Unset for one run, the new record is started; the requirement then passes.
+    assert fv(["run", "-e", "X=fv:one", "--", *command], base_env).returncode == 0
+    assert fv(["run", "-e", "X=fv:one", "--", *command], strict).returncode == 0
+
+
+def test_run_9_a_requirement_for_a_record_does_not_trip_on_a_first_use(tmp_path, base_env, store):
+    strict = {**base_env, "FLOOR_VAULT_REQUIRE_RECORD": "1"}
+    first = fv(["run", "-e", "X=fv:one", "--", *_printenv(tmp_path, "X")], strict)
+    assert first.returncode == 0, first.stderr
+    assert "binding record" not in first.stderr
 
 
 # -------------------------------------------------------------------- secrets
