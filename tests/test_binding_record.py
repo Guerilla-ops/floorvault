@@ -16,6 +16,7 @@ from floorvault.binding_record import (
     STATE_DIR_ENV,
     BindingRecord,
     BindingRecordError,
+    BindingRecordLost,
     default_state_dir,
 )
 from floorvault.vaultkit import VaultError
@@ -133,18 +134,34 @@ def test_a_record_that_disappears_is_noticed_through_the_store_marker(tmp_path):
     marker = vault_dir / MARKER_NAME
     assert record.marker_path == marker
     # Nothing recorded yet: no marker, nothing lost, and an empty check adds neither.
-    assert not record.lost()
     assert record.check({}) == []
-    assert not marker.exists() and not record.lost()
+    assert not marker.exists() and not record.lost_on_last_update
     assert record.check({"a": "none"}) == []
-    assert marker.is_file() and not record.lost()
+    assert marker.is_file() and not record.lost_on_last_update
     # The state directory is wiped (an ephemeral container): the marker stays.
     record.path.unlink()
-    assert record.lost()
-    # The next check starts a new record, trusting items as they are, and the
-    # loss is over.
+    with pytest.raises(BindingRecordLost):
+        record.check({"a": "none"}, refuse_lost=True)
+    assert record.lost_on_last_update
+    assert not record.path.exists()  # refusing starts no record
+    # Without the requirement the check goes on, trusting items as they are, and
+    # says that the record it updated had been lost.
     assert record.check({"a": "1" * 64}) == []
-    assert not record.lost()
+    assert record.lost_on_last_update and record.path.exists()
+    assert record.check({"a": "1" * 64}, refuse_lost=True) == []
+    assert not record.lost_on_last_update
+
+
+def test_loss_is_judged_on_the_snapshot_the_update_is_made_against(tmp_path, monkeypatch):
+    vault_dir = tmp_path / "vault"
+    vault_dir.mkdir()
+    record = BindingRecord(vault_dir, tmp_path / "state")
+    record.check({"a": "none"})
+    # The record vanishes between any earlier look and the load the swap uses:
+    # that load is the one that decides, so the loss cannot be recreated unnoticed.
+    monkeypatch.setattr(record._anchors, "load", lambda name: None)
+    with pytest.raises(BindingRecordLost):
+        record.check({"a": "none"}, refuse_lost=True)
 
 
 def test_the_marker_is_left_beside_a_record_that_already_exists(tmp_path):
@@ -153,20 +170,27 @@ def test_the_marker_is_left_beside_a_record_that_already_exists(tmp_path):
     record = BindingRecord(vault_dir, tmp_path / "state")
     record.check({"a": "none"})
     (vault_dir / MARKER_NAME).unlink()
-    assert not record.lost()  # no marker, so there is nothing to compare with
+    record.path.unlink()
+    assert record.check({"a": "none"}, refuse_lost=True) == []  # no marker: a first use
+    assert not record.lost_on_last_update
+    (vault_dir / MARKER_NAME).unlink()
     record.check({"a": "none"})  # nothing changed, but a record exists
     assert (vault_dir / MARKER_NAME).is_file()
     record.path.unlink()
-    assert record.lost()
+    with pytest.raises(BindingRecordLost):
+        record.check({"a": "none"}, refuse_lost=True)
 
 
-def test_only_a_regular_marker_counts_and_lost_never_raises(tmp_path):
+def test_only_a_regular_marker_counts_and_a_missing_store_dir_is_not_an_error(tmp_path):
     vault_dir = tmp_path / "vault"
     vault_dir.mkdir()
     record = BindingRecord(vault_dir, tmp_path / "state")
     (vault_dir / MARKER_NAME).mkdir()
-    assert not record.lost()
     record.check({"a": "none"})  # leaves the directory where it is
     assert (vault_dir / MARKER_NAME).is_dir()
+    record.path.unlink()
+    assert record.check({"a": "none"}, refuse_lost=True) == []
+    assert not record.lost_on_last_update
     gone = BindingRecord(tmp_path / "nowhere", tmp_path / "state2")
-    assert not gone.lost()
+    assert gone.check({"a": "none"}, refuse_lost=True) == []
+    assert not gone.lost_on_last_update

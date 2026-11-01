@@ -1895,8 +1895,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AUD-32",
         "src/floorvault/binding_record.py",
-        "            return self._anchors.load(self._name) is None\n",
-        "            return False  # MUTANT\n",
+        "                self.lost_on_last_update = raw is None and self._marker_is_regular()\n",
+        "                self.lost_on_last_update = False  # MUTANT\n",
         "A binding record that disappeared is never noticed, so a wiped state directory silently turns replay protection off (RUN-9)",
     ),
     Mutation(
@@ -1909,15 +1909,15 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AUD-34",
         "src/floorvault/agent_cli.py",
-        "            if require_record:\n",
-        "            if False:  # MUTANT\n",
+        "            changed = record.check(fingerprints, refuse_lost=require_record)\n",
+        "            changed = record.check(fingerprints)  # MUTANT\n",
         "A lost binding record is trusted although $FLOOR_VAULT_REQUIRE_RECORD asks for a refusal (RUN-9)",
     ),
     Mutation(
         "AUD-35",
         "src/floorvault/binding_record.py",
-        "            if not stat.S_ISREG(os.lstat(self.marker_path).st_mode):\n",
-        "            if False:  # MUTANT\n",
+        "            return stat.S_ISREG(os.lstat(self.marker_path).st_mode)\n",
+        "            return True  # MUTANT\n",
         "Anything at the marker's path, a directory or a link, is taken for the marker (RUN-9)",
     ),
     Mutation(

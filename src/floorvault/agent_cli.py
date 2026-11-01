@@ -66,6 +66,7 @@ from .binding_record import (
     STATE_DIR_ENV,
     BindingRecord,
     BindingRecordError,
+    BindingRecordLost,
     default_state_dir,
 )
 from .key_file import KeyFileError
@@ -574,19 +575,19 @@ def _check_bindings(
                 f"({type(exc).__name__}), so it is not resolved"
             )
     if record is not None and fingerprints:
-        if record.lost():
-            # Before check() starts a new record: a record that is gone while
-            # the store says it had one usually means a state directory that
-            # does not persist, where replay protection would silently stop.
-            if require_record:
-                _err(prog, _record_lost_message(record, refused=True))
-                return False
-            _err(prog, "warning: " + _record_lost_message(record, refused=False))
         try:
-            changed = record.check(fingerprints)
+            # A record that is gone while the store says it had one usually means
+            # a state directory that does not persist, where replay protection
+            # would silently stop. check() judges that on the snapshot it updates.
+            changed = record.check(fingerprints, refuse_lost=require_record)
+        except BindingRecordLost:
+            _err(prog, _record_lost_message(record, refused=True))
+            return False
         except BindingRecordError as exc:
             _err(prog, str(exc))
             return False
+        if record.lost_on_last_update:
+            _err(prog, "warning: " + _record_lost_message(record, refused=False))
         for item_id in changed:
             problems.append(_binding_changed(item_id))
             del bindings[item_id]
