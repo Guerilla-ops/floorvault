@@ -206,6 +206,8 @@ def test_store_written_by_the_plugin_opens_under_floorvault_run(tmp_path, monkey
 
     base = {k: v for k, v in os.environ.items() if k not in ("FLOOR_VAULT_KEY", "VAULT_MASTER_KEY")}
     base["PYTHONPATH"] = str(ROOT / "src")
+    base["FLOOR_VAULT_STATE_DIR"] = str(tmp_path / "state")
+    base["FLOOR_VAULT_ALLOW_UNBOUND"] = "1"
     probe = [sys.executable, "-c", "import os; print(os.environ['A'])"]
     for extra, flags in (
         ({"HERMES_VAULT_KEY": KEY}, ["--key-env", "HERMES_VAULT_KEY"]),

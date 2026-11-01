@@ -110,10 +110,17 @@ plaintext stays in the encrypted store.
 # Store a secret (read from the terminal, never from argv).
 read -rs KEY && printf 'value=%s\n' "$KEY" | floorvault secrets add "OpenAI" --id openai --stdin; unset KEY
 
+# Bind it to the one command line that may receive it.
+floorvault secrets allow openai -- python ~/agent.py
+
 # Reference it. This file holds no secret.
 echo 'OPENAI_API_KEY=fv:openai' > .env
-floorvault run --env-file .env -- python agent.py
+floorvault run --env-file .env -- python ~/agent.py
 ```
+
+`run` refuses an item with no binding (see
+[Binding items to commands](#binding-items-to-commands)); pass `--allow-unbound`
+to resolve unbound items for any command, as releases before 0.3.0 did.
 
 MCP clients work the same way. Point the server's command at `floorvault run`
 and put the reference in its `env` block. Claude Desktop, Cursor and Claude
@@ -137,7 +144,9 @@ Code use this shape:
 GUI clients often start servers with a minimal `PATH`. Use the absolute path
 that `command -v floorvault` prints, and set `PATH` in the `env` block so `run`
 can find the command (`npx` here); plain values there are passed through
-unchanged. `run` looks the command up on the `PATH` it was started with.
+unchanged. `run` looks the command up on the `PATH` it was started with. Bind
+the item to the server's command line, with that same `PATH`:
+`PATH=/usr/local/bin:/usr/bin:/bin floorvault secrets allow github-pat -- npx -y @modelcontextprotocol/server-github`.
 
 **Install the key-store support for your platform.** A plain
 `pip install floorvault` has no OS key store on macOS or Linux, and without
@@ -161,7 +170,8 @@ mkdir -p ~/.config/floorvault
 export FLOOR_VAULT_KEY_FILE=~/.config/floorvault/master.key
 # Creates the store under that key; no OS key store is used.
 read -rs KEY && printf 'value=%s\n' "$KEY" | floorvault secrets add "OpenAI" --id openai --stdin; unset KEY
-floorvault run -e OPENAI_API_KEY=fv:openai -- python agent.py
+floorvault secrets allow openai -- python ~/agent.py
+floorvault run -e OPENAI_API_KEY=fv:openai -- python ~/agent.py
 ```
 
 The file holds the 64-hex master key; surrounding whitespace is ignored. It
@@ -206,7 +216,8 @@ environment variable, an MCP config or a key file.
 ```sh
 floorvault secrets init --custody systemd-creds      # new store only
 read -rs KEY && printf 'value=%s\n' "$KEY" | floorvault secrets add "OpenAI" --id openai --stdin; unset KEY
-floorvault run -e OPENAI_API_KEY=fv:openai -- python agent.py
+floorvault secrets allow openai -- python ~/agent.py
+floorvault run -e OPENAI_API_KEY=fv:openai -- python ~/agent.py
 ```
 
 - **What binds the key.** The credential is tied to your numeric UID, your
@@ -531,7 +542,8 @@ exact command lines `run` may start with it:
 floorvault secrets allow github-pat -- npx -y @modelcontextprotocol/server-github
 floorvault secrets show github-pat            # lists the bound command lines
 floorvault secrets allow github-pat --remove -- npx -y @modelcontextprotocol/server-github
-floorvault secrets allow github-pat --clear   # unbind: resolves for any command again
+floorvault secrets allow github-pat --clear   # unbind: refused unless --allow-unbound
+floorvault secrets allow github-pat --accept  # trust a change made outside this command
 ```
 
 - **What must match:** the program's absolute path as found on `PATH` (symlinks
@@ -539,7 +551,13 @@ floorvault secrets allow github-pat --clear   # unbind: resolves for any command
   exactly the same arguments. Run `secrets allow` with the `PATH` the client
   uses; when they differ, `run` prints the command line it saw.
 - **On a mismatch** `run` exits `125` naming the variable and item, and the
-  command does not start. Items without a binding behave as before.
+  command does not start.
+- **Unbound items are refused** (from 0.3.0). Pass `run --allow-unbound`, or set
+  `FLOOR_VAULT_ALLOW_UNBOUND=1`, to resolve them for any command as earlier
+  releases did. `--require-binding` or `FLOOR_VAULT_REQUIRE_BINDING=1` (for
+  example in one MCP server's `env` block) refuses them again over both. The
+  requirement lives outside the store, so a binding cleared in `vault.db` blocks
+  the item instead of releasing it.
 - **Variables that steer the program.** While a bound item is being resolved,
   `run` refuses to start if the command's environment sets a variable that can
   change what it loads: `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`,
@@ -556,28 +574,53 @@ floorvault secrets allow github-pat --clear   # unbind: resolves for any command
   fetches the package when it runs, and a script can be edited. Give scripts as
   absolute paths; `secrets allow` warns about relative ones, which resolve
   against whatever directory the command starts in.
-- **Not a boundary against your own user, or against anyone who can write
-  `vault.db`.** The binding is sealed under the item's id, so it cannot be moved
-  to another item or replaced with new command lines without the key. It can,
-  however, be removed without the key (an item whose binding column is empty
-  counts as unbound), or rolled back to an older sealed binding of the same
-  item ([#97](https://github.com/Guerilla-ops/floorvault/issues/97)). Code
-  running as you can also clear it, read the key from your key store, or read
-  the started command's environment. It protects against mistakes and against
-  a configuration that names an item for a command you did not choose. It does
+- **The binding record.** The binding is sealed under the item's id, so it
+  cannot be moved to another item or replaced with new command lines without
+  the key. But it lives in `vault.db`, so whoever can write that file can clear
+  it or write back an older sealed binding of the same item, and both still
+  decrypt ([#97](https://github.com/Guerilla-ops/floorvault/issues/97)). So
+  `run` keeps a fingerprint of each item's binding as stored (a SHA-256 of the
+  ciphertext; it reveals nothing about the command lines) outside the store, and
+  refuses an item whose binding no longer matches: `its command binding changed
+  since floorvault last used it`. `secrets allow` refuses to add to or remove
+  from such a binding, which would make it look trusted; `--clear` replaces it
+  outright. If you changed the binding yourself with other code, check it with
+  `secrets show` and accept it with `secrets allow ITEM --accept`.
+- **Where the record lives.** `$FLOOR_VAULT_STATE_DIR`, else
+  `$XDG_STATE_HOME/floorvault` (`~/.local/state/floorvault`) on Linux,
+  `~/Library/Application Support/floorvault` on macOS and
+  `%LOCALAPPDATA%\floorvault` on Windows, one file per store under `bindings/`.
+  It is refused inside the store directory. It must be writable: `run` fails
+  closed when it cannot read or update the record.
+- **The state directory must persist.** The record only works if it is still
+  there on the next run. In a container without a mounted volume, on a tmpfs or
+  on an ephemeral CI runner it is wiped between runs, every run is a first use,
+  and replay protection does nothing. To make that visible, the first record
+  `run` writes for a store also leaves a small marker file in the store
+  directory (`.floorvault-binding-record`). When `run` later finds the marker
+  but no record, it warns on stderr (`the binding record for this store is
+  missing`) and starts a new record, so the warning appears once per loss. Set
+  `FLOOR_VAULT_REQUIRE_RECORD=1`, for example in an MCP server's `env` block, to
+  refuse instead: nothing is resolved and no new record is started until you
+  unset it for one run. In a container, mount a volume and point
+  `FLOOR_VAULT_STATE_DIR` at it. The marker only notices an accident; whoever can
+  write the store directory can delete it, which is the same reach that defeats
+  the record. A store directory that `run` cannot write to gets no marker, so it
+  gets no notice either.
+- **What it does not stop.** An item `run` has not seen before is trusted as it
+  is. The record holds against someone who can write or restore `vault.db` but
+  not the state directory: a synced or shared store, a store-only backup.
+  Someone who can roll back both together, or code running as you, can defeat
+  it; such code can also read the key from your key store and the started
+  command's environment. The binding protects against mistakes and against a
+  configuration that names an item for a command you did not choose. It does
   not fix which variable the value lands in.
-- **Requiring a binding.** `floorvault run --require-binding`, or
-  `FLOOR_VAULT_REQUIRE_BINDING=1` where `run` starts (for example in an MCP
-  client's `env` block), refuses every item that has no binding. A binding
-  cleared in `vault.db` then blocks the item instead of releasing it. The
-  requirement lives outside the store, which is why it holds; a stored flag
-  could be cleared the same way. It does not stop an older, wider binding of the
-  same item being written back; only a record of the store kept outside it
-  (`floorvault.freshness`) detects that.
-- **Who enforces it:** only `floorvault run` from this release on. Older
-  `floorvault` versions ignore bindings. The Hermes plugin enforces them
-  against the command line Hermes was started with
-  ([Command bindings](../plugins/hermesvault/README.md#command-bindings)).
+- **Who enforces it:** `floorvault run` (bindings since 0.2.8; refusing unbound
+  items and the binding record since 0.3.0). Older `floorvault` versions ignore
+  bindings. The Hermes plugin enforces them against the command line Hermes was
+  started with ([Command bindings](../plugins/hermesvault/README.md#command-bindings)),
+  but keeps no binding record and, unless `require_binding` is set, resolves
+  unbound items.
 
 ## Hermes Agent integration
 

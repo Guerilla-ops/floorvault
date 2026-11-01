@@ -27,40 +27,44 @@ file to references. It keeps no backup, because a backup would be a second
 plaintext copy, so old copies may still exist in editor swap files, backups or
 git history.
 
-## 2. Reference them
+## 2. Bind each item to its command
+
+`floorvault run` hands an item only to the command lines it is bound to, and
+refuses one with no binding, so say which command may receive each item:
+
+```bash
+floorvault secrets allow openai -- python ~/agent.py
+floorvault secrets allow app-db -- python ~/agent.py
+floorvault secrets allow github-pat -- python ~/agent.py
+```
+
+A binding is the program's absolute path as found on `PATH`, plus exactly these
+arguments; `secrets allow` resolves the path and warns about relative ones.
+`run` then refuses the item for any other command line. It also refuses an item
+whose binding was cleared or replaced in the store file behind its back, for
+example an older copy written back. `run --allow-unbound` resolves unbound items
+for any command, as releases before 0.3.0 did.
+
+## 3. Reference them
 
 [`app.env`](app.env) holds references and ordinary settings, and is safe to commit:
 
 ```bash
-floorvault run --env-file app.env -- python agent.py
+floorvault run --env-file app.env -- python ~/agent.py
 ```
 
 `fv:<item>` takes the item's `value` field (or its only field), and
 `fv:<item>:<field>` takes a named one. If any reference does not resolve, the
 command is not started.
 
-## 3. MCP servers
+## 4. MCP servers
 
 [`mcp.json`](mcp.json) is the shape Claude Desktop, Cursor and Claude Code use.
 The client starts `floorvault run`, which resolves the reference in `env` and
 starts the server. Use the absolute path that `command -v floorvault` prints:
-GUI clients often have a minimal `PATH`.
-
-## 4. Bind an item to one command
-
-Bindings stop an item reaching a command it was not meant for, for example
-after a config is edited to point a reference at something else:
-
-```bash
-floorvault secrets allow github-pat -- "$(command -v npx)" -y @modelcontextprotocol/server-github
-```
-
-`run` then refuses to hand `github-pat` to any other command line.
-
-An item with no binding still reaches any command. To refuse those too, set
-`FLOOR_VAULT_REQUIRE_BINDING=1` in the `env` block of [`mcp.json`](mcp.json),
-or pass `run --require-binding`. The requirement lives outside the store, so a
-binding cleared in the store file blocks the item instead of releasing it.
+GUI clients often have a minimal `PATH`. Bind the server's item (step 2) with
+the `PATH` from its `env` block, so `npx` resolves to the same file:
+`PATH=/usr/local/bin:/usr/bin:/bin floorvault secrets allow github-pat -- npx -y @modelcontextprotocol/server-github`.
 
 ## What this protects, and what it does not
 

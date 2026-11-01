@@ -386,6 +386,8 @@ def cli(tmp_path, fake, vault):
             "USERPROFILE": str(home),
             "FLOOR_VAULT_DIR": str(vault),
             "FV_TEST_SDC_DIR": str(fake.dir),
+            "FLOOR_VAULT_STATE_DIR": str(tmp_path / "state"),
+            "FLOOR_VAULT_ALLOW_UNBOUND": "1",
             # A key variable that must be ignored for a vault whose key is sealed.
             "FLOOR_VAULT_KEY": os.urandom(32).hex(),
         }
