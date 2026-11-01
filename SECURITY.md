@@ -262,7 +262,11 @@ proof of a plaintext-recovery attack.
   whose stored binding no longer matches a fingerprint it keeps outside the
   store, so a binding cleared or rolled back in `vault.db` without the key
   blocks the item. That record is trusted on first use and holds only while it
-  is beyond the reach of whoever can write the store. `floorvault secrets` commands print no values, but `run` can
+  is beyond the reach of whoever can write the store, and while its state
+  directory persists between runs: where it is wiped (a container without a
+  volume, a tmpfs, an ephemeral CI runner) every run is a first use. `run` warns
+  when a record that existed is gone, or refuses with `FLOOR_VAULT_REQUIRE_RECORD=1`.
+  `floorvault secrets` commands print no values, but `run` can
   start a command that does.
 - **Migration can write during listing.** The migration-aware `list_items()` path
   upgrades legacy items through metadata lookup. It can write modern records and

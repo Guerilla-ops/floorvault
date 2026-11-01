@@ -21,6 +21,14 @@ Limits, stated where they are documented (USAGE, SECURITY):
   who can write or restore the store but not the state directory (a synced or
   shared store, a store-only backup). Someone who can roll both back together,
   or who runs code as you, can defeat it; such code can read the key anyway.
+- **The state directory must persist.** A marker file in the store directory
+  says a record was kept for the store before. If the record is gone while the
+  marker is not (a state directory wiped between runs: a container without a
+  volume, a tmpfs, an ephemeral CI runner), :meth:`BindingRecord.check` says so
+  from the same snapshot it updates, and ``run`` warns, or with
+  ``$FLOOR_VAULT_REQUIRE_RECORD`` refuses. The marker
+  only exists to notice an accident: whoever can write the store directory can
+  delete it, which is the same reach that defeats the record.
 - The fingerprint is of ciphertext, so the record reveals nothing about the
   bound command lines, and needs no key.
 """
@@ -31,6 +39,7 @@ import hashlib
 import json
 import os
 import posixpath
+import stat
 import sys
 from pathlib import Path
 from typing import Callable, Mapping, Optional, TypeVar
@@ -43,11 +52,19 @@ STATE_DIR_ENV = "FLOOR_VAULT_STATE_DIR"
 _FORMAT = "FVBR1"
 _CAS_RETRIES = 20
 
+#: Dropped in the store directory once a record exists for it (see ``lost``).
+MARKER_NAME = ".floorvault-binding-record"
+_MARKER_BODY = b"FVBM1\n"
+
 T = TypeVar("T")
 
 
 class BindingRecordError(Exception):
     """The record cannot be used. The message is safe to print."""
+
+
+class BindingRecordLost(BindingRecordError):
+    """A record was kept for this store before and is gone (``refuse_lost``)."""
 
 
 def default_state_dir(environ: Mapping[str, str], platform: str = sys.platform) -> Path:
@@ -87,6 +104,9 @@ class BindingRecord:
         self._name = hashlib.sha256(self._vault.encode("utf-8")).hexdigest()
         self._anchors = FileAnchorStore(state / "bindings")
         self.path = state / "bindings" / f"{self._name}.fvanchor"
+        self.marker_path = vault / MARKER_NAME
+        #: Whether the last update started from a lost record (see :meth:`check`).
+        self.lost_on_last_update = False
 
     def _parse(self, raw: Optional[bytes]) -> dict[str, str]:
         if raw is None:
@@ -113,17 +133,30 @@ class BindingRecord:
         payload = {"format": _FORMAT, "vault": self._vault, "items": dict(sorted(items.items()))}
         return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
-    def _update(self, change: Callable[[dict[str, str]], T]) -> T:
-        """Apply ``change`` to the items with compare-and-swap; return its result."""
+    def _update(self, change: Callable[[dict[str, str]], T], *, refuse_lost: bool = False) -> T:
+        """Apply ``change`` to the items with compare-and-swap; return its result.
+
+        A record is *lost* when the store carries the marker but the record file
+        is absent. That is judged on the very snapshot the swap is made against,
+        on every retry, so a record deleted between a separate check and the
+        update cannot be recreated unnoticed. With ``refuse_lost`` a lost record
+        raises :class:`BindingRecordLost` before anything is written.
+        """
         try:
             for _ in range(_CAS_RETRIES):
                 raw = self._anchors.load(self._name)
+                self.lost_on_last_update = raw is None and self._marker_is_regular()
+                if self.lost_on_last_update and refuse_lost:
+                    raise BindingRecordLost(f"the binding record {self.path} is missing")
                 items = self._parse(raw)
                 before = dict(items)
                 result = change(items)
                 if items == before:
+                    if raw is not None:
+                        self._ensure_marker()
                     return result
                 if self._anchors.compare_and_swap(self._name, raw, self._encode(items)):
+                    self._ensure_marker()
                     return result
         except OSError as exc:
             raise BindingRecordError(
@@ -132,11 +165,37 @@ class BindingRecord:
             ) from None
         raise BindingRecordError(f"the binding record {self.path} kept changing; try again")
 
-    def check(self, current: Mapping[str, str]) -> list[str]:
+    def _ensure_marker(self) -> None:
+        """Leave the marker that says this store has had a record. Best effort."""
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            if os.path.lexists(self.marker_path):
+                return
+            fd = os.open(self.marker_path, flags, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(_MARKER_BODY)
+        except OSError:
+            # A read-only store directory, or a racing writer: the record still
+            # works; only the lost-record notice is unavailable.
+            pass
+
+    def _marker_is_regular(self) -> bool:
+        """Whether the store carries the marker (a regular file, not a link or directory)."""
+        try:
+            return stat.S_ISREG(os.lstat(self.marker_path).st_mode)
+        except OSError:
+            return False
+
+    def check(self, current: Mapping[str, str], *, refuse_lost: bool = False) -> list[str]:
         """Return the items whose binding differs from the record, sorted.
 
         ``current`` maps item ids to their binding's fingerprint as stored
         now (:meth:`VaultStore.binding_fingerprint`). Items the record does not hold yet are added as they are.
+
+        If the store says a record was kept before and it is gone, every item is
+        a first use. :attr:`lost_on_last_update` says whether that was so for the
+        update just made; with ``refuse_lost`` :class:`BindingRecordLost` is
+        raised instead, and no record is started.
         """
 
         def change(items: dict[str, str]) -> list[str]:
@@ -145,7 +204,7 @@ class BindingRecord:
                 items.setdefault(item_id, fp)
             return changed
 
-        return self._update(change)
+        return self._update(change, refuse_lost=refuse_lost)
 
     def record(self, item_id: str, fp: str) -> None:
         """Record ``item_id``'s binding as it is now (after this CLI changed it)."""
