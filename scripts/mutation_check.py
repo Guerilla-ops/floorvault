@@ -1923,8 +1923,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PWC-1",
         "src/floorvault/passphrase_custody.py",
-        "    if other is not None:\n        raise PassphraseCustodyError(\n",
-        "    if False:  # MUTANT\n        raise PassphraseCustodyError(\n",
+        "        if other is not None:\n            raise PassphraseCustodyError(\n",
+        "        if False:  # MUTANT\n            raise PassphraseCustodyError(\n",
         "A passphrase key is created beside another custody's key and forks the store (#84)",
     ),
     Mutation(
@@ -1937,8 +1937,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PWC-3",
         "src/floorvault/agent_cli.py",
-        "                return passphrase_custody.read_key(vault_dir, phrase)\n",
-        "                return None  # MUTANT\n",
+        "                unwrapped = passphrase_custody.read_key(vault_dir, phrase)\n",
+        "                unwrapped = None  # MUTANT\n",
         "A store with a wrapped key falls through to another custody instead of asking (#84)",
     ),
     Mutation(
@@ -1961,6 +1961,41 @@ MUTATIONS: tuple[Mutation, ...] = (
         '    if passphrase_custody.wrapped_present(vault_dir):\n        _err(prog, f"{vault_dir} is already passphrase-protected; nothing was changed")\n',
         '    if False:  # MUTANT\n        _err(prog, f"{vault_dir} is already passphrase-protected; nothing was changed")\n',
         "protect runs on a store whose key is already wrapped (#84)",
+    ),
+    Mutation(
+        "PWC-7",
+        "src/floorvault/agent_cli.py",
+        "            if unwrapped is None:\n",
+        "            if False:  # MUTANT\n",
+        "A wrapped key that vanished during the prompt lets another custody stand in (#84)",
+    ),
+    Mutation(
+        "PWC-8",
+        "src/floorvault/passphrase_custody.py",
+        "    if raw_key_present(vault_dir):\n        raise PassphraseCustodyError(\n",
+        "    if False:  # MUTANT\n        raise PassphraseCustodyError(\n",
+        "A raw key beside the wrapped key is tolerated, leaving a plaintext copy usable (#84)",
+    ),
+    Mutation(
+        "PWC-9",
+        "src/floorvault/agent_cli.py",
+        "            _check_store_key(open_store(vault_dir, key_bytes=raw), vault_dir)\n",
+        "            pass  # MUTANT\n",
+        "protect wraps a raw key without proving it opens the store (#84)",
+    ),
+    Mutation(
+        "PWC-10",
+        "src/floorvault/agent_cli.py",
+        '    if passphrase_custody.wrapped_present(vault_dir):\n        _err(\n            prog,\n            f"{vault_dir} already holds',
+        '    if False:  # MUTANT\n        _err(\n            prog,\n            f"{vault_dir} already holds',
+        "init --custody systemd-creds creates a second key beside a wrapped one (#84)",
+    ),
+    Mutation(
+        "PWC-11",
+        "src/floorvault/passphrase_custody.py",
+        "            stack.enter_context(_creation_lock(vault_dir))\n",
+        "            pass  # MUTANT\n",
+        "The wrapped key is created without the shared creation lock (#84)",
     ),
     Mutation(
         "BG-1",

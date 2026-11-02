@@ -101,7 +101,8 @@ def test_init_wraps_a_new_key_and_creates_nothing_else(vault, env):
     assert code == 0, err
     wrapped = vault / "master.key.fvpw"
     assert wrapped.is_file()
-    assert sorted(p.name for p in vault.iterdir()) == ["master.key.fvpw"]
+    # The wrapped key, and the creation lock the library's resolvers share.
+    assert sorted(p.name for p in vault.iterdir()) == ["master.key.fvpw", "master.key.lock"]
     assert "created" in out and str(wrapped) in out
     # The file is exactly an FVPW1 file that the passphrase opens.
     key = passphrase_custody.read_key(vault, PHRASE)
@@ -316,3 +317,72 @@ def test_create_refuses_a_second_key_and_reads_back_none_when_absent(vault):
     assert key is not None and len(key) == 32
     with pytest.raises(passphrase_custody.PassphraseCustodyError):
         passphrase_custody.create_wrapped_key(vault, PHRASE)  # never replaced
+
+
+def test_a_wrapped_key_that_vanishes_during_the_prompt_opens_nothing_else(vault, env):
+    assert init(vault, env, PHRASE)[0] == 0
+    other_key = "ab" * 32
+
+    def vanishing(prompt="Passphrase: ", *, confirm=False):
+        (vault / "master.key.fvpw").unlink()
+        return PHRASE
+
+    # An environment key is there to be picked up; it must not be.
+    code, out, err = cli(
+        ["secrets", "list", "--vault", str(vault)],
+        {**env, "FLOOR_VAULT_KEY": other_key},
+        vanishing,
+    )
+    assert code == 1 and "disappeared while it was being unlocked" in err
+    assert "tok" not in out
+
+
+def test_init_systemd_creds_refuses_a_directory_with_a_wrapped_key(vault, env):
+    assert init(vault, env, PHRASE)[0] == 0
+    code, _out, err = cli(
+        ["secrets", "init", "--custody", "systemd-creds", "--vault", str(vault)], env, Prompt()
+    )
+    assert code == 2 and "already holds a passphrase-wrapped key" in err
+    assert not (vault / "master.key.sdcred").exists()
+
+
+def test_a_raw_key_beside_the_wrapped_key_is_refused_before_any_prompt(vault, env):
+    assert init(vault, env, PHRASE)[0] == 0
+    (vault / "master.key").write_bytes(b"\x00" * 32)
+    prompt = Prompt(PHRASE)
+    code, _out, err = cli(["secrets", "list", "--vault", str(vault)], env, prompt)
+    assert code == 1 and "usable plaintext copy" in err
+    assert prompt.asked == []
+    with pytest.raises(passphrase_custody.PassphraseCustodyError, match="plaintext copy"):
+        passphrase_custody.read_key(vault, PHRASE)
+
+
+def test_protect_refuses_a_raw_key_that_does_not_open_the_store(vault, env, no_os_tier):
+    raw_store(vault)
+    # A stale raw key: valid, but not the one the store was created with.
+    (vault / "master.key").write_text("cd" * 32)
+    before = (vault / "master.key").read_bytes()
+    prompt = Prompt(PHRASE)
+    code, _out, err = cli(["secrets", "protect", "--vault", str(vault)], env, prompt)
+    assert code == 1 and "does not open the vault" in err
+    assert prompt.asked == []
+    assert (vault / "master.key").read_bytes() == before
+    assert not (vault / "master.key.fvpw").exists()
+
+
+def test_creation_rechecks_other_custody_under_the_shared_lock(vault, monkeypatch):
+    entered = []
+
+    @contextlib.contextmanager
+    def lock_that_loses_a_race(path):
+        # Another resolver publishes a raw key just before this one gets the lock.
+        entered.append(path.name)
+        (vault / "master.key").write_bytes(b"x")
+        yield
+
+    vault.mkdir()
+    monkeypatch.setattr(passphrase_custody, "exclusive_lock", lock_that_loses_a_race)
+    with pytest.raises(passphrase_custody.PassphraseCustodyError, match="fork"):
+        passphrase_custody.create_wrapped_key(vault, PHRASE)
+    assert entered == ["master.key.lock"]
+    assert not (vault / "master.key.fvpw").exists()

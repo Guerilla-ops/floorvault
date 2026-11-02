@@ -19,6 +19,7 @@ key for such callers is a later step of #84.
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import os
 import secrets
@@ -27,10 +28,12 @@ import warnings
 from pathlib import Path
 from typing import Optional
 
+from ._filelock import exclusive_lock
 from .providers import passphrase_store
 from .providers.adaptive import (
     OS_TIER_MARKER_FILENAME,
     SYSTEMD_CREDENTIAL_FILENAME,
+    TIER3_LOCK_FILENAME,
     WRAPPED_KEY_FILENAME,
 )
 from .providers.platform_custody import (
@@ -52,6 +55,70 @@ class PassphraseCustodyError(Exception):
 
 class Locked(PassphraseCustodyError):
     """A wrapped key exists but there is no terminal to ask for the passphrase."""
+
+
+def _creation_lock(vault_dir: Path):
+    """The Tier-3 creation lock (``master.key.lock``), shared with the library's resolvers.
+
+    A raw-key resolver and this module publish different files (``master.key``,
+    ``master.key.fvpw``), so no-clobber publication cannot stop both: only the
+    shared lock, with the other-custody check repeated under it, can.
+    """
+    try:
+        _mkdir_owner_only(Path(vault_dir))
+    except FileExistsError:
+        _mkdir_owner_only(Path(vault_dir))  # lost a creation race; the directory exists now
+    return exclusive_lock(Path(vault_dir) / TIER3_LOCK_FILENAME)
+
+
+def raw_key_present(vault_dir: Path) -> bool:
+    """Whether a raw ``master.key`` sits beside ``vault_dir``.
+
+    ``lstat``, and any failure other than "not found" counts as present, so an
+    unsafe path or a lookup that cannot rule the file out is never taken for absent.
+    """
+    try:
+        os.lstat(Path(vault_dir) / "master.key")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def refuse_raw_companion(vault_dir: Path) -> None:
+    """Raise when a raw ``master.key`` sits beside a wrapped key.
+
+    That is a usable plaintext copy of the key (for example after an interrupted
+    ``protect``), which defeats the wrapping; the library's provider refuses it
+    too (SPEC §10.8). The message says what to do.
+    """
+    if raw_key_present(vault_dir):
+        raise PassphraseCustodyError(
+            f"a raw {Path(vault_dir) / 'master.key'} sits beside the passphrase-wrapped key; "
+            "it is a usable plaintext copy of the key and defeats the wrapping. If it is the "
+            "same key (an interrupted `protect`), check that the store opens with the "
+            "passphrase, then delete the raw file; nothing was opened"
+        )
+
+
+def read_raw_key(vault_dir: Path) -> bytes:
+    """The key in the raw ``master.key`` beside ``vault_dir`` (64 hex or 32 bytes)."""
+    path = Path(vault_dir) / "master.key"
+    try:
+        raw = read_protected(path, header=b"", expected_length=None)
+    except ProtectedStoreMissing:
+        raise PassphraseCustodyError(f"no raw key file at {path}") from None
+    except ProtectedStoreError as exc:
+        raise PassphraseCustodyError(f"{path}: {exc}") from None
+    if len(raw) == 64:
+        try:
+            raw = bytes.fromhex(raw.decode("ascii").strip())
+        except (UnicodeDecodeError, ValueError):
+            raise PassphraseCustodyError(f"{path} is not a valid hexadecimal key") from None
+    if len(raw) != 32:
+        raise PassphraseCustodyError(f"{path} does not hold a 32-byte key")
+    return bytes(raw)
 
 
 def wrapped_path(vault_dir: Path) -> Path:
@@ -127,38 +194,47 @@ def _has_controlling_terminal() -> bool:
 def create_wrapped_key(vault_dir: Path, passphrase: str) -> Path:
     """Create a random master key, wrap it beside ``vault_dir`` and return the file's path.
 
-    Refuses when another custody already holds a key for the directory. The
-    wrapped file is unwrapped again before this returns, so a file that cannot
-    be opened is found here, not at the first ``run``. It is created exclusively
-    with mode 0600 and never replaced. The key itself is not returned: it leaves
-    this module only through :func:`read_key`, after an unlock.
+    Under the Tier-3 creation lock, and refusing when another custody already
+    holds a key for the directory (checked again under the lock, so a raw-key
+    resolver that published first is seen). The wrapped file is unwrapped again
+    before this returns, so a file that cannot be opened is found here, not at
+    the first ``run``. It is created exclusively with mode 0600 and never
+    replaced. The key itself is not returned: it leaves this module only through
+    :func:`read_key`, after an unlock.
     """
-    other = other_custody_present(vault_dir)
-    if other is not None:
-        raise PassphraseCustodyError(
-            f"{Path(vault_dir) / other} shows that another custody holds a key for this "
-            "directory; a second key would fork the store"
-        )
-    key = secrets.token_bytes(32)
     path = wrapped_path(vault_dir)
-    try:
-        _mkdir_owner_only(Path(vault_dir))
-        payload = passphrase_store.wrap(key, passphrase)
-        write_protected(
-            payload,
-            path,
-            header=passphrase_store.MAGIC,
-            expected_length=passphrase_store.PAYLOAD_BYTES,
-        )
-    except ProtectedStoreError as exc:
-        raise PassphraseCustodyError(f"cannot create {path}: {exc}") from None
-    except (OSError, ValueError) as exc:
-        raise PassphraseCustodyError(f"cannot create {path} ({type(exc).__name__})") from None
-    check = read_key(vault_dir, passphrase)
-    if check != key:
-        raise PassphraseCustodyError(
-            f"{path} did not unwrap to the same key; the key is not usable, nothing else changed"
-        )
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(_creation_lock(vault_dir))
+        except (OSError, ValueError) as exc:
+            raise PassphraseCustodyError(
+                f"cannot take the creation lock for {vault_dir} ({type(exc).__name__})"
+            ) from None
+        other = other_custody_present(vault_dir)
+        if other is not None:
+            raise PassphraseCustodyError(
+                f"{Path(vault_dir) / other} shows that another custody holds a key for this "
+                "directory; a second key would fork the store"
+            )
+        key = secrets.token_bytes(32)
+        try:
+            payload = passphrase_store.wrap(key, passphrase)
+            write_protected(
+                payload,
+                path,
+                header=passphrase_store.MAGIC,
+                expected_length=passphrase_store.PAYLOAD_BYTES,
+            )
+        except ProtectedStoreError as exc:
+            raise PassphraseCustodyError(f"cannot create {path}: {exc}") from None
+        except (OSError, ValueError) as exc:
+            raise PassphraseCustodyError(f"cannot create {path} ({type(exc).__name__})") from None
+        check = read_key(vault_dir, passphrase)
+        if check != key:
+            raise PassphraseCustodyError(
+                f"{path} did not unwrap to the same key; the key is not usable, "
+                "nothing else changed"
+            )
     return path
 
 
@@ -170,6 +246,7 @@ def read_key(vault_dir: Path, passphrase: str) -> Optional[bytes]:
     key is there, so nothing else may stand in for it.
     """
     path = wrapped_path(vault_dir)
+    refuse_raw_companion(vault_dir)
     try:
         payload = read_protected(
             path,

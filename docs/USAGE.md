@@ -651,9 +651,12 @@ and the data is gone.
   [#84](https://github.com/Guerilla-ops/floorvault/issues/84). Until then use
   systemd-creds or `--key-file` for unattended runs.
 - **`floorvault secrets protect`** wraps the key of an *existing* store that keeps
-  it in a raw `master.key` beside the store (the Tier-3 file): it writes
+  it in a raw `master.key` beside the store (the Tier-3 file): it first checks
+  that the raw key opens the store (a stale `master.key` is refused), writes
   `master.key.fvpw`, checks that it unwraps to the same key, then overwrites and
-  removes the raw file. The key is unchanged, so the data stays readable. The
+  removes the raw file. A raw `master.key` left beside a wrapped key (for example by an
+  interrupted `protect`) is a usable plaintext copy: `run` and `secrets` refuse the
+  store until you delete it. The key is unchanged, so the data stays readable. The
   overwrite is best effort: copy-on-write and journaling filesystems, SSDs,
   snapshots and backups can keep earlier copies of the raw key, so treat a key
   that has sat unwrapped on a backed-up disk as exposed. A key in the OS key

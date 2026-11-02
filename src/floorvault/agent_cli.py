@@ -184,10 +184,19 @@ def _custody_key(args, environ: Mapping[str, str], vault_dir: Optional[Path]) ->
             # unlock it; no other custody may stand in, and with no terminal the
             # store is locked (a key agent for unattended callers is later work).
             try:
+                passphrase_custody.refuse_raw_companion(vault_dir)
                 phrase = passphrase_custody.prompt_passphrase(f"Passphrase for {vault_dir}: ")
-                return passphrase_custody.read_key(vault_dir, phrase)
+                unwrapped = passphrase_custody.read_key(vault_dir, phrase)
             except passphrase_custody.PassphraseCustodyError as exc:
                 raise StoreUnavailable(str(exc)) from None
+            if unwrapped is None:
+                # The wrapped file was there a moment ago: its disappearance
+                # must not let an environment or OS key stand in.
+                raise StoreUnavailable(
+                    f"the passphrase-wrapped key beside {vault_dir} disappeared while it was "
+                    "being unlocked; nothing was opened"
+                )
+            return unwrapped
     key_file = _key_file_from(args, environ)
     return read_key_file(key_file) if key_file is not None else None
 
@@ -1220,6 +1229,13 @@ def _cmd_init(args, prog: str) -> int:
         return 2
     if args.custody == "passphrase":
         return _init_passphrase(vault_dir, prog)
+    if passphrase_custody.wrapped_present(vault_dir):
+        _err(
+            prog,
+            f"{vault_dir} already holds a passphrase-wrapped key; a second key would fork "
+            "the store. Nothing was created",
+        )
+        return 2
     try:
         path = systemd_creds.create_credential(vault_dir)
     except systemd_creds.SystemdCredsError as exc:
@@ -1312,6 +1328,13 @@ def _cmd_protect(args, prog: str) -> int:
         )
         return 2
     try:
+        if _is_regular_file(vault_dir / "vault.db"):
+            # A raw master.key can be stale while another key opens the store; a
+            # wrapper of it would then take precedence and open nothing. Prove it
+            # opens the store before anything is written or erased.
+            raw = passphrase_custody.read_raw_key(vault_dir)
+            _check_store_key(open_store(vault_dir, key_bytes=raw), vault_dir)
+            del raw
         phrase = passphrase_custody.prompt_passphrase("New passphrase: ", confirm=True)
         path = protect_key_file(phrase, fallback_dir=vault_dir)
     except passphrase_custody.PassphraseCustodyError as exc:
