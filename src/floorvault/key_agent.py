@@ -212,6 +212,18 @@ def _send(conn: socket.socket, message: Mapping[str, Any]) -> None:
     conn.sendall(struct.pack(">I", len(body)) + body)
 
 
+def _discard_pending(conn: socket.socket) -> None:
+    """Drop what the peer has already sent, so closing does not reset the connection.
+
+    Closing a Unix socket with unread data makes the peer's next read fail with a reset
+    instead of returning the reply that was just sent. One non-blocking-ish read is
+    enough for a request of a few bytes; this never waits for a slow peer.
+    """
+    with contextlib.suppress(OSError):
+        conn.settimeout(0.05)
+        conn.recv(MAX_MESSAGE)
+
+
 def _reader(
     conn: socket.socket,
     deadline: float,
@@ -358,9 +370,11 @@ class Agent:
             _pid, uid = peer_credentials(conn)
         except (AgentError, OSError):
             _send(conn, {"ok": False, "error": "refused"})
+            _discard_pending(conn)
             return
         if uid != os.geteuid():
             _send(conn, {"ok": False, "error": "refused"})  # another user: told nothing
+            _discard_pending(conn)
             return
         deadline = time.monotonic() + IO_TIMEOUT
         request = _recv(_reader(conn, deadline, self._check_live), MAX_MESSAGE)
@@ -463,7 +477,12 @@ def request(sock_path: Path, op: str, *, timeout: float = IO_TIMEOUT) -> dict[st
         _pid, uid = peer_credentials(client)
         if uid != os.geteuid():
             raise AgentError("the process at the socket is not this user; refusing it")
-        _send(client, {"op": op})
+        try:
+            _send(client, {"op": op})
+        except (BrokenPipeError, ConnectionResetError):
+            # The server answered and hung up without reading (it refuses some callers that
+            # way); its reply is already queued, so read it rather than report a broken pipe.
+            pass
         reply = _recv(_reader(client, time.monotonic() + timeout), MAX_MESSAGE)
     except (OSError, struct.error) as exc:
         raise AgentError(f"the agent did not answer ({type(exc).__name__})") from None

@@ -245,6 +245,36 @@ def test_another_users_connection_is_refused_and_learns_nothing(running):
     assert key_agent.status(item.path)["ok"]
 
 
+def test_a_reply_sent_before_the_server_hung_up_is_still_read(base, monkeypatch):
+    """A server that answers and closes without reading must show its reply, not a broken pipe."""
+    path = base / "rst" / "x.sock"
+    listener = key_agent._bind(path)
+    answered = threading.Event()
+
+    def refuse_and_hang_up():
+        conn, _ = listener.accept()
+        key_agent._send(conn, {"ok": False, "error": "refused"})
+        conn.close()
+        answered.set()
+
+    thread = threading.Thread(target=refuse_and_hang_up, daemon=True)
+    thread.start()
+    real = key_agent.peer_credentials
+
+    def after_the_server_has_hung_up(conn):
+        result = real(conn)
+        assert answered.wait(5)  # the client sends only once the server is gone
+        return result
+
+    monkeypatch.setattr(key_agent, "peer_credentials", after_the_server_has_hung_up)
+    try:
+        with pytest.raises(key_agent.AgentError, match="refused the request .*refused"):
+            key_agent.status(path)
+    finally:
+        thread.join(5)
+        listener.close()
+
+
 def test_the_client_refuses_a_server_that_is_not_this_user(running):
     item = running()
     real = key_agent.peer_credentials

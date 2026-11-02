@@ -2150,6 +2150,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         expect_on_windows="survived",
     ),
     Mutation(
+        "AGT-20",
+        "src/floorvault/key_agent.py",
+        "        except (BrokenPipeError, ConnectionResetError):\n            # The server answered",
+        "        except ZeroDivisionError:  # MUTANT\n            # The server answered",
+        "A refusal that arrives before the client's send is reported as a broken pipe (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
         "BG-1",
         "plugins/hermesvault/binding_guard.py",
         "    if any(command_allowed(line, allowed) for line in command_lines):\n",

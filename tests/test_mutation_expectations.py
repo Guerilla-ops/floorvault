@@ -161,7 +161,7 @@ def test_platform_overrides_are_declared_explicitly():
         "DUR-4",
         "BIND-7",
         "HIM-4",
-        *[f"AGT-{i}" for i in range(1, 20)],
+        *[f"AGT-{i}" for i in range(1, 21)],
         "AUD-2",
     ], f"unexpected set of platform-relaxed mutants: {relaxed}"
     # The reverse: a guard that exists only on Windows is dead code elsewhere,
