@@ -681,7 +681,9 @@ def test_a_relative_vault_path_gives_an_absolute_socket_path(base, monkeypatch):
     monkeypatch.chdir(base)
     assert key_agent.runtime_dir(Path("rel"), {}).is_absolute()
     path = key_agent.socket_path(Path("rel"), {})
-    assert path.is_absolute() and path.parent == base / "rel" / "agent"
+    # Compare resolved paths: on macOS /tmp is a link to /private/tmp, and the working
+    # directory comes back with the real prefix.
+    assert path.is_absolute() and path.parent.resolve() == (base / "rel" / "agent").resolve()
 
 
 def test_deeply_nested_json_is_a_bad_request_not_the_end_of_the_agent(running, monkeypatch):
