@@ -1,10 +1,10 @@
 <p>
-  <img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/floorvault-v0.2.9.webp" width="100%" alt="FloorVault v0.2.9: bind the item, bind the command. A secret is released only to the command line it was bound to. Four parts: require binding, run on Windows, store guard, and the Hermes plugin.">
+  <img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/floorvault-v0.2.9.webp" width="100%" alt="FloorVault v0.2.9: optional command binding can restrict a secret's release to a bound command. Four parts: require binding, run on Windows, store guard, and the Hermes plugin.">
 </p>
 
 # FloorVault
 
-**Encrypt the field. Bind it in place. Release it only to the command it was bound to.**
+**Encrypt the field. Optionally bind it in place to restrict which command can receive it.**
 
 <p>
   <a href="https://pypi.org/project/floorvault/"><img src="https://img.shields.io/pypi/v/floorvault.svg" alt="PyPI version"></a>
@@ -30,8 +30,9 @@ decrypt. Every credential can be bound to the command that may receive it.
   `FLOOR_VAULT_REQUIRE_BINDING=1`) releases only items with a `secrets allow`
   binding. The rule lives outside the store: clearing a binding in `vault.db`
   blocks the item, it does not release it.
-- **Hermes enforces bindings.** A bound item resolves only when Hermes was started
-  with one of its bindings; `secrets.hermesvault.require_binding` refuses the rest.
+- **Hermes supports optional command binding.** Set
+  `secrets.hermesvault.require_binding: true` to refuse unbound items; otherwise,
+  unbound credentials may still resolve.
 - **Wrong key, no write.** `VaultStore` proves its key against an existing item
   before the first write and raises `VaultError` on mismatch. A store mid-rotation
   is refused by name.
@@ -211,7 +212,7 @@ Beta, unaudited, no policy broker, and search beacons leak equality. In detail:
 | Memory | Managed buffers can be wiped; other copies may persist. Page locking and anti-dump measures do not create an enclave. |
 | Migration | Deletion does not guarantee erasure from WAL, pages, backups, snapshots or storage media. |
 | Agent access | A compromised or prompt-injected authorised caller can request genuine plaintext. The library does not supply a policy broker. |
-| Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, the state directory must persist and stay outside the store writer's control, and the Hermes plugin keeps no record. |
+| Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, and the state directory must persist and stay outside the store writer's control; restoring both the store and record can replay an older, wider binding undetected. The Hermes plugin keeps no record. |
 
 ## Documentation
 
