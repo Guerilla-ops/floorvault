@@ -211,7 +211,7 @@ Beta, unaudited, no policy broker, and search beacons leak equality. In detail:
 | Memory | Managed buffers can be wiped; other copies may persist. Page locking and anti-dump measures do not create an enclave. |
 | Migration | Deletion does not guarantee erasure from WAL, pages, backups, snapshots or storage media. |
 | Agent access | A compromised or prompt-injected authorised caller can request genuine plaintext. The library does not supply a policy broker. |
-| Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, the state directory must persist, and the Hermes plugin keeps no record. |
+| Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, the state directory must persist and stay outside the store writer's control, and the Hermes plugin keeps no record. |
 
 ## Documentation
 
