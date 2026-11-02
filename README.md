@@ -35,8 +35,8 @@ decrypt. Every credential can be bound to the command that may receive it.
 - **Wrong key, no write.** `VaultStore` proves its key against an existing item
   before the first write and raises `VaultError` on mismatch. A store mid-rotation
   is refused by name.
-- **`run` on Windows** resolves commands from `PATH`, never the working directory,
-  and no longer orphans its child on Ctrl+Break.
+- **`run` on Windows** no longer implicitly searches the working directory
+  when resolving commands from `PATH`, and no longer orphans its child on Ctrl+Break.
 
 Full notes: [v0.2.9 release](https://github.com/Guerilla-ops/floorvault/releases/tag/v0.2.9).
 
