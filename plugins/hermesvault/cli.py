@@ -435,10 +435,12 @@ def _cmd_bind(args) -> int:
         if other != args.env_name and other_item == item_id and (other_field or "value") == field:
             # The default item id is the lower-cased name, so API_KEY and api_key
             # would share one item and the second bind would overwrite the first.
+            # No name from the configuration is echoed (CodeQL treats the
+            # secrets section as sensitive); the operator can run `hvault show`.
             print(
-                f"hvault bind: {other} already maps to item {item_id}; binding "
-                f"{args.env_name} there would overwrite its value. Pass --id to "
-                "use a different item",
+                "hvault bind: another configured variable already maps to the same "
+                f"item, so binding {args.env_name} there would overwrite its value. "
+                "Pass --id to use a different item",
                 file=sys.stderr,
             )
             return 2

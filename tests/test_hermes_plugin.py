@@ -844,7 +844,8 @@ def test_bind_refuses_a_name_that_would_share_another_names_item(
     cfg = {"enabled": True, "env": {"API_KEY": "hv:api_key"}}
     assert _hvault(monkeypatch, tmp_path, cfg, "bind", **_bind_args("api_key")) == 2
     err = capsys.readouterr().err
-    assert "API_KEY already maps to item api_key" in err and "--id" in err
+    assert "another configured variable already maps to the same item" in err
+    assert "--id" in err and "API_KEY" not in err
 
 
 def test_bind_refuses_a_protected_key_variable(plugin_cli, tmp_path, monkeypatch, capsys):
