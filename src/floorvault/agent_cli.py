@@ -1253,7 +1253,7 @@ def _init_passphrase(vault_dir: Path, prog: str) -> int:
     """``init --custody passphrase``: a new random key, kept only wrapped under a passphrase."""
     try:
         phrase = passphrase_custody.prompt_passphrase("New passphrase: ", confirm=True)
-        path, _key = passphrase_custody.create_wrapped_key(vault_dir, phrase)
+        path = passphrase_custody.create_wrapped_key(vault_dir, phrase)
     except passphrase_custody.PassphraseCustodyError as exc:
         raise StoreUnavailable(str(exc)) from None
     print(f"created {path}")

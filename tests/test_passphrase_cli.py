@@ -310,8 +310,9 @@ def test_prompt_confirmation_and_empty_input(monkeypatch):
 def test_create_refuses_a_second_key_and_reads_back_none_when_absent(vault):
     assert passphrase_custody.read_key(vault, PHRASE) is None
     assert not passphrase_custody.wrapped_present(vault)
-    path, key = passphrase_custody.create_wrapped_key(vault, PHRASE)
+    path = passphrase_custody.create_wrapped_key(vault, PHRASE)
     assert passphrase_custody.wrapped_present(vault) and Path(path).is_file()
-    assert passphrase_custody.read_key(vault, PHRASE) == key
+    key = passphrase_custody.read_key(vault, PHRASE)
+    assert key is not None and len(key) == 32
     with pytest.raises(passphrase_custody.PassphraseCustodyError):
         passphrase_custody.create_wrapped_key(vault, PHRASE)  # never replaced

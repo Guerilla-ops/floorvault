@@ -124,14 +124,14 @@ def _has_controlling_terminal() -> bool:
     return True
 
 
-def create_wrapped_key(vault_dir: Path, passphrase: str) -> tuple[Path, bytes]:
-    """Create a random master key, wrap it beside ``vault_dir``; return the file and the key.
+def create_wrapped_key(vault_dir: Path, passphrase: str) -> Path:
+    """Create a random master key, wrap it beside ``vault_dir`` and return the file's path.
 
     Refuses when another custody already holds a key for the directory. The
     wrapped file is unwrapped again before this returns, so a file that cannot
     be opened is found here, not at the first ``run``. It is created exclusively
-    with mode 0600 and never replaced. The caller owns the returned key and
-    should drop it once the store is created.
+    with mode 0600 and never replaced. The key itself is not returned: it leaves
+    this module only through :func:`read_key`, after an unlock.
     """
     other = other_custody_present(vault_dir)
     if other is not None:
@@ -159,7 +159,7 @@ def create_wrapped_key(vault_dir: Path, passphrase: str) -> tuple[Path, bytes]:
         raise PassphraseCustodyError(
             f"{path} did not unwrap to the same key; the key is not usable, nothing else changed"
         )
-    return path, key
+    return path
 
 
 def read_key(vault_dir: Path, passphrase: str) -> Optional[bytes]:
