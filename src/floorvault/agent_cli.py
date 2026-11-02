@@ -43,7 +43,7 @@ import unicodedata
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
-from . import passphrase_custody, systemd_creds
+from . import key_agent, passphrase_custody, systemd_creds
 from .agentenv import (
     CUSTODY_ENV_NAMES,
     KEY_POINTER_ENV_NAMES,
@@ -849,6 +849,127 @@ def _add_store_options(parser: argparse.ArgumentParser) -> None:
             "refuse a store whose item kinds are not sealed, and seal them in a new "
             "store (default: $FLOOR_VAULT_SEALED_LISTING)"
         ),
+    )
+
+
+def add_agent_parsers(subparsers) -> None:
+    """``floorvault unlock`` and ``floorvault lock`` (the key agent, #84)."""
+    unlock = subparsers.add_parser(
+        "unlock",
+        help="Unlock a passphrase-protected store into a background key agent",
+        description=(
+            "Ask for the passphrase of a store whose key is wrapped under one "
+            "(`secrets init --custody passphrase`) and leave a background agent holding the "
+            "key until a time limit, `floorvault lock`, or a reboot. The agent runs as you; "
+            "other users cannot reach it, code running as you can. Linux and macOS. In this "
+            "release the agent only answers status and lock: `run` and `secrets` do not use "
+            "it yet."
+        ),
+    )
+    lock = subparsers.add_parser("lock", help="Stop the key agent for a store and wipe its key")
+    for parser in (unlock, lock):
+        parser.add_argument(
+            "--vault",
+            type=Path,
+            default=None,
+            metavar="DIR",
+            help="store directory (default: $FLOOR_VAULT_DIR or ~/.floorvault/agent-vault)",
+        )
+    unlock.add_argument(
+        "--ttl",
+        default="8h",
+        metavar="DURATION",
+        help="stop after this long in total (default: 8h; 30s, 15m, 8h, 2d)",
+    )
+    unlock.add_argument(
+        "--idle",
+        default="1h",
+        metavar="DURATION",
+        help="stop after this long without use (default: 1h)",
+    )
+    unlock.add_argument(
+        "--status",
+        action="store_true",
+        help="report whether an agent is running for the store, and unlock nothing",
+    )
+
+
+def agent_main(args: argparse.Namespace) -> int:
+    prog = f"floorvault {args.command}"
+    try:
+        if not key_agent.SUPPORTED:
+            _err(prog, "the key agent needs Linux or macOS")
+            return 1
+        vault_dir = _vault_dir(args.vault, os.environ)
+        if not passphrase_custody.wrapped_present(vault_dir):
+            _err(
+                prog,
+                f"no passphrase-wrapped key beside {vault_dir}; create one with "
+                "`floorvault secrets init --custody passphrase`",
+            )
+            return 1
+        sock = key_agent.socket_path(vault_dir, os.environ)
+        if args.command == "lock":
+            key_agent.lock(sock)
+            print(f"locked: the agent for {vault_dir} wiped its key and exited")
+            return 0
+        if args.status:
+            info = key_agent.status(sock)
+            print(_describe_agent(info, vault_dir))
+            return 0
+        try:
+            ttl = key_agent.parse_duration(args.ttl)
+            idle = key_agent.parse_duration(args.idle)
+        except ValueError as exc:
+            _err(prog, str(exc))
+            return 2
+        try:
+            key_agent.status(sock)
+        except key_agent.AgentNotRunning:
+            pass
+        else:
+            _err(prog, "an agent is already unlocked for this store; `floorvault lock` stops it")
+            return 1
+        try:
+            passphrase_custody.refuse_raw_companion(vault_dir)
+            phrase = passphrase_custody.prompt_passphrase(f"Passphrase for {vault_dir}: ")
+            key = passphrase_custody.read_key(vault_dir, phrase)
+        except passphrase_custody.PassphraseCustodyError as exc:
+            _err(prog, str(exc))
+            return 1
+        if key is None:
+            _err(prog, "the passphrase-wrapped key disappeared while it was being unlocked")
+            return 1
+        info = key_agent.start(vault_dir, key, ttl=ttl, idle=idle)
+        del key
+        print(_describe_agent(info, vault_dir))
+        _err(
+            prog,
+            "the agent answers status and lock only in this release; `run` and `secrets` "
+            "still ask for the passphrase themselves.",
+        )
+        return 0
+    except key_agent.AgentNotRunning as exc:
+        _err(prog, str(exc))
+        return 1
+    except key_agent.AgentError as exc:
+        _err(prog, str(exc))
+        return 1
+
+
+def _describe_agent(info: Mapping[str, object], vault_dir: Path) -> str:
+    def span(seconds: object) -> str:
+        total = int(seconds) if isinstance(seconds, (int, float)) else 0
+        hours, rest = divmod(total, 3600)
+        minutes, secs = divmod(rest, 60)
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+
+    return (
+        f"unlocked: an agent (pid {info.get('pid')}) holds the key for {vault_dir}; "
+        f"stops in at most {span(info.get('expires_in'))}, or after {span(info.get('idle_in'))} "
+        f"without use. protected memory: {'yes' if info.get('protected_memory') else 'no'}; "
+        f"core dumps off: {'yes' if info.get('core_dumps_off') else 'no'}; "
+        f"ptrace blocked: {'yes' if info.get('ptrace_blocked') else 'no'}"
     )
 
 
