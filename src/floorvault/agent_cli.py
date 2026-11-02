@@ -1246,7 +1246,7 @@ def _cmd_init(args, prog: str) -> int:
     return 0
 
 
-_SHORT_PASSPHRASE = 12
+_WEAK_BELOW_CHARS = 12
 
 
 def _init_passphrase(vault_dir: Path, prog: str) -> int:
@@ -1261,10 +1261,10 @@ def _init_passphrase(vault_dir: Path, prog: str) -> int:
         f"the master key is wrapped under your passphrase (scrypt, AES-SIV); "
         f"`run` and `secrets` ask for it on the terminal for the vault at {vault_dir}"
     )
-    if len(phrase) < _SHORT_PASSPHRASE:
+    if len(phrase) < _WEAK_BELOW_CHARS:
         _err(
             prog,
-            f"warning: a passphrase of fewer than {_SHORT_PASSPHRASE} characters is cheap to "
+            f"warning: a passphrase of fewer than {_WEAK_BELOW_CHARS} characters is cheap to "
             "guess offline; the wrapping is only as strong as the passphrase",
         )
     _err(
@@ -1320,10 +1320,10 @@ def _cmd_protect(args, prog: str) -> int:
         raise StoreUnavailable(str(exc)) from None
     print(f"wrapped the key: {path}")
     print("the raw master.key was overwritten and removed; the key itself is unchanged")
-    if len(phrase) < _SHORT_PASSPHRASE:
+    if len(phrase) < _WEAK_BELOW_CHARS:
         _err(
             prog,
-            f"warning: a passphrase of fewer than {_SHORT_PASSPHRASE} characters is cheap to "
+            f"warning: a passphrase of fewer than {_WEAK_BELOW_CHARS} characters is cheap to "
             "guess offline",
         )
     _err(
