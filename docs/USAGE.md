@@ -640,12 +640,15 @@ The plugin directory is self-contained. Its `plugin.yaml` declares
 from PyPI after asking for consent. The library wheel does not include or register
 the plugin. See the [plugin README](../plugins/hermesvault/README.md) for
 configuration, the `hermes hvault` commands and what the plugin reads and writes.
-Run `hermes hvault setup` once per profile: it creates the store and its key and
-may unlock the OS key store (a prompt), or, with `custody: systemd-creds`, seals a
-new key beside a new store; with `custody: key_file` it uses the existing file. The secret source itself never prompts
-and never creates anything, so Hermes startup cannot block on it; a missing store,
-a missing key or a locked Secret Service collection is reported and startup goes
-on without those variables.
+Run `hermes hvault bind <ENV_NAME>` for each secret: it creates the store and
+its key on first use (which may unlock the OS key store, a prompt; with
+`custody: systemd-creds` it seals a new key beside a new store; with
+`custody: key_file` it uses the existing file), prompts for the value, and
+writes the mapping into config.yaml. `hermes hvault` alone prints status and
+the next step. The secret source itself never prompts and never creates
+anything, so Hermes startup cannot block on it; a missing store, a missing key
+or a locked Secret Service collection is reported and startup goes on without
+those variables.
 
 Once enabled, the plugin maps references to existing items into the host's
 environment:
