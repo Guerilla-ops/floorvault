@@ -643,13 +643,42 @@ the passphrase. The wrapping is only as strong as the passphrase (`init` warns
 below 12 characters), and there is no recovery: lose the passphrase or the file
 and the data is gone.
 
-- **Unattended callers cannot use it.** An MCP client's `run` or a service has no
+- **Unattended callers cannot use it yet.** An MCP client's `run` or a service has no
   terminal to answer a prompt, so a store with a wrapped key is **locked** for it:
   the command fails and says why. Nothing falls back to another custody, and a
-  wrapped key beside a systemd-creds credential opens nothing. A key agent that
-  holds the unwrapped key for such callers is the next part of
-  [#84](https://github.com/Guerilla-ops/floorvault/issues/84). Until then use
-  systemd-creds or `--key-file` for unattended runs.
+  wrapped key beside a systemd-creds credential opens nothing. Until `run` and
+  `secrets` can use the key agent below (the next part of
+  [#84](https://github.com/Guerilla-ops/floorvault/issues/84)), use systemd-creds or
+  `--key-file` for unattended runs.
+- **`floorvault unlock` and `lock` (the key agent, Linux and macOS).**
+  `floorvault unlock` asks for the passphrase once and leaves a background agent
+  holding the key until it has run for `--ttl` (default 8h), sat unused for
+  `--idle` (default 1h), or `floorvault lock` or `SIGTERM` stops it; the key is
+  then wiped and the socket removed. `floorvault unlock --status` reports one.
+  **In this release the agent answers only `status` and `lock`**: `run` and
+  `secrets` still ask for the passphrase themselves, so unlocking changes nothing
+  for them yet. What is in place:
+  - The socket is `$XDG_RUNTIME_DIR/floorvault/<id>.sock`, else `<store>/agent/` (never
+    `/tmp`). The directory is checked to be a real directory, owned by you, mode 0700,
+    with no symlink, before every bind and connect; the socket is 0600; the peer's uid
+    is checked on every connection (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS),
+    and the client checks that the server is you. The `<id>` comes from the store's
+    resolved path and its wrapped key file, so an agent answers only for the store it
+    was unlocked for.
+  - A client that connects and says nothing holds the agent for at most five seconds;
+    messages over 4 KiB are refused. `status` does not count as use, so a monitor
+    cannot keep the key alive.
+  - The agent keeps the key in locked, dump-excluded memory where the platform allows,
+    turns core dumps off, and sets `PR_SET_DUMPABLE=0` (Linux) or `PT_DENY_ATTACH`
+    (macOS) to make `ptrace` and `/proc/<pid>/mem` harder. `unlock` prints which of
+    these took effect. Copies of the key made before it reached that memory (the
+    `unlock` process's own, and the copy the forked agent inherits) are not wiped.
+  - **What it does not stop:** code running as you can connect to the socket (as it can
+    read a key file or ask `systemd-creds`); `ptrace` hardening makes inspection
+    harder, not impossible; root; and a reboot ends it. `memfd_secret` is not used.
+    Another user's connection could not be tested here (the test environment is root
+    only); it is checked in unit tests by replacing the peer-uid lookup, and the macOS
+    peer-credential call has not been run on a real Mac outside CI.
 - **`floorvault secrets protect`** wraps the key of an *existing* store that keeps
   it in a raw `master.key` beside the store (the Tier-3 file): it first checks
   that the raw key opens the store (a stale `master.key` is refused), writes

@@ -51,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     from .agent_cli import add_secrets_parser
 
     add_secrets_parser(subparsers)
+    from .agent_cli import add_agent_parsers
+
+    add_agent_parsers(subparsers)
 
     # Subcommand: inspect
     inspect_parser = subparsers.add_parser("inspect", help="Inspect a specific encrypted record")
@@ -129,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
         from .agent_cli import secrets_main
 
         return secrets_main(args)
+
+    if args.command in ("unlock", "lock"):
+        from .agent_cli import agent_main
+
+        return agent_main(args)
 
     if args.command == "inspect":
         # Containment: the target must resolve to a regular file that is
