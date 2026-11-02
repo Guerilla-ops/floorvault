@@ -41,6 +41,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
+from ._filelock import exclusive_lock
+
 SUPPORTED = sys.platform in ("linux", "darwin")
 
 DEFAULT_TTL = 8 * 3600
@@ -87,25 +89,40 @@ def runtime_dir(vault_dir: Path, environ: Mapping[str, str]) -> Path:
     xdg = (environ.get("XDG_RUNTIME_DIR") or "").strip()
     if xdg and os.path.isabs(xdg):
         return Path(xdg) / "floorvault"
-    return Path(vault_dir) / "agent"
+    # Absolute: the daemon changes directory to "/", and its cleanup must name the
+    # socket it bound, not a relative path resolved from somewhere else.
+    return Path(os.path.abspath(vault_dir)) / "agent"
 
 
 def store_id(vault_dir: Path) -> str:
     """A short id from the store's resolved path and its wrapped key file.
 
     A different store, or the same path with a replaced key file, gets a different
-    socket, so an agent answers only for the store it was unlocked for.
+    socket, so an agent answers only for the store it was unlocked for. The file is
+    read the way the key reader reads it (no FIFO, link or oversized file; owner-only),
+    so a planted file cannot block or exhaust this command.
     """
     from . import passphrase_custody
+    from .providers import passphrase_store
+    from .providers.platform_custody import ProtectedStoreError, read_protected
 
     resolved = os.path.realpath(vault_dir)
+    path = passphrase_custody.wrapped_path(Path(resolved))
     try:
-        wrapped = passphrase_custody.wrapped_path(Path(resolved)).read_bytes()
+        payload = read_protected(
+            path,
+            header=passphrase_store.MAGIC,
+            expected_length=passphrase_store.PAYLOAD_BYTES,
+        )
+    except ProtectedStoreError as exc:  # ProtectedStoreMissing is a subclass
+        raise AgentError(f"no usable passphrase-wrapped key beside {vault_dir}: {exc}") from None
     except OSError as exc:
         raise AgentError(
             f"no readable passphrase-wrapped key beside {vault_dir} ({type(exc).__name__})"
         ) from None
-    digest = hashlib.sha256(resolved.encode("utf-8") + b"\0" + wrapped).hexdigest()
+    digest = hashlib.sha256(
+        resolved.encode("utf-8") + b"\0" + passphrase_store.MAGIC + payload
+    ).hexdigest()
     return digest[:20]
 
 
@@ -195,23 +212,48 @@ def _send(conn: socket.socket, message: Mapping[str, Any]) -> None:
     conn.sendall(struct.pack(">I", len(body)) + body)
 
 
-def _recv_exact(conn: socket.socket, count: int) -> bytes:
-    chunks = bytearray()
-    while len(chunks) < count:
-        chunk = conn.recv(count - len(chunks))
-        if not chunk:
-            raise AgentError("the connection closed early")
-        chunks.extend(chunk)
-    return bytes(chunks)
+def _reader(
+    conn: socket.socket,
+    deadline: float,
+    check: Optional[Callable[[], None]] = None,
+) -> Callable[[int], bytes]:
+    """A ``read_exact(count)`` bounded by one absolute ``deadline`` (``time.monotonic``).
+
+    ``settimeout`` bounds each receive, not the whole request, so a peer sending a
+    byte at a time could hold a reader for hours. This slices the wait, enforces the
+    one deadline, and calls ``check`` between slices (the agent uses it to notice a
+    stop, a lock or the end of the key's lifetime while a read is in flight).
+    """
+
+    def read_exact(count: int) -> bytes:
+        chunks = bytearray()
+        while len(chunks) < count:
+            if check is not None:
+                check()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AgentError("the message did not arrive in time")
+            conn.settimeout(min(remaining, 0.25))
+            try:
+                chunk = conn.recv(count - len(chunks))
+            except socket.timeout:
+                continue
+            if not chunk:
+                raise AgentError("the connection closed early")
+            chunks.extend(chunk)
+        return bytes(chunks)
+
+    return read_exact
 
 
-def _recv(conn: socket.socket, limit: int) -> dict[str, Any]:
-    (length,) = struct.unpack(">I", _recv_exact(conn, 4))
+def _recv(read_exact: Callable[[int], bytes], limit: int) -> dict[str, Any]:
+    (length,) = struct.unpack(">I", read_exact(4))
     if length > limit:
         raise AgentError("the message is too large")
     try:
-        message = json.loads(_recv_exact(conn, length).decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+        message = json.loads(read_exact(length).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        # RecursionError: a few thousand nested arrays fit in 4 KiB and overflow the decoder.
         raise AgentError("the message is not valid JSON") from None
     if not isinstance(message, dict):
         raise AgentError("the message is not an object")
@@ -238,9 +280,12 @@ class Agent:
         clock: Callable[[], float] = time.monotonic,
         poll: float = 0.5,
         hardening: Optional[Mapping[str, bool]] = None,
+        identity: Optional[tuple[int, int]] = None,
     ) -> None:
         self._key = key
         self.sock_path = Path(sock_path)
+        #: (st_dev, st_ino) of the socket this agent bound; only that file is removed on exit.
+        self._identity = identity
         self.ttl = ttl
         self.idle = idle
         self._clock = clock
@@ -302,7 +347,6 @@ class Agent:
         except OSError:
             return
         with conn:
-            conn.settimeout(IO_TIMEOUT)
             try:
                 self._handle(conn)
             except (AgentError, OSError, struct.error):
@@ -318,7 +362,9 @@ class Agent:
         if uid != os.geteuid():
             _send(conn, {"ok": False, "error": "refused"})  # another user: told nothing
             return
-        request = _recv(conn, MAX_MESSAGE)
+        deadline = time.monotonic() + IO_TIMEOUT
+        request = _recv(_reader(conn, deadline, self._check_live), MAX_MESSAGE)
+        conn.settimeout(max(0.05, deadline - time.monotonic()))
         op = request.get("op")
         if op == "status":
             ttl_left, idle_left = self._remaining()
@@ -339,6 +385,15 @@ class Agent:
         else:
             _send(conn, {"ok": False, "error": "unknown operation"})
 
+    def _check_live(self) -> None:
+        """Called while a request is being read: end it if the agent is stopping or out of time."""
+        if self._stop:
+            raise AgentError("the agent is stopping")
+        expired = self._expired()
+        if expired is not None:
+            self.request_stop(expired)
+            raise AgentError("the agent is stopping")
+
     def _close(self, listener: socket.socket) -> None:
         with contextlib.suppress(Exception):
             wipe = getattr(self._key, "wipe", None)
@@ -346,8 +401,22 @@ class Agent:
                 wipe()
         with contextlib.suppress(OSError):
             listener.close()
-        with contextlib.suppress(OSError):
-            os.unlink(self.sock_path)
+        self._remove_socket()
+
+    def _remove_socket(self) -> None:
+        """Remove the socket file only if it is still the one this agent bound.
+
+        Under the store's lifecycle lock, so it cannot interleave with another
+        unlock that is probing, replacing or binding the same path.
+        """
+        with contextlib.suppress(Exception):
+            with exclusive_lock(_lock_path(self.sock_path), timeout=5.0):
+                try:
+                    info = os.lstat(self.sock_path)
+                except FileNotFoundError:
+                    return
+                if self._identity is None or (info.st_dev, info.st_ino) == self._identity:
+                    os.unlink(self.sock_path)
 
 
 # ------------------------------------------------------------------ client side
@@ -395,7 +464,7 @@ def request(sock_path: Path, op: str, *, timeout: float = IO_TIMEOUT) -> dict[st
         if uid != os.geteuid():
             raise AgentError("the process at the socket is not this user; refusing it")
         _send(client, {"op": op})
-        reply = _recv(client, MAX_MESSAGE)
+        reply = _recv(_reader(client, time.monotonic() + timeout), MAX_MESSAGE)
     except (OSError, struct.error) as exc:
         raise AgentError(f"the agent did not answer ({type(exc).__name__})") from None
     finally:
@@ -416,30 +485,55 @@ def lock(sock_path: Path) -> None:
 # ---------------------------------------------------------------------- starting
 
 
+def _lock_path(sock_path: Path) -> Path:
+    return sock_path.with_suffix(".lock")
+
+
+def _socket_identity(sock_path: Path) -> tuple[int, int]:
+    info = os.lstat(sock_path)
+    return info.st_dev, info.st_ino
+
+
 def _bind(sock_path: Path) -> socket.socket:
-    """Bind a 0600 listening socket in a checked directory, replacing only a stale one."""
+    """Bind a 0600 listening socket in a checked directory, replacing only a stale one.
+
+    The probe for a live agent, the removal of a stale socket and the bind happen
+    under the store's lifecycle lock, so two unlocks started together cannot both
+    see a stale socket and the second replace the first's live one. Anything other
+    than a clear "nothing is listening" refuses: an agent that is still starting
+    answers late, and that is not permission to take its place.
+    """
     check_private_dir(sock_path.parent, create=True)
-    try:
-        status(sock_path)
-    except AgentNotRunning as exc:
-        if "stale" in str(exc):
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(sock_path)
-    else:
-        raise AgentError("an agent is already unlocked for this store; `floorvault lock` stops it")
-    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    previous = os.umask(0o177)
-    try:
-        listener.bind(os.fspath(sock_path))
-    except OSError as exc:
-        listener.close()
-        raise AgentError(f"cannot bind {sock_path} ({type(exc).__name__})") from None
-    finally:
-        os.umask(previous)
-    check_private_dir(sock_path.parent)  # again, after the bind: it is still ours and private
-    os.chmod(sock_path, 0o600)
-    listener.listen(8)
-    return listener
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(exclusive_lock(_lock_path(sock_path), timeout=10.0))
+        except Exception as exc:  # noqa: BLE001 - report the type only
+            raise AgentError(
+                f"cannot take the lock for {sock_path} ({type(exc).__name__})"
+            ) from None
+        try:
+            status(sock_path)
+        except AgentNotRunning as exc:
+            if "stale" in str(exc):
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(sock_path)
+        else:
+            raise AgentError(
+                "an agent is already unlocked for this store; `floorvault lock` stops it"
+            )
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        previous = os.umask(0o177)
+        try:
+            listener.bind(os.fspath(sock_path))
+        except OSError as exc:
+            listener.close()
+            raise AgentError(f"cannot bind {sock_path} ({type(exc).__name__})") from None
+        finally:
+            os.umask(previous)
+        check_private_dir(sock_path.parent)  # again, after the bind: still ours and private
+        os.chmod(sock_path, 0o600)
+        listener.listen(8)
+        return listener
 
 
 def start(
@@ -462,6 +556,7 @@ def start(
     environ = os.environ if environ is None else environ
     path = socket_path(vault_dir, environ)
     listener = _bind(path)
+    identity = _socket_identity(path)
     read_end, write_end = os.pipe()
     try:
         first = os.fork()
@@ -469,7 +564,7 @@ def start(
         listener.close()
         raise AgentError(f"cannot start the agent ({type(exc).__name__})") from None
     if first == 0:  # pragma: no cover - runs in the child
-        _daemon(listener, path, key, ttl, idle, read_end, write_end)
+        _daemon(listener, path, key, ttl, idle, identity, read_end, write_end)
         os._exit(0)
     os.close(write_end)
     listener.close()  # the daemon owns it now
@@ -493,6 +588,7 @@ def _daemon(  # pragma: no cover - runs in the forked child
     key: bytes,
     ttl: int,
     idle: int,
+    identity: tuple[int, int],
     read_end: int,
     write_end: int,
 ) -> None:
@@ -512,7 +608,7 @@ def _daemon(  # pragma: no cover - runs in the forked child
         from .memory import HardenedMemoryKey
 
         held = HardenedMemoryKey(bytearray(key))
-        agent = Agent(held, path, ttl=ttl, idle=idle, hardening=report)
+        agent = Agent(held, path, ttl=ttl, idle=idle, hardening=report, identity=identity)
         for number in (signal.SIGTERM, signal.SIGINT):
             signal.signal(number, lambda *_a: agent.request_stop("signalled"))
         os.write(write_end, b"1")

@@ -2003,6 +2003,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         "    if info.st_mode & 0o077:\n",
         "    if False:  # MUTANT\n",
         "The agent's socket directory may be open to group or others (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-2",
@@ -2010,6 +2011,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         '    if info.st_uid != os.geteuid():\n        raise AgentError(f"{path} is owned by another user; refusing it")\n    if info.st_mode & 0o077:',
         '    if False:  # MUTANT\n        raise AgentError(f"{path} is owned by another user; refusing it")\n    if info.st_mode & 0o077:',
         "The agent's socket directory may belong to another user (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-3",
@@ -2017,6 +2019,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         '        if uid != os.geteuid():\n            _send(conn, {"ok": False, "error": "refused"})',
         '        if False:  # MUTANT\n            _send(conn, {"ok": False, "error": "refused"})',
         "The agent answers a connection from another user (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-4",
@@ -2024,6 +2027,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         '        if uid != os.geteuid():\n            raise AgentError("the process at the socket',
         '        if False:  # MUTANT\n            raise AgentError("the process at the socket',
         "The client talks to a socket served by another user (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-5",
@@ -2031,6 +2035,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        if idle_left <= 0:\n",
         "        if False:  # MUTANT\n",
         "The agent never stops for being idle (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-6",
@@ -2038,6 +2043,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        if ttl_left <= 0:\n",
         "        if False:  # MUTANT\n",
         "The agent never stops at its time limit (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-7",
@@ -2045,6 +2051,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         '            self.request_stop("locked")\n',
         "            pass  # MUTANT\n",
         "`lock` is acknowledged but the agent keeps the key (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-8",
@@ -2052,13 +2059,15 @@ MUTATIONS: tuple[Mutation, ...] = (
         "    if xdg and os.path.isabs(xdg):\n",
         "    if xdg:\n",
         "A relative $XDG_RUNTIME_DIR is used for the socket (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-9",
         "src/floorvault/key_agent.py",
-        'hashlib.sha256(resolved.encode("utf-8") + b"\\0" + wrapped)',
-        'hashlib.sha256(resolved.encode("utf-8"))',
+        '        resolved.encode("utf-8") + b"\\0" + passphrase_store.MAGIC + payload\n',
+        '        resolved.encode("utf-8")\n',
         "A replaced wrapped key keeps the same agent socket (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-10",
@@ -2066,6 +2075,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         "    if len(os.fsencode(path)) > MAX_SOCKET_PATH:\n",
         "    if False:  # MUTANT\n",
         "A socket path too long for sockaddr_un is accepted (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-11",
@@ -2073,6 +2083,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         '        if "stale" in str(exc):\n',
         "        if False:  # MUTANT\n",
         "A stale socket file blocks starting an agent (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-12",
@@ -2080,6 +2091,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         "    check_private_dir(sock_path.parent, create=True)\n",
         "    check_private_dir(sock_path.parent, create=False)\n",
         "The agent's socket directory is not created (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "AGT-13",
@@ -2087,6 +2099,55 @@ MUTATIONS: tuple[Mutation, ...] = (
         '        if not passphrase_custody.wrapped_present(vault_dir):\n            _err(\n                prog,\n                f"no passphrase-wrapped key beside',
         '        if False:  # MUTANT\n            _err(\n                prog,\n                f"no passphrase-wrapped key beside',
         "unlock proceeds on a store with no wrapped key (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-14",
+        "src/floorvault/key_agent.py",
+        '        if self._stop:\n            raise AgentError("the agent is stopping")\n        expired',
+        '        if False:  # MUTANT\n            raise AgentError("the agent is stopping")\n        expired',
+        "A stop or lock does not cut off a request being read (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-15",
+        "src/floorvault/key_agent.py",
+        "        if expired is not None:\n            self.request_stop(expired)\n            raise AgentError",
+        "        if False:  # MUTANT\n            self.request_stop(expired)\n            raise AgentError",
+        "The key's lifetime does not end while a request is being read (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-16",
+        "src/floorvault/key_agent.py",
+        '            if remaining <= 0:\n                raise AgentError("the message did not arrive in time")',
+        '            if False:  # MUTANT\n                raise AgentError("the message did not arrive in time")',
+        "A client that trickles bytes holds the connection open past the deadline (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-17",
+        "src/floorvault/key_agent.py",
+        "    except (ValueError, UnicodeDecodeError, RecursionError):",
+        "    except (ValueError, UnicodeDecodeError):",
+        "Deeply nested JSON crashes the request handler (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-18",
+        "src/floorvault/key_agent.py",
+        "                if self._identity is None or (info.st_dev, info.st_ino) == self._identity:",
+        "                if True:  # MUTANT",
+        "An exiting agent removes a socket another agent has since bound (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-19",
+        "src/floorvault/key_agent.py",
+        "            stack.enter_context(exclusive_lock(_lock_path(sock_path), timeout=10.0))",
+        "            pass  # MUTANT",
+        "Two unlocks can both remove a stale socket and one binds over the other (#84)",
+        expect_on_windows="survived",
     ),
     Mutation(
         "BG-1",
