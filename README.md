@@ -1,10 +1,10 @@
 <p>
-  <img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/floorvault-v0.2.8.webp" width="100%" alt="FloorVault v0.2.8: encrypt the field, bind it in place. Ciphertext moved to another row, column, table or app does not decrypt. Four parts: context binding, the AES-256-SIV envelope engine, key custody, and agent secrets.">
+  <img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/floorvault-v0.2.9.webp" width="100%" alt="FloorVault v0.2.9: optional command binding can restrict a secret's release to a bound command. Four parts: require binding, run on Windows, store guard, and the Hermes plugin.">
 </p>
 
 # FloorVault
 
-**Encrypt the field. Bind it in place.**
+**Encrypt the field. Optionally bind it in place to restrict which command can receive it.**
 
 <p>
   <a href="https://pypi.org/project/floorvault/"><img src="https://img.shields.io/pypi/v/floorvault.svg" alt="PyPI version"></a>
@@ -14,15 +14,32 @@
   <a href="https://github.com/Guerilla-ops/floorvault/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
 </p>
 
-FloorVault is a Python library that encrypts individual fields in the database
-you already have, and keeps local credential stores. Every value is bound to
-where it belongs: ciphertext moved to another row, column, table, schema or
-application does not decrypt.
+FloorVault encrypts individual fields in the database you already have and
+keeps agent credentials out of `.env`. Every value is bound to where it lives:
+ciphertext moved to another row, column, table, schema or application does not
+decrypt. Every credential can be bound to the command that may receive it.
 
 [Install](#install) · [Quickstart](#quickstart) · [Context binding](#01--context-binding) ·
 [Envelope engine](#02--envelope-engine) · [Key custody](#03--key-custody) ·
 [Agent secrets](#04--agent-secrets) · [Limits](#security-boundaries) ·
 [Documentation](#documentation)
+
+## New in 0.2.9
+
+- **Unbound is refused.** `floorvault run --require-binding` (or
+  `FLOOR_VAULT_REQUIRE_BINDING=1`) releases only items with a `secrets allow`
+  binding. The rule lives outside the store: clearing a binding in `vault.db`
+  blocks the item, it does not release it.
+- **Hermes supports optional command binding.** Set
+  `secrets.hermesvault.require_binding: true` to refuse unbound items; otherwise,
+  unbound credentials may still resolve.
+- **Wrong key, no write.** `VaultStore` proves its key against an existing item
+  before the first write and raises `VaultError` on mismatch. A store mid-rotation
+  is refused by name.
+- **`run` on Windows** no longer implicitly searches the working directory
+  when resolving commands from `PATH`, and no longer orphans its child on Ctrl+Break.
+
+Full notes: [v0.2.9 release](https://github.com/Guerilla-ops/floorvault/releases/tag/v0.2.9).
 
 **Beta.** No completed independent code audit or security certification is claimed.
 Read [SECURITY.md](https://github.com/Guerilla-ops/floorvault/blob/main/SECURITY.md)
@@ -167,9 +184,12 @@ floorvault run --env-file .env -- python ~/agent.py
 - The store is `VaultStore`, a local credential database with optional sealed
   listing metadata, also usable directly from Python.
 - A [Hermes Agent plugin](https://github.com/Guerilla-ops/floorvault/tree/main/plugins/hermesvault)
-  in this repository loads vault items into Hermes' environment at startup.
+  in this repository loads vault items into Hermes' environment at startup and
+  enforces the same bindings (requires floorvault 0.2.8 or newer).
 
 > **The process you start sees plaintext,** and so can other code running as you.
+> A binding stops mistakes and untrusted configuration, not someone who can write
+> `vault.db`.
 
 The [walkthrough](https://github.com/Guerilla-ops/floorvault/tree/main/examples/agent-secrets)
 has a references-only `.env`, an MCP client config, and what this does and does
@@ -192,6 +212,7 @@ Beta, unaudited, no policy broker, and search beacons leak equality. In detail:
 | Memory | Managed buffers can be wiped; other copies may persist. Page locking and anti-dump measures do not create an enclave. |
 | Migration | Deletion does not guarantee erasure from WAL, pages, backups, snapshots or storage media. |
 | Agent access | A compromised or prompt-injected authorised caller can request genuine plaintext. The library does not supply a policy broker. |
+| Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, and the state directory must persist and stay outside the store writer's control; restoring both the store and record can replay an older, wider binding undetected. The Hermes plugin keeps no record. |
 
 ## Documentation
 
