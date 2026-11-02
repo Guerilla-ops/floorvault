@@ -721,6 +721,194 @@ def test_os_custody_on_a_sealed_store_names_the_custody_setting(sdc_fake, tmp_pa
     assert "custody: systemd-creds" in result.error
 
 
+# --- bind and status -----------------------------------------------------------
+
+
+def _bind_args(env_name="OPENAI_API_KEY", **over):
+    base = dict(item_id=None, field="value", label=None, print_only=False)
+    base.update(over)
+    return base | {"env_name": env_name}
+
+
+def test_bind_creates_store_stores_value_and_writes_mapping(
+    plugin_cli, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    written = {}
+    monkeypatch.setattr(plugin_cli, "_write_mapping", lambda n, r: written.update({n: r}) or True)
+    monkeypatch.setattr(plugin_cli.getpass, "getpass", lambda _p: "sk-live-SECRET")
+    monkeypatch.setattr(plugin_cli, "_cmd_doctor", lambda _a: 0)
+    assert _hvault(monkeypatch, tmp_path, {}, "bind", **_bind_args()) == 0
+    out = capsys.readouterr()
+    assert (tmp_path / "agent-vault" / "vault.db").is_file()
+    assert written == {"OPENAI_API_KEY": "hv:openai_api_key"}
+    assert "store created" in out.out and "stored openai_api_key.value" in out.out
+    assert "SECRET" not in out.out + out.err
+    assert fetch(tmp_path, {"env": {"OPENAI_API_KEY": "hv:openai_api_key"}}).secrets == {
+        "OPENAI_API_KEY": "sk-live-SECRET"
+    }
+
+
+def test_bind_updates_an_existing_item_and_honours_field_and_id(
+    plugin_cli, vault_home, monkeypatch, capsys
+):
+    monkeypatch.setattr(plugin_cli, "_write_mapping", lambda n, r: True)
+    monkeypatch.setattr(plugin_cli.getpass, "getpass", lambda _p: "tok-new")
+    monkeypatch.setattr(plugin_cli, "_cmd_doctor", lambda _a: 0)
+    args = _bind_args("TOKEN", item_id="vault_multi", field="token")
+    assert _hvault(monkeypatch, vault_home, {}, "bind", **args) == 0
+    assert "updated vault_multi.token" in capsys.readouterr().out
+    assert fetch(vault_home, {"env": {"TOKEN": "hv:vault_multi:token"}}).secrets == {
+        "TOKEN": "tok-new"
+    }
+
+
+def test_bind_falls_back_to_printing_the_mapping(plugin_cli, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    monkeypatch.setattr(plugin_cli, "_write_mapping", lambda n, r: False)
+    monkeypatch.setattr(plugin_cli.getpass, "getpass", lambda _p: "v")
+    assert _hvault(monkeypatch, tmp_path, {}, "bind", **_bind_args("A_B")) == 0
+    out = capsys.readouterr().out
+    assert "add this to config.yaml" in out and '"A_B": "hv:a_b"' in out
+
+
+def test_bind_rejects_a_bad_name_before_opening_the_store(plugin_cli, tmp_path, monkeypatch):
+    monkeypatch.setattr(plugin_cli, "_store", lambda **_k: pytest.fail("store opened"))
+    assert _hvault(monkeypatch, tmp_path, {}, "bind", **_bind_args("not valid")) == 2
+
+
+def test_bind_stores_nothing_on_an_empty_value(plugin_cli, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    monkeypatch.setenv("FLOOR_VAULT_KEY", KEY)
+    monkeypatch.setattr(plugin_cli.getpass, "getpass", lambda _p: "")
+    assert _hvault(monkeypatch, tmp_path, {}, "bind", **_bind_args("EMPTY")) == 2
+    assert "nothing stored" in capsys.readouterr().err
+    store = floorvault.get_vault_store(tmp_path / "agent-vault", auto_migrate=False)
+    assert store.list_items() == []
+
+
+def test_bind_refuses_to_read_where_getpass_can_only_echo(
+    plugin_cli, tmp_path, monkeypatch, capsys
+):
+    import getpass
+    import warnings
+
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    monkeypatch.setenv("FLOOR_VAULT_KEY", KEY)
+
+    def echoing(_prompt):
+        warnings.warn("Can not control echo on the terminal.", getpass.GetPassWarning)
+        return "visible-secret"
+
+    monkeypatch.setattr(plugin_cli.getpass, "getpass", echoing)
+    assert _hvault(monkeypatch, tmp_path, {}, "bind", **_bind_args("ECHO")) == 2
+    err = capsys.readouterr().err
+    assert "cannot hide the input" in err and "visible-secret" not in err
+    store = floorvault.get_vault_store(tmp_path / "agent-vault", auto_migrate=False)
+    assert store.list_items() == []
+
+
+def test_bind_stores_nothing_on_a_whitespace_only_value(plugin_cli, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    monkeypatch.setenv("FLOOR_VAULT_KEY", KEY)
+    monkeypatch.setattr(plugin_cli.getpass, "getpass", lambda _p: "   ")
+    assert _hvault(monkeypatch, tmp_path, {}, "bind", **_bind_args("BLANK")) == 2
+    assert "nothing stored" in capsys.readouterr().err
+    store = floorvault.get_vault_store(tmp_path / "agent-vault", auto_migrate=False)
+    assert store.list_items() == []
+
+
+def test_write_mapping_reports_a_failed_save_by_type_only(plugin_cli, monkeypatch, capsys):
+    import types
+
+    def save_config(config, *, strip_defaults=True, preserve_keys=None, merge_existing=False):
+        raise PermissionError("/secret/path/config.yaml")
+
+    module = types.ModuleType("hermes_cli.config")
+    module.save_config = save_config
+    module.is_managed = lambda: False
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.SimpleNamespace(config=module))
+    assert plugin_cli._write_mapping("TOKEN", "hv:token") is False
+    err = capsys.readouterr().err
+    assert "config.yaml was not updated (PermissionError)" in err
+    assert "/secret/path" not in err
+
+
+def test_bind_refuses_a_name_that_would_share_another_names_item(
+    plugin_cli, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    monkeypatch.setenv("FLOOR_VAULT_KEY", KEY)
+    monkeypatch.setattr(plugin_cli, "_store", lambda **_k: pytest.fail("store opened"))
+    cfg = {"enabled": True, "env": {"API_KEY": "hv:api_key"}}
+    assert _hvault(monkeypatch, tmp_path, cfg, "bind", **_bind_args("api_key")) == 2
+    err = capsys.readouterr().err
+    assert "another configured variable already maps to the same item" in err
+    assert "--id" in err and "API_KEY" not in err
+
+
+def test_bind_refuses_a_protected_key_variable(plugin_cli, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(plugin_cli, "_store", lambda **_k: pytest.fail("store opened"))
+    assert _hvault(monkeypatch, tmp_path, {}, "bind", **_bind_args("HERMES_VAULT_KEY")) == 2
+    assert "protected key variable" in capsys.readouterr().err
+
+
+def test_no_command_prints_status_and_next_step(plugin_cli, vault_home, monkeypatch, capsys):
+    cfg = {"enabled": True, "env": {"A": "hv:vault_testopenai", "B": "hv:missing"}}
+    assert _hvault(monkeypatch, vault_home, cfg, None) == 0
+    out = capsys.readouterr().out
+    assert "store:" in out and "(present)" in out
+    assert "resolved 1/2 mapping(s)" in out
+    assert "next: hermes hvault doctor" in out
+    assert "sk-test-123" not in out
+
+
+def test_status_on_a_fresh_profile_points_to_bind(plugin_cli, tmp_path, monkeypatch, capsys):
+    assert _hvault(monkeypatch, tmp_path, {}, None) == 0
+    out = capsys.readouterr().out
+    assert "(missing)" in out and "next: hermes hvault bind" in out
+    assert not (tmp_path / "agent-vault").exists()
+
+
+def test_write_mapping_saves_a_partial_merge_through_hermes(plugin_cli, monkeypatch):
+    import types
+
+    calls = {}
+
+    def save_config(config, *, strip_defaults=True, preserve_keys=None, merge_existing=False):
+        calls.update(config=config, preserve_keys=preserve_keys, merge_existing=merge_existing)
+
+    module = types.ModuleType("hermes_cli.config")
+    module.save_config = save_config
+    module.is_managed = lambda: False
+    module.read_user_config_raw = lambda: {}
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.SimpleNamespace(config=module))
+    assert plugin_cli._write_mapping("TOKEN", "hv:token") is True
+    assert calls["config"] == {
+        "secrets": {"hermesvault": {"enabled": True, "env": {"TOKEN": "hv:token"}}}
+    }
+    assert calls["merge_existing"] is True
+    assert ("secrets", "hermesvault", "env", "TOKEN") in calls["preserve_keys"]
+
+
+def test_write_mapping_declines_managed_or_old_hosts(plugin_cli, monkeypatch):
+    import types
+
+    module = types.ModuleType("hermes_cli.config")
+    module.save_config = lambda config: pytest.fail("must not save without a merging writer")
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.SimpleNamespace(config=module))
+    assert plugin_cli._write_mapping("TOKEN", "hv:token") is False
+
+    module.save_config = lambda config, *, preserve_keys=None, merge_existing=False: pytest.fail(
+        "managed"
+    )
+    module.is_managed = lambda: True
+    assert plugin_cli._write_mapping("TOKEN", "hv:token") is False
+
+
 # ------------------------------------------------------------ command bindings
 #
 # `floorvault secrets allow` binds an item to command lines. Inside Hermes the
