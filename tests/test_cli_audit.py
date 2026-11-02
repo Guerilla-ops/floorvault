@@ -11,6 +11,7 @@ import contextlib
 import getpass
 import io
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -54,6 +55,10 @@ def base_env(tmp_path, key):
             "USERPROFILE": str(home),
             "FLOOR_VAULT_KEY": key,
             "FLOOR_VAULT_DIR": str(tmp_path / "vault"),
+            # The binding record stays out of the real state directory. Unbound
+            # items resolve here; tests of the default refusal drop this.
+            "FLOOR_VAULT_STATE_DIR": str(tmp_path / "state"),
+            "FLOOR_VAULT_ALLOW_UNBOUND": "1",
         }
     )
     return env
@@ -381,39 +386,180 @@ def test_run_12_later_env_file_wins_whatever_the_spelling(tmp_path, base_env):
     assert result.stdout.strip() == "second"
 
 
-def test_run_9_require_binding_refuses_an_unbound_item(tmp_path, base_env, store):
+def _strict(env):
+    """``env`` without the fixture's FLOOR_VAULT_ALLOW_UNBOUND: run's default."""
+    return {k: v for k, v in env.items() if k != "FLOOR_VAULT_ALLOW_UNBOUND"}
+
+
+def _set_binding_column(store, item_id, value):
+    """Write vault.db directly, as someone with no key can."""
+    with contextlib.closing(sqlite3.connect(store / "vault.db")) as db:
+        db.execute("UPDATE vault_items SET allowed_commands = ? WHERE id = ?", (value, item_id))
+        db.commit()
+
+
+def _binding_column(store, item_id):
+    with contextlib.closing(sqlite3.connect(store / "vault.db")) as db:
+        return db.execute(
+            "SELECT allowed_commands FROM vault_items WHERE id = ?", (item_id,)
+        ).fetchone()[0]
+
+
+def test_run_9_an_unbound_item_is_refused_by_default(tmp_path, base_env, store):
     command = _printenv(tmp_path, "X")
+    strict = _strict(base_env)
     for args, env in (
-        (["run", "--require-binding"], base_env),
-        (["run"], {**base_env, "FLOOR_VAULT_REQUIRE_BINDING": "1"}),
+        (["run"], strict),
+        (["run", "--require-binding", "--allow-unbound"], strict),
+        (["run"], {**strict, "FLOOR_VAULT_ALLOW_UNBOUND": "1", "FLOOR_VAULT_REQUIRE_BINDING": "1"}),
     ):
         result = fv([*args, "-e", "X=fv:one", "--", *command], env)
-        assert result.returncode == 125
-        assert "vault item one has no command binding, and bindings are required" in (result.stderr)
+        assert result.returncode == 125, (args, result.stderr)
+        assert "vault item one has no command binding, and `run` requires one" in result.stderr
+        assert "--allow-unbound" in result.stderr
         assert SECRET not in result.stdout + result.stderr
-    assert fv(["secrets", "allow", "one", "--", *command], base_env).returncode == 0
-    bound = fv(["run", "--require-binding", "-e", "X=fv:one", "--", *command], base_env)
+    for args, env in (
+        (["run", "--allow-unbound"], strict),
+        (["run"], {**strict, "FLOOR_VAULT_ALLOW_UNBOUND": "1"}),
+    ):
+        result = fv([*args, "-e", "X=fv:one", "--", *command], env)
+        assert result.returncode == 0, (args, result.stderr)
+        assert result.stdout.strip() == f"X={SECRET}"
+    assert fv(["secrets", "allow", "one", "--", *command], strict).returncode == 0
+    bound = fv(["run", "-e", "X=fv:one", "--", *command], strict)
     assert bound.returncode == 0, bound.stderr
     assert bound.stdout.strip() == f"X={SECRET}"
 
 
-def test_run_9_a_binding_cleared_in_vault_db_blocks_the_item_when_required(
+def test_run_9_a_binding_cleared_in_vault_db_is_refused(tmp_path, base_env, store):
+    command = _printenv(tmp_path, "X")
+    other = [sys.executable, "-c", "import os; print('stolen=' + os.environ['X'])"]
+    assert fv(["secrets", "allow", "one", "--", *command], base_env).returncode == 0
+    assert fv(["run", "-e", "X=fv:one", "--", *other], base_env).returncode == 125
+    _set_binding_column(store, "one", None)
+    # Refused even where unbound items are allowed: the record saw it bound.
+    for env in (base_env, _strict(base_env)):
+        result = fv(["run", "-e", "X=fv:one", "--", *other], env)
+        assert result.returncode == 125
+        assert "vault item one: its command binding changed" in result.stderr
+        assert "floorvault secrets allow one --accept" in result.stderr
+        assert SECRET not in result.stdout + result.stderr
+    # The owner, who did clear it, accepts that.
+    accepted = fv(["secrets", "allow", "one", "--accept"], base_env)
+    assert accepted.returncode == 0, accepted.stderr
+    assert "one: not bound" in accepted.stdout
+    assert fv(["run", "-e", "X=fv:one", "--", *other], base_env).returncode == 0
+
+
+def test_run_9_an_older_binding_written_back_is_refused(tmp_path, base_env, store):
+    command = _printenv(tmp_path, "X")
+    other = [sys.executable, "-c", "import os; print('stolen=' + os.environ['X'])"]
+    strict = _strict(base_env)
+    assert fv(["secrets", "allow", "one", "--", *command], strict).returncode == 0
+    assert fv(["secrets", "allow", "one", "--", *other], strict).returncode == 0
+    wide = _binding_column(store, "one")
+    narrowed = fv(["secrets", "allow", "one", "--remove", "--", *other], strict)
+    assert narrowed.returncode == 0, narrowed.stderr
+    assert fv(["run", "-e", "X=fv:one", "--", *other], strict).returncode == 125
+    # The older, wider binding is written back. It still authenticates.
+    _set_binding_column(store, "one", wide)
+    for line in (other, command):
+        result = fv(["run", "-e", "X=fv:one", "--", *line], strict)
+        assert result.returncode == 125
+        assert "vault item one: its command binding changed" in result.stderr
+        assert SECRET not in result.stdout + result.stderr
+    # Adding to it would make the restored binding look trusted: refused too.
+    added = fv(["secrets", "allow", "one", "--", sys.executable, "-V"], strict)
+    assert added.returncode == 1
+    assert "its command binding changed" in added.stderr
+    assert _binding_column(store, "one") == wide
+    # Clearing replaces it outright, which is safe to do and to record.
+    assert fv(["secrets", "allow", "one", "--clear"], strict).returncode == 0
+    refused = fv(["run", "-e", "X=fv:one", "--", *command], strict)
+    assert "has no command binding" in refused.stderr
+
+
+def test_run_9_binding_record_is_kept_per_store_and_forgets_removed_items(
     tmp_path, base_env, store
 ):
     command = _printenv(tmp_path, "X")
     assert fv(["secrets", "allow", "one", "--", *command], base_env).returncode == 0
-    other = [sys.executable, "-c", "import os; print('stolen=' + os.environ['X'])"]
-    assert fv(["run", "-e", "X=fv:one", "--", *other], base_env).returncode == 125
-    # Someone who can write vault.db, but has no key, clears the binding.
-    with contextlib.closing(sqlite3.connect(store / "vault.db")) as db:
-        db.execute("UPDATE vault_items SET allowed_commands = NULL WHERE id = 'one'")
-        db.commit()
-    released = fv(["run", "-e", "X=fv:one", "--", *other], base_env)
-    assert released.returncode == 0  # the documented limit without the requirement
-    required = fv(["run", "--require-binding", "-e", "X=fv:one", "--", *other], base_env)
-    assert required.returncode == 125
-    assert "vault item one has no command binding" in required.stderr
-    assert SECRET not in required.stdout + required.stderr
+    assert fv(["secrets", "rm", "one"], base_env).returncode == 0
+    added = fv(["secrets", "add", "one", "--id", "one", "--stdin"], base_env, stdin="value=v2\n")
+    assert added.returncode == 0, added.stderr
+    # A new item under a removed id is not taken for a changed binding.
+    result = fv(["run", "-e", "X=fv:one", "--", *command], base_env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "X=v2"
+    records = list((tmp_path / "state" / "bindings").glob("*.fvanchor"))
+    assert len(records) == 1
+
+
+def test_run_9_binding_record_inside_the_store_is_refused(tmp_path, base_env, store):
+    env = {**base_env, "FLOOR_VAULT_STATE_DIR": str(store / "state")}
+    result = fv(["run", "-e", "X=fv:one", "--", *_printenv(tmp_path, "X")], env)
+    assert result.returncode == 125
+    assert "is inside the store" in result.stderr
+    assert SECRET not in result.stdout + result.stderr
+    allow = fv(["secrets", "allow", "one", "--", *_printenv(tmp_path, "X")], env)
+    assert allow.returncode == 1
+    assert "is inside the store" in allow.stderr
+
+
+def test_run_9_an_unreadable_binding_record_is_refused(tmp_path, base_env, store):
+    command = _printenv(tmp_path, "X")
+    assert fv(["run", "-e", "X=fv:one", "--", *command], base_env).returncode == 0
+    (record,) = (tmp_path / "state" / "bindings").glob("*.fvanchor")
+    record.write_text("{not json", encoding="utf-8")
+    result = fv(["run", "-e", "X=fv:one", "--", *command], base_env)
+    assert result.returncode == 125
+    assert "is unreadable" in result.stderr
+    assert SECRET not in result.stdout + result.stderr
+
+
+def test_run_9_a_wiped_state_directory_is_warned_about(tmp_path, base_env, store):
+    command = _printenv(tmp_path, "X")
+    first = fv(["run", "-e", "X=fv:one", "--", *command], base_env)
+    assert first.returncode == 0, first.stderr
+    # A first use, and an ordinary run after it, say nothing.
+    again = fv(["run", "-e", "X=fv:one", "--", *command], base_env)
+    assert again.returncode == 0 and "binding record" not in first.stderr + again.stderr
+    shutil.rmtree(tmp_path / "state")  # what an ephemeral container does
+    wiped = fv(["run", "-e", "X=fv:one", "--", *command], base_env)
+    assert wiped.returncode == 0, wiped.stderr
+    assert wiped.stdout.strip() == f"X={SECRET}"
+    assert "warning: the binding record for this store is missing" in wiped.stderr
+    assert "FLOOR_VAULT_STATE_DIR" in wiped.stderr and "FLOOR_VAULT_REQUIRE_RECORD" in wiped.stderr
+    assert SECRET not in wiped.stderr
+    # The run started a new record, so the next run is quiet again.
+    after = fv(["run", "-e", "X=fv:one", "--", *command], base_env)
+    assert after.returncode == 0 and "binding record" not in after.stderr
+
+
+def test_run_9_a_wiped_state_directory_can_be_refused(tmp_path, base_env, store):
+    command = _printenv(tmp_path, "X")
+    assert fv(["run", "-e", "X=fv:one", "--", *command], base_env).returncode == 0
+    shutil.rmtree(tmp_path / "state")
+    strict = {**base_env, "FLOOR_VAULT_REQUIRE_RECORD": "1"}
+    refused = fv(["run", "-e", "X=fv:one", "--", *command], strict)
+    assert refused.returncode == 125
+    assert "the binding record for this store is missing" in refused.stderr
+    assert "so nothing is resolved" in refused.stderr
+    assert "warning" not in refused.stderr
+    assert SECRET not in refused.stdout + refused.stderr
+    # Refusing starts no record, so it keeps refusing until the owner decides.
+    assert not (tmp_path / "state" / "bindings").exists()
+    assert fv(["run", "-e", "X=fv:one", "--", *command], strict).returncode == 125
+    # Unset for one run, the new record is started; the requirement then passes.
+    assert fv(["run", "-e", "X=fv:one", "--", *command], base_env).returncode == 0
+    assert fv(["run", "-e", "X=fv:one", "--", *command], strict).returncode == 0
+
+
+def test_run_9_a_requirement_for_a_record_does_not_trip_on_a_first_use(tmp_path, base_env, store):
+    strict = {**base_env, "FLOOR_VAULT_REQUIRE_RECORD": "1"}
+    first = fv(["run", "-e", "X=fv:one", "--", *_printenv(tmp_path, "X")], strict)
+    assert first.returncode == 0, first.stderr
+    assert "binding record" not in first.stderr
 
 
 # -------------------------------------------------------------------- secrets
