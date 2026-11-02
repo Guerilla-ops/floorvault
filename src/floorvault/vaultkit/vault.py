@@ -990,6 +990,25 @@ class VaultStore:
             raise VaultError(f"Vault item not found: {item_id}")
         return self._open_allowed_commands(item_id, row[0])
 
+    def binding_fingerprint(self, item_id: str) -> str:
+        """SHA-256 of ``item_id``'s sealed binding exactly as stored, or ``"none"``.
+
+        It changes whenever the stored binding does, including when the binding
+        is cleared, or an older sealed one is written back, without the key
+        (#97). A caller that keeps the last value where the database's writer
+        cannot reach can detect both; ``floorvault run`` does. It needs no key
+        and reveals nothing about the command lines.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT allowed_commands FROM vault_items WHERE id = ?", (item_id,)
+            ).fetchone()
+        if row is None:
+            raise VaultError(f"Vault item not found: {item_id}")
+        if row[0] is None:
+            return "none"
+        return hashlib.sha256(bytes(row[0])).hexdigest()
+
     def _open_allowed_commands(self, item_id: str, sealed: Any) -> Optional[list[list[str]]]:
         plaintext = self._decrypt_metadata(item_id, "allowed_commands", sealed)
         if plaintext is None:
