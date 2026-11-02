@@ -36,7 +36,9 @@ they do not exist yet (in the OS key store, where it may show the unlock prompt,
 or as a systemd-creds credential; see [Key custody](#key-custody)), prompts for
 the value without echo, stores it as item `openai_api_key`, writes the
 `secrets.hermesvault.env` mapping into config.yaml and runs `doctor`. Restart
-Hermes and the variable is set. Where Hermes cannot write the configuration
+Hermes and the variable is set, unless the profile's `.env` already sets it: with
+the default `override_existing: false` the `.env` value wins, so delete that line
+first (see below). Where Hermes cannot write the configuration
 (older releases, managed configs, `--print-only`), `bind` prints the mapping to
 paste instead.
 

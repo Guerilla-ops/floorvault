@@ -835,6 +835,24 @@ def test_write_mapping_reports_a_failed_save_by_type_only(plugin_cli, monkeypatc
     assert "/secret/path" not in err
 
 
+def test_bind_refuses_a_name_that_would_share_another_names_item(
+    plugin_cli, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    monkeypatch.setenv("FLOOR_VAULT_KEY", KEY)
+    monkeypatch.setattr(plugin_cli, "_store", lambda **_k: pytest.fail("store opened"))
+    cfg = {"enabled": True, "env": {"API_KEY": "hv:api_key"}}
+    assert _hvault(monkeypatch, tmp_path, cfg, "bind", **_bind_args("api_key")) == 2
+    err = capsys.readouterr().err
+    assert "API_KEY already maps to item api_key" in err and "--id" in err
+
+
+def test_bind_refuses_a_protected_key_variable(plugin_cli, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(plugin_cli, "_store", lambda **_k: pytest.fail("store opened"))
+    assert _hvault(monkeypatch, tmp_path, {}, "bind", **_bind_args("HERMES_VAULT_KEY")) == 2
+    assert "protected key variable" in capsys.readouterr().err
+
+
 def test_no_command_prints_status_and_next_step(plugin_cli, vault_home, monkeypatch, capsys):
     cfg = {"enabled": True, "env": {"A": "hv:vault_testopenai", "B": "hv:missing"}}
     assert _hvault(monkeypatch, vault_home, cfg, None) == 0

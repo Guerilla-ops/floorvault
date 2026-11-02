@@ -420,6 +420,28 @@ def _cmd_bind(args) -> int:
     ref = f"hv:{item_id}" if field == "value" else f"hv:{item_id}:{field}"
 
     cfg = _secrets_cfg()
+    if args.env_name in HermesVaultSource().protected_env_vars(cfg):
+        # Hermes never applies a mapping onto the bootstrap or key variables, so
+        # binding one would store a value that nothing can use.
+        print(
+            f"hvault bind: {args.env_name} is a protected key variable; "
+            "Hermes will not apply a mapping onto it",
+            file=sys.stderr,
+        )
+        return 2
+    env_map = cfg.get("env")
+    for other, other_ref in env_map.items() if isinstance(env_map, dict) else ():
+        other_item, other_field = parse_ref(other_ref)
+        if other != args.env_name and other_item == item_id and (other_field or "value") == field:
+            # The default item id is the lower-cased name, so API_KEY and api_key
+            # would share one item and the second bind would overwrite the first.
+            print(
+                f"hvault bind: {other} already maps to item {item_id}; binding "
+                f"{args.env_name} there would overwrite its value. Pass --id to "
+                "use a different item",
+                file=sys.stderr,
+            )
+            return 2
     home = Path(get_hermes_home())
     created = not (resolve_base_dir(cfg, home) / "vault.db").is_file()
     store = _store(setup=created)
