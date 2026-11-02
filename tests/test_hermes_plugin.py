@@ -787,6 +787,54 @@ def test_bind_stores_nothing_on_an_empty_value(plugin_cli, tmp_path, monkeypatch
     assert store.list_items() == []
 
 
+def test_bind_refuses_to_read_where_getpass_can_only_echo(
+    plugin_cli, tmp_path, monkeypatch, capsys
+):
+    import getpass
+    import warnings
+
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    monkeypatch.setenv("FLOOR_VAULT_KEY", KEY)
+
+    def echoing(_prompt):
+        warnings.warn("Can not control echo on the terminal.", getpass.GetPassWarning)
+        return "visible-secret"
+
+    monkeypatch.setattr(plugin_cli.getpass, "getpass", echoing)
+    assert _hvault(monkeypatch, tmp_path, {}, "bind", **_bind_args("ECHO")) == 2
+    err = capsys.readouterr().err
+    assert "cannot hide the input" in err and "visible-secret" not in err
+    store = floorvault.get_vault_store(tmp_path / "agent-vault", auto_migrate=False)
+    assert store.list_items() == []
+
+
+def test_bind_stores_nothing_on_a_whitespace_only_value(plugin_cli, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
+    monkeypatch.setenv("FLOOR_VAULT_KEY", KEY)
+    monkeypatch.setattr(plugin_cli.getpass, "getpass", lambda _p: "   ")
+    assert _hvault(monkeypatch, tmp_path, {}, "bind", **_bind_args("BLANK")) == 2
+    assert "nothing stored" in capsys.readouterr().err
+    store = floorvault.get_vault_store(tmp_path / "agent-vault", auto_migrate=False)
+    assert store.list_items() == []
+
+
+def test_write_mapping_reports_a_failed_save_by_type_only(plugin_cli, monkeypatch, capsys):
+    import types
+
+    def save_config(config, *, strip_defaults=True, preserve_keys=None, merge_existing=False):
+        raise PermissionError("/secret/path/config.yaml")
+
+    module = types.ModuleType("hermes_cli.config")
+    module.save_config = save_config
+    module.is_managed = lambda: False
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.SimpleNamespace(config=module))
+    assert plugin_cli._write_mapping("TOKEN", "hv:token") is False
+    err = capsys.readouterr().err
+    assert "config.yaml was not updated (PermissionError)" in err
+    assert "/secret/path" not in err
+
+
 def test_no_command_prints_status_and_next_step(plugin_cli, vault_home, monkeypatch, capsys):
     cfg = {"enabled": True, "env": {"A": "hv:vault_testopenai", "B": "hv:missing"}}
     assert _hvault(monkeypatch, vault_home, cfg, None) == 0

@@ -18,6 +18,7 @@ import getpass
 import json
 import shlex
 import sys
+import warnings
 from pathlib import Path
 
 from agent.secret_sources.base import get_source_environment, is_valid_env_name
@@ -224,6 +225,23 @@ def _cmd_add(args) -> int:
     return 0
 
 
+def _read_secret(prompt: str, command: str) -> "str | None":
+    """Prompt without echo. ``getpass`` falls back to echoing stdin, with only a
+    warning, when it cannot control the terminal; that is refused here, so a
+    value is never read where it would be shown. Returns None after reporting."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            return getpass.getpass(prompt)
+    except getpass.GetPassWarning:
+        print(
+            f"hvault {command}: cannot hide the input here (no secure terminal); "
+            "nothing read or stored",
+            file=sys.stderr,
+        )
+        return None
+
+
 def _cmd_put(args) -> int:
     _item_id(args.item_id)
     _field(args.field)
@@ -236,7 +254,9 @@ def _cmd_put(args) -> int:
     if meta is None:
         print(f"hvault put: item {args.item_id} not found", file=sys.stderr)
         return 1
-    value = getpass.getpass(f"{args.item_id}.{args.field}: ")
+    value = _read_secret(f"{args.item_id}.{args.field}: ", "put")
+    if value is None:
+        return 2
     if not value:
         print("hvault put: empty value", file=sys.stderr)
         return 2
@@ -380,7 +400,13 @@ def _write_mapping(env_name: str, ref: str) -> bool:
             },
             merge_existing=True,
         )
-    except Exception:  # noqa: BLE001 — any failure falls back to the paste path
+    except Exception as exc:  # noqa: BLE001 — any failure falls back to the paste path
+        # Not a refusal (no merging writer, managed install: those returned
+        # above, silently): a read or write that failed. Say so, by type only.
+        print(
+            f"hvault: config.yaml was not updated ({type(exc).__name__}); add the mapping by hand",
+            file=sys.stderr,
+        )
         return False
     return True
 
@@ -401,8 +427,13 @@ def _cmd_bind(args) -> int:
         print(f"store created at {resolve_base_dir(cfg, home)}")
         print(_custody_line(cfg))
 
-    value = getpass.getpass(f"{args.env_name}: ")
-    if not value:
+    value = _read_secret(f"{args.env_name}: ", "bind")
+    if value is None:
+        return 2
+    if not value.strip():
+        # add_item() drops whitespace-only fields, which would leave an empty
+        # record and a mapping to a field that does not exist. The value itself
+        # is stored as typed, not stripped.
         print("hvault bind: empty value; nothing stored", file=sys.stderr)
         return 2
     existing = store.get_meta(item_id)
