@@ -156,7 +156,8 @@ same environment whose `floorvault` the client starts. Windows uses DPAPI with
 no extra.
 
 **Headless Linux, servers and containers.** Without a Secret Service (no
-desktop session, a server, a container) there are two routes, and neither puts
+desktop session, a server, a container) there are two routes for unattended use
+(and a [passphrase](#a-passphrase-protected-key) for interactive use), and none puts
 the master key itself in `FLOOR_VAULT_KEY` or an MCP config, where it unlocks
 every item. On a host with systemd 256 or newer, prefer
 [systemd-creds](#headless-host-with-systemd-creds): the key is sealed to the
@@ -622,6 +623,44 @@ floorvault secrets allow github-pat --accept  # trust a change made outside this
   but keeps no binding record and, unless `require_binding` is set, resolves
   unbound items.
 
+
+### A passphrase-protected key
+
+For interactive work on a host with no OS key store, keep the master key only
+wrapped under a passphrase:
+
+```sh
+floorvault secrets init --custody passphrase     # new store only; asks twice
+floorvault secrets add "OpenAI" --id openai --stdin
+```
+
+`init` creates a random key and keeps it only as `master.key.fvpw` beside the
+store (scrypt and AES-SIV, the `FVPW1` format of
+[SPEC](SPEC.md)). `run` and `secrets` then ask for the passphrase on the
+terminal each time; it is never taken from `argv` or the environment, and a
+terminal that can only echo is refused. A copy of the disk or a backup also needs
+the passphrase. The wrapping is only as strong as the passphrase (`init` warns
+below 12 characters), and there is no recovery: lose the passphrase or the file
+and the data is gone.
+
+- **Unattended callers cannot use it.** An MCP client's `run` or a service has no
+  terminal to answer a prompt, so a store with a wrapped key is **locked** for it:
+  the command fails and says why. Nothing falls back to another custody, and a
+  wrapped key beside a systemd-creds credential opens nothing. A key agent that
+  holds the unwrapped key for such callers is the next part of
+  [#84](https://github.com/Guerilla-ops/floorvault/issues/84). Until then use
+  systemd-creds or `--key-file` for unattended runs.
+- **`floorvault secrets protect`** wraps the key of an *existing* store that keeps
+  it in a raw `master.key` beside the store (the Tier-3 file): it writes
+  `master.key.fvpw`, checks that it unwraps to the same key, then overwrites and
+  removes the raw file. The key is unchanged, so the data stays readable. The
+  overwrite is best effort: copy-on-write and journaling filesystems, SSDs,
+  snapshots and backups can keep earlier copies of the raw key, so treat a key
+  that has sat unwrapped on a backed-up disk as exposed. A key in the OS key
+  store, a systemd-creds credential, an environment variable or a `--key-file` is
+  not moved; `protect` says so and changes nothing.
+- **What it does not stop.** Code running as you while the key is unwrapped, anyone
+  who learns or watches the passphrase, and root.
 ## Hermes Agent integration
 
 The optional plugin in [`plugins/hermesvault`](../plugins/hermesvault) resolves local
