@@ -43,7 +43,7 @@ import unicodedata
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
-from . import systemd_creds
+from . import passphrase_custody, systemd_creds
 from .agentenv import (
     CUSTODY_ENV_NAMES,
     KEY_POINTER_ENV_NAMES,
@@ -150,6 +150,12 @@ def _key_file_from(args, environ: Mapping[str, str]) -> Optional[Path]:
     return Path(raw) if raw else None
 
 
+_TWO_CUSTODIES = (
+    "{dir} holds both a systemd-creds credential and a passphrase-wrapped key; "
+    "two keys for one store means it was forked. Nothing was opened"
+)
+
+
 def _custody_key(args, environ: Mapping[str, str], vault_dir: Optional[Path]) -> Optional[bytes]:
     """The master key from a file or a sealed credential, or None for ``--key-env`` / default custody.
 
@@ -163,12 +169,34 @@ def _custody_key(args, environ: Mapping[str, str], vault_dir: Optional[Path]) ->
     if getattr(args, "key_file", None) is not None:
         return read_key_file(args.key_file)
     if vault_dir is not None:
+        if passphrase_custody.wrapped_present(vault_dir) and systemd_creds.credential_present(
+            vault_dir
+        ):
+            raise StoreUnavailable(_TWO_CUSTODIES.format(dir=vault_dir))
         try:
             sealed = systemd_creds.read_key(vault_dir)
         except systemd_creds.SystemdCredsError as exc:
             raise StoreUnavailable(str(exc)) from None
         if sealed is not None:
             return sealed
+        if passphrase_custody.wrapped_present(vault_dir):
+            # A wrapped key means the store's key is there and needs a person to
+            # unlock it; no other custody may stand in, and with no terminal the
+            # store is locked (a key agent for unattended callers is later work).
+            try:
+                passphrase_custody.refuse_raw_companion(vault_dir)
+                phrase = passphrase_custody.prompt_passphrase(f"Passphrase for {vault_dir}: ")
+                unwrapped = passphrase_custody.read_key(vault_dir, phrase)
+            except passphrase_custody.PassphraseCustodyError as exc:
+                raise StoreUnavailable(str(exc)) from None
+            if unwrapped is None:
+                # The wrapped file was there a moment ago: its disappearance
+                # must not let an environment or OS key stand in.
+                raise StoreUnavailable(
+                    f"the passphrase-wrapped key beside {vault_dir} disappeared while it was "
+                    "being unlocked; nothing was opened"
+                )
+            return unwrapped
     key_file = _key_file_from(args, environ)
     return read_key_file(key_file) if key_file is not None else None
 
@@ -872,16 +900,32 @@ def add_secrets_parser(subparsers) -> None:
     init = sub.add_parser(
         "init",
         parents=[init_options],
-        help="Create the master key for a new store, sealed by systemd-creds",
+        help="Create the master key for a new store: sealed by systemd-creds, or wrapped by a passphrase",
         description=(
-            "Create a random master key and seal it with `systemd-creds encrypt --user` "
-            "beside the store (master.key.sdcred). `run` and `secrets` then unseal it without "
-            "a prompt. Needs Linux with systemd 256 or newer, and fails rather than fall back "
-            "to a weaker custody. Only for a store that does not exist yet."
+            "Create a random master key for a new store. --custody systemd-creds seals it "
+            "with `systemd-creds encrypt --user` beside the store (master.key.sdcred); `run` "
+            "and `secrets` then unseal it without a prompt (Linux, systemd 256 or newer). "
+            "--custody passphrase keeps it only wrapped under a passphrase asked for on the "
+            "terminal (master.key.fvpw). Neither falls back to a weaker custody. Only for a "
+            "store that does not exist yet."
         ),
     )
     init.add_argument(
-        "--custody", required=True, choices=["systemd-creds"], help="where the key is kept"
+        "--custody",
+        required=True,
+        choices=["systemd-creds", "passphrase"],
+        help="where the key is kept",
+    )
+    sub.add_parser(
+        "protect",
+        parents=[init_options],
+        help="Wrap an existing store's raw key file (master.key) under a passphrase",
+        description=(
+            "Wrap the raw master.key beside a store under a passphrase (master.key.fvpw), "
+            "then overwrite and remove the raw file. The key is unchanged, so the data stays "
+            "readable. Only a raw key file is wrapped; a key in the OS key store or elsewhere "
+            "is not moved."
+        ),
     )
 
     allow = sub.add_parser(
@@ -1179,7 +1223,17 @@ def _cmd_init(args, prog: str) -> int:
         _err(
             prog,
             f"a vault already exists at {vault_dir}; init creates the key for a new store "
-            "only. Moving an existing store's key here is not supported",
+            "only. To wrap the key of an existing store that keeps it in a raw key file, use "
+            "`floorvault secrets protect`",
+        )
+        return 2
+    if args.custody == "passphrase":
+        return _init_passphrase(vault_dir, prog)
+    if passphrase_custody.wrapped_present(vault_dir):
+        _err(
+            prog,
+            f"{vault_dir} already holds a passphrase-wrapped key; a second key would fork "
+            "the store. Nothing was created",
         )
         return 2
     try:
@@ -1204,6 +1258,102 @@ def _cmd_init(args, prog: str) -> int:
         "checked: the credential unseals from this shell. Not checked: unsealing from a "
         "service, a cron job or an SSH session without a login. Losing the credential or "
         "this machine's keys loses the data: keep your own backup of the secrets.",
+    )
+    return 0
+
+
+_WEAK_BELOW_CHARS = 12
+
+
+def _init_passphrase(vault_dir: Path, prog: str) -> int:
+    """``init --custody passphrase``: a new random key, kept only wrapped under a passphrase."""
+    try:
+        phrase = passphrase_custody.prompt_passphrase("New passphrase: ", confirm=True)
+        path = passphrase_custody.create_wrapped_key(vault_dir, phrase)
+    except passphrase_custody.PassphraseCustodyError as exc:
+        raise StoreUnavailable(str(exc)) from None
+    print(f"created {path}")
+    print(
+        f"the master key is wrapped under your passphrase (scrypt, AES-SIV); "
+        f"`run` and `secrets` ask for it on the terminal for the vault at {vault_dir}"
+    )
+    if len(phrase) < _WEAK_BELOW_CHARS:
+        _err(
+            prog,
+            f"warning: a passphrase of fewer than {_WEAK_BELOW_CHARS} characters is cheap to "
+            "guess offline; the wrapping is only as strong as the passphrase",
+        )
+    _err(
+        prog,
+        "checked: the file unwraps with this passphrase. A copy of the disk or a backup "
+        "also needs the passphrase; code running as you while the key is unwrapped, or "
+        "anyone who learns the passphrase, does not. There is no recovery: lose the passphrase "
+        "or the file and the data is gone, so keep your own backup of the secrets.",
+    )
+    _err(
+        prog,
+        "an unattended `run` (an MCP client, a service) cannot answer a prompt and will "
+        "refuse this store until a key agent exists; use this for interactive work, or "
+        "`--custody systemd-creds` or `--key-file` for unattended use.",
+    )
+    return 0
+
+
+def _cmd_protect(args, prog: str) -> int:
+    """``secrets protect``: wrap the raw key file of an existing store under a passphrase."""
+    from .providers.adaptive import protect_key_file
+    from .providers.base import KeyProviderError
+
+    if args.key_env or args.key_file is not None:
+        _err(prog, "protect takes no --key-env or --key-file")
+        return 2
+    vault_dir = _vault_dir(args.vault, os.environ)
+    if passphrase_custody.wrapped_present(vault_dir):
+        _err(prog, f"{vault_dir} is already passphrase-protected; nothing was changed")
+        return 2
+    if systemd_creds.credential_present(vault_dir):
+        _err(
+            prog,
+            f"the key for {vault_dir} is sealed by systemd-creds, not in a raw key file; "
+            "protect wraps only a raw master.key. Nothing was changed",
+        )
+        return 2
+    if not _is_regular_file(vault_dir / "master.key"):
+        _err(
+            prog,
+            f"there is no raw master.key beside {vault_dir}. protect wraps only that file; a "
+            "key in the OS key store, an environment variable or a --key-file is not moved. "
+            "Create a new store with `floorvault secrets init --custody passphrase` and "
+            "move the items across. Nothing was changed",
+        )
+        return 2
+    try:
+        if _is_regular_file(vault_dir / "vault.db"):
+            # A raw master.key can be stale while another key opens the store; a
+            # wrapper of it would then take precedence and open nothing. Prove it
+            # opens the store before anything is written or erased.
+            raw = passphrase_custody.read_raw_key(vault_dir)
+            _check_store_key(open_store(vault_dir, key_bytes=raw), vault_dir)
+            del raw
+        phrase = passphrase_custody.prompt_passphrase("New passphrase: ", confirm=True)
+        path = protect_key_file(phrase, fallback_dir=vault_dir)
+    except passphrase_custody.PassphraseCustodyError as exc:
+        raise StoreUnavailable(str(exc)) from None
+    except KeyProviderError as exc:
+        raise StoreUnavailable(str(exc)) from None
+    print(f"wrapped the key: {path}")
+    print("the raw master.key was overwritten and removed; the key itself is unchanged")
+    if len(phrase) < _WEAK_BELOW_CHARS:
+        _err(
+            prog,
+            f"warning: a passphrase of fewer than {_WEAK_BELOW_CHARS} characters is cheap to "
+            "guess offline",
+        )
+    _err(
+        prog,
+        "the overwrite of the raw file is best effort: on copy-on-write or journaling "
+        "filesystems, SSDs, snapshots and backups, earlier copies of the raw key can "
+        "survive. If the raw key has ever sat on a backed-up disk, treat it as exposed.",
     )
     return 0
 
@@ -2165,6 +2315,7 @@ _SECRETS_COMMANDS = {
     "allow": _cmd_allow,
     "rm": _cmd_rm,
     "seal-listing": _cmd_seal_listing,
+    "protect": _cmd_protect,
     "ref": _cmd_ref,
     "import": _cmd_import,
 }
