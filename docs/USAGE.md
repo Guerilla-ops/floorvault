@@ -636,7 +636,7 @@ hermes plugins enable hermesvault
 ```
 
 The plugin directory is self-contained. Its `plugin.yaml` declares
-`floorvault>=0.2.8,<0.3` and the platform keyring packages, which Hermes installs
+`floorvault>=0.2.8,<0.4` and the platform keyring packages, which Hermes installs
 from PyPI after asking for consent. The library wheel does not include or register
 the plugin. See the [plugin README](../plugins/hermesvault/README.md) for
 configuration, the `hermes hvault` commands and what the plugin reads and writes.

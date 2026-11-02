@@ -18,7 +18,7 @@ hermes plugins enable hermesvault
 
 Hermes asks for consent to install the plugin's Python dependencies, which come
 from PyPI:
-- `floorvault>=0.2.8,<0.3` (0.2.8 is the first release that can hold and read
+- `floorvault>=0.2.8,<0.4` (0.2.8 is the first release that can hold and read
   command bindings, which the plugin enforces; see
   [Command bindings](#command-bindings));
 - `secretstorage` on Linux;
