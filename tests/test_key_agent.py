@@ -730,3 +730,122 @@ def test_deeply_nested_json_is_a_bad_request_not_the_end_of_the_agent(running, m
     }
     assert item.thread.is_alive()
     assert key_agent.status(item.path)["ok"]
+
+
+# ------------------------------------------- limits across sleep and hardening policy
+
+
+def test_the_limit_clock_counts_a_sleep_ignores_a_clock_set_back_and_never_goes_back():
+    monotonic, wall = FakeClock(), FakeClock()
+    clock = key_agent._LimitClock(monotonic, wall)
+    assert clock() == 0.0
+    monotonic.advance(10), wall.advance(10)
+    assert clock() == 10.0  # ordinary running
+    wall.advance(50_000)  # asleep: only the wall clock moved
+    assert clock() == 50_010.0
+    monotonic.advance(5), wall.advance(-7_200)  # the wall clock set back while 5 s pass
+    assert clock() == 50_015.0
+    monotonic.advance(1), wall.advance(1)  # carries on normally from the wrong time: no rewind
+    assert clock() == 50_016.0
+    wall.advance(3_600)  # a forward step (NTP, a person) counts in full: limits end early
+    assert clock() == 53_616.0
+
+
+def test_an_agent_that_slept_past_its_limits_wipes_its_key_when_the_machine_wakes(vault, env):
+    monotonic, wall = FakeClock(), FakeClock()
+    item = Running(vault, env, key_agent._LimitClock(monotonic, wall), ttl=8 * 3600, idle=3600)
+    try:
+        assert key_agent.status(item.path)["ok"]
+        wall.advance(14 * 3600)  # the machine slept overnight: the monotonic clock stood still
+        item.join(10)
+        assert item.key.is_wiped and not item.path.exists()
+        assert item.agent.reason == "the time limit passed"
+    finally:
+        item.stop()
+
+
+def test_an_agent_without_a_clock_of_its_own_uses_the_limit_clock(monkeypatch):
+    made = []
+
+    class Spy:
+        def __init__(self):
+            made.append(self)
+
+        def __call__(self):
+            return 0.0
+
+    monkeypatch.setattr(key_agent, "_LimitClock", Spy)
+    key_agent.Agent(object(), Path("/tmp/not-used.sock"))
+    assert len(made) == 1
+
+
+def test_the_c_library_is_found_even_where_find_library_fails(monkeypatch):
+    import ctypes.util
+
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+    libc = key_agent._libc()
+    assert libc is not None and hasattr(libc, "prctl" if sys.platform == "linux" else "ptrace")
+
+
+@pytest.mark.parametrize(
+    ("report", "named"),
+    [
+        ({"core_dumps_off": True, "ptrace_blocked": False}, "block debuggers"),
+        ({"core_dumps_off": False, "ptrace_blocked": True}, "turn core dumps off"),
+        (
+            {"core_dumps_off": False, "ptrace_blocked": False},
+            "turn core dumps off or block debuggers",
+        ),
+    ],
+)
+def test_the_agent_refuses_to_start_unprotected_and_holds_nothing(
+    vault, env, monkeypatch, report, named
+):
+    monkeypatch.setattr(key_agent, "harden_process", lambda: dict(report))
+    with pytest.raises(key_agent.AgentError, match=f"could not {named}") as raised:
+        key_agent.start(vault, b"k" * 32, environ=env, app_context=APP_CONTEXT)
+    assert "--allow-unhardened" in str(raised.value) and "nothing is holding the key" in str(
+        raised.value
+    )
+    path = key_agent.socket_path(vault, env)
+    assert not path.exists()
+    with pytest.raises(key_agent.AgentNotRunning):
+        key_agent.status(path)
+
+
+def test_allow_unhardened_starts_the_agent_and_status_says_what_is_missing(vault, env, monkeypatch):
+    monkeypatch.setattr(
+        key_agent, "harden_process", lambda: {"core_dumps_off": False, "ptrace_blocked": False}
+    )
+    info = key_agent.start(
+        vault, b"k" * 32, environ=env, app_context=APP_CONTEXT, allow_unhardened=True
+    )
+    path = key_agent.socket_path(vault, env)
+    pid = info["pid"]
+    try:
+        assert info["core_dumps_off"] is False and info["ptrace_blocked"] is False
+        key_agent.lock(path)
+        assert wait_until(lambda: not alive(pid))
+    finally:
+        if alive(pid):
+            os.kill(pid, 9)
+
+
+def test_unlock_refuses_an_unprotected_agent_unless_told_otherwise(vault, env, monkeypatch):
+    monkeypatch.setattr(
+        key_agent, "harden_process", lambda: {"core_dumps_off": True, "ptrace_blocked": False}
+    )
+    args = ["--vault", str(vault)]
+    code, out, err, asked = cli(["unlock", *args], env, [PHRASE])
+    assert code == 1 and "could not block debuggers" in err and "--allow-unhardened" in err
+    assert PHRASE not in out + err
+    assert not key_agent.socket_path(vault, env).exists()
+    code, out, err, _ = cli(["unlock", "--allow-unhardened", *args], env, [PHRASE])
+    pid = key_agent.status(key_agent.socket_path(vault, env))["pid"]
+    try:
+        assert code == 0 and "ptrace blocked: no" in out
+        assert "WARNING" in err and "not fully protected" in err
+    finally:
+        cli(["lock", *args], env)
+        if not wait_until(lambda: not alive(pid)) and alive(pid):
+            os.kill(pid, 9)

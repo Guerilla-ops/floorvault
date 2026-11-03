@@ -654,6 +654,11 @@ and the data is gone.
   holding the key until it has run for `--ttl` (default 8h), sat unused for
   `--idle` (default 1h), or `floorvault lock` or `SIGTERM` stops it; the key is
   then wiped and the socket removed. `floorvault unlock --status` reports one.
+  The limits keep counting while the machine sleeps (a laptop closed overnight does
+  not keep the key for the rest of the day): the agent measures time with the larger of
+  the monotonic and wall clocks' steps and never goes backwards, so setting the clock
+  back extends nothing, and a forward step (a time sync, a person) ends the agent early,
+  which is the safe direction.
   While it runs, `floorvault run` and `floorvault secrets` for that store use it
   instead of asking for the passphrase, with no terminal needed. **The agent never
   hands out the key.** It encrypts and decrypts for the caller: the store code is given
@@ -678,9 +683,16 @@ and the data is gone.
     many short requests.
   - The agent keeps the key in locked, dump-excluded memory where the platform allows,
     turns core dumps off, and sets `PR_SET_DUMPABLE=0` (Linux) or `PT_DENY_ATTACH`
-    (macOS) to make `ptrace` and `/proc/<pid>/mem` harder. `unlock` prints which of
-    these took effect. Copies of the key made before it reached that memory (the
-    `unlock` process's own, and the copy the forked agent inherits) are not wiped.
+    (macOS) so another process running as you cannot read `/proc/<pid>/mem` or attach a
+    debugger (checked on Linux: both are refused; without it both succeed and the key
+    itself, not just the agent's help, can be taken, and it outlives the agent).
+    **`unlock` refuses to start an agent that could not do both** (core dumps off,
+    debuggers blocked) and says which failed; `--allow-unhardened` starts it anyway,
+    with a warning, and `unlock --status` keeps showing what is missing. `unlock`
+    prints which protections took effect. Copies of the key made before it reached that
+    memory (the `unlock` process's own, and the copy the forked agent inherits) are not
+    wiped, and decrypted values the agent handles stay in ordinary memory until it
+    exits; the debugger block above is what protects them.
   - **What it does not stop:** code running as you can connect to the socket and ask the
     agent to decrypt anything in the store (it is a decryption oracle for you, as a key
     file would be a key for you; the per-item command bindings `run` checks are checked by

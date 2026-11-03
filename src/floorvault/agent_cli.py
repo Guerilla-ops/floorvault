@@ -941,6 +941,14 @@ def add_agent_parsers(subparsers) -> None:
         help="stop after this long without use (default: 1h)",
     )
     unlock.add_argument(
+        "--allow-unhardened",
+        action="store_true",
+        help=(
+            "start the agent even if it cannot turn core dumps off or block debuggers from "
+            "reading its memory (a process running as you could then take the key itself)"
+        ),
+    )
+    unlock.add_argument(
         "--status",
         action="store_true",
         help="report whether an agent is running for the store, and unlock nothing",
@@ -993,9 +1001,22 @@ def agent_main(args: argparse.Namespace) -> int:
         if key is None:
             _err(prog, "the passphrase-wrapped key disappeared while it was being unlocked")
             return 1
-        info = key_agent.start(vault_dir, key, ttl=ttl, idle=idle, app_context=APP_CONTEXT)
+        info = key_agent.start(
+            vault_dir,
+            key,
+            ttl=ttl,
+            idle=idle,
+            app_context=APP_CONTEXT,
+            allow_unhardened=args.allow_unhardened,
+        )
         del key
         print(_describe_agent(info, vault_dir))
+        if not (info.get("core_dumps_off") and info.get("ptrace_blocked")):
+            _err(
+                prog,
+                "WARNING: this agent is not fully protected (see above); a process running "
+                "as you could read the key out of its memory. `floorvault lock` stops it.",
+            )
         _err(
             prog,
             "`floorvault run` and `floorvault secrets` for this store use the agent now; "

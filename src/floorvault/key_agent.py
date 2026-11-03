@@ -192,20 +192,38 @@ def peer_credentials(conn: socket.socket) -> tuple[Optional[int], int]:
 # --------------------------------------------------------------------- hardening
 
 
-def harden_process() -> dict[str, bool]:
-    """Best-effort limits on how this process can be inspected. Reports what took effect."""
+def _libc() -> Any:
+    """The C library, or None. The running program's own symbols first: ``find_library``
+    can fail (musl, minimal images) where the process already has libc loaded."""
     import ctypes
     import ctypes.util
 
+    probe = "prctl" if sys.platform == "linux" else "ptrace"
+    with contextlib.suppress(OSError, AttributeError):
+        libc = ctypes.CDLL(None, use_errno=True)
+        getattr(libc, probe)
+        return libc
+    with contextlib.suppress(OSError):
+        name = ctypes.util.find_library("c")
+        if name:
+            return ctypes.CDLL(name, use_errno=True)
+    return None
+
+
+def harden_process() -> dict[str, bool]:
+    """Limits on how this process can be inspected. Reports what took effect.
+
+    Best effort here; whether the agent may run without them is decided by its starter
+    (``start`` refuses unless ``allow_unhardened``).
+    """
     from .memory import disable_core_dumps
 
     report = {"core_dumps_off": False, "ptrace_blocked": False}
     with contextlib.suppress(Exception):
         report["core_dumps_off"] = bool(disable_core_dumps())
-    libc_name = ctypes.util.find_library("c")
-    if libc_name:
+    libc = _libc()
+    if libc is not None:
         with contextlib.suppress(Exception):
-            libc = ctypes.CDLL(libc_name, use_errno=True)
             if sys.platform == "linux":
                 report["ptrace_blocked"] = libc.prctl(4, 0, 0, 0, 0) == 0  # PR_SET_DUMPABLE
             elif sys.platform == "darwin":
@@ -322,13 +340,41 @@ def _coordinates(request: Mapping[str, Any], *, key_id_default: Optional[int]) -
 # ----------------------------------------------------------------------- server
 
 
+class _LimitClock:
+    """Seconds the agent has been alive, for its total and idle limits.
+
+    ``time.monotonic`` does not count time the machine is suspended (Linux
+    ``CLOCK_MONOTONIC``; Python's macOS clock stops in sleep too), so a laptop that sleeps
+    overnight would keep the key far past its limits in real time. The wall clock does
+    keep going, but it can be set back. So each step advances by the larger of the two
+    clocks' steps, and never backwards: a sleep counts in full, setting the wall clock
+    back extends nothing, and a forward step (NTP, a person) ends the limits early,
+    which is the safe direction.
+    """
+
+    def __init__(
+        self,
+        monotonic: Callable[[], float] = time.monotonic,
+        wall: Callable[[], float] = time.time,
+    ) -> None:
+        self._monotonic, self._wall = monotonic, wall
+        self._last_monotonic, self._last_wall = monotonic(), wall()
+        self._now = 0.0
+
+    def __call__(self) -> float:
+        monotonic, wall = self._monotonic(), self._wall()
+        self._now += max(monotonic - self._last_monotonic, wall - self._last_wall, 0.0)
+        self._last_monotonic, self._last_wall = monotonic, wall
+        return self._now
+
+
 class Agent:
     """Holds ``key`` until ``ttl`` seconds after start, ``idle`` seconds without use, or a stop.
 
     ``status`` does not count as use (a monitor must not keep the key alive);
     ``lock`` stops the agent; ``encrypt`` and ``decrypt`` are use, and are served by
     ``crypto`` (a ``FloorVault`` over the same key) when one is given. ``clock`` and
-    ``poll`` exist for tests.
+    ``poll`` exist for tests; the default clock keeps counting while the machine sleeps.
     """
 
     def __init__(
@@ -338,7 +384,7 @@ class Agent:
         *,
         ttl: int = DEFAULT_TTL,
         idle: int = DEFAULT_IDLE,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Optional[Callable[[], float]] = None,
         poll: float = 0.5,
         hardening: Optional[Mapping[str, bool]] = None,
         identity: Optional[tuple[int, int]] = None,
@@ -351,7 +397,8 @@ class Agent:
         self._identity = identity
         self.ttl = ttl
         self.idle = idle
-        self._clock = clock
+        self._clock = clock if clock is not None else _LimitClock()
+        clock = self._clock
         self._poll = poll
         self._hardening = dict(hardening or {})
         self._started = clock()
@@ -750,11 +797,17 @@ def start(
     idle: int = DEFAULT_IDLE,
     environ: Optional[Mapping[str, str]] = None,
     app_context: str,
+    allow_unhardened: bool = False,
 ) -> dict[str, Any]:
     """Start a background agent holding ``key`` for ``vault_dir``; return its first status.
 
     ``app_context`` is the application context the store's records were sealed under; the
     agent encrypts and decrypts with it, so it must be the CLI's own (``APP_CONTEXT``).
+
+    The agent refuses to start unless it could turn core dumps off and block debuggers
+    from reading its memory (a same-user process could otherwise take the key itself, which
+    outlives the agent); ``allow_unhardened`` starts it anyway, and ``status`` still reports
+    what took effect.
 
     The listener is bound before forking, so a refusal (a bad directory, an agent
     already running) is reported here. The agent is a daemon: a second fork after
@@ -774,7 +827,18 @@ def start(
         listener.close()
         raise AgentError(f"cannot start the agent ({type(exc).__name__})") from None
     if first == 0:  # pragma: no cover - runs in the child
-        _daemon(listener, path, key, ttl, idle, identity, app_context, read_end, write_end)
+        _daemon(
+            listener,
+            path,
+            key,
+            ttl,
+            idle,
+            identity,
+            app_context,
+            allow_unhardened,
+            read_end,
+            write_end,
+        )
         os._exit(0)
     os.close(write_end)
     listener.close()  # the daemon owns it now
@@ -782,9 +846,22 @@ def start(
         os.waitpid(first, 0)
     try:
         with os.fdopen(read_end, "rb") as pipe:
-            ready = pipe.read(1)
+            ready = pipe.read(3)
     except OSError:
         ready = b""
+    if ready[:1] == b"H":
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        missing = [
+            what
+            for what, flag in (("turn core dumps off", ready[1:2]), ("block debuggers", ready[2:3]))
+            if flag != b"1"
+        ]
+        raise AgentError(
+            f"the agent could not {' or '.join(missing)}, so a process running as you could "
+            "read the key out of its memory; nothing is holding the key. Pass "
+            "--allow-unhardened to start it anyway"
+        )
     if ready != b"1":
         with contextlib.suppress(OSError):
             os.unlink(path)
@@ -820,6 +897,7 @@ def _daemon(  # pragma: no cover - runs in the forked child
     idle: int,
     identity: tuple[int, int],
     app_context: str,
+    allow_unhardened: bool,
     read_end: int,
     write_end: int,
 ) -> None:
@@ -837,6 +915,14 @@ def _daemon(  # pragma: no cover - runs in the forked child
         os.chdir("/")
         _close_inherited_descriptors({listener.fileno(), write_end})
         report = harden_process()
+        if not allow_unhardened and not (report["core_dumps_off"] and report["ptrace_blocked"]):
+            flags = (b"1" if report["core_dumps_off"] else b"0") + (
+                b"1" if report["ptrace_blocked"] else b"0"
+            )
+            os.write(write_end, b"H" + flags)
+            os.close(write_end)
+            write_end = -1
+            return
         from .core import FloorVault
         from .memory import HardenedMemoryKey
 
@@ -853,6 +939,6 @@ def _daemon(  # pragma: no cover - runs in the forked child
         code = 0
     except BaseException:  # noqa: BLE001 - a daemon must not raise into the caller's stack
         with contextlib.suppress(OSError):
-            os.close(write_end)
+            os.close(write_end)  # -1 when already closed: the error is suppressed
     finally:
         os._exit(code)
