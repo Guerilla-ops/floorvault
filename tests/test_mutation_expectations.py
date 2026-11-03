@@ -149,7 +149,9 @@ def test_platform_overrides_are_declared_explicitly():
     """
     module = _load()
     relaxed = [mutant.id for mutant in module.MUTATIONS if mutant.expect_on_windows == "survived"]
-    # AUD-2 (CLI audit): like BIND-7, only a symlink test can kill it.
+    # The key agent's suite is skipped on Windows (no AF_UNIX peer credentials), so its
+    # mutants cannot be killed there. AUD-2 (CLI audit): like BIND-7, only a symlink test
+    # can kill it.
     assert relaxed == [
         "DS-5",
         "PC-18",
@@ -159,6 +161,7 @@ def test_platform_overrides_are_declared_explicitly():
         "DUR-4",
         "BIND-7",
         "HIM-4",
+        *[f"AGT-{i}" for i in range(1, 36)],
         "AUD-2",
     ], f"unexpected set of platform-relaxed mutants: {relaxed}"
     # The reverse: a guard that exists only on Windows is dead code elsewhere,
