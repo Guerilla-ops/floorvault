@@ -39,6 +39,7 @@ import hashlib
 import json
 import os
 import re
+import select
 import selectors
 import signal
 import socket
@@ -59,6 +60,8 @@ DEFAULT_IDLE = 3600
 #: client may hold the agent. The peer's uid is checked before anything is read.
 MAX_MESSAGE = 4 * 1024 * 1024
 IO_TIMEOUT = 5.0
+#: A master key is 32 bytes; the agent reads exactly that from its starter.
+KEY_BYTES = 32
 #: The longest socket path that fits ``sockaddr_un`` on both Linux (108) and macOS (104).
 MAX_SOCKET_PATH = 100
 _OPS = ("status", "lock", "encrypt", "decrypt")
@@ -137,7 +140,13 @@ def store_id(vault_dir: Path) -> str:
 
 
 def socket_path(vault_dir: Path, environ: Mapping[str, str]) -> Path:
-    path = runtime_dir(vault_dir, environ) / f"{store_id(vault_dir)}.sock"
+    """The agent's socket, with links in its directory's path resolved once, here.
+
+    Every later bind and connect then uses a path with no symlink in it, so swapping a link
+    cannot redirect them; the directories above it are checked by :func:`check_private_dir`.
+    """
+    directory = Path(os.path.realpath(runtime_dir(vault_dir, environ)))
+    path = directory / f"{store_id(vault_dir)}.sock"
     if len(os.fsencode(path)) > MAX_SOCKET_PATH:
         raise AgentError(
             f"the socket path {path} is too long for a Unix socket; set $XDG_RUNTIME_DIR "
@@ -147,18 +156,32 @@ def socket_path(vault_dir: Path, environ: Mapping[str, str]) -> Path:
 
 
 def check_private_dir(path: Path, *, create: bool = False) -> None:
-    """Require ``path`` to be a real directory, owned by this user, with no group/other access.
+    """Require ``path`` to be a real directory, owned by this user, with no group/other access,
+    below directories that only this user (or root) can change.
 
     ``lstat``: a symlink is refused, however it resolves. With ``create`` a missing
-    final component is made 0700 (its parent must exist).
+    final component is made 0700 (its parent must exist); if the checks then refuse
+    it, the directory this call made is removed again.
     """
+    created = False
     if create:
         try:
             os.mkdir(path, 0o700)
+            created = True
         except FileExistsError:
             pass
         except OSError as exc:
             raise AgentError(f"cannot create {path} ({type(exc).__name__})") from None
+    try:
+        _check_private_dir(path)
+    except AgentError:
+        if created:
+            with contextlib.suppress(OSError):
+                os.rmdir(path)
+        raise
+
+
+def _check_private_dir(path: Path) -> None:
     try:
         info = os.lstat(path)
     except OSError as exc:
@@ -169,6 +192,53 @@ def check_private_dir(path: Path, *, create: bool = False) -> None:
         raise AgentError(f"{path} is owned by another user; refusing it")
     if info.st_mode & 0o077:
         raise AgentError(f"{path} is accessible by group or others; run chmod 700 on it")
+    _check_ancestors(path)
+
+
+def _group_is_only_us(gid: int) -> bool:
+    """Whether ``gid`` is a group of ours that nobody else belongs to (a user-private group)."""
+    if gid != os.getegid() and gid not in os.getgroups():
+        return False
+    try:
+        import grp
+        import pwd
+
+        me = pwd.getpwuid(os.geteuid()).pw_name
+        if any(member != me for member in grp.getgrgid(gid).gr_mem):
+            return False
+        return all(entry.pw_uid == os.geteuid() for entry in pwd.getpwall() if entry.pw_gid == gid)
+    except (ImportError, KeyError, OSError):
+        return False  # cannot tell: not ours alone
+
+
+def _check_ancestors(path: Path) -> None:
+    """Every directory above ``path`` must be one that only this user (or root) can rename entries in.
+
+    ``lstat`` stops a link in ``path`` itself, but anyone who can write to a directory above
+    it can rename it or swap a link there, and a client would connect to, or an agent bind in,
+    a different place. So, along the resolved path from ``/``, each ancestor must be owned by
+    this user or root, and not writable by group or others, except a sticky directory (``/tmp``:
+    entries there cannot be renamed by other users) or a group that is ours alone.
+    """
+    resolved = Path(os.path.realpath(path))
+    for ancestor in reversed(resolved.parents):
+        try:
+            info = os.lstat(ancestor)
+        except OSError as exc:
+            raise AgentError(f"cannot check {ancestor} ({type(exc).__name__})") from None
+        if not stat.S_ISDIR(info.st_mode):
+            raise AgentError(f"{ancestor} (above {path}) is not a directory; refusing it")
+        if info.st_uid not in (0, os.geteuid()):
+            raise AgentError(f"{ancestor} (above {path}) is owned by another user; refusing it")
+        if info.st_mode & stat.S_ISVTX:
+            continue
+        if info.st_mode & stat.S_IWOTH or (
+            info.st_mode & stat.S_IWGRP and not _group_is_only_us(info.st_gid)
+        ):
+            raise AgentError(
+                f"{ancestor} (above {path}) can be changed by other users, who could swap "
+                "what the path leads to; run chmod go-w on it or use a directory elsewhere"
+            )
 
 
 # ------------------------------------------------------------------- peer uid
@@ -548,19 +618,24 @@ class Agent:
         self._remove_socket()
 
     def _remove_socket(self) -> None:
-        """Remove the socket file only if it is still the one this agent bound.
+        """Remove the socket file only if it is still the one this agent bound."""
+        _unlink_socket(self.sock_path, self._identity)
 
-        Under the store's lifecycle lock, so it cannot interleave with another
-        unlock that is probing, replacing or binding the same path.
-        """
-        with contextlib.suppress(Exception):
-            with exclusive_lock(_lock_path(self.sock_path), timeout=5.0):
-                try:
-                    info = os.lstat(self.sock_path)
-                except FileNotFoundError:
-                    return
-                if self._identity is None or (info.st_dev, info.st_ino) == self._identity:
-                    os.unlink(self.sock_path)
+
+def _unlink_socket(sock_path: Path, identity: Optional[tuple[int, int]]) -> None:
+    """Unlink ``sock_path`` only if it is still the socket with ``identity`` (``(st_dev, st_ino)``).
+
+    Under the store's lifecycle lock, so it cannot interleave with another unlock that is
+    probing, replacing or binding the same path.
+    """
+    with contextlib.suppress(Exception):
+        with exclusive_lock(_lock_path(sock_path), timeout=5.0):
+            try:
+                info = os.lstat(sock_path)
+            except FileNotFoundError:
+                return
+            if identity is None or (info.st_dev, info.st_ino) == identity:
+                os.unlink(sock_path)
 
 
 # ------------------------------------------------------------------ client side
@@ -789,6 +864,177 @@ def _bind(sock_path: Path) -> socket.socket:
         return listener
 
 
+class PendingAgent:
+    """A forked agent that is bound, protected and waiting for its key.
+
+    The agent is forked **before** the passphrase is asked for, and receives the key over a
+    pipe into a buffer it zeroes after copying, so nothing the caller held while prompting
+    (the typed passphrase, the derived wrapping key, the unwrapped key) is in the agent's
+    memory image. ``send_key`` delivers the key; ``cancel`` (or a closed pipe) makes the
+    agent exit and remove its socket.
+    """
+
+    def __init__(self, path: Path, key_fd: int, ready_fd: int) -> None:
+        self.path = path
+        self._key_fd = key_fd
+        self._ready_fd = ready_fd
+        self._done = (
+            False  # the key was delivered (or the agent was cancelled): nothing left to undo
+        )
+
+    def _close_key(self) -> None:
+        if self._key_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(self._key_fd)
+            self._key_fd = -1
+
+    def _finish(self) -> None:
+        self._close_key()
+        if self._ready_fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(self._ready_fd)
+            self._ready_fd = -1
+
+    def send_key(self, key: bytes) -> dict[str, Any]:
+        """Hand the agent its key and return its first status."""
+        if self._done:
+            raise AgentError("the agent was already given its key or cancelled")
+        try:
+            if len(key) != KEY_BYTES:
+                raise AgentError(f"the key must be {KEY_BYTES} bytes")
+            try:
+                os.write(self._key_fd, key)
+            except OSError:
+                raise AgentError("the agent went away before it was given the key") from None
+            self._close_key()
+            if _read_ready(self._ready_fd, 1) != b"1":
+                raise AgentError("the agent did not start; nothing is holding the key")
+        except BaseException:
+            self.cancel()
+            raise
+        self._done = True
+        self._finish()
+        return status(self.path)
+
+    def cancel(self) -> None:
+        """Stop the agent without a key and wait until its socket is gone.
+
+        Does nothing once the key was delivered: from then on ``lock`` is how it stops.
+        """
+        if self._done:
+            return
+        self._done = True
+        self._close_key()
+        if self._ready_fd >= 0:
+            _read_ready(self._ready_fd, 1, until_eof=True)
+        self._finish()
+        info = None
+        with contextlib.suppress(OSError):
+            info = os.lstat(self.path)
+        if info is not None and stat.S_ISSOCK(info.st_mode):
+            with contextlib.suppress(OSError):
+                os.unlink(self.path)  # the agent died before it could remove it
+
+
+def _read_ready(fd: int, count: int, *, until_eof: bool = False, timeout: float = 15.0) -> bytes:
+    """Up to ``count`` bytes from a pipe (all of it, then EOF, with ``until_eof``), or b"" on a timeout."""
+    deadline = time.monotonic() + timeout
+    data = b""
+    while until_eof or len(data) < count:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return data
+        ready, _w, _x = select.select([fd], [], [], remaining)
+        if not ready:
+            continue
+        chunk = os.read(fd, max(count - len(data), 1) if not until_eof else 64)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def prepare(
+    vault_dir: Path,
+    *,
+    ttl: int = DEFAULT_TTL,
+    idle: int = DEFAULT_IDLE,
+    environ: Optional[Mapping[str, str]] = None,
+    app_context: str,
+    allow_unhardened: bool = False,
+) -> PendingAgent:
+    """Bind the socket, fork the agent, and have it protect itself; it then waits for its key.
+
+    ``app_context`` is the application context the store's records were sealed under; the
+    agent encrypts and decrypts with it, so it must be the CLI's own (``APP_CONTEXT``).
+
+    The agent refuses to run unless it could turn core dumps off and block debuggers
+    from reading its memory (a same-user process could otherwise take the key itself, which
+    outlives the agent); ``allow_unhardened`` runs it anyway, and ``status`` still reports
+    what took effect. That is decided here, before anyone is asked for a passphrase.
+
+    The listener is bound before forking, so a refusal (a bad directory, an agent
+    already running) is reported here. The agent is a daemon: a second fork after
+    ``setsid``, standard streams on ``/dev/null``, core dumps off.
+    """
+    if not SUPPORTED:
+        raise AgentError("the key agent needs Linux or macOS")
+    environ = os.environ if environ is None else environ
+    path = socket_path(vault_dir, environ)
+    listener = _bind(path)
+    identity = _socket_identity(path)
+    key_read, key_write = os.pipe()
+    ready_read, ready_write = os.pipe()
+    try:
+        first = os.fork()
+    except OSError as exc:
+        for fd in (key_read, key_write, ready_read, ready_write):
+            os.close(fd)
+        listener.close()
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise AgentError(f"cannot start the agent ({type(exc).__name__})") from None
+    if first == 0:  # pragma: no cover - runs in the child
+        os.close(key_write)
+        os.close(ready_read)
+        _daemon(
+            listener,
+            path,
+            ttl,
+            idle,
+            identity,
+            app_context,
+            allow_unhardened,
+            key_read,
+            ready_write,
+        )
+        os._exit(0)
+    os.close(key_read)
+    os.close(ready_write)
+    listener.close()  # the daemon owns it now
+    with contextlib.suppress(ChildProcessError):
+        os.waitpid(first, 0)
+    pending = PendingAgent(path, key_write, ready_read)
+    verdict = _read_ready(ready_read, 1)
+    if verdict == b"H":
+        flags = _read_ready(ready_read, 2)
+        pending.cancel()
+        missing = [
+            what
+            for what, flag in (("turn core dumps off", flags[:1]), ("block debuggers", flags[1:2]))
+            if flag != b"1"
+        ]
+        raise AgentError(
+            f"the agent could not {' or '.join(missing)}, so a process running as you could "
+            "read the key out of its memory; nothing is holding the key. Pass "
+            "--allow-unhardened to start it anyway"
+        )
+    if verdict != b"K":
+        pending.cancel()
+        raise AgentError("the agent did not start; nothing is holding the key")
+    return pending
+
+
 def start(
     vault_dir: Path,
     key: bytes,
@@ -801,72 +1047,19 @@ def start(
 ) -> dict[str, Any]:
     """Start a background agent holding ``key`` for ``vault_dir``; return its first status.
 
-    ``app_context`` is the application context the store's records were sealed under; the
-    agent encrypts and decrypts with it, so it must be the CLI's own (``APP_CONTEXT``).
-
-    The agent refuses to start unless it could turn core dumps off and block debuggers
-    from reading its memory (a same-user process could otherwise take the key itself, which
-    outlives the agent); ``allow_unhardened`` starts it anyway, and ``status`` still reports
-    what took effect.
-
-    The listener is bound before forking, so a refusal (a bad directory, an agent
-    already running) is reported here. The agent is a daemon: a second fork after
-    ``setsid``, standard streams on ``/dev/null``, core dumps off. The caller's own
-    copy of ``key`` lives until the caller exits; ``bytes`` cannot be wiped.
+    For a caller that already has the key (the CLI uses :func:`prepare` so that the agent is
+    forked before the passphrase is asked for). The caller's own copy of ``key`` lives
+    until the caller exits; ``bytes`` cannot be wiped.
     """
-    if not SUPPORTED:
-        raise AgentError("the key agent needs Linux or macOS")
-    environ = os.environ if environ is None else environ
-    path = socket_path(vault_dir, environ)
-    listener = _bind(path)
-    identity = _socket_identity(path)
-    read_end, write_end = os.pipe()
-    try:
-        first = os.fork()
-    except OSError as exc:
-        listener.close()
-        raise AgentError(f"cannot start the agent ({type(exc).__name__})") from None
-    if first == 0:  # pragma: no cover - runs in the child
-        _daemon(
-            listener,
-            path,
-            key,
-            ttl,
-            idle,
-            identity,
-            app_context,
-            allow_unhardened,
-            read_end,
-            write_end,
-        )
-        os._exit(0)
-    os.close(write_end)
-    listener.close()  # the daemon owns it now
-    with contextlib.suppress(ChildProcessError):
-        os.waitpid(first, 0)
-    try:
-        with os.fdopen(read_end, "rb") as pipe:
-            ready = pipe.read(3)
-    except OSError:
-        ready = b""
-    if ready[:1] == b"H":
-        with contextlib.suppress(OSError):
-            os.unlink(path)
-        missing = [
-            what
-            for what, flag in (("turn core dumps off", ready[1:2]), ("block debuggers", ready[2:3]))
-            if flag != b"1"
-        ]
-        raise AgentError(
-            f"the agent could not {' or '.join(missing)}, so a process running as you could "
-            "read the key out of its memory; nothing is holding the key. Pass "
-            "--allow-unhardened to start it anyway"
-        )
-    if ready != b"1":
-        with contextlib.suppress(OSError):
-            os.unlink(path)
-        raise AgentError("the agent did not start; nothing is holding the key")
-    return status(path)
+    pending = prepare(
+        vault_dir,
+        ttl=ttl,
+        idle=idle,
+        environ=environ,
+        app_context=app_context,
+        allow_unhardened=allow_unhardened,
+    )
+    return pending.send_key(key)
 
 
 def _close_inherited_descriptors(keep: set[int]) -> None:
@@ -889,21 +1082,40 @@ def _close_inherited_descriptors(keep: set[int]) -> None:
                 os.close(fd)
 
 
+def _read_key_into_buffer(fd: int) -> Optional[bytearray]:  # pragma: no cover - child
+    """Exactly ``KEY_BYTES`` from the pipe, read straight into a mutable buffer (no ``bytes``
+    copy), or None if the pipe closed first."""
+    buffer = bytearray(KEY_BYTES)
+    view = memoryview(buffer)
+    got = 0
+    try:
+        while got < KEY_BYTES:
+            count = os.readv(fd, [view[got:]])
+            if count == 0:
+                break
+            got += count
+    finally:
+        view.release()
+    if got != KEY_BYTES:
+        buffer[:] = bytes(KEY_BYTES)
+        return None
+    return buffer
+
+
 def _daemon(  # pragma: no cover - runs in the forked child
     listener: socket.socket,
     path: Path,
-    key: bytes,
     ttl: int,
     idle: int,
     identity: tuple[int, int],
     app_context: str,
     allow_unhardened: bool,
-    read_end: int,
-    write_end: int,
+    key_read: int,
+    ready_write: int,
 ) -> None:
     code = 1
+    served = False
     try:
-        os.close(read_end)
         os.setsid()
         if os.fork() != 0:
             os._exit(0)  # the first child ends; the daemon is not a session leader
@@ -913,32 +1125,51 @@ def _daemon(  # pragma: no cover - runs in the forked child
         if devnull > 2:
             os.close(devnull)
         os.chdir("/")
-        _close_inherited_descriptors({listener.fileno(), write_end})
+        _close_inherited_descriptors({listener.fileno(), key_read, ready_write})
         report = harden_process()
         if not allow_unhardened and not (report["core_dumps_off"] and report["ptrace_blocked"]):
             flags = (b"1" if report["core_dumps_off"] else b"0") + (
                 b"1" if report["ptrace_blocked"] else b"0"
             )
-            os.write(write_end, b"H" + flags)
-            os.close(write_end)
-            write_end = -1
-            return
-        from .core import FloorVault
-        from .memory import HardenedMemoryKey
+            os.write(ready_write, b"H" + flags)
+        else:
+            os.write(ready_write, b"K")  # protected, bound, and waiting for the key
+            from .core import FloorVault
+            from .memory import HardenedMemoryKey
 
-        held = HardenedMemoryKey(bytearray(key))
-        crypto = FloorVault(held, app_instance_id=app_context)
-        agent = Agent(
-            held, path, ttl=ttl, idle=idle, hardening=report, identity=identity, crypto=crypto
-        )
-        for number in (signal.SIGTERM, signal.SIGINT):
-            signal.signal(number, lambda *_a: agent.request_stop("signalled"))
-        os.write(write_end, b"1")
-        os.close(write_end)
-        agent.serve(listener)
-        code = 0
+            key = _read_key_into_buffer(key_read)
+            os.close(key_read)
+            if key is not None:
+                held = HardenedMemoryKey(key)  # copies the key and zeroes the buffer it was given
+                del key
+                crypto = FloorVault(held, app_instance_id=app_context)
+                agent = Agent(
+                    held,
+                    path,
+                    ttl=ttl,
+                    idle=idle,
+                    hardening=report,
+                    identity=identity,
+                    crypto=crypto,
+                )
+                for number in (signal.SIGTERM, signal.SIGINT):
+                    signal.signal(number, lambda *_a: agent.request_stop("signalled"))
+                os.write(ready_write, b"1")
+                os.close(ready_write)
+                ready_write = -1
+                served = True
+                agent.serve(listener)  # wipes the key and removes the socket when it ends
+                code = 0
     except BaseException:  # noqa: BLE001 - a daemon must not raise into the caller's stack
-        with contextlib.suppress(OSError):
-            os.close(write_end)  # -1 when already closed: the error is suppressed
+        pass
     finally:
+        if not served:
+            # Refused, cancelled or failed before serving: close the listener and remove the
+            # socket this process bound.
+            with contextlib.suppress(Exception):
+                listener.close()
+            _unlink_socket(path, identity)
+        if ready_write >= 0:
+            with contextlib.suppress(OSError):
+                os.close(ready_write)
         os._exit(code)

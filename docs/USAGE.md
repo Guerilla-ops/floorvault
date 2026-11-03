@@ -672,8 +672,12 @@ and the data is gone.
   What is in place:
   - The socket is `$XDG_RUNTIME_DIR/floorvault/<id>.sock`, else `<store>/agent/` (never
     `/tmp`). The directory is checked to be a real directory, owned by you, mode 0700,
-    with no symlink, before every bind and connect; the socket is 0600; the peer's uid
-    is checked on every connection (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS),
+    with no symlink, before every bind and connect, and so is everything above it:
+    links in the path are resolved once, and each directory on the resolved path must be
+    owned by you or root and not writable by group or others (a sticky directory such
+    as `/tmp`, or a group that only you belong to, is fine), because anyone who can
+    change a directory above could swap what the path leads to; the socket is 0600; the
+    peer's uid is checked on every connection (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS),
     and the client checks that the server is you. The `<id>` comes from the store's
     resolved path and its wrapped key file, so an agent answers only for the store it
     was unlocked for.
@@ -689,10 +693,14 @@ and the data is gone.
     **`unlock` refuses to start an agent that could not do both** (core dumps off,
     debuggers blocked) and says which failed; `--allow-unhardened` starts it anyway,
     with a warning, and `unlock --status` keeps showing what is missing. `unlock`
-    prints which protections took effect. Copies of the key made before it reached that
-    memory (the `unlock` process's own, and the copy the forked agent inherits) are not
-    wiped, and decrypted values the agent handles stay in ordinary memory until it
-    exits; the debugger block above is what protects them.
+    prints which protections took effect. The agent is forked **before** the passphrase
+    is asked for and is sent only the key, over a pipe, into a buffer it zeroes after
+    copying it into the protected memory; so the typed passphrase, and any other copy of
+    the key the `unlock` process held, are not in the agent's memory (measured with a
+    root scan of `/proc/<pid>/mem`: one copy of each in an agent forked afterwards, none
+    in this design). Copies in the short-lived `unlock` process live until it exits.
+    Decrypted values the agent handles stay in ordinary memory until it exits (Python
+    strings cannot be wiped); the debugger block above is what protects them.
   - **What it does not stop:** code running as you can connect to the socket and ask the
     agent to decrypt anything in the store (it is a decryption oracle for you, as a key
     file would be a key for you; the per-item command bindings `run` checks are checked by
