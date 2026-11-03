@@ -165,6 +165,8 @@ def test_platform_overrides_are_declared_explicitly():
         "AGT-54",
         "AGT-55",
         "AGT-56",
+        "AGT-57",
+        "AGT-58",
         "AUD-2",
     ], f"unexpected set of platform-relaxed mutants: {relaxed}"
     # The reverse: a guard that exists only on Windows is dead code elsewhere,

@@ -2136,8 +2136,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AGT-18",
         "src/floorvault/key_agent.py",
-        "            if identity is None or (info.st_dev, info.st_ino) == identity:",
-        "            if True:  # MUTANT",
+        "            if identity is not None and (info.st_dev, info.st_ino) != identity:\n                return\n",
+        "            if False:  # MUTANT\n                return\n",
         "An exiting agent removes a socket another agent has since bound (#84)",
         expect_on_windows="survived",
     ),
@@ -2347,6 +2347,22 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        if self._suspend_inclusive is not None:\n",
         "        if False:  # MUTANT\n",
         "The limit clock ignores its suspend-inclusive source (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-57",
+        "src/floorvault/key_agent.py",
+        "            if not _nobody_listens(sock_path):\n                return\n",
+        "            if False:  # MUTANT\n                return\n",
+        "A socket with a live agent listening on it is removed because its inode number matches (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-58",
+        "src/floorvault/key_agent.py",
+        "            if not stat.S_ISSOCK(info.st_mode):\n                return\n",
+        "            if False:  # MUTANT\n                return\n",
+        "Whatever now sits at the agent's socket path is removed as if it were the socket (#84)",
         expect_on_windows="survived",
     ),
     Mutation(

@@ -586,12 +586,28 @@ class Agent:
         _unlink_socket(self.sock_path, self._identity)
 
 
+def _nobody_listens(sock_path: Path) -> bool:
+    """Whether a connect to ``sock_path`` finds nobody (a stale socket file), not a live agent."""
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(0.5)
+        probe.connect(os.fspath(sock_path))
+    except (ConnectionRefusedError, FileNotFoundError):
+        return True
+    except OSError:
+        return False  # cannot tell (a timeout, a full backlog): treat it as alive
+    finally:
+        probe.close()
+    return False
+
+
 def _unlink_socket(sock_path: Path, identity: Optional[tuple[int, int]]) -> None:
-    """Unlink ``sock_path`` only if it is still the socket with ``identity`` (``(st_dev, st_ino)``).
+    """Unlink ``sock_path`` if it is the stale socket file ``identity`` (``(st_dev, st_ino)``) names.
 
     Under the store's lifecycle lock, so it cannot interleave with another unlock that is
-    probing, replacing or binding the same path, and it never removes a socket that another
-    agent has bound there since.
+    probing, replacing or binding the same path. It never removes a socket that another agent
+    has bound there since: the identity must match **and** nobody may be listening (inode
+    numbers are reused, so the identity alone could take a newer agent's socket for the old one).
     """
     with contextlib.suppress(Exception):
         with exclusive_lock(_lock_path(sock_path), timeout=5.0):
@@ -599,8 +615,13 @@ def _unlink_socket(sock_path: Path, identity: Optional[tuple[int, int]]) -> None
                 info = os.lstat(sock_path)
             except FileNotFoundError:
                 return
-            if identity is None or (info.st_dev, info.st_ino) == identity:
-                os.unlink(sock_path)
+            if not stat.S_ISSOCK(info.st_mode):
+                return
+            if identity is not None and (info.st_dev, info.st_ino) != identity:
+                return
+            if not _nobody_listens(sock_path):
+                return
+            os.unlink(sock_path)
 
 
 # ------------------------------------------------------------------ client side
@@ -886,7 +907,7 @@ def start(
         os.waitpid(first, 0)
     try:
         with os.fdopen(read_end, "rb") as pipe:
-            ready = pipe.read(3)
+            ready = pipe.read()  # to end-of-file: the agent has exited (or closed it) by then
     except OSError:
         ready = b""
     if ready[:1] == b"H":
@@ -957,6 +978,10 @@ def _daemon(  # pragma: no cover - runs in the forked child
             flags = (b"1" if report["core_dumps_off"] else b"0") + (
                 b"1" if report["ptrace_blocked"] else b"0"
             )
+            # The owner removes its own socket before it reports: closing the listener first
+            # makes it stale, and nothing else can mistake it for a live agent meanwhile.
+            listener.close()
+            _unlink_socket(path, identity)
             os.write(write_end, b"H" + flags)
             os.close(write_end)
             write_end = -1
