@@ -1228,24 +1228,47 @@ def test_the_platforms_suspend_inclusive_clock_is_the_one_chosen(monkeypatch):
     assert key_agent._suspend_inclusive_clock() is None
 
 
-def test_unlinking_a_socket_removes_only_the_one_that_was_bound(base):
+def stale_socket(path):
+    """A socket file with nobody listening: bound, then closed."""
+    leftover = socket.socket(socket.AF_UNIX)
+    leftover.bind(str(path))
+    leftover.close()
+    return key_agent._socket_identity(path)
+
+
+def test_unlinking_removes_a_stale_socket_and_nothing_else(base):
     path = base / "s.sock"
-    first = socket.socket(socket.AF_UNIX)
-    first.bind(str(path))
-    identity = key_agent._socket_identity(path)
+    identity = stale_socket(path)
     key_agent._unlink_socket(path, identity)
     assert not path.exists()
     key_agent._unlink_socket(path, identity)  # already gone: nothing to do, no error
-    second = socket.socket(socket.AF_UNIX)
-    second.bind(str(path))
+    stale_socket(path)
+    key_agent._unlink_socket(path, None)  # no identity known: a stale socket is removed
+    assert not path.exists()
+
+
+def test_unlinking_leaves_a_live_socket_alone_even_if_it_has_the_same_inode(base):
+    path = base / "live.sock"
+    live = socket.socket(socket.AF_UNIX)
+    live.bind(str(path))
+    live.listen(1)
     try:
-        key_agent._unlink_socket(path, identity)  # a different socket now: left alone
-        assert path.exists()
-        key_agent._unlink_socket(path, None)  # no identity known: removed
-        assert not path.exists()
+        # The identity matches exactly (inode numbers get reused, so a match proves little) ...
+        key_agent._unlink_socket(path, key_agent._socket_identity(path))
+        assert path.exists()  # ... but somebody is listening, so it is not the stale one
     finally:
-        first.close()
-        second.close()
+        live.close()
+
+
+def test_unlinking_leaves_a_socket_with_another_identity_and_a_non_socket_alone(base):
+    path = base / "other.sock"
+    stale_socket(path)
+    key_agent._unlink_socket(path, (0, 0))  # not the socket that was bound
+    assert path.exists()
+    path.unlink()
+    path.write_text("not a socket")
+    key_agent._unlink_socket(path, None)
+    assert path.read_text() == "not a socket"
 
 
 def test_a_refused_start_never_removes_a_socket_another_agent_bound_since(vault, env, monkeypatch):
