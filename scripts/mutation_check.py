@@ -2350,14 +2350,6 @@ MUTATIONS: tuple[Mutation, ...] = (
         expect_on_windows="survived",
     ),
     Mutation(
-        "AGT-45",
-        "src/floorvault/key_agent.py",
-        "        if self._done:\n            return\n        self._done = True\n        self._close_key()",
-        "        self._done = True\n        self._close_key()  # MUTANT",
-        "Cancelling after the key was delivered removes the live agent's socket (#84)",
-        expect_on_windows="survived",
-    ),
-    Mutation(
         "AGT-46",
         "src/floorvault/key_agent.py",
         "    _check_ancestors(path)\n\n\ndef _group_is_only_us",
@@ -2419,11 +2411,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        if created:\n            with contextlib.suppress(OSError):\n                os.rmdir(path)\n",
         "        if created:\n            pass  # MUTANT\n",
         "A refused socket directory is left behind (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
         "AGT-54",
         "src/floorvault/key_agent.py",
-        '    if ready[:1] == b"H":\n        _unlink_socket(path, identity)\n',
-        '    if ready[:1] == b"H":\n        os.unlink(path)\n',
-        "A refused start removes a socket another agent has bound there since (#84)",
+        "        _unlink_socket(self.path, self._identity)\n",
+        "        with contextlib.suppress(OSError):\n            os.unlink(self.path)\n",
+        "A cancelled or refused agent removes a socket another agent has bound there since (#84)",
         expect_on_windows="survived",
     ),
     Mutation(
