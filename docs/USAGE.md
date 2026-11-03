@@ -655,10 +655,12 @@ and the data is gone.
   `--idle` (default 1h), or `floorvault lock` or `SIGTERM` stops it; the key is
   then wiped and the socket removed. `floorvault unlock --status` reports one.
   The limits keep counting while the machine sleeps (a laptop closed overnight does
-  not keep the key for the rest of the day): the agent measures time with the larger of
-  the monotonic and wall clocks' steps and never goes backwards, so setting the clock
-  back extends nothing, and a forward step (a time sync, a person) ends the agent early,
-  which is the safe direction.
+  not keep the key for the rest of the day): the agent times itself with a clock that
+  counts suspended time and cannot be set (Linux `CLOCK_BOOTTIME`; macOS
+  `CLOCK_MONOTONIC_RAW`, which has not been run on a real Mac). Where there is no such
+  clock it falls back to the larger of the monotonic and wall clocks' steps, which
+  still counts a sleep and ends the agent early on a forward clock step, but can lose a
+  sleep if the wall clock is corrected backwards during that same suspend.
   While it runs, `floorvault run` and `floorvault secrets` for that store use it
   instead of asking for the passphrase, with no terminal needed. **The agent never
   hands out the key.** It encrypts and decrypts for the caller: the store code is given
