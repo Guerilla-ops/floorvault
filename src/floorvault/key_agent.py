@@ -410,28 +410,62 @@ def _coordinates(request: Mapping[str, Any], *, key_id_default: Optional[int]) -
 # ----------------------------------------------------------------------- server
 
 
+_AUTO = object()
+
+
+def _suspend_inclusive_clock() -> Optional[Callable[[], float]]:
+    """A clock that keeps running while the machine is suspended, if this platform has one.
+
+    Linux ``CLOCK_BOOTTIME``; macOS ``CLOCK_MONOTONIC_RAW`` (``CLOCK_UPTIME_RAW`` and
+    ``time.monotonic`` stop in sleep). Neither can be set back by changing the wall clock.
+    """
+    name = {"linux": "CLOCK_BOOTTIME", "darwin": "CLOCK_MONOTONIC_RAW"}.get(sys.platform)
+    clock_id = getattr(time, name, None) if name else None
+    if clock_id is None:
+        return None
+    try:
+        time.clock_gettime(clock_id)
+    except (OSError, AttributeError):
+        return None
+    return lambda: time.clock_gettime(clock_id)
+
+
 class _LimitClock:
     """Seconds the agent has been alive, for its total and idle limits.
 
     ``time.monotonic`` does not count time the machine is suspended (Linux
     ``CLOCK_MONOTONIC``; Python's macOS clock stops in sleep too), so a laptop that sleeps
-    overnight would keep the key far past its limits in real time. The wall clock does
-    keep going, but it can be set back. So each step advances by the larger of the two
-    clocks' steps, and never backwards: a sleep counts in full, setting the wall clock
-    back extends nothing, and a forward step (NTP, a person) ends the limits early,
-    which is the safe direction.
+    overnight would keep the key far past its limits in real time. Where the platform has a
+    clock that counts suspended time and cannot be set (``_suspend_inclusive_clock``), that
+    is the clock, never going backwards.
+
+    Without one, each step advances by the larger of the monotonic and wall-clock steps and
+    never backwards: a sleep counts in full, setting the wall clock back on its own extends
+    nothing, and a forward step ends the limits early (the safe direction). That fallback is
+    weaker: a wall-clock correction *during the same suspend* can hide the sleep.
     """
 
     def __init__(
         self,
         monotonic: Callable[[], float] = time.monotonic,
         wall: Callable[[], float] = time.time,
+        *,
+        suspend_inclusive: Any = _AUTO,
     ) -> None:
+        if suspend_inclusive is _AUTO:
+            suspend_inclusive = _suspend_inclusive_clock()
+        self._suspend_inclusive = suspend_inclusive
         self._monotonic, self._wall = monotonic, wall
+        self._last_suspend = suspend_inclusive() if suspend_inclusive else 0.0
         self._last_monotonic, self._last_wall = monotonic(), wall()
         self._now = 0.0
 
     def __call__(self) -> float:
+        if self._suspend_inclusive is not None:
+            now = self._suspend_inclusive()
+            self._now += max(now - self._last_suspend, 0.0)
+            self._last_suspend = now
+            return self._now
         monotonic, wall = self._monotonic(), self._wall()
         self._now += max(monotonic - self._last_monotonic, wall - self._last_wall, 0.0)
         self._last_monotonic, self._last_wall = monotonic, wall
@@ -626,7 +660,8 @@ def _unlink_socket(sock_path: Path, identity: Optional[tuple[int, int]]) -> None
     """Unlink ``sock_path`` only if it is still the socket with ``identity`` (``(st_dev, st_ino)``).
 
     Under the store's lifecycle lock, so it cannot interleave with another unlock that is
-    probing, replacing or binding the same path.
+    probing, replacing or binding the same path, and it never removes a socket that another
+    agent has bound there since.
     """
     with contextlib.suppress(Exception):
         with exclusive_lock(_lock_path(sock_path), timeout=5.0):
@@ -874,8 +909,11 @@ class PendingAgent:
     agent exit and remove its socket.
     """
 
-    def __init__(self, path: Path, key_fd: int, ready_fd: int) -> None:
+    def __init__(
+        self, path: Path, key_fd: int, ready_fd: int, identity: Optional[tuple[int, int]] = None
+    ) -> None:
         self.path = path
+        self._identity = identity  # (st_dev, st_ino) of the socket this agent was started on
         self._key_fd = key_fd
         self._ready_fd = ready_fd
         self._done = (
@@ -928,12 +966,9 @@ class PendingAgent:
         if self._ready_fd >= 0:
             _read_ready(self._ready_fd, 1, until_eof=True)
         self._finish()
-        info = None
-        with contextlib.suppress(OSError):
-            info = os.lstat(self.path)
-        if info is not None and stat.S_ISSOCK(info.st_mode):
-            with contextlib.suppress(OSError):
-                os.unlink(self.path)  # the agent died before it could remove it
+        # The agent removes its own socket; this covers one that died first. Only the socket
+        # this agent bound: a newer agent may have replaced it since.
+        _unlink_socket(self.path, self._identity)
 
 
 def _read_ready(fd: int, count: int, *, until_eof: bool = False, timeout: float = 15.0) -> bytes:
@@ -1014,7 +1049,7 @@ def prepare(
     listener.close()  # the daemon owns it now
     with contextlib.suppress(ChildProcessError):
         os.waitpid(first, 0)
-    pending = PendingAgent(path, key_write, ready_read)
+    pending = PendingAgent(path, key_write, ready_read, identity)
     verdict = _read_ready(ready_read, 1)
     if verdict == b"H":
         flags = _read_ready(ready_read, 2)
