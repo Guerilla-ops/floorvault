@@ -172,7 +172,10 @@ def test_bad_arguments_are_refused_without_echoing_them(broker):
         "key_id": None,
     }
     # The unchanged message works, so each case below fails for its one fault.
-    assert key_agent._exchange(item.path, good, 3) == {"ok": True, "plaintext": "fine"}
+    assert key_agent._exchange(item.path, good, 3) == {
+        "ok": True,
+        "plaintext_b64": base64.b64encode(b"fine").decode(),
+    }
     faults = {
         "non-strict base64": {"ciphertext_b64": "AA==!!"},
         "ciphertext not a string": {"ciphertext_b64": 5},
@@ -490,3 +493,87 @@ def test_a_credential_beside_the_wrapped_key_is_refused_even_with_an_agent_runni
         assert code == 1 and "forked" in err
     finally:
         item.stop()
+
+
+# ------------------------------------------------- review findings on #126
+
+
+def test_the_input_types_are_checked_as_the_library_checks_them(broker):
+    item = broker()
+    remote = key_agent.RemoteVault(item.path)
+    local = FloorVault(HardenedMemoryKey(bytearray(KEY)), app_instance_id=APP_CONTEXT)
+    for bad in (10, [1, 2, 3], None, 1.5):
+        with pytest.raises(TypeError, match="plaintext must be"):
+            remote.encrypt(bad, **coords())
+        with pytest.raises(TypeError):
+            local.encrypt(bad, **coords())
+    for fine in ("text", b"bytes", bytearray(b"ba"), memoryview(b"mv")):
+        sealed = remote.encrypt(fine, **coords())
+        assert (
+            remote.decrypt(sealed, **coords())
+            == bytes(fine if not isinstance(fine, str) else fine.encode()).decode()
+        )
+    sealed = remote.encrypt("ok", **coords())
+    assert remote.decrypt(bytearray(sealed), **coords()) == "ok"
+    for bad in (memoryview(sealed), list(sealed), "text", None):
+        with pytest.raises(TypeError, match="Ciphertext must be bytes"):
+            remote.decrypt(bad, **coords())
+        with pytest.raises(TypeError):
+            local.decrypt(bad, **coords())
+
+
+def test_text_that_json_would_expand_still_reads_back(broker):
+    item = broker()
+    remote = key_agent.RemoteVault(item.path, timeout=60)
+    # 3 bytes a character stored; JSON would make the reply 6 bytes a character (over the limit).
+    text = "界" * 800_000
+    assert remote.decrypt(remote.encrypt(text, **coords()), **coords()) == text
+
+
+def test_a_request_completed_after_the_limit_passed_is_not_served(broker, monkeypatch):
+    clock = FakeClock()
+    item = broker(clock, idle=600)
+    remote = key_agent.RemoteVault(item.path)
+    sealed = remote.encrypt("v", **coords())
+    served = []
+    real_decrypt = item.crypto.decrypt
+    monkeypatch.setattr(
+        item.crypto, "decrypt", lambda *a, **k: served.append(1) or real_decrypt(*a, **k)
+    )
+    real_recv = key_agent._recv
+
+    def read_then_run_out_of_time(reader, limit):
+        message = real_recv(reader, limit)
+        if threading.current_thread() is item.thread and message.get("op") == "decrypt":
+            clock.advance(10_000)  # the last byte arrived just as the idle limit passed
+        return message
+
+    monkeypatch.setattr(key_agent, "_recv", read_then_run_out_of_time)
+    with pytest.raises(key_agent.AgentError):
+        remote.decrypt(sealed, **coords())
+    assert served == []
+    item.thread.join(5)
+    assert not item.thread.is_alive() and item.key.is_wiped
+
+
+def test_a_request_completed_after_a_stop_is_not_served(broker, monkeypatch):
+    item = broker()
+    remote = key_agent.RemoteVault(item.path)
+    sealed = remote.encrypt("v", **coords())
+    served = []
+    real_decrypt = item.crypto.decrypt
+    monkeypatch.setattr(
+        item.crypto, "decrypt", lambda *a, **k: served.append(1) or real_decrypt(*a, **k)
+    )
+    real_recv = key_agent._recv
+
+    def read_then_get_signalled(reader, limit):
+        message = real_recv(reader, limit)
+        if threading.current_thread() is item.thread and message.get("op") == "decrypt":
+            item.agent.request_stop("signalled")  # what the SIGTERM handler does
+        return message
+
+    monkeypatch.setattr(key_agent, "_recv", read_then_get_signalled)
+    with pytest.raises(key_agent.AgentError):
+        remote.decrypt(sealed, **coords())
+    assert served == []

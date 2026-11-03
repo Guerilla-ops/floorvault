@@ -448,6 +448,10 @@ class Agent:
             _send(conn, {"ok": True, "locked": True})
             self.request_stop("locked")
         elif op in _CRYPTO_OPS and self._crypto is not None:
+            # The limits and a stop apply when the key is used, not only while the request is
+            # read: a deadline can pass between the last byte and here, and touching first
+            # would restart the idle clock of an agent that should already be gone.
+            self._check_live()
             self.touch()
             _send(conn, self._crypto_reply(op, request))
         else:
@@ -464,7 +468,10 @@ class Agent:
                 cipher = self._crypto.encrypt(plaintext, **coords)
                 return {"ok": True, "ciphertext_b64": base64.b64encode(cipher).decode("ascii")}
             ciphertext = _unb64(request.get("ciphertext_b64"))
-            return {"ok": True, "plaintext": self._crypto.decrypt(ciphertext, **coords)}
+            plaintext = self._crypto.decrypt(ciphertext, **coords).encode("utf-8")
+            # Base64, like the request: JSON would escape non-ASCII text to six bytes a
+            # character, so an item that fits an encrypt could not be read back.
+            return {"ok": True, "plaintext_b64": base64.b64encode(plaintext).decode("ascii")}
         except DecryptionVerificationError:
             return {"ok": False, "kind": "verification", "error": "verification failed"}
         except NonceReuseError:
@@ -613,7 +620,15 @@ class RemoteVault:
         revision: Optional[int] = None,
         key_id: int = 0,
     ) -> bytes:
-        data = plaintext.encode("utf-8") if isinstance(plaintext, str) else bytes(plaintext)
+        if isinstance(plaintext, str):
+            data = plaintext.encode("utf-8")
+        elif isinstance(plaintext, (bytes, bytearray, memoryview)):
+            data = bytes(plaintext)
+        else:
+            raise TypeError(
+                "plaintext must be str, bytes, bytearray, or memoryview, "
+                f"got {type(plaintext).__name__}"
+            )
         reply = self._ask(
             {
                 "op": "encrypt",
@@ -641,6 +656,8 @@ class RemoteVault:
         revision: Optional[int] = None,
         key_id: Optional[int] = None,
     ) -> str:
+        if not isinstance(ciphertext, (bytes, bytearray)):
+            raise TypeError("Ciphertext must be bytes")
         reply = self._ask(
             {
                 "op": "decrypt",
@@ -654,10 +671,10 @@ class RemoteVault:
                 "key_id": key_id,
             }
         )
-        plaintext = reply.get("plaintext")
-        if not isinstance(plaintext, str):
-            raise AgentError("the agent's reply was not understood")
-        return plaintext
+        try:
+            return _unb64(reply.get("plaintext_b64")).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            raise AgentError("the agent's reply was not understood") from None
 
     def wipe(self) -> None:
         """Nothing is held here; the agent keeps the key."""
