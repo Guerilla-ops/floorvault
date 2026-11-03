@@ -25,6 +25,7 @@ from unittest import mock
 import pytest
 
 from floorvault import key_agent, passphrase_custody
+from floorvault.agent_cli import APP_CONTEXT
 from floorvault.inspector import main
 from floorvault.memory import HardenedMemoryKey
 from floorvault.providers import passphrase_store
@@ -410,7 +411,9 @@ def wait_until(condition, seconds=10):
 
 
 def test_a_real_agent_starts_answers_and_locks(vault, env):
-    info = key_agent.start(vault, b"k" * 32, ttl=3600, idle=600, environ=env)
+    info = key_agent.start(
+        vault, b"k" * 32, ttl=3600, idle=600, environ=env, app_context=APP_CONTEXT
+    )
     path = key_agent.socket_path(vault, env)
     pid = info["pid"]
     try:
@@ -418,7 +421,7 @@ def test_a_real_agent_starts_answers_and_locks(vault, env):
         assert info["expires_in"] > 3500 and info["idle_in"] > 500
         assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
         with pytest.raises(key_agent.AgentError, match="already unlocked"):
-            key_agent.start(vault, b"k" * 32, environ=env)
+            key_agent.start(vault, b"k" * 32, environ=env, app_context=APP_CONTEXT)
         key_agent.lock(path)
         assert wait_until(lambda: not path.exists())
         assert wait_until(lambda: not alive(pid))
@@ -427,8 +430,30 @@ def test_a_real_agent_starts_answers_and_locks(vault, env):
             os.kill(pid, 9)
 
 
+def test_the_daemon_does_not_keep_the_callers_descriptors(vault, env):
+    """A pipe its caller reads to the end must reach end-of-file: the agent must not hold it."""
+    import select
+
+    reader, writer = os.pipe()
+    info = key_agent.start(
+        vault, b"k" * 32, ttl=3600, idle=600, environ=env, app_context=APP_CONTEXT
+    )
+    path = key_agent.socket_path(vault, env)
+    pid = info["pid"]
+    try:
+        os.close(writer)
+        ready, _, _ = select.select([reader], [], [], 5)
+        assert ready and os.read(reader, 1) == b""  # end-of-file: no other copy of the write end
+    finally:
+        os.close(reader)
+        with contextlib.suppress(key_agent.AgentError):
+            key_agent.lock(path)
+        if alive(pid):
+            assert wait_until(lambda: not alive(pid))
+
+
 def test_a_real_agent_stops_itself_at_its_time_limit(vault, env):
-    info = key_agent.start(vault, b"k" * 32, ttl=1, idle=600, environ=env)
+    info = key_agent.start(vault, b"k" * 32, ttl=1, idle=600, environ=env, app_context=APP_CONTEXT)
     path = key_agent.socket_path(vault, env)
     pid = info["pid"]
     try:
@@ -470,7 +495,7 @@ def test_unlock_status_and_lock_from_the_command_line(vault, env):
     code, out, err, asked = cli(["unlock", *args], env, [PHRASE])
     assert code == 0, err
     assert "unlocked: an agent" in out and "protected memory:" in out
-    assert "answers status and lock only" in err and PHRASE not in out + err
+    assert "use the agent now" in err and PHRASE not in out + err
     assert len(asked) == 1
     pid = key_agent.status(key_agent.socket_path(vault, env))["pid"]
     try:
