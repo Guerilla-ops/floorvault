@@ -201,6 +201,52 @@ def _custody_key(args, environ: Mapping[str, str], vault_dir: Optional[Path]) ->
     return read_key_file(key_file) if key_file is not None else None
 
 
+def _agent_crypto(args, environ: Mapping[str, str], vault_dir: Optional[Path]):
+    """A ``RemoteVault`` for a running key agent, or None when there is none to use.
+
+    Only a store with a passphrase-wrapped key and no explicit key option
+    (``--key-env``, ``--key-file``) can have one. The refusals ``_custody_key``
+    makes (two custodies, a raw key beside the wrapped one) are made first, so an
+    agent never stands in for a store that would have been refused. No agent
+    running is not an error (the caller asks for the passphrase as before); an
+    agent that is there but cannot be used is, and nothing falls back past it.
+    """
+    if vault_dir is None or not key_agent.SUPPORTED:
+        return None
+    if getattr(args, "key_env", None) or getattr(args, "key_file", None) is not None:
+        return None
+    if not passphrase_custody.wrapped_present(vault_dir):
+        return None
+    if systemd_creds.credential_present(vault_dir):
+        raise StoreUnavailable(_TWO_CUSTODIES.format(dir=vault_dir))
+    try:
+        passphrase_custody.refuse_raw_companion(vault_dir)
+    except passphrase_custody.PassphraseCustodyError as exc:
+        raise StoreUnavailable(str(exc)) from None
+    try:
+        sock = key_agent.socket_path(vault_dir, environ)
+    except key_agent.AgentError:
+        return None  # no agent can run for this path (too long, say)
+    try:
+        key_agent.status(sock)
+    except key_agent.AgentNotRunning:
+        return None
+    except key_agent.AgentError as exc:
+        raise StoreUnavailable(
+            f"the key agent for {vault_dir} is there but cannot be used ({exc}); "
+            "`floorvault lock` stops it. Nothing was opened"
+        ) from None
+    return key_agent.RemoteVault(sock)
+
+
+def _custody(args, environ: Mapping[str, str], vault_dir: Optional[Path]):
+    """``(key_bytes, crypto)``: a running key agent's ``RemoteVault``, else the key from ``_custody_key``."""
+    crypto = _agent_crypto(args, environ, vault_dir)
+    if crypto is not None:
+        return None, crypto
+    return _custody_key(args, environ, vault_dir), None
+
+
 def _env_key(key_env: str, environ: Mapping[str, str]) -> bytes:
     """The 64-hex master key held in the variable ``key_env``, as ``open_store`` reads it."""
     raw = (environ.get(key_env) or "").strip()
@@ -231,6 +277,7 @@ def open_store(
     *,
     key_env: Optional[str] = None,
     key_bytes: Optional[bytes] = None,
+    crypto=None,
     create: bool = False,
     environ: Optional[Mapping[str, str]] = None,
     provider_environ: Optional[Mapping[str, str]] = None,
@@ -241,8 +288,9 @@ def open_store(
 
     With ``create=False`` (every command but ``secrets add`` and
     ``secrets import --write``) the store must already exist and the master
-    key is only read, never created. ``key_bytes`` (from ``--key-file``) and
-    ``key_env`` use the given key directly, never ``AdaptiveKeyProvider``.
+    key is only read, never created. ``crypto`` (a ``RemoteVault`` standing for a key
+    agent's key), ``key_bytes`` (from ``--key-file``) and ``key_env`` use the given
+    key directly, never ``AdaptiveKeyProvider``.
     ``provider_environ`` is where the default provider reads key variables
     (``{}``: none, as the Hermes plugin does); ``None`` is the process
     environment.
@@ -276,7 +324,9 @@ def open_store(
     }
     provider = None
     try:
-        if key_bytes is not None:
+        if crypto is not None:
+            store = VaultStore(vault_dir, crypto=crypto, **listing)
+        elif key_bytes is not None:
             crypto = FloorVault(HardenedMemoryKey(key_bytes), app_instance_id=APP_CONTEXT)
             store = VaultStore(vault_dir, crypto=crypto, **listing)
         elif key_env:
@@ -689,7 +739,7 @@ def _prepare_environment(
     try:
         _check_key_options(args)
         vault_dir = _vault_dir(args.vault, os.environ)
-        key_bytes = _custody_key(args, os.environ, vault_dir)
+        key_bytes, crypto = _custody(args, os.environ, vault_dir)
         if key_bytes is not None:
             key_hex = key_bytes.hex()
         record = _binding_record(vault_dir)
@@ -697,6 +747,7 @@ def _prepare_environment(
             vault_dir,
             key_env=args.key_env,
             key_bytes=key_bytes,
+            crypto=crypto,
             sealed_listing=_sealed_listing_asserted(args, os.environ),
         )
     except (StoreUnavailable, BindingRecordError) as exc:
@@ -861,9 +912,9 @@ def add_agent_parsers(subparsers) -> None:
             "Ask for the passphrase of a store whose key is wrapped under one "
             "(`secrets init --custody passphrase`) and leave a background agent holding the "
             "key until a time limit, `floorvault lock`, or a reboot. The agent runs as you; "
-            "other users cannot reach it, code running as you can. Linux and macOS. In this "
-            "release the agent only answers status and lock: `run` and `secrets` do not use "
-            "it yet."
+            "other users cannot reach it, code running as you can. While it runs, `floorvault "
+            "run` and `floorvault secrets` for this store use it instead of asking for the "
+            "passphrase. Linux and macOS."
         ),
     )
     lock = subparsers.add_parser("lock", help="Stop the key agent for a store and wipe its key")
@@ -940,13 +991,13 @@ def agent_main(args: argparse.Namespace) -> int:
         if key is None:
             _err(prog, "the passphrase-wrapped key disappeared while it was being unlocked")
             return 1
-        info = key_agent.start(vault_dir, key, ttl=ttl, idle=idle)
+        info = key_agent.start(vault_dir, key, ttl=ttl, idle=idle, app_context=APP_CONTEXT)
         del key
         print(_describe_agent(info, vault_dir))
         _err(
             prog,
-            "the agent answers status and lock only in this release; `run` and `secrets` "
-            "still ask for the passphrase themselves.",
+            "`floorvault run` and `floorvault secrets` for this store use the agent now; "
+            "`floorvault lock` stops it.",
         )
         return 0
     except key_agent.AgentNotRunning as exc:
@@ -1203,10 +1254,12 @@ def _store_for(
     _check_key_options(args)
     vault_dir = _vault_dir(args.vault, os.environ)
     existed = _is_regular_file(vault_dir / "vault.db")
+    key_bytes, crypto = _custody(args, os.environ, vault_dir)
     store = open_store(
         vault_dir,
         key_env=args.key_env,
-        key_bytes=_custody_key(args, os.environ, vault_dir),
+        key_bytes=key_bytes,
+        crypto=crypto,
         create=create and not existed,
         environ=environ,
         provider_environ=provider_environ,
@@ -1604,10 +1657,12 @@ def _cmd_seal_listing(args, prog: str) -> int:
         _err(prog, "a key rotation of this store is in progress; finish it first")
         return 1
     del store
+    key_bytes, crypto = _custody(args, os.environ, vault_dir)
     sealed = open_store(
         vault_dir,
         key_env=args.key_env,
-        key_bytes=_custody_key(args, os.environ, vault_dir),
+        key_bytes=key_bytes,
+        crypto=crypto,
         migrate_listing=True,
     )
     count = len(sealed.list_items())  # authenticates every sealed row

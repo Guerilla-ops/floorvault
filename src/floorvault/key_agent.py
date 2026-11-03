@@ -1,11 +1,17 @@
-"""A key agent that holds an unwrapped master key for one store (#84, step 3, part 2).
+"""A key agent that holds an unwrapped master key for one store (#84, step 3).
 
 ``floorvault unlock`` asks for the passphrase of a passphrase-wrapped store once,
 then leaves a small background process holding the key in hardened memory until a
-time limit, ``floorvault lock``, or ``SIGTERM``. This module is the agent's
-*core*: its process, socket and lifetime. It answers only ``status`` and ``lock``;
-it hands out no key and resolves no item. Serving ``run`` and ``secrets`` through
-it is the next part of #84, and until that lands nothing in the CLI consults it.
+time limit, ``floorvault lock``, or ``SIGTERM``. While it runs, ``floorvault run``
+and ``floorvault secrets`` for that store use it instead of asking for the
+passphrase.
+
+The agent **never hands out the key**. It answers ``status`` and ``lock``, and it
+encrypts and decrypts for the caller: the store code (``VaultStore``) is given a
+:class:`RemoteVault` whose ``encrypt`` and ``decrypt`` ask the agent, so the key stays
+in the agent's protected memory and the caller sees only plaintext and ciphertext.
+That is a decryption oracle for whoever may connect, which is the limit below: the
+agent narrows who holds the key, it does not make a connected caller harmless.
 
 Threat model, stated plainly:
 
@@ -26,6 +32,8 @@ Linux and macOS only (``AF_UNIX`` with peer credentials). Windows has DPAPI cust
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import hashlib
 import json
@@ -47,12 +55,14 @@ SUPPORTED = sys.platform in ("linux", "darwin")
 
 DEFAULT_TTL = 8 * 3600
 DEFAULT_IDLE = 3600
-#: Largest request the agent reads, and how long one client may hold the agent.
-MAX_MESSAGE = 4096
+#: Largest message either side reads (a vault item and its base64 fit), and how long one
+#: client may hold the agent. The peer's uid is checked before anything is read.
+MAX_MESSAGE = 4 * 1024 * 1024
 IO_TIMEOUT = 5.0
 #: The longest socket path that fits ``sockaddr_un`` on both Linux (108) and macOS (104).
 MAX_SOCKET_PATH = 100
-_OPS = ("status", "lock")
+_OPS = ("status", "lock", "encrypt", "decrypt")
+_CRYPTO_OPS = ("encrypt", "decrypt")
 _DURATION = re.compile(r"^(\d+)([smhd]?)$")
 
 
@@ -221,7 +231,7 @@ def _discard_pending(conn: socket.socket) -> None:
     """
     with contextlib.suppress(OSError):
         conn.settimeout(0.05)
-        conn.recv(MAX_MESSAGE)
+        conn.recv(65536)
 
 
 def _reader(
@@ -272,6 +282,43 @@ def _recv(read_exact: Callable[[int], bytes], limit: int) -> dict[str, Any]:
     return message
 
 
+def _unb64(value: Any) -> bytes:
+    if not isinstance(value, str):
+        raise ValueError("expected a base64 string")
+    try:
+        return base64.b64decode(value.encode("ascii"), validate=True)
+    except (binascii.Error, UnicodeEncodeError):
+        raise ValueError("not base64") from None
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("expected an integer")
+    return value
+
+
+def _coordinates(request: Mapping[str, Any], *, key_id_default: Optional[int]) -> dict[str, Any]:
+    """The context a record is bound to (table, id, column, schema, revision, key id)."""
+    texts = {}
+    for name in ("table", "record_id", "column", "schema_id"):
+        value = request.get(name)
+        if not isinstance(value, str):
+            raise ValueError(f"{name} must be a string")
+        texts[name] = value
+    version = _int_or_none(request.get("schema_version"))
+    if version is None:
+        raise ValueError("schema_version must be an integer")
+    key_id = _int_or_none(request["key_id"]) if "key_id" in request else key_id_default
+    return {
+        **texts,
+        "schema_version": version,
+        "revision": _int_or_none(request.get("revision")),
+        "key_id": key_id,
+    }
+
+
 # ----------------------------------------------------------------------- server
 
 
@@ -279,7 +326,9 @@ class Agent:
     """Holds ``key`` until ``ttl`` seconds after start, ``idle`` seconds without use, or a stop.
 
     ``status`` does not count as use (a monitor must not keep the key alive);
-    ``lock`` stops the agent. ``clock`` and ``poll`` exist for tests.
+    ``lock`` stops the agent; ``encrypt`` and ``decrypt`` are use, and are served by
+    ``crypto`` (a ``FloorVault`` over the same key) when one is given. ``clock`` and
+    ``poll`` exist for tests.
     """
 
     def __init__(
@@ -293,8 +342,10 @@ class Agent:
         poll: float = 0.5,
         hardening: Optional[Mapping[str, bool]] = None,
         identity: Optional[tuple[int, int]] = None,
+        crypto: Any = None,
     ) -> None:
         self._key = key
+        self._crypto = crypto
         self.sock_path = Path(sock_path)
         #: (st_dev, st_ino) of the socket this agent bound; only that file is removed on exit.
         self._identity = identity
@@ -396,8 +447,32 @@ class Agent:
         elif op == "lock":
             _send(conn, {"ok": True, "locked": True})
             self.request_stop("locked")
+        elif op in _CRYPTO_OPS and self._crypto is not None:
+            self.touch()
+            _send(conn, self._crypto_reply(op, request))
         else:
             _send(conn, {"ok": False, "error": "unknown operation"})
+
+    def _crypto_reply(self, op: str, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Run one ``encrypt`` or ``decrypt``. A failure names its kind and never its content."""
+        from .core import DecryptionVerificationError, NonceReuseError
+
+        try:
+            coords = _coordinates(request, key_id_default=0 if op == "encrypt" else None)
+            if op == "encrypt":
+                plaintext = _unb64(request.get("plaintext_b64"))
+                cipher = self._crypto.encrypt(plaintext, **coords)
+                return {"ok": True, "ciphertext_b64": base64.b64encode(cipher).decode("ascii")}
+            ciphertext = _unb64(request.get("ciphertext_b64"))
+            return {"ok": True, "plaintext": self._crypto.decrypt(ciphertext, **coords)}
+        except DecryptionVerificationError:
+            return {"ok": False, "kind": "verification", "error": "verification failed"}
+        except NonceReuseError:
+            return {"ok": False, "kind": "nonce", "error": "nonce reuse"}
+        except (ValueError, TypeError):
+            return {"ok": False, "kind": "value", "error": "invalid argument"}
+        except Exception:  # noqa: BLE001 - the type is not worth the risk of a message
+            return {"ok": False, "kind": "failed", "error": "the operation failed"}
 
     def _check_live(self) -> None:
         """Called while a request is being read: end it if the agent is stopping or out of time."""
@@ -409,10 +484,11 @@ class Agent:
             raise AgentError("the agent is stopping")
 
     def _close(self, listener: socket.socket) -> None:
-        with contextlib.suppress(Exception):
-            wipe = getattr(self._key, "wipe", None)
-            if wipe is not None:
-                wipe()
+        for holder in (self._crypto, self._key):
+            with contextlib.suppress(Exception):
+                wipe = getattr(holder, "wipe", None)
+                if wipe is not None:
+                    wipe()
         with contextlib.suppress(OSError):
             listener.close()
         self._remove_socket()
@@ -456,10 +532,8 @@ def _check_socket(path: Path) -> None:
         raise AgentError(f"{path} is owned by another user; refusing it")
 
 
-def request(sock_path: Path, op: str, *, timeout: float = IO_TIMEOUT) -> dict[str, Any]:
-    """Send one request and return the reply. Checks the directory, the socket and the server's uid."""
-    if op not in _OPS:
-        raise ValueError(f"unknown operation {op!r}")
+def _exchange(sock_path: Path, message: Mapping[str, Any], timeout: float) -> dict[str, Any]:
+    """Send one message and return the reply as it came. Checks the directory, the socket and the server's uid."""
     if not SUPPORTED:
         raise AgentError("the key agent needs Linux or macOS")
     _check_socket(sock_path)
@@ -478,19 +552,115 @@ def request(sock_path: Path, op: str, *, timeout: float = IO_TIMEOUT) -> dict[st
         if uid != os.geteuid():
             raise AgentError("the process at the socket is not this user; refusing it")
         try:
-            _send(client, {"op": op})
+            _send(client, message)
         except (BrokenPipeError, ConnectionResetError):
             # The server answered and hung up without reading (it refuses some callers that
             # way); its reply is already queued, so read it rather than report a broken pipe.
             pass
-        reply = _recv(_reader(client, time.monotonic() + timeout), MAX_MESSAGE)
+        return _recv(_reader(client, time.monotonic() + timeout), MAX_MESSAGE)
     except (OSError, struct.error) as exc:
         raise AgentError(f"the agent did not answer ({type(exc).__name__})") from None
     finally:
         client.close()
+
+
+def request(sock_path: Path, op: str, *, timeout: float = IO_TIMEOUT) -> dict[str, Any]:
+    """Send one ``status`` or ``lock`` request and return the reply."""
+    if op not in ("status", "lock"):
+        raise ValueError(f"unknown operation {op!r}")
+    reply = _exchange(sock_path, {"op": op}, timeout)
     if not reply.get("ok"):
         raise AgentError(f"the agent refused the request ({reply.get('error', 'no reason')})")
     return reply
+
+
+class RemoteVault:
+    """``encrypt`` and ``decrypt`` through a running key agent: the key never leaves it.
+
+    Offers the two methods ``VaultStore`` calls on its crypto object, with the same
+    arguments and the same exceptions, so a store opened with one behaves as one
+    opened with the key. Every call asks the agent, which counts it as use of the key.
+    """
+
+    def __init__(self, sock_path: Path, *, timeout: float = IO_TIMEOUT) -> None:
+        self.sock_path = Path(sock_path)
+        self._timeout = timeout
+
+    def _ask(self, message: dict[str, Any]) -> dict[str, Any]:
+        from .core import DecryptionVerificationError, NonceReuseError
+
+        reply = _exchange(self.sock_path, message, self._timeout)
+        if reply.get("ok"):
+            return reply
+        kind = reply.get("kind")
+        if kind == "verification":
+            raise DecryptionVerificationError("authentication of the stored value failed")
+        if kind == "nonce":
+            raise NonceReuseError("the agent refused to reuse a nonce")
+        if kind == "value":
+            raise ValueError("the agent rejected an argument")
+        raise AgentError(f"the agent refused the request ({reply.get('error', 'no reason')})")
+
+    def encrypt(
+        self,
+        plaintext: Any,
+        *,
+        table: str,
+        record_id: str,
+        column: str,
+        schema_id: str = "floor.vault.v1",
+        schema_version: int = 1,
+        revision: Optional[int] = None,
+        key_id: int = 0,
+    ) -> bytes:
+        data = plaintext.encode("utf-8") if isinstance(plaintext, str) else bytes(plaintext)
+        reply = self._ask(
+            {
+                "op": "encrypt",
+                "plaintext_b64": base64.b64encode(data).decode("ascii"),
+                "table": table,
+                "record_id": record_id,
+                "column": column,
+                "schema_id": schema_id,
+                "schema_version": schema_version,
+                "revision": revision,
+                "key_id": key_id,
+            }
+        )
+        return _unb64(reply.get("ciphertext_b64"))
+
+    def decrypt(
+        self,
+        ciphertext: bytes,
+        *,
+        table: str,
+        record_id: str,
+        column: str,
+        schema_id: str = "floor.vault.v1",
+        schema_version: int = 1,
+        revision: Optional[int] = None,
+        key_id: Optional[int] = None,
+    ) -> str:
+        reply = self._ask(
+            {
+                "op": "decrypt",
+                "ciphertext_b64": base64.b64encode(bytes(ciphertext)).decode("ascii"),
+                "table": table,
+                "record_id": record_id,
+                "column": column,
+                "schema_id": schema_id,
+                "schema_version": schema_version,
+                "revision": revision,
+                "key_id": key_id,
+            }
+        )
+        plaintext = reply.get("plaintext")
+        if not isinstance(plaintext, str):
+            raise AgentError("the agent's reply was not understood")
+        return plaintext
+
+    def wipe(self) -> None:
+        """Nothing is held here; the agent keeps the key."""
 
 
 def status(sock_path: Path) -> dict[str, Any]:
@@ -562,8 +732,12 @@ def start(
     ttl: int = DEFAULT_TTL,
     idle: int = DEFAULT_IDLE,
     environ: Optional[Mapping[str, str]] = None,
+    app_context: str,
 ) -> dict[str, Any]:
     """Start a background agent holding ``key`` for ``vault_dir``; return its first status.
+
+    ``app_context`` is the application context the store's records were sealed under; the
+    agent encrypts and decrypts with it, so it must be the CLI's own (``APP_CONTEXT``).
 
     The listener is bound before forking, so a refusal (a bad directory, an agent
     already running) is reported here. The agent is a daemon: a second fork after
@@ -583,7 +757,7 @@ def start(
         listener.close()
         raise AgentError(f"cannot start the agent ({type(exc).__name__})") from None
     if first == 0:  # pragma: no cover - runs in the child
-        _daemon(listener, path, key, ttl, idle, identity, read_end, write_end)
+        _daemon(listener, path, key, ttl, idle, identity, app_context, read_end, write_end)
         os._exit(0)
     os.close(write_end)
     listener.close()  # the daemon owns it now
@@ -608,6 +782,7 @@ def _daemon(  # pragma: no cover - runs in the forked child
     ttl: int,
     idle: int,
     identity: tuple[int, int],
+    app_context: str,
     read_end: int,
     write_end: int,
 ) -> None:
@@ -624,10 +799,14 @@ def _daemon(  # pragma: no cover - runs in the forked child
             os.close(devnull)
         os.chdir("/")
         report = harden_process()
+        from .core import FloorVault
         from .memory import HardenedMemoryKey
 
         held = HardenedMemoryKey(bytearray(key))
-        agent = Agent(held, path, ttl=ttl, idle=idle, hardening=report, identity=identity)
+        crypto = FloorVault(held, app_instance_id=app_context)
+        agent = Agent(
+            held, path, ttl=ttl, idle=idle, hardening=report, identity=identity, crypto=crypto
+        )
         for number in (signal.SIGTERM, signal.SIGINT):
             signal.signal(number, lambda *_a: agent.request_stop("signalled"))
         os.write(write_end, b"1")
