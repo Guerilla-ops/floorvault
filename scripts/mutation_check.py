@@ -2240,8 +2240,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AGT-31",
         "src/floorvault/agent_cli.py",
-        "    if systemd_creds.credential_present(vault_dir):\n        raise StoreUnavailable(_TWO_CUSTODIES.format(dir=vault_dir))\n    try:\n        passphrase_custody.refuse_raw_companion",
-        "    if False:  # MUTANT\n        raise StoreUnavailable(_TWO_CUSTODIES.format(dir=vault_dir))\n    try:\n        passphrase_custody.refuse_raw_companion",
+        "    if systemd_creds.credential_present(vault_dir):\n        # Two keys for one store: `_custody_key` refuses it, in one place. An agent must\n        # not stand in for that refusal, so it steps aside and lets it be made.\n        return None\n",
+        "    if systemd_creds.credential_present(vault_dir):\n        pass  # MUTANT\n",
         "A running agent stands in for a store that also has a sealed credential (#84)",
         expect_on_windows="survived",
     ),
@@ -2267,6 +2267,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         '        if not isinstance(ciphertext, (bytes, bytearray)):\n            raise TypeError("Ciphertext must be bytes")',
         '        if False:  # MUTANT\n            raise TypeError("Ciphertext must be bytes")',
         "RemoteVault.decrypt accepts a ciphertext type the library rejects (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-35",
+        "src/floorvault/key_agent.py",
+        "        _close_inherited_descriptors({listener.fileno(), write_end})\n",
+        "        pass  # MUTANT\n",
+        "The daemon keeps its caller's descriptors, such as a pipe the caller is reading to the end (#84)",
         expect_on_windows="survived",
     ),
     Mutation(

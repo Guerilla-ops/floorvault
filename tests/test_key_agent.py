@@ -430,6 +430,28 @@ def test_a_real_agent_starts_answers_and_locks(vault, env):
             os.kill(pid, 9)
 
 
+def test_the_daemon_does_not_keep_the_callers_descriptors(vault, env):
+    """A pipe its caller reads to the end must reach end-of-file: the agent must not hold it."""
+    import select
+
+    reader, writer = os.pipe()
+    info = key_agent.start(
+        vault, b"k" * 32, ttl=3600, idle=600, environ=env, app_context=APP_CONTEXT
+    )
+    path = key_agent.socket_path(vault, env)
+    pid = info["pid"]
+    try:
+        os.close(writer)
+        ready, _, _ = select.select([reader], [], [], 5)
+        assert ready and os.read(reader, 1) == b""  # end-of-file: no other copy of the write end
+    finally:
+        os.close(reader)
+        with contextlib.suppress(key_agent.AgentError):
+            key_agent.lock(path)
+        if alive(pid):
+            assert wait_until(lambda: not alive(pid))
+
+
 def test_a_real_agent_stops_itself_at_its_time_limit(vault, env):
     info = key_agent.start(vault, b"k" * 32, ttl=1, idle=600, environ=env, app_context=APP_CONTEXT)
     path = key_agent.socket_path(vault, env)

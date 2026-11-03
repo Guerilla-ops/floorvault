@@ -218,7 +218,9 @@ def _agent_crypto(args, environ: Mapping[str, str], vault_dir: Optional[Path]):
     if not passphrase_custody.wrapped_present(vault_dir):
         return None
     if systemd_creds.credential_present(vault_dir):
-        raise StoreUnavailable(_TWO_CUSTODIES.format(dir=vault_dir))
+        # Two keys for one store: `_custody_key` refuses it, in one place. An agent must
+        # not stand in for that refusal, so it steps aside and lets it be made.
+        return None
     try:
         passphrase_custody.refuse_raw_companion(vault_dir)
     except passphrase_custody.PassphraseCustodyError as exc:

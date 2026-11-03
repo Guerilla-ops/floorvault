@@ -792,6 +792,26 @@ def start(
     return status(path)
 
 
+def _close_inherited_descriptors(keep: set[int]) -> None:
+    """Close every descriptor but the standard streams and ``keep``.
+
+    A daemon forked from a caller holds that caller's descriptors until it exits, which
+    for an agent is hours: a pipe the caller was reading to the end (a test runner, a
+    shell substitution, a supervisor) would never see end-of-file.
+    """
+    listing = None
+    for directory in ("/proc/self/fd", "/dev/fd"):
+        try:
+            listing = [int(name) for name in os.listdir(directory)]
+            break
+        except (OSError, ValueError):
+            continue
+    for fd in listing if listing is not None else range(3, 1024):
+        if fd > 2 and fd not in keep:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
 def _daemon(  # pragma: no cover - runs in the forked child
     listener: socket.socket,
     path: Path,
@@ -815,6 +835,7 @@ def _daemon(  # pragma: no cover - runs in the forked child
         if devnull > 2:
             os.close(devnull)
         os.chdir("/")
+        _close_inherited_descriptors({listener.fileno(), write_end})
         report = harden_process()
         from .core import FloorVault
         from .memory import HardenedMemoryKey
