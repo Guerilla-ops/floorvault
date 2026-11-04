@@ -1281,7 +1281,10 @@ def test_a_refused_start_never_removes_a_socket_another_agent_bound_since(vault,
 
     def waitpid_then_a_newer_agent_binds(pid, flags):
         result = real_waitpid(pid, flags)
-        os.unlink(path)  # the refused agent's socket is stale; a concurrent unlock replaces it
+        with contextlib.suppress(
+            FileNotFoundError
+        ):  # the refused agent may have removed it already
+            os.unlink(path)  # its socket is stale; a concurrent unlock replaces it
         newer = socket.socket(socket.AF_UNIX)
         newer.bind(str(path))
         newer.listen(1)
