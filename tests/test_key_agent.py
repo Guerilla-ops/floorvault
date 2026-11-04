@@ -1078,11 +1078,13 @@ def test_a_directory_above_the_socket_directory_that_others_can_change_is_refuse
     final = nested(base, "top", "mid", "floorvault")
     key_agent.check_private_dir(final)
     top = base / "top"
-    os.chmod(top, 0o777)
+    # Writable by others but not by the group, so only the world-writable rule can refuse it
+    # (0o777 also sets the group bit, which a group that is ours alone would let through).
+    os.chmod(top, 0o707)
     with pytest.raises(key_agent.AgentError, match="can be changed by other users") as raised:
         key_agent.check_private_dir(final)
     assert str(top) in str(raised.value) and "chmod go-w" in str(raised.value)
-    os.chmod(top, 0o1777)  # sticky, like /tmp: other users cannot rename what is ours
+    os.chmod(top, 0o1707)  # sticky, like /tmp: other users cannot rename what is ours
     key_agent.check_private_dir(final)
     os.chmod(top, 0o700)
     key_agent.check_private_dir(final)
