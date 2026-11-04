@@ -267,3 +267,21 @@ def test_a_shard_can_be_listed_without_running_mutations():
         check=False,
     )
     assert bad.returncode == 2
+
+
+def test_a_red_baseline_names_the_tests_that_failed(monkeypatch, capsys):
+    """CI used to say only 'the unmutated copy is not green', which cost several rounds to diagnose."""
+    mc = _load()
+    monkeypatch.setattr(mc, "_copy_repo", lambda destination: destination.mkdir(parents=True))
+
+    def red(workdir, tests, first_failure_only):
+        mc._last_output = (
+            "....\nFAILED tests/test_x.py::test_flaky - AssertionError: boom\n1 failed\n"
+        )
+        return 1
+
+    monkeypatch.setattr(mc, "_run_tests", red)
+    assert mc._run_curated(False) == 2
+    err = capsys.readouterr().err
+    assert "the unmutated copy is not green" in err
+    assert "FAILED tests/test_x.py::test_flaky - AssertionError: boom" in err
