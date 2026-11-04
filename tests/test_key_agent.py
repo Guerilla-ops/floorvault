@@ -1000,7 +1000,8 @@ with mock.patch.object(sys, "argv", ["floorvault", "unlock", "--vault", vault]),
 
 
 @pytest.mark.skipif(
-    os.geteuid() != 0 or not os.path.isdir("/proc/self"), reason="reads another process's memory"
+    getattr(os, "geteuid", lambda: -1)() != 0 or not os.path.isdir("/proc/self"),
+    reason="reads another process's memory",
 )
 def test_neither_the_typed_passphrase_nor_a_copy_of_the_key_is_in_the_agent_memory(base, env):
     """A root scan of /proc/<pid>/mem (CI runs as an ordinary user, so it skips).
