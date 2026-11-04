@@ -2834,6 +2834,14 @@ def _report_red_baseline(output: str) -> None:
         print(f"    {line}", file=sys.stderr)
 
 
+def _report_killers(output: str) -> None:
+    """Print the test(s) that failed in the last run, for a mutant that was expected to survive."""
+    lines = output.splitlines()
+    failed = [line for line in lines if line.startswith(("FAILED ", "ERROR "))]
+    for line in failed[:10] or lines[-15:]:
+        print(f"    {line}", file=sys.stderr)
+
+
 def _run_tests(workdir: Path, tests: list[str], first_failure_only: bool) -> int:
     global _last_output
     argv = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
@@ -3069,6 +3077,10 @@ def _run_curated(verbose: bool, *, scope: str = "all", shard: tuple[int, int] | 
             print(
                 f"{mutation.id:8} {result:9} {expected:9} [{'OK ' if ok else 'BAD'}] {mutation.why}"
             )
+            if not ok and result == "killed":
+                # Expected to survive but a test failed: name it (a flaky test shows up here,
+                # most visibly when an equivalent mutant such as the canary is "killed").
+                _report_killers(_last_output)
         print("-" * 92)
         if failures:
             print(f"[FAIL] {failures} mutation(s) did not behave as expected")
