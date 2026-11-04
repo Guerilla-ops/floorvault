@@ -2821,7 +2821,21 @@ def _copy_repo(destination: Path) -> None:
     )
 
 
+#: Output of the most recent ``_run_tests`` call, so a red baseline can say which tests failed.
+_last_output = ""
+
+
+def _report_red_baseline(output: str) -> None:
+    """Say which tests made the unmutated copy fail (the exit code alone names none)."""
+    lines = output.splitlines()
+    failed = [line for line in lines if line.startswith(("FAILED ", "ERROR "))]
+    print("[FAIL] the unmutated copy is not green; aborting", file=sys.stderr)
+    for line in failed[:40] or lines[-40:]:
+        print(f"    {line}", file=sys.stderr)
+
+
 def _run_tests(workdir: Path, tests: list[str], first_failure_only: bool) -> int:
+    global _last_output
     argv = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     if first_failure_only:
         argv.append("-x")
@@ -2832,9 +2846,11 @@ def _run_tests(workdir: Path, tests: list[str], first_failure_only: bool) -> int
     # bytecode - the mutant then appears to survive because the original code
     # ran. Two full sweeps disagreed by 28 mutants until this was pinned down.
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    return subprocess.run(  # harness-built argv, no shell  # nosec B603
+    completed = subprocess.run(  # harness-built argv, no shell  # nosec B603
         argv, cwd=workdir, capture_output=True, text=True, env=env
-    ).returncode
+    )
+    _last_output = (completed.stdout or "") + (completed.stderr or "")
+    return completed.returncode
 
 
 def _classify(code: int) -> str:
@@ -3023,7 +3039,7 @@ def _run_curated(verbose: bool, *, scope: str = "all", shard: tuple[int, int] | 
         workdir = Path(tmp) / "repo"
         _copy_repo(workdir)
         if _run_tests(workdir, curated_tests, False) != 0:
-            print("[FAIL] the unmutated copy is not green; aborting", file=sys.stderr)
+            _report_red_baseline(_last_output)
             return 2
         print("[BASELINE] unmutated copy: tests pass\n")
         failures = 0
