@@ -328,13 +328,23 @@ LAUNCH = (
 def alive(pid):
     try:
         os.kill(pid, 0)
-    except OSError:
+    except ProcessLookupError:
         return False
+    if not os.path.isdir("/proc/self"):
+        return True  # no /proc (macOS): a signal that found the process is all there is to go on
     try:
         with open(f"/proc/{pid}/stat", "rb") as handle:
             return handle.read().rsplit(b")", 1)[1].split()[0] != b"Z"
+    except FileNotFoundError:
+        return False  # a zombie that was reaped between the two looks
     except OSError:
         return True
+
+
+def force_kill(pid):
+    """SIGKILL, for cleanup: the process may have exited since it was last looked at."""
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, 9)
 
 
 def wait_until(condition, seconds=10):
@@ -423,7 +433,7 @@ def test_run_and_secrets_use_a_real_agent_with_no_terminal_and_stop_when_it_is_l
         assert VALUE not in again.stdout + again.stderr
     finally:
         if alive(pid):
-            os.kill(pid, 9)
+            force_kill(pid)
 
 
 def test_an_agent_that_is_there_but_unusable_stops_everything(base, env, vault):

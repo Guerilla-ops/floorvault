@@ -394,11 +394,21 @@ def alive(pid):
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+    if not os.path.isdir("/proc/self"):
+        return True  # no /proc (macOS): a signal that found the process is all there is to go on
     try:
         with open(f"/proc/{pid}/stat", "rb") as handle:
             return handle.read().rsplit(b")", 1)[1].split()[0] != b"Z"
+    except FileNotFoundError:
+        return False  # a zombie that was reaped between the two looks
     except OSError:
         return True
+
+
+def force_kill(pid):
+    """SIGKILL, for cleanup: the process may have exited since it was last looked at."""
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, 9)
 
 
 def wait_until(condition, seconds=10):
@@ -427,7 +437,7 @@ def test_a_real_agent_starts_answers_and_locks(vault, env):
         assert wait_until(lambda: not alive(pid))
     finally:
         if alive(pid):
-            os.kill(pid, 9)
+            force_kill(pid)
 
 
 def test_the_daemon_does_not_keep_the_callers_descriptors(vault, env):
@@ -461,7 +471,7 @@ def test_a_real_agent_stops_itself_at_its_time_limit(vault, env):
         assert wait_until(lambda: not alive(pid))
     finally:
         if alive(pid):
-            os.kill(pid, 9)
+            force_kill(pid)
 
 
 # --------------------------------------------------------------------------- the CLI
@@ -512,7 +522,7 @@ def test_unlock_status_and_lock_from_the_command_line(vault, env):
         assert code == 1 and "no agent is listening" in err
     finally:
         if alive(pid):
-            os.kill(pid, 9)
+            force_kill(pid)
 
 
 def test_unlock_needs_a_wrapped_key_a_right_passphrase_and_sane_limits(base, vault, env):
@@ -834,7 +844,7 @@ def test_allow_unhardened_starts_the_agent_and_status_says_what_is_missing(vault
         assert wait_until(lambda: not alive(pid))
     finally:
         if alive(pid):
-            os.kill(pid, 9)
+            force_kill(pid)
 
 
 def test_unlock_refuses_an_unprotected_agent_unless_told_otherwise(vault, env, monkeypatch):
@@ -854,7 +864,7 @@ def test_unlock_refuses_an_unprotected_agent_unless_told_otherwise(vault, env, m
     finally:
         cli(["lock", *args], env)
         if not wait_until(lambda: not alive(pid)) and alive(pid):
-            os.kill(pid, 9)
+            force_kill(pid)
 
 
 def test_a_suspend_inclusive_clock_counts_a_sleep_even_if_the_wall_clock_is_corrected_back():
