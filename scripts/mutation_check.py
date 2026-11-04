@@ -2136,8 +2136,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AGT-18",
         "src/floorvault/key_agent.py",
-        "                if self._identity is None or (info.st_dev, info.st_ino) == self._identity:",
-        "                if True:  # MUTANT",
+        "            if identity is not None and (info.st_dev, info.st_ino) != identity:\n                return\n",
+        "            if False:  # MUTANT\n                return\n",
         "An exiting agent removes a socket another agent has since bound (#84)",
         expect_on_windows="survived",
     ),
@@ -2275,6 +2275,94 @@ MUTATIONS: tuple[Mutation, ...] = (
         "        _close_inherited_descriptors({listener.fileno(), write_end})\n",
         "        pass  # MUTANT\n",
         "The daemon keeps its caller's descriptors, such as a pipe the caller is reading to the end (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-36",
+        "src/floorvault/key_agent.py",
+        "        self._now += max(monotonic - self._last_monotonic, wall - self._last_wall, 0.0)\n",
+        "        self._now += max(monotonic - self._last_monotonic, 0.0)  # MUTANT\n",
+        "The limit clock ignores the wall clock, so a sleeping machine keeps the key past its limits (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-37",
+        "src/floorvault/key_agent.py",
+        "        self._clock = clock if clock is not None else _LimitClock()\n",
+        "        self._clock = clock if clock is not None else time.monotonic  # MUTANT\n",
+        "An agent uses a clock that stops while the machine sleeps (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-38",
+        "src/floorvault/key_agent.py",
+        '        if not allow_unhardened and not (report["core_dumps_off"] and report["ptrace_blocked"]):\n',
+        "        if False:  # MUTANT\n",
+        "The agent starts even though it could not protect its memory (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-39",
+        "src/floorvault/key_agent.py",
+        '    if ready[:1] == b"H":\n',
+        "    if False:  # MUTANT\n",
+        "The starter does not report that the agent refused to run unprotected (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-40",
+        "src/floorvault/key_agent.py",
+        "        libc = ctypes.CDLL(None, use_errno=True)\n",
+        '        raise OSError("MUTANT")\n',
+        "The C library is looked up only with find_library, which can fail (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-41",
+        "src/floorvault/key_agent.py",
+        '(report["core_dumps_off"] and report["ptrace_blocked"])',
+        'report["ptrace_blocked"]',
+        "An agent that left core dumps on is accepted as protected (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-54",
+        "src/floorvault/key_agent.py",
+        '    if ready[:1] == b"H":\n        _unlink_socket(path, identity)\n',
+        '    if ready[:1] == b"H":\n        os.unlink(path)\n',
+        "A refused start removes a socket another agent has bound there since (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-55",
+        "src/floorvault/key_agent.py",
+        "    return lambda: time.clock_gettime(clock_id)\n",
+        "    return None  # MUTANT\n",
+        "The platform's suspend-inclusive clock is never used, so a sleep hidden by a clock correction is lost (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-56",
+        "src/floorvault/key_agent.py",
+        "        if self._suspend_inclusive is not None:\n",
+        "        if False:  # MUTANT\n",
+        "The limit clock ignores its suspend-inclusive source (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-57",
+        "src/floorvault/key_agent.py",
+        "            if not _nobody_listens(sock_path):\n                return\n",
+        "            if False:  # MUTANT\n                return\n",
+        "A socket with a live agent listening on it is removed because its inode number matches (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-58",
+        "src/floorvault/key_agent.py",
+        "            if not stat.S_ISSOCK(info.st_mode):\n                return\n",
+        "            if False:  # MUTANT\n                return\n",
+        "Whatever now sits at the agent's socket path is removed as if it were the socket (#84)",
         expect_on_windows="survived",
     ),
     Mutation(
@@ -2645,7 +2733,21 @@ def _copy_repo(destination: Path) -> None:
     )
 
 
+#: Output of the most recent ``_run_tests`` call, so a red baseline can say which tests failed.
+_last_output = ""
+
+
+def _report_red_baseline(output: str) -> None:
+    """Say which tests made the unmutated copy fail (the exit code alone names none)."""
+    lines = output.splitlines()
+    failed = [line for line in lines if line.startswith(("FAILED ", "ERROR "))]
+    print("[FAIL] the unmutated copy is not green; aborting", file=sys.stderr)
+    for line in failed[:40] or lines[-40:]:
+        print(f"    {line}", file=sys.stderr)
+
+
 def _run_tests(workdir: Path, tests: list[str], first_failure_only: bool) -> int:
+    global _last_output
     argv = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
     if first_failure_only:
         argv.append("-x")
@@ -2656,9 +2758,11 @@ def _run_tests(workdir: Path, tests: list[str], first_failure_only: bool) -> int
     # bytecode - the mutant then appears to survive because the original code
     # ran. Two full sweeps disagreed by 28 mutants until this was pinned down.
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    return subprocess.run(  # harness-built argv, no shell  # nosec B603
+    completed = subprocess.run(  # harness-built argv, no shell  # nosec B603
         argv, cwd=workdir, capture_output=True, text=True, env=env
-    ).returncode
+    )
+    _last_output = (completed.stdout or "") + (completed.stderr or "")
+    return completed.returncode
 
 
 def _classify(code: int) -> str:
@@ -2847,7 +2951,7 @@ def _run_curated(verbose: bool, *, scope: str = "all", shard: tuple[int, int] | 
         workdir = Path(tmp) / "repo"
         _copy_repo(workdir)
         if _run_tests(workdir, curated_tests, False) != 0:
-            print("[FAIL] the unmutated copy is not green; aborting", file=sys.stderr)
+            _report_red_baseline(_last_output)
             return 2
         print("[BASELINE] unmutated copy: tests pass\n")
         failures = 0

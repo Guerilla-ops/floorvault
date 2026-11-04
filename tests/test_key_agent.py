@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import shutil
 import socket
 import stat
@@ -185,7 +186,9 @@ def test_the_socket_directory_must_be_private_and_ours(base, monkeypatch):
         key_agent.check_private_dir(base / "file")
     # Owned by someone else.
     monkeypatch.setattr(key_agent.os, "geteuid", lambda: os.stat(good).st_uid + 1)
-    with pytest.raises(key_agent.AgentError, match="owned by another user"):
+    # The directory's own message, not one about a directory above it (which would also be
+    # raised, for an ordinary user's tree, if this directory's own check were missing).
+    with pytest.raises(key_agent.AgentError, match=re.escape(f"{good} is owned by another user")):
         key_agent.check_private_dir(good)
 
 
@@ -394,11 +397,21 @@ def alive(pid):
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+    if not os.path.isdir("/proc/self"):
+        return True  # no /proc (macOS): a signal that found the process is all there is to go on
     try:
         with open(f"/proc/{pid}/stat", "rb") as handle:
             return handle.read().rsplit(b")", 1)[1].split()[0] != b"Z"
+    except FileNotFoundError:
+        return False  # a zombie that was reaped between the two looks
     except OSError:
         return True
+
+
+def force_kill(pid):
+    """SIGKILL, for cleanup: the process may have exited since it was last looked at."""
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, 9)
 
 
 def wait_until(condition, seconds=10):
@@ -427,7 +440,7 @@ def test_a_real_agent_starts_answers_and_locks(vault, env):
         assert wait_until(lambda: not alive(pid))
     finally:
         if alive(pid):
-            os.kill(pid, 9)
+            force_kill(pid)
 
 
 def test_the_daemon_does_not_keep_the_callers_descriptors(vault, env):
@@ -461,7 +474,7 @@ def test_a_real_agent_stops_itself_at_its_time_limit(vault, env):
         assert wait_until(lambda: not alive(pid))
     finally:
         if alive(pid):
-            os.kill(pid, 9)
+            force_kill(pid)
 
 
 # --------------------------------------------------------------------------- the CLI
@@ -512,7 +525,7 @@ def test_unlock_status_and_lock_from_the_command_line(vault, env):
         assert code == 1 and "no agent is listening" in err
     finally:
         if alive(pid):
-            os.kill(pid, 9)
+            force_kill(pid)
 
 
 def test_unlock_needs_a_wrapped_key_a_right_passphrase_and_sane_limits(base, vault, env):
@@ -730,3 +743,253 @@ def test_deeply_nested_json_is_a_bad_request_not_the_end_of_the_agent(running, m
     }
     assert item.thread.is_alive()
     assert key_agent.status(item.path)["ok"]
+
+
+# ------------------------------------------- limits across sleep and hardening policy
+
+
+def test_the_limit_clock_counts_a_sleep_ignores_a_clock_set_back_and_never_goes_back():
+    monotonic, wall = FakeClock(), FakeClock()
+    clock = key_agent._LimitClock(monotonic, wall, suspend_inclusive=None)
+    assert clock() == 0.0
+    monotonic.advance(10), wall.advance(10)
+    assert clock() == 10.0  # ordinary running
+    wall.advance(50_000)  # asleep: only the wall clock moved
+    assert clock() == 50_010.0
+    monotonic.advance(5), wall.advance(-7_200)  # the wall clock set back while 5 s pass
+    assert clock() == 50_015.0
+    monotonic.advance(1), wall.advance(1)  # carries on normally from the wrong time: no rewind
+    assert clock() == 50_016.0
+    wall.advance(3_600)  # a forward step (NTP, a person) counts in full: limits end early
+    assert clock() == 53_616.0
+
+
+def test_an_agent_that_slept_past_its_limits_wipes_its_key_when_the_machine_wakes(vault, env):
+    monotonic, wall = FakeClock(), FakeClock()
+    item = Running(
+        vault,
+        env,
+        key_agent._LimitClock(monotonic, wall, suspend_inclusive=None),
+        ttl=8 * 3600,
+        idle=3600,
+    )
+    try:
+        assert key_agent.status(item.path)["ok"]
+        wall.advance(14 * 3600)  # the machine slept overnight: the monotonic clock stood still
+        item.join(10)
+        assert item.key.is_wiped and not item.path.exists()
+        assert item.agent.reason == "the time limit passed"
+    finally:
+        item.stop()
+
+
+def test_an_agent_without_a_clock_of_its_own_uses_the_limit_clock(monkeypatch):
+    made = []
+
+    class Spy:
+        def __init__(self):
+            made.append(self)
+
+        def __call__(self):
+            return 0.0
+
+    monkeypatch.setattr(key_agent, "_LimitClock", Spy)
+    key_agent.Agent(object(), Path("/tmp/not-used.sock"))
+    assert len(made) == 1
+
+
+def test_the_c_library_is_found_even_where_find_library_fails(monkeypatch):
+    import ctypes.util
+
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+    libc = key_agent._libc()
+    assert libc is not None and hasattr(libc, "prctl" if sys.platform == "linux" else "ptrace")
+
+
+@pytest.mark.parametrize(
+    ("report", "named"),
+    [
+        ({"core_dumps_off": True, "ptrace_blocked": False}, "block debuggers"),
+        ({"core_dumps_off": False, "ptrace_blocked": True}, "turn core dumps off"),
+        (
+            {"core_dumps_off": False, "ptrace_blocked": False},
+            "turn core dumps off or block debuggers",
+        ),
+    ],
+)
+def test_the_agent_refuses_to_start_unprotected_and_holds_nothing(
+    vault, env, monkeypatch, report, named
+):
+    monkeypatch.setattr(key_agent, "harden_process", lambda: dict(report))
+    with pytest.raises(key_agent.AgentError, match=f"could not {named}") as raised:
+        key_agent.start(vault, b"k" * 32, environ=env, app_context=APP_CONTEXT)
+    assert "--allow-unhardened" in str(raised.value) and "nothing is holding the key" in str(
+        raised.value
+    )
+    path = key_agent.socket_path(vault, env)
+    assert not path.exists()
+    with pytest.raises(key_agent.AgentNotRunning):
+        key_agent.status(path)
+
+
+def test_allow_unhardened_starts_the_agent_and_status_says_what_is_missing(vault, env, monkeypatch):
+    monkeypatch.setattr(
+        key_agent, "harden_process", lambda: {"core_dumps_off": False, "ptrace_blocked": False}
+    )
+    info = key_agent.start(
+        vault, b"k" * 32, environ=env, app_context=APP_CONTEXT, allow_unhardened=True
+    )
+    path = key_agent.socket_path(vault, env)
+    pid = info["pid"]
+    try:
+        assert info["core_dumps_off"] is False and info["ptrace_blocked"] is False
+        key_agent.lock(path)
+        assert wait_until(lambda: not alive(pid))
+    finally:
+        if alive(pid):
+            force_kill(pid)
+
+
+def test_unlock_refuses_an_unprotected_agent_unless_told_otherwise(vault, env, monkeypatch):
+    monkeypatch.setattr(
+        key_agent, "harden_process", lambda: {"core_dumps_off": True, "ptrace_blocked": False}
+    )
+    args = ["--vault", str(vault)]
+    code, out, err, asked = cli(["unlock", *args], env, [PHRASE])
+    assert code == 1 and "could not block debuggers" in err and "--allow-unhardened" in err
+    assert PHRASE not in out + err
+    assert not key_agent.socket_path(vault, env).exists()
+    code, out, err, _ = cli(["unlock", "--allow-unhardened", *args], env, [PHRASE])
+    pid = key_agent.status(key_agent.socket_path(vault, env))["pid"]
+    try:
+        assert code == 0 and "ptrace blocked: no" in out
+        assert "WARNING" in err and "not fully protected" in err
+    finally:
+        cli(["lock", *args], env)
+        if not wait_until(lambda: not alive(pid)) and alive(pid):
+            force_kill(pid)
+
+
+def test_a_suspend_inclusive_clock_counts_a_sleep_even_if_the_wall_clock_is_corrected_back():
+    awake, wall, suspended = FakeClock(), FakeClock(), FakeClock()
+    clock = key_agent._LimitClock(awake, wall, suspend_inclusive=suspended)
+    awake.advance(1800), wall.advance(1800), suspended.advance(1800)  # 30 minutes awake
+    assert clock() == 1800.0
+    # 45 minutes asleep: only the suspend-inclusive clock moves ... and on waking the wall clock
+    # is corrected back an hour, so its step over the sleep is -900 s. The fallback would lose
+    # the whole sleep (deltas 0 and -900); this does not.
+    suspended.advance(2700), wall.advance(2700 - 3600)
+    assert clock() == 4500.0
+
+
+def test_the_idle_limit_ends_an_agent_that_slept_through_a_clock_correction():
+    awake, wall, suspended = FakeClock(), FakeClock(), FakeClock()
+    clock = key_agent._LimitClock(awake, wall, suspend_inclusive=suspended)
+    agent = key_agent.Agent(
+        object(), Path("/tmp/not-used.sock"), ttl=8 * 3600, idle=3600, clock=clock
+    )
+    awake.advance(1800), wall.advance(1800), suspended.advance(1800)
+    assert agent._expired() is None  # 30 minutes in: well inside the idle hour
+    suspended.advance(2700), wall.advance(-900)  # 45 minutes asleep, clock corrected back an hour
+    assert agent._expired() == "the idle limit passed"  # 75 minutes without use
+
+
+def test_the_platforms_suspend_inclusive_clock_is_the_one_chosen(monkeypatch):
+    import time as time_module
+
+    expected = "CLOCK_BOOTTIME" if sys.platform == "linux" else "CLOCK_MONOTONIC_RAW"
+    wanted = getattr(time_module, expected)
+
+    def fake_clock_gettime(clock_id):
+        return 5000.0 if clock_id == wanted else 100.0
+
+    monkeypatch.setattr(time_module, "clock_gettime", fake_clock_gettime)
+    clock = key_agent._suspend_inclusive_clock()
+    assert clock is not None and clock() == 5000.0
+    monkeypatch.delattr(time_module, expected)
+    assert key_agent._suspend_inclusive_clock() is None  # no such clock here: the fallback is used
+
+    def failing(clock_id):
+        raise OSError("not supported")
+
+    monkeypatch.undo()
+    monkeypatch.setattr(time_module, "clock_gettime", failing)
+    assert key_agent._suspend_inclusive_clock() is None
+
+
+def stale_socket(path):
+    """A socket file with nobody listening: bound, then closed."""
+    leftover = socket.socket(socket.AF_UNIX)
+    leftover.bind(str(path))
+    leftover.close()
+    return key_agent._socket_identity(path)
+
+
+def test_unlinking_removes_a_stale_socket_and_nothing_else(base):
+    path = base / "s.sock"
+    identity = stale_socket(path)
+    key_agent._unlink_socket(path, identity)
+    assert not path.exists()
+    key_agent._unlink_socket(path, identity)  # already gone: nothing to do, no error
+    stale_socket(path)
+    key_agent._unlink_socket(path, None)  # no identity known: a stale socket is removed
+    assert not path.exists()
+
+
+def test_unlinking_leaves_a_live_socket_alone_even_if_it_has_the_same_inode(base):
+    path = base / "live.sock"
+    live = socket.socket(socket.AF_UNIX)
+    live.bind(str(path))
+    live.listen(1)
+    try:
+        # The identity matches exactly (inode numbers get reused, so a match proves little) ...
+        key_agent._unlink_socket(path, key_agent._socket_identity(path))
+        assert path.exists()  # ... but somebody is listening, so it is not the stale one
+    finally:
+        live.close()
+
+
+def test_unlinking_leaves_a_socket_with_another_identity_and_a_non_socket_alone(base, monkeypatch):
+    path = base / "other.sock"
+    stale_socket(path)
+    key_agent._unlink_socket(path, (0, 0))  # not the socket that was bound
+    assert path.exists()
+    path.unlink()
+    path.write_text("not a socket")
+    # What a connect to a regular file reports differs by OS (refused on Linux, ENOTSOCK on
+    # macOS), so say outright that nobody is listening: the type check alone must keep the file.
+    monkeypatch.setattr(key_agent, "_nobody_listens", lambda sock_path: True)
+    key_agent._unlink_socket(path, None)
+    assert path.read_text() == "not a socket"
+
+
+def test_a_refused_start_never_removes_a_socket_another_agent_bound_since(vault, env, monkeypatch):
+    monkeypatch.setattr(
+        key_agent, "harden_process", lambda: {"core_dumps_off": False, "ptrace_blocked": False}
+    )
+    path = key_agent.socket_path(vault, env)
+    real_waitpid = os.waitpid
+    replacements = []
+
+    def waitpid_then_a_newer_agent_binds(pid, flags):
+        result = real_waitpid(pid, flags)
+        with contextlib.suppress(
+            FileNotFoundError
+        ):  # the refused agent may have removed it already
+            os.unlink(path)  # its socket is stale; a concurrent unlock replaces it
+        newer = socket.socket(socket.AF_UNIX)
+        newer.bind(str(path))
+        newer.listen(1)
+        replacements.append(newer)
+        return result
+
+    monkeypatch.setattr(key_agent.os, "waitpid", waitpid_then_a_newer_agent_binds)
+    try:
+        with pytest.raises(key_agent.AgentError, match="could not"):
+            key_agent.start(vault, b"k" * 32, environ=env, app_context=APP_CONTEXT)
+        assert path.exists()  # the newer agent's socket was not taken for the refused one's
+    finally:
+        for newer in replacements:
+            newer.close()
+        with contextlib.suppress(OSError):
+            os.unlink(path)

@@ -192,20 +192,38 @@ def peer_credentials(conn: socket.socket) -> tuple[Optional[int], int]:
 # --------------------------------------------------------------------- hardening
 
 
-def harden_process() -> dict[str, bool]:
-    """Best-effort limits on how this process can be inspected. Reports what took effect."""
+def _libc() -> Any:
+    """The C library, or None. The running program's own symbols first: ``find_library``
+    can fail (musl, minimal images) where the process already has libc loaded."""
     import ctypes
     import ctypes.util
 
+    probe = "prctl" if sys.platform == "linux" else "ptrace"
+    with contextlib.suppress(OSError, AttributeError):
+        libc = ctypes.CDLL(None, use_errno=True)
+        getattr(libc, probe)
+        return libc
+    with contextlib.suppress(OSError):
+        name = ctypes.util.find_library("c")
+        if name:
+            return ctypes.CDLL(name, use_errno=True)
+    return None
+
+
+def harden_process() -> dict[str, bool]:
+    """Limits on how this process can be inspected. Reports what took effect.
+
+    Best effort here; whether the agent may run without them is decided by its starter
+    (``start`` refuses unless ``allow_unhardened``).
+    """
     from .memory import disable_core_dumps
 
     report = {"core_dumps_off": False, "ptrace_blocked": False}
     with contextlib.suppress(Exception):
         report["core_dumps_off"] = bool(disable_core_dumps())
-    libc_name = ctypes.util.find_library("c")
-    if libc_name:
+    libc = _libc()
+    if libc is not None:
         with contextlib.suppress(Exception):
-            libc = ctypes.CDLL(libc_name, use_errno=True)
             if sys.platform == "linux":
                 report["ptrace_blocked"] = libc.prctl(4, 0, 0, 0, 0) == 0  # PR_SET_DUMPABLE
             elif sys.platform == "darwin":
@@ -322,13 +340,75 @@ def _coordinates(request: Mapping[str, Any], *, key_id_default: Optional[int]) -
 # ----------------------------------------------------------------------- server
 
 
+_AUTO = object()
+
+
+def _suspend_inclusive_clock() -> Optional[Callable[[], float]]:
+    """A clock that keeps running while the machine is suspended, if this platform has one.
+
+    Linux ``CLOCK_BOOTTIME``; macOS ``CLOCK_MONOTONIC_RAW`` (``CLOCK_UPTIME_RAW`` and
+    ``time.monotonic`` stop in sleep). Neither can be set back by changing the wall clock.
+    """
+    name = {"linux": "CLOCK_BOOTTIME", "darwin": "CLOCK_MONOTONIC_RAW"}.get(sys.platform)
+    clock_id = getattr(time, name, None) if name else None
+    if clock_id is None:
+        return None
+    try:
+        time.clock_gettime(clock_id)
+    except (OSError, AttributeError):
+        return None
+    return lambda: time.clock_gettime(clock_id)
+
+
+class _LimitClock:
+    """Seconds the agent has been alive, for its total and idle limits.
+
+    ``time.monotonic`` does not count time the machine is suspended (Linux
+    ``CLOCK_MONOTONIC``; Python's macOS clock stops in sleep too), so a laptop that sleeps
+    overnight would keep the key far past its limits in real time. Where the platform has a
+    clock that counts suspended time and cannot be set (``_suspend_inclusive_clock``), that
+    is the clock, never going backwards.
+
+    Without one, each step advances by the larger of the monotonic and wall-clock steps and
+    never backwards: a sleep counts in full, setting the wall clock back on its own extends
+    nothing, and a forward step ends the limits early (the safe direction). That fallback is
+    weaker: a wall-clock correction *during the same suspend* can hide the sleep.
+    """
+
+    def __init__(
+        self,
+        monotonic: Callable[[], float] = time.monotonic,
+        wall: Callable[[], float] = time.time,
+        *,
+        suspend_inclusive: Any = _AUTO,
+    ) -> None:
+        if suspend_inclusive is _AUTO:
+            suspend_inclusive = _suspend_inclusive_clock()
+        self._suspend_inclusive = suspend_inclusive
+        self._monotonic, self._wall = monotonic, wall
+        self._last_suspend = suspend_inclusive() if suspend_inclusive else 0.0
+        self._last_monotonic, self._last_wall = monotonic(), wall()
+        self._now = 0.0
+
+    def __call__(self) -> float:
+        if self._suspend_inclusive is not None:
+            now = self._suspend_inclusive()
+            self._now += max(now - self._last_suspend, 0.0)
+            self._last_suspend = now
+            return self._now
+        monotonic, wall = self._monotonic(), self._wall()
+        self._now += max(monotonic - self._last_monotonic, wall - self._last_wall, 0.0)
+        self._last_monotonic, self._last_wall = monotonic, wall
+        return self._now
+
+
 class Agent:
     """Holds ``key`` until ``ttl`` seconds after start, ``idle`` seconds without use, or a stop.
 
     ``status`` does not count as use (a monitor must not keep the key alive);
     ``lock`` stops the agent; ``encrypt`` and ``decrypt`` are use, and are served by
     ``crypto`` (a ``FloorVault`` over the same key) when one is given. ``clock`` and
-    ``poll`` exist for tests.
+    ``poll`` exist for tests; the default clock keeps counting while the machine sleeps.
     """
 
     def __init__(
@@ -338,7 +418,7 @@ class Agent:
         *,
         ttl: int = DEFAULT_TTL,
         idle: int = DEFAULT_IDLE,
-        clock: Callable[[], float] = time.monotonic,
+        clock: Optional[Callable[[], float]] = None,
         poll: float = 0.5,
         hardening: Optional[Mapping[str, bool]] = None,
         identity: Optional[tuple[int, int]] = None,
@@ -351,7 +431,8 @@ class Agent:
         self._identity = identity
         self.ttl = ttl
         self.idle = idle
-        self._clock = clock
+        self._clock = clock if clock is not None else _LimitClock()
+        clock = self._clock
         self._poll = poll
         self._hardening = dict(hardening or {})
         self._started = clock()
@@ -501,19 +582,46 @@ class Agent:
         self._remove_socket()
 
     def _remove_socket(self) -> None:
-        """Remove the socket file only if it is still the one this agent bound.
+        """Remove the socket file only if it is still the one this agent bound."""
+        _unlink_socket(self.sock_path, self._identity)
 
-        Under the store's lifecycle lock, so it cannot interleave with another
-        unlock that is probing, replacing or binding the same path.
-        """
-        with contextlib.suppress(Exception):
-            with exclusive_lock(_lock_path(self.sock_path), timeout=5.0):
-                try:
-                    info = os.lstat(self.sock_path)
-                except FileNotFoundError:
-                    return
-                if self._identity is None or (info.st_dev, info.st_ino) == self._identity:
-                    os.unlink(self.sock_path)
+
+def _nobody_listens(sock_path: Path) -> bool:
+    """Whether a connect to ``sock_path`` finds nobody (a stale socket file), not a live agent."""
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(0.5)
+        probe.connect(os.fspath(sock_path))
+    except (ConnectionRefusedError, FileNotFoundError):
+        return True
+    except OSError:
+        return False  # cannot tell (a timeout, a full backlog): treat it as alive
+    finally:
+        probe.close()
+    return False
+
+
+def _unlink_socket(sock_path: Path, identity: Optional[tuple[int, int]]) -> None:
+    """Unlink ``sock_path`` if it is the stale socket file ``identity`` (``(st_dev, st_ino)``) names.
+
+    Under the store's lifecycle lock, so it cannot interleave with another unlock that is
+    probing, replacing or binding the same path. It never removes a socket that another agent
+    has bound there since: the identity must match **and** nobody may be listening (inode
+    numbers are reused, so the identity alone could take a newer agent's socket for the old one).
+    """
+    with contextlib.suppress(Exception):
+        with exclusive_lock(_lock_path(sock_path), timeout=5.0):
+            try:
+                info = os.lstat(sock_path)
+            except FileNotFoundError:
+                return
+            if not stat.S_ISSOCK(info.st_mode):
+                return
+            if identity is not None and (info.st_dev, info.st_ino) != identity:
+                return
+            if not _nobody_listens(sock_path):
+                return
+            os.unlink(sock_path)
 
 
 # ------------------------------------------------------------------ client side
@@ -750,11 +858,17 @@ def start(
     idle: int = DEFAULT_IDLE,
     environ: Optional[Mapping[str, str]] = None,
     app_context: str,
+    allow_unhardened: bool = False,
 ) -> dict[str, Any]:
     """Start a background agent holding ``key`` for ``vault_dir``; return its first status.
 
     ``app_context`` is the application context the store's records were sealed under; the
     agent encrypts and decrypts with it, so it must be the CLI's own (``APP_CONTEXT``).
+
+    The agent refuses to start unless it could turn core dumps off and block debuggers
+    from reading its memory (a same-user process could otherwise take the key itself, which
+    outlives the agent); ``allow_unhardened`` starts it anyway, and ``status`` still reports
+    what took effect.
 
     The listener is bound before forking, so a refusal (a bad directory, an agent
     already running) is reported here. The agent is a daemon: a second fork after
@@ -774,7 +888,18 @@ def start(
         listener.close()
         raise AgentError(f"cannot start the agent ({type(exc).__name__})") from None
     if first == 0:  # pragma: no cover - runs in the child
-        _daemon(listener, path, key, ttl, idle, identity, app_context, read_end, write_end)
+        _daemon(
+            listener,
+            path,
+            key,
+            ttl,
+            idle,
+            identity,
+            app_context,
+            allow_unhardened,
+            read_end,
+            write_end,
+        )
         os._exit(0)
     os.close(write_end)
     listener.close()  # the daemon owns it now
@@ -782,12 +907,23 @@ def start(
         os.waitpid(first, 0)
     try:
         with os.fdopen(read_end, "rb") as pipe:
-            ready = pipe.read(1)
+            ready = pipe.read()  # to end-of-file: the agent has exited (or closed it) by then
     except OSError:
         ready = b""
+    if ready[:1] == b"H":
+        _unlink_socket(path, identity)
+        missing = [
+            what
+            for what, flag in (("turn core dumps off", ready[1:2]), ("block debuggers", ready[2:3]))
+            if flag != b"1"
+        ]
+        raise AgentError(
+            f"the agent could not {' or '.join(missing)}, so a process running as you could "
+            "read the key out of its memory; nothing is holding the key. Pass "
+            "--allow-unhardened to start it anyway"
+        )
     if ready != b"1":
-        with contextlib.suppress(OSError):
-            os.unlink(path)
+        _unlink_socket(path, identity)
         raise AgentError("the agent did not start; nothing is holding the key")
     return status(path)
 
@@ -820,6 +956,7 @@ def _daemon(  # pragma: no cover - runs in the forked child
     idle: int,
     identity: tuple[int, int],
     app_context: str,
+    allow_unhardened: bool,
     read_end: int,
     write_end: int,
 ) -> None:
@@ -837,6 +974,18 @@ def _daemon(  # pragma: no cover - runs in the forked child
         os.chdir("/")
         _close_inherited_descriptors({listener.fileno(), write_end})
         report = harden_process()
+        if not allow_unhardened and not (report["core_dumps_off"] and report["ptrace_blocked"]):
+            flags = (b"1" if report["core_dumps_off"] else b"0") + (
+                b"1" if report["ptrace_blocked"] else b"0"
+            )
+            # The owner removes its own socket before it reports: closing the listener first
+            # makes it stale, and nothing else can mistake it for a live agent meanwhile.
+            listener.close()
+            _unlink_socket(path, identity)
+            os.write(write_end, b"H" + flags)
+            os.close(write_end)
+            write_end = -1
+            return
         from .core import FloorVault
         from .memory import HardenedMemoryKey
 
@@ -853,6 +1002,6 @@ def _daemon(  # pragma: no cover - runs in the forked child
         code = 0
     except BaseException:  # noqa: BLE001 - a daemon must not raise into the caller's stack
         with contextlib.suppress(OSError):
-            os.close(write_end)
+            os.close(write_end)  # -1 when already closed: the error is suppressed
     finally:
         os._exit(code)

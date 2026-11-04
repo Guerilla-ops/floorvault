@@ -161,7 +161,12 @@ def test_platform_overrides_are_declared_explicitly():
         "DUR-4",
         "BIND-7",
         "HIM-4",
-        *[f"AGT-{i}" for i in range(1, 36)],
+        *[f"AGT-{i}" for i in range(1, 42)],
+        "AGT-54",
+        "AGT-55",
+        "AGT-56",
+        "AGT-57",
+        "AGT-58",
         "AUD-2",
     ], f"unexpected set of platform-relaxed mutants: {relaxed}"
     # The reverse: a guard that exists only on Windows is dead code elsewhere,
@@ -262,3 +267,21 @@ def test_a_shard_can_be_listed_without_running_mutations():
         check=False,
     )
     assert bad.returncode == 2
+
+
+def test_a_red_baseline_names_the_tests_that_failed(monkeypatch, capsys):
+    """CI used to say only 'the unmutated copy is not green', which cost several rounds to diagnose."""
+    mc = _load()
+    monkeypatch.setattr(mc, "_copy_repo", lambda destination: destination.mkdir(parents=True))
+
+    def red(workdir, tests, first_failure_only):
+        mc._last_output = (
+            "....\nFAILED tests/test_x.py::test_flaky - AssertionError: boom\n1 failed\n"
+        )
+        return 1
+
+    monkeypatch.setattr(mc, "_run_tests", red)
+    assert mc._run_curated(False) == 2
+    err = capsys.readouterr().err
+    assert "the unmutated copy is not green" in err
+    assert "FAILED tests/test_x.py::test_flaky - AssertionError: boom" in err
