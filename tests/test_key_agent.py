@@ -26,6 +26,7 @@ from unittest import mock
 import pytest
 
 from floorvault import key_agent, passphrase_custody
+from floorvault._filelock import exclusive_lock
 from floorvault.agent_cli import APP_CONTEXT
 from floorvault.inspector import main
 from floorvault.memory import HardenedMemoryKey
@@ -1300,14 +1301,16 @@ def test_a_refused_start_never_removes_a_socket_another_agent_bound_since(vault,
 
     def waitpid_then_a_newer_agent_binds(pid, flags):
         result = real_waitpid(pid, flags)
-        with contextlib.suppress(
-            FileNotFoundError
-        ):  # the refused agent may have removed it already
-            os.unlink(path)  # its socket is stale; a concurrent unlock replaces it
-        newer = socket.socket(socket.AF_UNIX)
-        newer.bind(str(path))
-        newer.listen(1)
-        replacements.append(newer)
+        # A concurrent unlock replaces the stale socket the way a real one does: with the
+        # lifecycle lock held from unlink to listen. Without it there is a moment when the file
+        # exists but nobody listens yet, which no real agent exposes to the cleanup.
+        with exclusive_lock(key_agent._lock_path(path), timeout=10.0):
+            with contextlib.suppress(FileNotFoundError):  # the refused agent may have removed it
+                os.unlink(path)
+            newer = socket.socket(socket.AF_UNIX)
+            newer.bind(str(path))
+            newer.listen(1)
+            replacements.append(newer)
         return result
 
     monkeypatch.setattr(key_agent.os, "waitpid", waitpid_then_a_newer_agent_binds)
