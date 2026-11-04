@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import shutil
 import socket
 import stat
@@ -185,7 +186,9 @@ def test_the_socket_directory_must_be_private_and_ours(base, monkeypatch):
         key_agent.check_private_dir(base / "file")
     # Owned by someone else.
     monkeypatch.setattr(key_agent.os, "geteuid", lambda: os.stat(good).st_uid + 1)
-    with pytest.raises(key_agent.AgentError, match="owned by another user"):
+    # The directory's own message, not one about a directory above it (which would also be
+    # raised, for an ordinary user's tree, if this directory's own check were missing).
+    with pytest.raises(key_agent.AgentError, match=re.escape(f"{good} is owned by another user")):
         key_agent.check_private_dir(good)
 
 
