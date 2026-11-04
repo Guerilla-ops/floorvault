@@ -1271,13 +1271,16 @@ def test_unlinking_leaves_a_live_socket_alone_even_if_it_has_the_same_inode(base
         live.close()
 
 
-def test_unlinking_leaves_a_socket_with_another_identity_and_a_non_socket_alone(base):
+def test_unlinking_leaves_a_socket_with_another_identity_and_a_non_socket_alone(base, monkeypatch):
     path = base / "other.sock"
     stale_socket(path)
     key_agent._unlink_socket(path, (0, 0))  # not the socket that was bound
     assert path.exists()
     path.unlink()
     path.write_text("not a socket")
+    # What a connect to a regular file reports differs by OS (refused on Linux, ENOTSOCK on
+    # macOS), so say outright that nobody is listening: the type check alone must keep the file.
+    monkeypatch.setattr(key_agent, "_nobody_listens", lambda sock_path: True)
     key_agent._unlink_socket(path, None)
     assert path.read_text() == "not a socket"
 
