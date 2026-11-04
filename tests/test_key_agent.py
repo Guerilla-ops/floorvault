@@ -1041,7 +1041,11 @@ def test_neither_the_typed_passphrase_nor_a_copy_of_the_key_is_in_the_agent_memo
     pid = key_agent.status(key_agent.socket_path(vault, env))["pid"]
     found = {"passphrase": 0, "key": 0}
     try:
-        with open(f"/proc/{pid}/maps") as maps, open(f"/proc/{pid}/mem", "rb", 0) as mem:
+        try:
+            maps, mem = open(f"/proc/{pid}/maps"), open(f"/proc/{pid}/mem", "rb", 0)
+        except PermissionError:  # root without CAP_SYS_PTRACE (a container): cannot read it
+            pytest.skip("this process may not read another process's memory")
+        with maps, mem:
             for line in maps:
                 match = re.match(r"([0-9a-f]+)-([0-9a-f]+) (\S+) \S+ \S+ \S+\s*(.*)", line)
                 lo, hi, perms, name = int(match[1], 16), int(match[2], 16), match[3], match[4]
@@ -1079,8 +1083,7 @@ def test_a_directory_above_the_socket_directory_that_others_can_change_is_refuse
     final = nested(base, "top", "mid", "floorvault")
     key_agent.check_private_dir(final)
     top = base / "top"
-    # Writable by others but not by the group, so only the world-writable rule can refuse it
-    # (0o777 also sets the group bit, which a group that is ours alone would let through).
+    # Writable by others but not by the group, so only the world-writable rule can refuse it.
     os.chmod(top, 0o707)
     with pytest.raises(key_agent.AgentError, match="can be changed by other users") as raised:
         key_agent.check_private_dir(final)
@@ -1091,41 +1094,34 @@ def test_a_directory_above_the_socket_directory_that_others_can_change_is_refuse
     key_agent.check_private_dir(final)
 
 
-def test_a_group_writable_directory_is_accepted_only_for_a_group_that_is_ours_alone(
-    base, monkeypatch
-):
+def test_a_group_writable_directory_above_is_refused_whoever_is_in_the_group(base):
+    """Who else is in a group cannot be read reliably (directory services, ACLs): not guessed."""
     final = nested(base, "top", "mid", "floorvault")
-    os.chmod(base / "top", 0o775)
-    monkeypatch.setattr(key_agent, "_group_is_only_us", lambda gid: False)
+    top = base / "top"
+    os.chmod(top, 0o770)  # group-writable only: the other-writable rule does not apply
     with pytest.raises(key_agent.AgentError, match="can be changed by other users"):
         key_agent.check_private_dir(final)
-    monkeypatch.setattr(key_agent, "_group_is_only_us", lambda gid: True)
+    os.chmod(top, 0o1770)  # sticky: other users cannot rename what is ours
+    key_agent.check_private_dir(final)
+    os.chmod(top, 0o700)
     key_agent.check_private_dir(final)
 
 
-def test_which_groups_are_ours_alone(monkeypatch):
-    import grp
-    import pwd
-    from types import SimpleNamespace
-
-    me, gid = os.geteuid(), os.getegid()
-    mine = SimpleNamespace(pw_name="me", pw_uid=me, pw_gid=gid)
-    other = SimpleNamespace(pw_name="other", pw_uid=me + 1, pw_gid=gid)
-    monkeypatch.setattr(pwd, "getpwuid", lambda uid: mine)
-    monkeypatch.setattr(grp, "getgrgid", lambda g: SimpleNamespace(gr_mem=[]))
-    monkeypatch.setattr(pwd, "getpwall", lambda: [mine])
-    assert key_agent._group_is_only_us(gid) is True
-    monkeypatch.setattr(pwd, "getpwall", lambda: [mine, other])  # someone else has it as primary
-    assert key_agent._group_is_only_us(gid) is False
-    monkeypatch.setattr(pwd, "getpwall", lambda: [mine])
-    monkeypatch.setattr(grp, "getgrgid", lambda g: SimpleNamespace(gr_mem=["me", "other"]))
-    assert key_agent._group_is_only_us(gid) is False  # someone else is a listed member
-    monkeypatch.setattr(grp, "getgrgid", lambda g: SimpleNamespace(gr_mem=["me"]))
-    assert key_agent._group_is_only_us(gid) is True
-    monkeypatch.setattr(os, "getgroups", lambda: [])
-    assert key_agent._group_is_only_us(gid + 1000) is False  # not a group of ours at all
-    monkeypatch.setattr(grp, "getgrgid", lambda g: (_ for _ in ()).throw(KeyError(g)))
-    assert key_agent._group_is_only_us(gid) is False  # cannot tell
+def test_a_link_held_by_a_directory_others_can_change_is_refused_though_it_leads_somewhere_safe(
+    base,
+):
+    """The path as written is judged too: its target's own ancestors can all be private while
+    the directory holding the link is not, and the link can be swapped there."""
+    safe = nested(base, "safe", "floorvault")
+    holder = nested(base, "holder")
+    (holder / "link").symlink_to(base / "safe")
+    key_agent.check_private_dir(safe)  # the resolved path is fine
+    key_agent.check_private_dir(holder / "link" / "floorvault")
+    os.chmod(holder, 0o707)  # others can now rename or replace `link`
+    key_agent.check_private_dir(safe)
+    with pytest.raises(key_agent.AgentError, match="can be changed by other users") as raised:
+        key_agent.check_private_dir(holder / "link" / "floorvault")
+    assert str(holder) in str(raised.value)
 
 
 def test_a_directory_above_owned_by_someone_else_is_refused(base, monkeypatch):
@@ -1341,3 +1337,106 @@ def test_cancelling_a_prepared_agent_never_removes_a_newer_agents_socket(vault, 
         newer.close()
         with contextlib.suppress(OSError):
             os.unlink(path)
+
+
+# ------------------------------------------- an interrupted or mismatched start
+
+
+def test_a_start_cut_short_after_the_key_was_delivered_stops_the_agent(vault, env, monkeypatch):
+    """Ctrl-C (or a timeout) after the key was written must not leave an agent holding it."""
+    pending = key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+    path = pending.path
+    seen = {}
+    real_read_ready = key_agent._read_ready
+
+    def interrupted_once_the_agent_is_serving(*args, **kwargs):
+        assert real_read_ready(*args, **kwargs) == b"1"
+        seen["pid"] = key_agent.status(path)["pid"]  # it has the key and is answering
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(key_agent, "_read_ready", interrupted_once_the_agent_is_serving)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            pending.send_key(b"k" * 32)
+        monkeypatch.undo()
+        pid = seen["pid"]
+        assert wait_until(lambda: not alive(pid)), "the agent that was given the key is still up"
+        assert wait_until(lambda: not path.exists())
+    finally:
+        pending.cancel()
+        if "pid" in seen and alive(seen["pid"]):
+            force_kill(seen["pid"])
+
+
+def test_waiting_on_a_pipe_works_for_descriptors_above_the_select_limit():
+    """select() refuses a descriptor of 1024 or more; a starter with many files open has them."""
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    wanted = 1100
+    if hard != resource.RLIM_INFINITY and hard < wanted + 8:
+        pytest.skip("cannot raise the open-file limit far enough")
+    if soft != resource.RLIM_INFINITY and soft < wanted + 8:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (wanted + 8, hard))
+    reader, writer = os.pipe()
+    high = os.dup2(reader, wanted)
+    try:
+        os.write(writer, b"1")
+        assert key_agent._read_ready(high, 1, timeout=5) == b"1"
+    finally:
+        for fd in (high, reader, writer):
+            os.close(fd)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_a_failed_fork_leaves_a_newer_agents_socket_alone(vault, env, monkeypatch):
+    path = key_agent.socket_path(vault, env)
+    newer = []
+
+    def fork_fails_after_another_unlock_took_the_path():
+        os.unlink(path)
+        replacement = socket.socket(socket.AF_UNIX)
+        replacement.bind(str(path))
+        replacement.listen(1)
+        newer.append(replacement)
+        raise OSError("no processes")
+
+    monkeypatch.setattr(os, "fork", fork_fails_after_another_unlock_took_the_path)
+    try:
+        with pytest.raises(key_agent.AgentError, match="cannot start the agent"):
+            key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+        assert path.exists()  # the newer agent's socket, not the failed start's
+    finally:
+        for replacement in newer:
+            replacement.close()
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+def test_a_key_file_replaced_while_the_passphrase_is_asked_for_starts_nothing(vault, env):
+    """The socket is named after the wrapped key; a key from another file would be unreachable."""
+    wrapped = next(vault.glob("master.key.fvpw"))
+    path = key_agent.socket_path(vault, env)
+    answers = []
+
+    def prompt(text="Passphrase: ", *, confirm=False):
+        wrapped.unlink()  # replaced while the prompt is open (same passphrase, new salt)
+        passphrase_custody.create_wrapped_key(vault, PHRASE)
+        answers.append(text)
+        return PHRASE
+
+    out, err = io.StringIO(), io.StringIO()
+    with (
+        mock.patch.dict(os.environ, env, clear=True),
+        mock.patch.object(sys, "argv", ["floorvault", "unlock", "--vault", str(vault)]),
+        mock.patch.object(passphrase_custody, "prompt_passphrase", prompt),
+        contextlib.redirect_stdout(out),
+        contextlib.redirect_stderr(err),
+    ):
+        code = main()
+    assert answers and code == 1, out.getvalue() + err.getvalue()
+    assert "changed while it was being unlocked" in err.getvalue()
+    assert not path.exists()
+    assert not key_agent.socket_path(vault, env).exists()
+    with pytest.raises(key_agent.AgentNotRunning):
+        key_agent.status(key_agent.socket_path(vault, env))

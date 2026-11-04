@@ -39,7 +39,6 @@ import hashlib
 import json
 import os
 import re
-import select
 import selectors
 import signal
 import socket
@@ -195,50 +194,47 @@ def _check_private_dir(path: Path) -> None:
     _check_ancestors(path)
 
 
-def _group_is_only_us(gid: int) -> bool:
-    """Whether ``gid`` is a group of ours that nobody else belongs to (a user-private group)."""
-    if gid != os.getegid() and gid not in os.getgroups():
-        return False
-    try:
-        import grp
-        import pwd
-
-        me = pwd.getpwuid(os.geteuid()).pw_name
-        if any(member != me for member in grp.getgrgid(gid).gr_mem):
-            return False
-        return all(entry.pw_uid == os.geteuid() for entry in pwd.getpwall() if entry.pw_gid == gid)
-    except (ImportError, KeyError, OSError):
-        return False  # cannot tell: not ours alone
-
-
 def _check_ancestors(path: Path) -> None:
     """Every directory above ``path`` must be one that only this user (or root) can rename entries in.
 
     ``lstat`` stops a link in ``path`` itself, but anyone who can write to a directory above
     it can rename it or swap a link there, and a client would connect to, or an agent bind in,
-    a different place. So, along the resolved path from ``/``, each ancestor must be owned by
-    this user or root, and not writable by group or others, except a sticky directory (``/tmp``:
-    entries there cannot be renamed by other users) or a group that is ours alone.
+    a different place. So each ancestor must be owned by this user or root and not writable
+    by group or others, except a sticky directory (``/tmp``: entries there cannot be renamed
+    by other users). Group write is refused outright: whether a group has other members
+    cannot be read reliably (directory services, ACLs), so it is not guessed.
+
+    Two chains are walked: the path as written (links followed, so a link in the middle
+    is judged by where it points and by the directory that holds it) and the path with every
+    link resolved, which is where a bind or connect really lands.
     """
+    written = Path(os.path.abspath(path))
     resolved = Path(os.path.realpath(path))
-    for ancestor in reversed(resolved.parents):
-        try:
-            info = os.lstat(ancestor)
-        except OSError as exc:
-            raise AgentError(f"cannot check {ancestor} ({type(exc).__name__})") from None
-        if not stat.S_ISDIR(info.st_mode):
-            raise AgentError(f"{ancestor} (above {path}) is not a directory; refusing it")
-        if info.st_uid not in (0, os.geteuid()):
-            raise AgentError(f"{ancestor} (above {path}) is owned by another user; refusing it")
-        if info.st_mode & stat.S_ISVTX:
-            continue
-        if info.st_mode & stat.S_IWOTH or (
-            info.st_mode & stat.S_IWGRP and not _group_is_only_us(info.st_gid)
-        ):
-            raise AgentError(
-                f"{ancestor} (above {path}) can be changed by other users, who could swap "
-                "what the path leads to; run chmod go-w on it or use a directory elsewhere"
-            )
+    seen: set[Path] = set()
+    for chain, follow in ((written, True), (resolved, False)):
+        for ancestor in reversed(chain.parents):
+            if (ancestor, follow) in seen:
+                continue
+            seen.add((ancestor, follow))
+            _check_ancestor(ancestor, path, follow=follow)
+
+
+def _check_ancestor(ancestor: Path, path: Path, *, follow: bool) -> None:
+    try:
+        info = os.stat(ancestor) if follow else os.lstat(ancestor)
+    except OSError as exc:
+        raise AgentError(f"cannot check {ancestor} ({type(exc).__name__})") from None
+    if not stat.S_ISDIR(info.st_mode):
+        raise AgentError(f"{ancestor} (above {path}) is not a directory; refusing it")
+    if info.st_uid not in (0, os.geteuid()):
+        raise AgentError(f"{ancestor} (above {path}) is owned by another user; refusing it")
+    if info.st_mode & stat.S_ISVTX:
+        return
+    if info.st_mode & (stat.S_IWOTH | stat.S_IWGRP):
+        raise AgentError(
+            f"{ancestor} (above {path}) can be changed by other users, who could swap "
+            "what the path leads to; run chmod go-w on it or use a directory elsewhere"
+        )
 
 
 # ------------------------------------------------------------------- peer uid
@@ -958,6 +954,7 @@ class PendingAgent:
         """Hand the agent its key and return its first status."""
         if self._done:
             raise AgentError("the agent was already given its key or cancelled")
+        delivered = False
         try:
             if len(key) != KEY_BYTES:
                 raise AgentError(f"the key must be {KEY_BYTES} bytes")
@@ -965,15 +962,30 @@ class PendingAgent:
                 os.write(self._key_fd, key)
             except OSError:
                 raise AgentError("the agent went away before it was given the key") from None
+            delivered = True
             self._close_key()
             if _read_ready(self._ready_fd, 1) != b"1":
                 raise AgentError("the agent did not start; nothing is holding the key")
         except BaseException:
-            self.cancel()
+            if delivered:
+                self._stop_after_delivery()
+            else:
+                self.cancel()
             raise
         self._done = True
         self._finish()
         return status(self.path)
+
+    def _stop_after_delivery(self) -> None:
+        """The agent has the key but its start was not confirmed (an interrupt, a timeout).
+
+        Ask it to stop, so a key is not left in an agent the caller believes did not start.
+        Its socket is left in place: if the request fails, ``floorvault lock`` can still reach it.
+        """
+        self._done = True
+        self._finish()
+        with contextlib.suppress(Exception):
+            lock(self.path)
 
     def cancel(self) -> None:
         """Stop the agent without a key and wait until its socket is gone.
@@ -1000,9 +1012,10 @@ def _read_ready(fd: int, count: int, *, until_eof: bool = False, timeout: float 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return data
-        ready, _w, _x = select.select([fd], [], [], remaining)
-        if not ready:
-            continue
+        with selectors.DefaultSelector() as selector:  # not select(): it fails for fd >= 1024
+            selector.register(fd, selectors.EVENT_READ)
+            if not selector.select(remaining):
+                continue
         chunk = os.read(fd, max(count - len(data), 1) if not until_eof else 64)
         if not chunk:
             break
@@ -1047,8 +1060,7 @@ def prepare(
         for fd in (key_read, key_write, ready_read, ready_write):
             os.close(fd)
         listener.close()
-        with contextlib.suppress(OSError):
-            os.unlink(path)
+        _unlink_socket(path, identity)
         raise AgentError(f"cannot start the agent ({type(exc).__name__})") from None
     if first == 0:  # pragma: no cover - runs in the child
         os.close(key_write)
@@ -1071,23 +1083,29 @@ def prepare(
     with contextlib.suppress(ChildProcessError):
         os.waitpid(first, 0)
     pending = PendingAgent(path, key_write, ready_read, identity)
-    verdict = _read_ready(ready_read, 1)
-    if verdict == b"H":
-        flags = _read_ready(ready_read, 2)
-        pending.cancel()
-        missing = [
-            what
-            for what, flag in (("turn core dumps off", flags[:1]), ("block debuggers", flags[1:2]))
-            if flag != b"1"
-        ]
-        raise AgentError(
-            f"the agent could not {' or '.join(missing)}, so a process running as you could "
-            "read the key out of its memory; nothing is holding the key. Pass "
-            "--allow-unhardened to start it anyway"
-        )
-    if verdict != b"K":
-        pending.cancel()
-        raise AgentError("the agent did not start; nothing is holding the key")
+    try:
+        verdict = _read_ready(ready_read, 1)
+        if verdict == b"H":
+            flags = _read_ready(ready_read, 2)
+            pending.cancel()
+            missing = [
+                what
+                for what, flag in (
+                    ("turn core dumps off", flags[:1]),
+                    ("block debuggers", flags[1:2]),
+                )
+                if flag != b"1"
+            ]
+            raise AgentError(
+                f"the agent could not {' or '.join(missing)}, so a process running as you could "
+                "read the key out of its memory; nothing is holding the key. Pass "
+                "--allow-unhardened to start it anyway"
+            )
+        if verdict != b"K":
+            raise AgentError("the agent did not start; nothing is holding the key")
+    except BaseException:
+        pending.cancel()  # idempotent; also covers an interrupt while waiting for the verdict
+        raise
     return pending
 
 

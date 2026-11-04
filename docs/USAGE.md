@@ -675,10 +675,12 @@ and the data is gone.
   - The socket is `$XDG_RUNTIME_DIR/floorvault/<id>.sock`, else `<store>/agent/` (never
     `/tmp`). The directory is checked to be a real directory, owned by you, mode 0700,
     with no symlink, before every bind and connect, and so is everything above it:
-    links in the path are resolved once, and each directory on the resolved path must be
-    owned by you or root and not writable by group or others (a sticky directory such
-    as `/tmp`, or a group that only you belong to, is fine), because anyone who can
-    change a directory above could swap what the path leads to; the socket is 0600; the
+    links in the path are resolved once, and each directory above it, on the path as
+    written and on the resolved one, must be owned by you or root and not writable by
+    group or others (a sticky directory such as `/tmp` is fine; group write is refused
+    even for a group only you seem to be in, since who else shares a group cannot be
+    read reliably), because anyone who can change a directory above could swap what the
+    path leads to. If yours is group-writable, `chmod g-w` it; the socket is 0600; the
     peer's uid is checked on every connection (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on macOS),
     and the client checks that the server is you. The `<id>` comes from the store's
     resolved path and its wrapped key file, so an agent answers only for the store it

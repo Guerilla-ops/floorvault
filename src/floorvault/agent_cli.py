@@ -1014,6 +1014,15 @@ def agent_main(args: argparse.Namespace) -> int:
                 pending.cancel()
                 _err(prog, "the passphrase-wrapped key disappeared while it was being unlocked")
                 return 1
+            if key_agent.socket_path(vault_dir, os.environ) != pending.path:
+                # The agent's socket is named after the wrapped key; if that file was replaced
+                # while the prompt was open, this key belongs to another socket nobody would find.
+                pending.cancel()
+                _err(
+                    prog,
+                    "the passphrase-wrapped key changed while it was being unlocked; try again",
+                )
+                return 1
             info = pending.send_key(key)
             del key
         except passphrase_custody.PassphraseCustodyError as exc:
