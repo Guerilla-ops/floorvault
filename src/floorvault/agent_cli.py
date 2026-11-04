@@ -993,23 +993,45 @@ def agent_main(args: argparse.Namespace) -> int:
             return 1
         try:
             passphrase_custody.refuse_raw_companion(vault_dir)
-            phrase = passphrase_custody.prompt_passphrase(f"Passphrase for {vault_dir}: ")
-            key = passphrase_custody.read_key(vault_dir, phrase)
         except passphrase_custody.PassphraseCustodyError as exc:
             _err(prog, str(exc))
             return 1
-        if key is None:
-            _err(prog, "the passphrase-wrapped key disappeared while it was being unlocked")
-            return 1
-        info = key_agent.start(
+        # The agent is forked and protects itself *before* the passphrase is asked for, so
+        # nothing typed here (nor the unwrapped key) is in its memory, and an agent that
+        # cannot protect itself is refused before anyone types anything.
+        pending = key_agent.prepare(
             vault_dir,
-            key,
             ttl=ttl,
             idle=idle,
             app_context=APP_CONTEXT,
             allow_unhardened=args.allow_unhardened,
         )
-        del key
+        try:
+            phrase = passphrase_custody.prompt_passphrase(f"Passphrase for {vault_dir}: ")
+            key = passphrase_custody.read_key(vault_dir, phrase)
+            del phrase
+            if key is None:
+                pending.cancel()
+                _err(prog, "the passphrase-wrapped key disappeared while it was being unlocked")
+                return 1
+            if key_agent.socket_path(vault_dir, os.environ) != pending.path:
+                # The agent's socket is named after the wrapped key; if that file was replaced
+                # while the prompt was open, this key belongs to another socket nobody would find.
+                pending.cancel()
+                _err(
+                    prog,
+                    "the passphrase-wrapped key changed while it was being unlocked; try again",
+                )
+                return 1
+            info = pending.send_key(key)
+            del key
+        except passphrase_custody.PassphraseCustodyError as exc:
+            pending.cancel()
+            _err(prog, str(exc))
+            return 1
+        except BaseException:
+            pending.cancel()
+            raise
         print(_describe_agent(info, vault_dir))
         if not (info.get("core_dumps_off") and info.get("ptrace_blocked")):
             _err(

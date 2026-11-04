@@ -26,6 +26,7 @@ from unittest import mock
 import pytest
 
 from floorvault import key_agent, passphrase_custody
+from floorvault._filelock import exclusive_lock
 from floorvault.agent_cli import APP_CONTEXT
 from floorvault.inspector import main
 from floorvault.memory import HardenedMemoryKey
@@ -857,7 +858,7 @@ def test_unlock_refuses_an_unprotected_agent_unless_told_otherwise(vault, env, m
     args = ["--vault", str(vault)]
     code, out, err, asked = cli(["unlock", *args], env, [PHRASE])
     assert code == 1 and "could not block debuggers" in err and "--allow-unhardened" in err
-    assert PHRASE not in out + err
+    assert PHRASE not in out + err and asked == []  # refused before anyone typed anything
     assert not key_agent.socket_path(vault, env).exists()
     code, out, err, _ = cli(["unlock", "--allow-unhardened", *args], env, [PHRASE])
     pid = key_agent.status(key_agent.socket_path(vault, env))["pid"]
@@ -868,6 +869,329 @@ def test_unlock_refuses_an_unprotected_agent_unless_told_otherwise(vault, env, m
         cli(["lock", *args], env)
         if not wait_until(lambda: not alive(pid)) and alive(pid):
             force_kill(pid)
+
+
+# ----------------------------- the agent is forked before the passphrase, and gets only the key
+
+
+def test_the_agent_is_forked_before_the_passphrase_is_asked_for(base, vault, env):
+    """Whatever the starting process holds while prompting is in the agent's memory if it forked later."""
+    state = {"typed": False, "active": True}
+    log = base / "forks.log"
+
+    def note_fork():  # runs in each child the agent's start makes
+        if state["active"]:
+            with open(log, "a") as handle:
+                handle.write("T" if state["typed"] else "F")
+
+    os.register_at_fork(after_in_child=note_fork)
+
+    def prompt(text="Passphrase: ", *, confirm=False):
+        state["typed"] = True
+        return PHRASE
+
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(sys, "argv", ["floorvault", "unlock", "--vault", str(vault)]),
+            mock.patch.object(passphrase_custody, "prompt_passphrase", prompt),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = main()
+    finally:
+        state["active"] = False
+    pid = key_agent.status(key_agent.socket_path(vault, env))["pid"]
+    try:
+        assert code == 0, err.getvalue()
+        assert state["typed"]  # the prompt ran ...
+        assert log.read_text() == "FF"  # ... after both of the agent's forks
+    finally:
+        cli(["lock", "--vault", str(vault)], env)
+        if not wait_until(lambda: not alive(pid)) and alive(pid):
+            os.kill(pid, 9)
+
+
+def test_a_prepared_agent_waits_for_its_key_and_then_serves(vault, env):
+    pending = key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+    path = pending.path
+    pid = None
+    try:
+        assert path.exists()
+        info = pending.send_key(b"k" * 32)
+        pid = info["pid"]
+        assert info["ok"] and alive(pid)
+        with pytest.raises(key_agent.AgentError, match="already given its key or cancelled"):
+            pending.send_key(b"k" * 32)
+        pending.cancel()  # too late to cancel: the live agent and its socket are left alone
+        assert path.exists() and key_agent.status(path)["ok"]
+        key_agent.lock(path)
+        assert wait_until(lambda: not path.exists())
+    finally:
+        pending.cancel()
+        if pid is not None and alive(pid):
+            os.kill(pid, 9)
+
+
+def test_a_prepared_agent_that_is_cancelled_or_abandoned_leaves_nothing(vault, env):
+    pending = key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+    path = pending.path
+    pending.cancel()
+    assert not path.exists()
+    with pytest.raises(key_agent.AgentNotRunning):
+        key_agent.status(path)
+    # A starter that dies (its end of the key pipe closes) is the same as a cancel.
+    pending = key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+    os.close(pending._key_fd)
+    pending._key_fd = -1
+    assert wait_until(lambda: not path.exists())
+    pending.cancel()
+
+
+def test_a_key_of_the_wrong_size_is_refused_and_the_agent_goes_away(vault, env):
+    pending = key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+    path = pending.path
+    with pytest.raises(key_agent.AgentError, match="key must be 32 bytes"):
+        pending.send_key(b"short")
+    assert not path.exists()
+
+
+def test_the_key_is_read_into_a_buffer_that_a_short_write_does_not_fill():
+    reader, writer = os.pipe()
+    try:
+        os.write(writer, b"x" * 32)
+        os.close(writer)
+        assert key_agent._read_key_into_buffer(reader) == bytearray(b"x" * 32)
+    finally:
+        os.close(reader)
+    reader, writer = os.pipe()
+    try:
+        os.write(writer, b"y" * 10)
+        os.close(writer)
+        assert key_agent._read_key_into_buffer(reader) is None  # the pipe closed too soon
+    finally:
+        os.close(reader)
+
+
+def test_a_second_unlock_while_the_first_waits_for_its_key_does_not_take_its_place(vault, env):
+    first = key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+    try:
+        with pytest.raises(key_agent.AgentError):  # it answers late, which is not "nothing listens"
+            key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+        assert first.path.exists()
+    finally:
+        first.cancel()
+
+
+UNLOCK_IN_A_FRESH_PROCESS = """
+import contextlib, io, os, sys
+sys.path.insert(0, {src!r})
+from unittest import mock
+from floorvault import passphrase_custody
+from floorvault.inspector import main
+from floorvault.providers import passphrase_store
+passphrase_store.DEFAULT_LOG2_N = passphrase_store.MIN_LOG2_N
+phrase_file, vault = sys.argv[1], sys.argv[2]
+def prompt(*args, **kwargs):
+    return open(phrase_file).read()   # the passphrase enters this process only here
+out = io.StringIO()
+with mock.patch.object(sys, "argv", ["floorvault", "unlock", "--vault", vault]), \\
+     mock.patch.object(passphrase_custody, "prompt_passphrase", prompt), \\
+     contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+    sys.exit(main())
+"""
+
+
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: -1)() != 0 or not os.path.isdir("/proc/self"),
+    reason="reads another process's memory",
+)
+def test_neither_the_typed_passphrase_nor_a_copy_of_the_key_is_in_the_agent_memory(base, env):
+    """A root scan of /proc/<pid>/mem (CI runs as an ordinary user, so it skips).
+
+    The unlock runs in a fresh interpreter so that nothing here (this test holds both the
+    passphrase and the key) is in the agent's inherited memory.
+    """
+    import re
+    import subprocess
+
+    canary = "CANARY-PASSPHRASE-" + "q7x2m9" * 4
+    vault = base / "scan"
+    passphrase_custody.create_wrapped_key(vault, canary)
+    key = passphrase_custody.read_key(vault, canary)
+    phrase_file = base / "phrase"
+    phrase_file.write_text(canary)
+    src = str(Path(key_agent.__file__).resolve().parent.parent)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            UNLOCK_IN_A_FRESH_PROCESS.format(src=src),
+            str(phrase_file),
+            str(vault),
+        ],
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    pid = key_agent.status(key_agent.socket_path(vault, env))["pid"]
+    found = {"passphrase": 0, "key": 0}
+    try:
+        try:
+            maps, mem = open(f"/proc/{pid}/maps"), open(f"/proc/{pid}/mem", "rb", 0)
+        except PermissionError:  # root without CAP_SYS_PTRACE (a container): cannot read it
+            pytest.skip("this process may not read another process's memory")
+        with maps, mem:
+            for line in maps:
+                match = re.match(r"([0-9a-f]+)-([0-9a-f]+) (\S+) \S+ \S+ \S+\s*(.*)", line)
+                lo, hi, perms, name = int(match[1], 16), int(match[2], 16), match[3], match[4]
+                if "r" not in perms or name.strip() in ("[vvar]", "[vsyscall]", "[vdso]"):
+                    continue
+                try:
+                    mem.seek(lo)
+                    data = mem.read(hi - lo)
+                except OSError:
+                    continue
+                found["passphrase"] += data.count(canary.encode())
+                if "/dev/zero" not in name:  # the protected mapping holds the key by design
+                    found["key"] += data.count(key)
+    finally:
+        cli(["lock", "--vault", str(vault)], env)
+        if not wait_until(lambda: not alive(pid)) and alive(pid):
+            os.kill(pid, 9)
+    assert found == {"passphrase": 0, "key": 0}
+
+
+# ------------------------------------------- the directories above the socket directory
+
+
+def nested(base, *names):
+    """base/n1/n2/..., each 0700, and the deepest path."""
+    path = base
+    for name in names:
+        path = path / name
+        path.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(path, 0o700)
+    return path
+
+
+def test_a_directory_above_the_socket_directory_that_others_can_change_is_refused(base):
+    final = nested(base, "top", "mid", "floorvault")
+    key_agent.check_private_dir(final)
+    top = base / "top"
+    # Writable by others but not by the group, so only the world-writable rule can refuse it.
+    os.chmod(top, 0o707)
+    with pytest.raises(key_agent.AgentError, match="can be changed by other users") as raised:
+        key_agent.check_private_dir(final)
+    assert str(top) in str(raised.value) and "chmod go-w" in str(raised.value)
+    os.chmod(top, 0o1707)  # sticky, like /tmp: other users cannot rename what is ours
+    key_agent.check_private_dir(final)
+    os.chmod(top, 0o700)
+    key_agent.check_private_dir(final)
+
+
+def test_a_group_writable_directory_above_is_refused_whoever_is_in_the_group(base):
+    """Who else is in a group cannot be read reliably (directory services, ACLs): not guessed."""
+    final = nested(base, "top", "mid", "floorvault")
+    top = base / "top"
+    os.chmod(top, 0o770)  # group-writable only: the other-writable rule does not apply
+    with pytest.raises(key_agent.AgentError, match="can be changed by other users"):
+        key_agent.check_private_dir(final)
+    os.chmod(top, 0o1770)  # sticky: other users cannot rename what is ours
+    key_agent.check_private_dir(final)
+    os.chmod(top, 0o700)
+    key_agent.check_private_dir(final)
+
+
+def test_a_link_held_by_a_directory_others_can_change_is_refused_though_it_leads_somewhere_safe(
+    base,
+):
+    """The path as written is judged too: its target's own ancestors can all be private while
+    the directory holding the link is not, and the link can be swapped there."""
+    safe = nested(base, "safe", "floorvault")
+    holder = nested(base, "holder")
+    (holder / "link").symlink_to(base / "safe")
+    key_agent.check_private_dir(safe)  # the resolved path is fine
+    key_agent.check_private_dir(holder / "link" / "floorvault")
+    os.chmod(holder, 0o707)  # others can now rename or replace `link`
+    key_agent.check_private_dir(safe)
+    with pytest.raises(key_agent.AgentError, match="can be changed by other users") as raised:
+        key_agent.check_private_dir(holder / "link" / "floorvault")
+    assert str(holder) in str(raised.value)
+
+
+def test_a_directory_above_owned_by_someone_else_is_refused(base, monkeypatch):
+    final = nested(base, "top", "mid", "floorvault")
+    target = os.fspath(os.path.realpath(base / "top"))
+    real_lstat = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if os.fspath(path) == target:
+            fields = list(info)
+            fields[4] = os.geteuid() + 424242  # st_uid: not us, and not root
+            return os.stat_result(fields)
+        return info
+
+    monkeypatch.setattr(key_agent.os, "lstat", lstat)
+    with pytest.raises(key_agent.AgentError, match="above .* is owned by another user"):
+        key_agent.check_private_dir(final)
+
+
+def test_links_in_the_path_are_resolved_and_what_they_lead_through_is_judged(base):
+    real = nested(base, "real")
+    os.chmod(real, 0o700)
+    nested(base, "real", "floorvault")
+    (base / "link").symlink_to(real)
+    # socket_path resolves the link once, so later binds and connects name no link at all.
+    vault = base / "v"
+    passphrase_custody.create_wrapped_key(vault, PHRASE)
+    path = key_agent.socket_path(vault, {"XDG_RUNTIME_DIR": str(base / "link")})
+    assert path.parent == Path(os.path.realpath(real / "floorvault"))
+    assert not any(part.is_symlink() for part in [path.parent, *path.parent.parents])
+    # A link into a place others can change is refused for what it leads through.
+    open_dir = nested(base, "open")
+    inside = nested(base, "open", "floorvault")
+    os.chmod(open_dir, 0o777)
+    (base / "link2").symlink_to(open_dir)
+    with pytest.raises(key_agent.AgentError, match="can be changed by other users"):
+        key_agent.check_private_dir(base / "link2" / "floorvault")
+    os.chmod(open_dir, 0o700)
+    key_agent.check_private_dir(inside)
+
+
+def test_a_refused_directory_is_not_left_behind_by_a_create(base):
+    top = nested(base, "top")
+    os.chmod(top, 0o777)
+    with pytest.raises(key_agent.AgentError, match="can be changed by other users"):
+        key_agent.check_private_dir(top / "floorvault", create=True)
+    assert not (top / "floorvault").exists()
+
+
+def test_the_client_will_not_connect_through_a_directory_others_can_change(running):
+    item = running()
+    assert key_agent.status(item.path)["ok"]
+    runtime = item.path.parent.parent
+    os.chmod(runtime, 0o777)
+    try:
+        with pytest.raises(key_agent.AgentError, match="can be changed by other users"):
+            key_agent.status(item.path)
+    finally:
+        os.chmod(runtime, 0o700)
+    assert key_agent.status(item.path)["ok"]
+
+
+def test_the_agent_will_not_bind_below_a_directory_others_can_change(base, vault):
+    runtime = nested(base, "shared")
+    os.chmod(runtime, 0o777)
+    path = key_agent.socket_path(vault, {"XDG_RUNTIME_DIR": str(runtime)})
+    with pytest.raises(key_agent.AgentError, match="can be changed by other users"):
+        key_agent._bind(path)
+    assert not path.exists() and not path.parent.exists()
 
 
 def test_a_suspend_inclusive_clock_counts_a_sleep_even_if_the_wall_clock_is_corrected_back():
@@ -973,14 +1297,16 @@ def test_a_refused_start_never_removes_a_socket_another_agent_bound_since(vault,
 
     def waitpid_then_a_newer_agent_binds(pid, flags):
         result = real_waitpid(pid, flags)
-        with contextlib.suppress(
-            FileNotFoundError
-        ):  # the refused agent may have removed it already
-            os.unlink(path)  # its socket is stale; a concurrent unlock replaces it
-        newer = socket.socket(socket.AF_UNIX)
-        newer.bind(str(path))
-        newer.listen(1)
-        replacements.append(newer)
+        # A concurrent unlock replaces the stale socket the way a real one does: with the
+        # lifecycle lock held from unlink to listen. Without it there is a moment when the file
+        # exists but nobody listens yet, which no real agent exposes to the cleanup.
+        with exclusive_lock(key_agent._lock_path(path), timeout=10.0):
+            with contextlib.suppress(FileNotFoundError):  # the refused agent may have removed it
+                os.unlink(path)
+            newer = socket.socket(socket.AF_UNIX)
+            newer.bind(str(path))
+            newer.listen(1)
+            replacements.append(newer)
         return result
 
     monkeypatch.setattr(key_agent.os, "waitpid", waitpid_then_a_newer_agent_binds)
@@ -993,3 +1319,124 @@ def test_a_refused_start_never_removes_a_socket_another_agent_bound_since(vault,
             newer.close()
         with contextlib.suppress(OSError):
             os.unlink(path)
+
+
+def test_cancelling_a_prepared_agent_never_removes_a_newer_agents_socket(vault, env):
+    pending = key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+    path = pending.path
+    os.close(pending._key_fd)  # the agent sees its starter go away and removes its own socket ...
+    pending._key_fd = -1
+    assert wait_until(lambda: not path.exists())
+    newer = socket.socket(socket.AF_UNIX)  # ... and a newer agent has bound the path since
+    newer.bind(str(path))
+    newer.listen(1)
+    try:
+        pending.cancel()
+        assert path.exists()
+    finally:
+        newer.close()
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+# ------------------------------------------- an interrupted or mismatched start
+
+
+def test_a_start_cut_short_after_the_key_was_delivered_stops_the_agent(vault, env, monkeypatch):
+    """Ctrl-C (or a timeout) after the key was written must not leave an agent holding it."""
+    pending = key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+    path = pending.path
+    seen = {}
+    real_read_ready = key_agent._read_ready
+
+    def interrupted_once_the_agent_is_serving(*args, **kwargs):
+        assert real_read_ready(*args, **kwargs) == b"1"
+        seen["pid"] = key_agent.status(path)["pid"]  # it has the key and is answering
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(key_agent, "_read_ready", interrupted_once_the_agent_is_serving)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            pending.send_key(b"k" * 32)
+        monkeypatch.undo()
+        pid = seen["pid"]
+        assert wait_until(lambda: not alive(pid)), "the agent that was given the key is still up"
+        assert wait_until(lambda: not path.exists())
+    finally:
+        pending.cancel()
+        if "pid" in seen and alive(seen["pid"]):
+            force_kill(seen["pid"])
+
+
+def test_waiting_on_a_pipe_works_for_descriptors_above_the_select_limit():
+    """select() refuses a descriptor of 1024 or more; a starter with many files open has them."""
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    wanted = 1100
+    if hard != resource.RLIM_INFINITY and hard < wanted + 8:
+        pytest.skip("cannot raise the open-file limit far enough")
+    if soft != resource.RLIM_INFINITY and soft < wanted + 8:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (wanted + 8, hard))
+    reader, writer = os.pipe()
+    high = os.dup2(reader, wanted)
+    try:
+        os.write(writer, b"1")
+        assert key_agent._read_ready(high, 1, timeout=5) == b"1"
+    finally:
+        for fd in (high, reader, writer):
+            os.close(fd)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_a_failed_fork_leaves_a_newer_agents_socket_alone(vault, env, monkeypatch):
+    path = key_agent.socket_path(vault, env)
+    newer = []
+
+    def fork_fails_after_another_unlock_took_the_path():
+        os.unlink(path)
+        replacement = socket.socket(socket.AF_UNIX)
+        replacement.bind(str(path))
+        replacement.listen(1)
+        newer.append(replacement)
+        raise OSError("no processes")
+
+    monkeypatch.setattr(os, "fork", fork_fails_after_another_unlock_took_the_path)
+    try:
+        with pytest.raises(key_agent.AgentError, match="cannot start the agent"):
+            key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+        assert path.exists()  # the newer agent's socket, not the failed start's
+    finally:
+        for replacement in newer:
+            replacement.close()
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
+def test_a_key_file_replaced_while_the_passphrase_is_asked_for_starts_nothing(vault, env):
+    """The socket is named after the wrapped key; a key from another file would be unreachable."""
+    wrapped = next(vault.glob("master.key.fvpw"))
+    path = key_agent.socket_path(vault, env)
+    answers = []
+
+    def prompt(text="Passphrase: ", *, confirm=False):
+        wrapped.unlink()  # replaced while the prompt is open (same passphrase, new salt)
+        passphrase_custody.create_wrapped_key(vault, PHRASE)
+        answers.append(text)
+        return PHRASE
+
+    out, err = io.StringIO(), io.StringIO()
+    with (
+        mock.patch.dict(os.environ, env, clear=True),
+        mock.patch.object(sys, "argv", ["floorvault", "unlock", "--vault", str(vault)]),
+        mock.patch.object(passphrase_custody, "prompt_passphrase", prompt),
+        contextlib.redirect_stdout(out),
+        contextlib.redirect_stderr(err),
+    ):
+        code = main()
+    assert answers and code == 1, out.getvalue() + err.getvalue()
+    assert "changed while it was being unlocked" in err.getvalue()
+    assert not path.exists()
+    assert not key_agent.socket_path(vault, env).exists()
+    with pytest.raises(key_agent.AgentNotRunning):
+        key_agent.status(key_agent.socket_path(vault, env))

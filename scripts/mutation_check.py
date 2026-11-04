@@ -2272,7 +2272,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AGT-35",
         "src/floorvault/key_agent.py",
-        "        _close_inherited_descriptors({listener.fileno(), write_end})\n",
+        "        _close_inherited_descriptors({listener.fileno(), key_read, ready_write})\n",
         "        pass  # MUTANT\n",
         "The daemon keeps its caller's descriptors, such as a pipe the caller is reading to the end (#84)",
         expect_on_windows="survived",
@@ -2304,7 +2304,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AGT-39",
         "src/floorvault/key_agent.py",
-        '    if ready[:1] == b"H":\n',
+        '    if verdict == b"H":\n',
         "    if False:  # MUTANT\n",
         "The starter does not report that the agent refused to run unprotected (#84)",
         expect_on_windows="survived",
@@ -2326,11 +2326,99 @@ MUTATIONS: tuple[Mutation, ...] = (
         expect_on_windows="survived",
     ),
     Mutation(
+        "AGT-42",
+        "src/floorvault/key_agent.py",
+        "    if got != KEY_BYTES:\n        buffer[:] = bytes(KEY_BYTES)\n",
+        "    if False:  # MUTANT\n        buffer[:] = bytes(KEY_BYTES)\n",
+        "A key cut short on its way to the agent is accepted (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-43",
+        "src/floorvault/key_agent.py",
+        "            if len(key) != KEY_BYTES:\n                raise AgentError",
+        "            if False:  # MUTANT\n                raise AgentError",
+        "A key of the wrong size is sent to the agent (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-44",
+        "src/floorvault/agent_cli.py",
+        "        except passphrase_custody.PassphraseCustodyError as exc:\n            pending.cancel()\n",
+        "        except passphrase_custody.PassphraseCustodyError as exc:\n            pass  # MUTANT\n",
+        "A failed unlock leaves the waiting agent and its socket behind (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-46",
+        "src/floorvault/key_agent.py",
+        "    _check_ancestors(path)\n\n\ndef _check_ancestors",
+        "    pass  # MUTANT\n\n\ndef _check_ancestors",
+        "The directories above the socket directory are not examined (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-47",
+        "src/floorvault/key_agent.py",
+        "    if info.st_mode & stat.S_ISVTX:\n        return\n",
+        "    if False:  # MUTANT\n        return\n",
+        "A sticky directory such as /tmp is refused as an ancestor (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-48",
+        "src/floorvault/key_agent.py",
+        "    if info.st_uid not in (0, os.geteuid()):\n",
+        "    if False:  # MUTANT\n",
+        "A directory above owned by another user is accepted (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-49",
+        "src/floorvault/key_agent.py",
+        "    if info.st_mode & (stat.S_IWOTH | stat.S_IWGRP):\n",
+        "    if info.st_mode & (stat.S_IWGRP):  # MUTANT\n",
+        "A world-writable directory above the socket directory is accepted (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-50",
+        "src/floorvault/key_agent.py",
+        "    if info.st_mode & (stat.S_IWOTH | stat.S_IWGRP):\n",
+        "    if info.st_mode & (stat.S_IWOTH):  # MUTANT\n",
+        "A group-writable directory above is accepted whoever is in the group (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-51",
+        "src/floorvault/key_agent.py",
+        "    for chain, follow in ((written, True), (resolved, False)):\n",
+        "    for chain, follow in ((resolved, False),):  # MUTANT\n",
+        "The path as written is not checked, only the resolved one, so a link held by a directory others can change passes (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-52",
+        "src/floorvault/key_agent.py",
+        "    directory = Path(os.path.realpath(runtime_dir(vault_dir, environ)))\n",
+        "    directory = runtime_dir(vault_dir, environ)  # MUTANT\n",
+        "A link in the socket directory's path is left in place for later binds and connects (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-53",
+        "src/floorvault/key_agent.py",
+        "        if created:\n            with contextlib.suppress(OSError):\n                os.rmdir(path)\n",
+        "        if created:\n            pass  # MUTANT\n",
+        "A refused socket directory is left behind (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
         "AGT-54",
         "src/floorvault/key_agent.py",
-        '    if ready[:1] == b"H":\n        _unlink_socket(path, identity)\n',
-        '    if ready[:1] == b"H":\n        os.unlink(path)\n',
-        "A refused start removes a socket another agent has bound there since (#84)",
+        "        _unlink_socket(self.path, self._identity)\n",
+        "        with contextlib.suppress(OSError):\n            os.unlink(self.path)\n",
+        "A cancelled or refused agent removes a socket another agent has bound there since (#84)",
         expect_on_windows="survived",
     ),
     Mutation(
@@ -2363,6 +2451,38 @@ MUTATIONS: tuple[Mutation, ...] = (
         "            if not stat.S_ISSOCK(info.st_mode):\n                return\n",
         "            if False:  # MUTANT\n                return\n",
         "Whatever now sits at the agent's socket path is removed as if it were the socket (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-59",
+        "src/floorvault/key_agent.py",
+        "            if delivered:\n                self._stop_after_delivery()\n",
+        "            if False:  # MUTANT\n                self._stop_after_delivery()\n",
+        "A start cut short after the key was delivered leaves the agent holding the key (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-60",
+        "src/floorvault/key_agent.py",
+        "        with selectors.DefaultSelector() as selector:  # not select(): it fails for fd >= 1024\n",
+        "        with selectors.SelectSelector() as selector:  # MUTANT\n",
+        "Waiting on the agent's pipe breaks for a descriptor of 1024 or more (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-61",
+        "src/floorvault/key_agent.py",
+        "        listener.close()\n        _unlink_socket(path, identity)\n",
+        "        listener.close()\n        with contextlib.suppress(OSError):\n            os.unlink(path)\n",
+        "A failed fork removes a socket another agent has bound there since (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-62",
+        "src/floorvault/agent_cli.py",
+        "            if key_agent.socket_path(vault_dir, os.environ) != pending.path:\n",
+        "            if False:  # MUTANT\n",
+        "A key from a wrapped file replaced during the prompt is handed to an agent nobody can find (#84)",
         expect_on_windows="survived",
     ),
     Mutation(
@@ -2746,6 +2866,14 @@ def _report_red_baseline(output: str) -> None:
         print(f"    {line}", file=sys.stderr)
 
 
+def _report_killers(output: str) -> None:
+    """Print the test(s) that failed in the last run, for a mutant that was expected to survive."""
+    lines = output.splitlines()
+    failed = [line for line in lines if line.startswith(("FAILED ", "ERROR "))]
+    for line in failed[:10] or lines[-15:]:
+        print(f"    {line}", file=sys.stderr)
+
+
 def _run_tests(workdir: Path, tests: list[str], first_failure_only: bool) -> int:
     global _last_output
     argv = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
@@ -2981,6 +3109,10 @@ def _run_curated(verbose: bool, *, scope: str = "all", shard: tuple[int, int] | 
             print(
                 f"{mutation.id:8} {result:9} {expected:9} [{'OK ' if ok else 'BAD'}] {mutation.why}"
             )
+            if not ok and result == "killed":
+                # Expected to survive but a test failed: name it (a flaky test shows up here,
+                # most visibly when an equivalent mutant such as the canary is "killed").
+                _report_killers(_last_output)
         print("-" * 92)
         if failures:
             print(f"[FAIL] {failures} mutation(s) did not behave as expected")

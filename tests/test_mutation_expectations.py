@@ -161,12 +161,9 @@ def test_platform_overrides_are_declared_explicitly():
         "DUR-4",
         "BIND-7",
         "HIM-4",
-        *[f"AGT-{i}" for i in range(1, 42)],
-        "AGT-54",
-        "AGT-55",
-        "AGT-56",
-        "AGT-57",
-        "AGT-58",
+        *[
+            f"AGT-{i}" for i in range(1, 63) if i != 45
+        ],  # AGT-45 retired: equivalent once unlink checks for a listener
         "AUD-2",
     ], f"unexpected set of platform-relaxed mutants: {relaxed}"
     # The reverse: a guard that exists only on Windows is dead code elsewhere,
@@ -285,3 +282,30 @@ def test_a_red_baseline_names_the_tests_that_failed(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "the unmutated copy is not green" in err
     assert "FAILED tests/test_x.py::test_flaky - AssertionError: boom" in err
+
+
+def test_a_mutant_expected_to_survive_that_is_killed_names_the_failing_test(monkeypatch, capsys):
+    """A 'killed' canary means a test failed for no reason a docstring change explains: say which."""
+    mc = _load()
+    monkeypatch.setattr(mc, "_copy_repo", lambda destination: _stub_repo(mc, destination))
+    calls = []
+
+    def run(workdir, tests, first_failure_only):
+        calls.append(first_failure_only)
+        if first_failure_only:  # the mutant run
+            mc._last_output = "FAILED tests/test_y.py::test_timing - AssertionError: late\n"
+            return 1
+        mc._last_output = ""
+        return 0
+
+    monkeypatch.setattr(mc, "_run_tests", run)
+    canary = mc.Mutation("CANARY", "x.py", "a", "b", "docstring", expect="survived")
+    monkeypatch.setattr(mc, "curated_mutations", lambda scope, shard: [canary])
+    assert mc._run_curated(False) == 1
+    err = capsys.readouterr().err
+    assert "FAILED tests/test_y.py::test_timing - AssertionError: late" in err
+
+
+def _stub_repo(mc, destination):
+    destination.mkdir(parents=True)
+    (destination / "x.py").write_text("a\n")
