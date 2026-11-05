@@ -722,9 +722,39 @@ and the data is gone.
   store until you delete it. The key is unchanged, so the data stays readable. The
   overwrite is best effort: copy-on-write and journaling filesystems, SSDs,
   snapshots and backups can keep earlier copies of the raw key, so treat a key
-  that has sat unwrapped on a backed-up disk as exposed. A key in the OS key
-  store, a systemd-creds credential, an environment variable or a `--key-file` is
-  not moved; `protect` says so and changes nothing.
+  that has sat unwrapped on a backed-up disk as exposed. A key held anywhere else is
+  not wrapped by plain `protect`, which says so and changes nothing; use `--rotate`.
+- **`floorvault secrets protect --rotate`** is for a store whose key is held somewhere
+  other than a raw file: the OS key store, a systemd-creds credential, `--key-env` or
+  `--key-file` (name the key source the way you do for `run`). Such a key cannot be moved
+  under a passphrase without being read out and written again, so the store is *rotated*:
+  a new random key is made, every item (and its command binding) is re-encrypted under
+  it, and the new key is kept only wrapped under the passphrase. The old key then opens
+  nothing in the store.
+  - **Order, so a stop is recoverable.** The new key is first written wrapped beside the
+    store (`master.key.fvpw.staged`), then the store is rotated with the library's
+    resumable rotation, binding fingerprints are re-recorded (they are of the sealed
+    bytes, which the rotation changed), the staged file is published as
+    `master.key.fvpw` without replacing anything, and only then is the old custody
+    removed: the systemd-creds credential (`master.key.sdcred`) or the OS-tier marker
+    (`master.key.ostier`). Run the same command again after any interruption: it
+    resumes the rotation, publishes, or removes the old custody, whichever is left,
+    and asks for the passphrase once. A rotation that already finished needs no old key.
+  - **What stays and what goes.** The OS key store entry itself is shared by every store
+    that uses it and is never touched; an environment variable or key file is not edited,
+    so retire it yourself. **A copy or backup of the store made before `protect --rotate`
+    still opens with the old key**, so it is protected only as well as that key is.
+    Anything else that opens this store with the old key (an MCP server's `--key-file`, the
+    Hermes plugin, which does not support a passphrase) stops working.
+  - **What it refuses, changing nothing:** a raw `master.key` beside the store (use plain
+    `protect`); an already protected store; a key option together with another custody's
+    key beside the store (two key sources); a command binding changed since floorvault last
+    saw it (`secrets allow ITEM --accept` after checking it, so the rotation does not
+    launder a binding someone cleared in `vault.db`); and a store rotated 255 times.
+  - **Limit.** If a run is stopped after the rotation finished but before the binding
+    fingerprints were re-recorded, resuming trusts the bindings as stored (a binding cleared
+    in that window would not be noticed); check them with `floorvault secrets show`. An
+    unattended `run` cannot answer the passphrase prompt afterwards: use a key agent.
 - **What it does not stop.** Code running as you while the key is unwrapped, anyone
   who learns or watches the passphrase, and root.
 ## Hermes Agent integration

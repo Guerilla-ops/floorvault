@@ -1993,8 +1993,18 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PWC-11",
         "src/floorvault/passphrase_custody.py",
-        "            stack.enter_context(_creation_lock(vault_dir))\n",
-        "            pass  # MUTANT\n",
+        "            stack.enter_context(_creation_lock(vault_dir))\n"
+        "        except (OSError, ValueError) as exc:\n"
+        "            raise PassphraseCustodyError(\n"
+        '                f"cannot take the creation lock for {vault_dir} ({type(exc).__name__})"\n'
+        "            ) from None\n"
+        "        other = other_custody_present(vault_dir)\n",
+        "            pass  # MUTANT\n"
+        "        except (OSError, ValueError) as exc:\n"
+        "            raise PassphraseCustodyError(\n"
+        '                f"cannot take the creation lock for {vault_dir} ({type(exc).__name__})"\n'
+        "            ) from None\n"
+        "        other = other_custody_present(vault_dir)\n",
         "The wrapped key is created without the shared creation lock (#84)",
     ),
     Mutation(
@@ -2486,6 +2496,83 @@ MUTATIONS: tuple[Mutation, ...] = (
         expect_on_windows="survived",
     ),
     Mutation(
+        "PRT-1",
+        "src/floorvault/agent_cli.py",
+        "        record.record(item_id, new_store.binding_fingerprint(item_id))\n",
+        "        pass  # MUTANT\n",
+        "After a protect --rotate, the binding fingerprints are not re-recorded and every bound item is refused (#84)",
+    ),
+    Mutation(
+        "PRT-2",
+        "src/floorvault/agent_cli.py",
+        "            if changed:\n                _err(prog, _binding_changed(changed[0]))\n                return 1\n            if rotation.generation(store)",
+        "            if False:  # MUTANT\n                _err(prog, _binding_changed(changed[0]))\n                return 1\n            if rotation.generation(store)",
+        "A binding changed behind the CLI's back is laundered into the new key by a rotation (#84)",
+    ),
+    Mutation(
+        "PRT-3",
+        "src/floorvault/agent_cli.py",
+        "            passphrase_custody.stage_wrapped_key(vault_dir, new_key, phrase)\n",
+        "            pass  # MUTANT\n",
+        "The new key is not written wrapped before the store is rotated, so a stop loses it (#84)",
+    ),
+    Mutation(
+        "PRT-4",
+        "src/floorvault/passphrase_custody.py",
+        '        if not wrapped_present(vault_dir):\n            raise PassphraseCustodyError(\n                f"no wrapped key beside {vault_dir}; the old custody was left in place"',
+        '        if False:  # MUTANT\n            raise PassphraseCustodyError(\n                f"no wrapped key beside {vault_dir}; the old custody was left in place"',
+        "The old custody is removed with no wrapped key in place (#84)",
+    ),
+    Mutation(
+        "PRT-5",
+        "src/floorvault/passphrase_custody.py",
+        "_REPLACEABLE_CUSTODY_FILES = (SYSTEMD_CREDENTIAL_FILENAME, OS_TIER_MARKER_FILENAME)",
+        '_REPLACEABLE_CUSTODY_FILES = (SYSTEMD_CREDENTIAL_FILENAME, OS_TIER_MARKER_FILENAME, "master.key")',
+        "A raw master.key is removed as if it were a replaced custody (#84)",
+    ),
+    Mutation(
+        "PRT-6",
+        "src/floorvault/passphrase_custody.py",
+        "            if existing != payload:\n",
+        "            if False:  # MUTANT\n",
+        "A different wrapped key is accepted as the one the staged key became (#84)",
+    ),
+    Mutation(
+        "PRT-7",
+        "src/floorvault/agent_cli.py",
+        "    if explicit and leftovers and not wrapped:\n",
+        "    if False:  # MUTANT\n",
+        "An explicit key option beside another custody's key is not refused as two key sources (#84)",
+    ),
+    Mutation(
+        "PRT-8",
+        "src/floorvault/agent_cli.py",
+        "    if passphrase_custody.raw_key_present(vault_dir):\n        _err(\n            prog,\n            f\"a raw {vault_dir / 'master.key'} sits beside the store.",
+        "    if False:  # MUTANT\n        _err(\n            prog,\n            f\"a raw {vault_dir / 'master.key'} sits beside the store.",
+        "protect --rotate runs on a store whose key is a raw master.key (#84)",
+    ),
+    Mutation(
+        "PRT-9",
+        "src/floorvault/custody_rotation.py",
+        "        if new_id > MAX_GENERATION:\n",
+        "        if False:  # MUTANT\n",
+        "A store whose key generation counter is full is rotated anyway (#84)",
+    ),
+    Mutation(
+        "PRT-10",
+        "src/floorvault/agent_cli.py",
+        "    _check_store_key(store, vault_dir)\n    old = _old_custody_name(args, vault_dir)\n",
+        "    old = _old_custody_name(args, vault_dir)\n",
+        "The old custody is removed on the strength of a wrapped key that was never shown to open the store (#84)",
+    ),
+    Mutation(
+        "PRT-11",
+        "src/floorvault/agent_cli.py",
+        "                _check_store_key(candidate, vault_dir)\n                new_store = candidate\n",
+        "                new_store = candidate\n",
+        "A staged key that does not open the store is taken for one that finished the rotation (#84)",
+    ),
+    Mutation(
         "BG-1",
         "plugins/hermesvault/binding_guard.py",
         "    if any(command_allowed(line, allowed) for line in command_lines):\n",
@@ -2554,8 +2641,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AUD-5",
         "src/floorvault/agent_cli.py",
-        "        _check_store_key(store, vault_dir)\n",
-        "        pass  # MUTANT\n",
+        "    if existed:\n        _check_store_key(store, vault_dir)\n",
+        "    if existed:\n        pass  # MUTANT\n",
         "secrets add under another key writes to an existing store, leaving it sealed under two keys",
     ),
     Mutation(
@@ -2660,7 +2747,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AUD-15",
         "src/floorvault/agent_cli.py",
-        "    if target is not None:\n        # Part of the store",
+        "    if target is not None and not allow_rotation:\n        # Part of the store",
         "    if False:  # MUTANT\n        # Part of the store",
         "A half-finished rotation is opened with one key and reported as the wrong key (SEC-16)",
     ),
