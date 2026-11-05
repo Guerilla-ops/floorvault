@@ -45,6 +45,9 @@ from .providers.platform_custody import (
 )
 
 WRAPPED_FILENAME = WRAPPED_KEY_FILENAME
+#: A new wrapped key written before it is the store's key (``protect --rotate``): the store
+#: is re-sealed under it, and only then is it renamed to ``WRAPPED_FILENAME``.
+STAGED_FILENAME = WRAPPED_KEY_FILENAME + ".staged"
 #: Files that mean another custody already holds (or held) this store's key.
 OTHER_CUSTODY_FILES = ("master.key", SYSTEMD_CREDENTIAL_FILENAME, OS_TIER_MARKER_FILENAME)
 
@@ -123,6 +126,21 @@ def read_raw_key(vault_dir: Path) -> bytes:
 
 def wrapped_path(vault_dir: Path) -> Path:
     return Path(vault_dir) / WRAPPED_FILENAME
+
+
+def staged_path(vault_dir: Path) -> Path:
+    return Path(vault_dir) / STAGED_FILENAME
+
+
+def staged_present(vault_dir: Path) -> bool:
+    """Whether a staged wrapped key sits beside ``vault_dir`` (same ``lstat`` rule as above)."""
+    try:
+        os.lstat(staged_path(vault_dir))
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def wrapped_present(vault_dir: Path) -> bool:
@@ -238,15 +256,7 @@ def create_wrapped_key(vault_dir: Path, passphrase: str) -> Path:
     return path
 
 
-def read_key(vault_dir: Path, passphrase: str) -> Optional[bytes]:
-    """The master key unwrapped from the file beside ``vault_dir``, or None if absent.
-
-    None means only that no wrapped file exists. One that exists but cannot be
-    opened (wrong passphrase, altered, unsafe permissions) raises: the store's
-    key is there, so nothing else may stand in for it.
-    """
-    path = wrapped_path(vault_dir)
-    refuse_raw_companion(vault_dir)
+def _unwrap_file(path: Path, passphrase: str) -> Optional[bytes]:
     try:
         payload = read_protected(
             path,
@@ -263,3 +273,176 @@ def read_key(vault_dir: Path, passphrase: str) -> Optional[bytes]:
         raise PassphraseCustodyError(str(exc)) from None
     except ValueError as exc:
         raise PassphraseCustodyError(str(exc)) from None
+
+
+def read_key(vault_dir: Path, passphrase: str) -> Optional[bytes]:
+    """The master key unwrapped from the file beside ``vault_dir``, or None if absent.
+
+    None means only that no wrapped file exists. One that exists but cannot be
+    opened (wrong passphrase, altered, unsafe permissions) raises: the store's
+    key is there, so nothing else may stand in for it.
+    """
+    refuse_raw_companion(vault_dir)
+    return _unwrap_file(wrapped_path(vault_dir), passphrase)
+
+
+# ------------------------------------------------- a new key, staged (protect --rotate)
+
+
+def read_staged_key(vault_dir: Path, passphrase: str) -> Optional[bytes]:
+    """The key in the staged file (see :func:`stage_wrapped_key`), or None if there is none."""
+    return _unwrap_file(staged_path(vault_dir), passphrase)
+
+
+def stage_wrapped_key(vault_dir: Path, key: bytes, passphrase: str) -> Path:
+    """Wrap ``key`` into the staged file, created exclusively with mode 0600 and never replaced.
+
+    The staged file is not the store's key yet: nothing reads it as custody. It exists so
+    that a rotation to ``key`` can be resumed, and its result opened, if the process stops
+    half way, which a key held only in memory could not. It is unwrapped again before this
+    returns, so a file that cannot be opened is found here.
+    """
+    path = staged_path(vault_dir)
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(_creation_lock(vault_dir))
+        except (OSError, ValueError) as exc:
+            raise PassphraseCustodyError(
+                f"cannot take the creation lock for {vault_dir} ({type(exc).__name__})"
+            ) from None
+        if wrapped_present(vault_dir):
+            raise PassphraseCustodyError(f"{wrapped_path(vault_dir)} already exists")
+        try:
+            payload = passphrase_store.wrap(key, passphrase)
+            write_protected(
+                payload,
+                path,
+                header=passphrase_store.MAGIC,
+                expected_length=passphrase_store.PAYLOAD_BYTES,
+            )
+        except ProtectedStoreError as exc:
+            raise PassphraseCustodyError(f"cannot create {path}: {exc}") from None
+        except (OSError, ValueError) as exc:
+            raise PassphraseCustodyError(f"cannot create {path} ({type(exc).__name__})") from None
+        if read_staged_key(vault_dir, passphrase) != key:
+            raise PassphraseCustodyError(
+                f"{path} did not unwrap to the same key; nothing else changed"
+            )
+    return path
+
+
+def publish_staged_key(vault_dir: Path, passphrase: str) -> Path:
+    """Make the staged key the store's wrapped key: publish it without replacing, then drop it.
+
+    Safe to repeat: if the wrapped file is already there and holds the same wrapping as the
+    staged one (a stop between the two steps), only the staged file is removed. A different
+    wrapped file is never replaced.
+    """
+    final, staged = wrapped_path(vault_dir), staged_path(vault_dir)
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(_creation_lock(vault_dir))
+        except (OSError, ValueError) as exc:
+            raise PassphraseCustodyError(
+                f"cannot take the creation lock for {vault_dir} ({type(exc).__name__})"
+            ) from None
+        try:
+            payload = read_protected(
+                staged,
+                header=passphrase_store.MAGIC,
+                expected_length=passphrase_store.PAYLOAD_BYTES,
+            )
+        except ProtectedStoreMissing:
+            raise PassphraseCustodyError(f"no staged key at {staged}") from None
+        except ProtectedStoreError as exc:
+            raise PassphraseCustodyError(f"{staged}: {exc}") from None
+        try:
+            passphrase_store.unwrap(payload, passphrase)
+        except (passphrase_store.PassphraseStoreError, ValueError) as exc:
+            raise PassphraseCustodyError(str(exc)) from None
+        if wrapped_present(vault_dir):
+            try:
+                existing = read_protected(
+                    final,
+                    header=passphrase_store.MAGIC,
+                    expected_length=passphrase_store.PAYLOAD_BYTES,
+                )
+            except ProtectedStoreError as exc:
+                raise PassphraseCustodyError(f"{final}: {exc}") from None
+            if existing != payload:
+                raise PassphraseCustodyError(
+                    f"{final} already holds a different wrapped key; nothing was replaced"
+                )
+        else:
+            try:
+                write_protected(
+                    payload,
+                    final,
+                    header=passphrase_store.MAGIC,
+                    expected_length=passphrase_store.PAYLOAD_BYTES,
+                )
+            except ProtectedStoreError as exc:
+                raise PassphraseCustodyError(f"cannot create {final}: {exc}") from None
+            except (OSError, ValueError) as exc:
+                raise PassphraseCustodyError(
+                    f"cannot create {final} ({type(exc).__name__})"
+                ) from None
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(staged)
+    return final
+
+
+def discard_staged_key(vault_dir: Path) -> None:
+    """Remove the staged file, if any (the wrapped file is untouched)."""
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(staged_path(vault_dir))
+
+
+#: What an earlier custody leaves beside a store; ``master.key`` (a raw key) is never removed here.
+_REPLACEABLE_CUSTODY_FILES = (SYSTEMD_CREDENTIAL_FILENAME, OS_TIER_MARKER_FILENAME)
+
+
+def replaceable_custody_files(vault_dir: Path) -> list[str]:
+    """Names of the sealed-credential and OS-tier marker files present beside ``vault_dir``."""
+    found = []
+    for name in _REPLACEABLE_CUSTODY_FILES:
+        try:
+            os.lstat(Path(vault_dir) / name)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            pass  # cannot rule it out: count it as there
+        found.append(name)
+    return found
+
+
+def remove_replaced_custody(vault_dir: Path) -> list[str]:
+    """Remove the credential and OS-tier marker of the custody a wrapped key replaced.
+
+    Refuses unless a wrapped key is in place, so the store is never left with no custody.
+    The OS key store entry itself is shared by every store using it and is not touched.
+    """
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(_creation_lock(vault_dir))
+        except (OSError, ValueError) as exc:
+            raise PassphraseCustodyError(
+                f"cannot take the creation lock for {vault_dir} ({type(exc).__name__})"
+            ) from None
+        if not wrapped_present(vault_dir):
+            raise PassphraseCustodyError(
+                f"no wrapped key beside {vault_dir}; the old custody was left in place"
+            )
+        removed = []
+        for name in replaceable_custody_files(vault_dir):
+            try:
+                os.unlink(Path(vault_dir) / name)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise PassphraseCustodyError(
+                    f"cannot remove {Path(vault_dir) / name} ({type(exc).__name__}); the store "
+                    "has the new wrapped key, so remove that file by hand"
+                ) from None
+            removed.append(name)
+    return removed
