@@ -750,10 +750,14 @@ and the data is gone.
     `protect`); an already protected store; a key option together with another custody's
     key beside the store (two key sources); a command binding changed since floorvault last
     saw it (`secrets allow ITEM --accept` after checking it, so the rotation does not
-    launder a binding someone cleared in `vault.db`); and a store rotated 255 times.
-  - **Limit.** If a run is stopped after the rotation finished but before the binding
-    fingerprints were re-recorded, resuming trusts the bindings as stored (a binding cleared
-    in that window would not be noticed); check them with `floorvault secrets show`. An
+    launder a binding someone cleared in `vault.db`; this is checked again on every resume
+    for the items not yet re-sealed); and a store rotated 255 times. A key (the old one, the
+    staged one, or the wrapped one) must open every item **and every retirement record**
+    before it is trusted, so a store with no items cannot be fooled by the wrong key.
+  - **Limit.** An item already re-sealed when a run stopped has no recorded fingerprint for
+    its new ciphertext, so a binding cleared on it afterwards would not be noticed on resume
+    (nor, if the stop came after the rotation finished and before the fingerprints were
+    re-recorded, on any item); check bindings with `floorvault secrets show`. An
     unattended `run` cannot answer the passphrase prompt afterwards: use a key agent.
 - **What it does not stop.** Code running as you while the key is unwrapped, anyone
   who learns or watches the passphrase, and root.
