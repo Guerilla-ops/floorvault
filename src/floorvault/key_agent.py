@@ -61,6 +61,14 @@ MAX_MESSAGE = 4 * 1024 * 1024
 IO_TIMEOUT = 5.0
 #: A master key is 32 bytes; the agent reads exactly that from its starter.
 KEY_BYTES = 32
+#: The longest a forked agent waits for its key. Until the key arrives the daemon is
+#: bound and listening but answers nothing (``Agent`` - and with it the TTL and idle
+#: limits - does not exist yet), so a starter that hangs instead of dying, say one left
+#: at its passphrase prompt, would wedge the socket path for good: new unlocks see a
+#: live listener that never answers and refuse to take its place. The daemon therefore
+#: gives the wait up and cleans up after this long; a key arriving later finds the pipe
+#: closed and reports the agent gone. Long enough for a prompt, short enough to recover.
+KEY_WAIT_TIMEOUT = 15 * 60
 #: The longest socket path that fits ``sockaddr_un`` on both Linux (108) and macOS (104).
 MAX_SOCKET_PATH = 100
 _OPS = ("status", "lock", "encrypt", "decrypt")
@@ -73,7 +81,16 @@ class AgentError(Exception):
 
 
 class AgentNotRunning(AgentError):
-    """No agent is listening for this store."""
+    """No agent is listening for this store.
+
+    ``stale`` marks "a socket file is there but refuses connections" - the one case where
+    the file may be replaced. It travels on the exception so callers do not match on the
+    message text.
+    """
+
+    def __init__(self, message: str, *, stale: bool = False) -> None:
+        super().__init__(message)
+        self.stale = stale
 
 
 # ------------------------------------------------------------------ durations
@@ -592,6 +609,13 @@ class Agent:
                 },
             )
         elif op == "lock":
+            wanted = request.get("identity")
+            if wanted is not None and not self._identity_matches(wanted):
+                # A lock aimed at a different agent that held this socket earlier (for
+                # example a start cut short after its key was delivered) must not stop
+                # the agent actually bound to it now.
+                _send(conn, {"ok": False, "error": "a different agent holds this socket"})
+                return
             _send(conn, {"ok": True, "locked": True})
             self.request_stop("locked")
         elif op in _CRYPTO_OPS and self._crypto is not None:
@@ -628,6 +652,17 @@ class Agent:
         except Exception:  # noqa: BLE001 - the type is not worth the risk of a message
             return {"ok": False, "kind": "failed", "error": "the operation failed"}
 
+    def _identity_matches(self, wanted: Any) -> bool:
+        """Whether a request's ``identity`` names this agent's socket ``(st_dev, st_ino)``."""
+        if self._identity is None:
+            return False
+        return (
+            isinstance(wanted, list)
+            and len(wanted) == 2
+            and all(isinstance(part, int) and not isinstance(part, bool) for part in wanted)
+            and (wanted[0], wanted[1]) == self._identity
+        )
+
     def _check_live(self) -> None:
         """Called while a request is being read: end it if the agent is stopping or out of time."""
         if self._stop:
@@ -653,18 +688,47 @@ class Agent:
 
 
 def _nobody_listens(sock_path: Path) -> bool:
-    """Whether a connect to ``sock_path`` finds nobody (a stale socket file), not a live agent."""
-    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    """Whether a connect to ``sock_path`` finds nobody (a stale socket file), not a live agent.
+
+    A refused connect is retried a few times before it counts: a live agent whose accept
+    queue is momentarily full also answers ``ECONNREFUSED``, and one refusal must not
+    take its socket for dead. A truly stale socket refuses every probe instantly, so
+    the retries cost it nothing.
+    """
+    for attempt in range(3):
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(0.5)
+            probe.connect(os.fspath(sock_path))
+        except ConnectionRefusedError:
+            if attempt == 2:
+                return True
+            time.sleep(0.1)
+            continue
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False  # cannot tell (a timeout): treat it as alive
+        finally:
+            probe.close()
+        return False
+    return True  # unreachable; the loop always returns
+
+
+def _unlink_socket_locked(sock_path: Path, identity: Optional[tuple[int, int]]) -> None:
+    """The identity- and listener-checked unlink, for callers already holding the lifecycle lock."""
     try:
-        probe.settimeout(0.5)
-        probe.connect(os.fspath(sock_path))
-    except (ConnectionRefusedError, FileNotFoundError):
-        return True
+        info = os.lstat(sock_path)
     except OSError:
-        return False  # cannot tell (a timeout, a full backlog): treat it as alive
-    finally:
-        probe.close()
-    return False
+        return
+    if not stat.S_ISSOCK(info.st_mode):
+        return
+    if identity is not None and (info.st_dev, info.st_ino) != identity:
+        return
+    if not _nobody_listens(sock_path):
+        return
+    with contextlib.suppress(OSError):
+        os.unlink(sock_path)
 
 
 def _unlink_socket(sock_path: Path, identity: Optional[tuple[int, int]]) -> None:
@@ -677,17 +741,7 @@ def _unlink_socket(sock_path: Path, identity: Optional[tuple[int, int]]) -> None
     """
     with contextlib.suppress(Exception):
         with exclusive_lock(_lock_path(sock_path), timeout=5.0):
-            try:
-                info = os.lstat(sock_path)
-            except FileNotFoundError:
-                return
-            if not stat.S_ISSOCK(info.st_mode):
-                return
-            if identity is not None and (info.st_dev, info.st_ino) != identity:
-                return
-            if not _nobody_listens(sock_path):
-                return
-            os.unlink(sock_path)
+            _unlink_socket_locked(sock_path, identity)
 
 
 # ------------------------------------------------------------------ client side
@@ -726,7 +780,9 @@ def _exchange(sock_path: Path, message: Mapping[str, Any], timeout: float) -> di
         except FileNotFoundError:
             raise AgentNotRunning(f"no agent is listening at {sock_path}") from None
         except ConnectionRefusedError:
-            raise AgentNotRunning(f"{sock_path} is stale: nothing is listening") from None
+            raise AgentNotRunning(
+                f"{sock_path} is stale: nothing is listening", stale=True
+            ) from None
         except OSError as exc:
             raise AgentError(f"cannot connect to {sock_path} ({type(exc).__name__})") from None
         _pid, uid = peer_credentials(client)
@@ -745,11 +801,25 @@ def _exchange(sock_path: Path, message: Mapping[str, Any], timeout: float) -> di
         client.close()
 
 
-def request(sock_path: Path, op: str, *, timeout: float = IO_TIMEOUT) -> dict[str, Any]:
-    """Send one ``status`` or ``lock`` request and return the reply."""
+def request(
+    sock_path: Path,
+    op: str,
+    *,
+    timeout: float = IO_TIMEOUT,
+    identity: Optional[tuple[int, int]] = None,
+) -> dict[str, Any]:
+    """Send one ``status`` or ``lock`` request and return the reply.
+
+    ``identity`` (``(st_dev, st_ino)`` of the socket file the caller means) pins a
+    ``lock`` to that one binding: an agent that re-bound the path since refuses,
+    instead of a stale instruction stopping a newer agent.
+    """
     if op not in ("status", "lock"):
         raise ValueError(f"unknown operation {op!r}")
-    reply = _exchange(sock_path, {"op": op}, timeout)
+    message: dict[str, Any] = {"op": op}
+    if identity is not None:
+        message["identity"] = [int(identity[0]), int(identity[1])]
+    reply = _exchange(sock_path, message, timeout)
     if not reply.get("ok"):
         raise AgentError(f"the agent refused the request ({reply.get('error', 'no reason')})")
     return reply
@@ -858,8 +928,8 @@ def status(sock_path: Path) -> dict[str, Any]:
     return request(sock_path, "status")
 
 
-def lock(sock_path: Path) -> None:
-    request(sock_path, "lock")
+def lock(sock_path: Path, *, identity: Optional[tuple[int, int]] = None) -> None:
+    request(sock_path, "lock", identity=identity)
 
 
 # ---------------------------------------------------------------------- starting
@@ -894,9 +964,16 @@ def _bind(sock_path: Path) -> socket.socket:
         try:
             status(sock_path)
         except AgentNotRunning as exc:
-            if "stale" in str(exc):
-                with contextlib.suppress(FileNotFoundError):
-                    os.unlink(sock_path)
+            if exc.stale:
+                # Remove only the very file the probe found dead, and only after it
+                # still answers nobody: a refused connect can also mean a live agent
+                # whose accept queue is momentarily full.
+                try:
+                    probed = _socket_identity(sock_path)
+                except OSError:
+                    pass
+                else:
+                    _unlink_socket_locked(sock_path, probed)
         else:
             raise AgentError(
                 "an agent is already unlocked for this store; `floorvault lock` stops it"
@@ -985,7 +1062,9 @@ class PendingAgent:
         self._done = True
         self._finish()
         with contextlib.suppress(Exception):
-            lock(self.path)
+            # Pinned to the socket this agent bound: if a newer agent took the path in the
+            # meantime, the lock aimed at the interrupted start must not stop it.
+            lock(self.path, identity=self._identity)
 
     def cancel(self) -> None:
         """Stop the agent without a key and wait until its socket is gone.
@@ -1045,6 +1124,10 @@ def prepare(
     The listener is bound before forking, so a refusal (a bad directory, an agent
     already running) is reported here. The agent is a daemon: a second fork after
     ``setsid``, standard streams on ``/dev/null``, core dumps off.
+
+    ``os.fork()`` copies this process's address space and its locks: call this from the
+    main thread, before other threads exist (or while they hold no locks), so the child
+    cannot inherit a mutex another thread was holding and deadlock on it.
     """
     if not SUPPORTED:
         raise AgentError("the key agent needs Linux or macOS")
@@ -1123,7 +1206,11 @@ def start(
 
     For a caller that already has the key (the CLI uses :func:`prepare` so that the agent is
     forked before the passphrase is asked for). The caller's own copy of ``key`` lives
-    until the caller exits; ``bytes`` cannot be wiped.
+    until the caller exits; ``bytes`` cannot be wiped. And because ``key`` exists in this
+    process before :func:`prepare` forks, the daemon inherits that copy in its own memory
+    image - a ghost the agent's ``HardenedMemoryKey`` and ``wipe()`` cannot reach. Callers
+    that want the fork-before-key property must do what the CLI does: :func:`prepare`
+    first, then fetch the key, then ``send_key``.
     """
     pending = prepare(
         vault_dir,
@@ -1156,14 +1243,29 @@ def _close_inherited_descriptors(keep: set[int]) -> None:
                 os.close(fd)
 
 
-def _read_key_into_buffer(fd: int) -> Optional[bytearray]:  # pragma: no cover - child
+def _read_key_into_buffer(  # pragma: no cover - child
+    fd: int, timeout: float = KEY_WAIT_TIMEOUT
+) -> Optional[bytearray]:
     """Exactly ``KEY_BYTES`` from the pipe, read straight into a mutable buffer (no ``bytes``
-    copy), or None if the pipe closed first."""
+    copy), or None if the pipe closed or ``timeout`` seconds passed first.
+
+    The wait is bounded (``KEY_WAIT_TIMEOUT``): before the key arrives no ``Agent`` exists
+    to enforce limits, so without a deadline a starter that never finishes would leave the
+    daemon - bound, listening, unreachable - holding the socket path forever.
+    """
     buffer = bytearray(KEY_BYTES)
     view = memoryview(buffer)
     got = 0
+    deadline = time.monotonic() + timeout
     try:
         while got < KEY_BYTES:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            with selectors.DefaultSelector() as selector:
+                selector.register(fd, selectors.EVENT_READ)
+                if not selector.select(min(remaining, 1.0)):
+                    continue
             count = os.readv(fd, [view[got:]])
             if count == 0:
                 break
@@ -1215,7 +1317,7 @@ def _daemon(  # pragma: no cover - runs in the forked child
             from .core import FloorVault
             from .memory import HardenedMemoryKey
 
-            key = _read_key_into_buffer(key_read)
+            key = _read_key_into_buffer(key_read, KEY_WAIT_TIMEOUT)
             os.close(key_read)
             if key is not None:
                 held = HardenedMemoryKey(key)  # copies the key and zeroes the buffer it was given

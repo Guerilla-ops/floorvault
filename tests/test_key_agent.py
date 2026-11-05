@@ -1440,3 +1440,107 @@ def test_a_key_file_replaced_while_the_passphrase_is_asked_for_starts_nothing(va
     assert not key_agent.socket_path(vault, env).exists()
     with pytest.raises(key_agent.AgentNotRunning):
         key_agent.status(key_agent.socket_path(vault, env))
+
+
+# ------------------------------------------- staleness probes and pinned locks
+
+
+def test_a_refused_connect_marks_the_not_running_error_stale(base):
+    """``stale`` travels on the exception, so callers do not match on the message text."""
+    sock = base / "s.sock"
+    dead = socket.socket(socket.AF_UNIX)
+    dead.bind(str(sock))
+    dead.close()
+    with pytest.raises(key_agent.AgentNotRunning) as excinfo:
+        key_agent._exchange(sock, {"op": "status"}, 1.0)
+    assert excinfo.value.stale
+
+
+def test_one_refused_probe_does_not_take_a_live_socket_for_stale(base, monkeypatch):
+    """A live agent with a full accept queue also answers ECONNREFUSED; one refusal is not proof."""
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(str(base / "s.sock"))
+    listener.listen(4)
+    calls = {"n": 0}
+    real_socket = key_agent.socket.socket
+
+    class RefuseOnce:
+        def __init__(self):
+            self.inner = real_socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            calls["n"] += 1
+            self.n = calls["n"]
+
+        def settimeout(self, value):
+            self.inner.settimeout(value)
+
+        def connect(self, path):
+            if self.n == 1:
+                raise ConnectionRefusedError("the accept queue is full")
+            return self.inner.connect(path)
+
+        def close(self):
+            self.inner.close()
+
+    monkeypatch.setattr(key_agent.socket, "socket", lambda *a, **k: RefuseOnce())
+    try:
+        assert key_agent._nobody_listens(base / "s.sock") is False
+    finally:
+        listener.close()
+
+
+def test_a_lock_pinned_to_another_binding_is_refused_and_the_agent_stays(running):
+    """A lock carrying a stale (dev, ino) must not stop the agent bound to the path now."""
+    item = running()
+    with pytest.raises(key_agent.AgentError, match="a different agent"):
+        key_agent.lock(item.path, identity=(0, 0))
+    assert key_agent.status(item.path)["ok"]
+    key_agent.lock(item.path)  # an unpinned lock still works
+    item.join()
+    assert not item.path.exists()
+
+
+def test_a_lock_pinned_to_this_binding_stops_the_agent(running):
+    item = running()
+    key_agent.lock(item.path, identity=key_agent._socket_identity(item.path))
+    item.join()
+    assert not item.path.exists()
+
+
+def test_a_stop_after_delivery_aimed_at_an_old_binding_leaves_the_new_agent(running):
+    """The interrupted-start cleanup must not kill an agent that re-bound the path since."""
+    item = running()
+    pending = key_agent.PendingAgent(item.path, -1, -1, identity=(0, 0))
+    pending._stop_after_delivery()
+    assert key_agent.status(item.path)["ok"]
+    key_agent.lock(item.path)
+    item.join()
+
+
+def test_a_stop_after_delivery_locks_the_agent_it_started(running):
+    item = running()
+    pending = key_agent.PendingAgent(
+        item.path, -1, -1, identity=key_agent._socket_identity(item.path)
+    )
+    pending._stop_after_delivery()
+    item.join()
+    assert not item.path.exists()
+
+
+def test_a_pending_agent_left_waiting_for_its_key_gives_up_and_clears_the_path(
+    vault, env, monkeypatch
+):
+    """Until the key arrives no Agent exists to enforce limits, so the daemon bounds the wait
+    itself: a starter that hangs instead of dying cannot wedge the socket path forever."""
+    monkeypatch.setattr(key_agent, "KEY_WAIT_TIMEOUT", 0.5)
+    pending = key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+    path = pending.path
+    assert path.exists()
+    try:
+        assert wait_until(lambda: not path.exists()), "the abandoned agent kept the socket"
+        with pytest.raises(key_agent.AgentNotRunning):
+            key_agent.status(path)
+        with pytest.raises(key_agent.AgentError, match="went away"):
+            pending.send_key(b"k" * 32)
+    finally:
+        pending.cancel()
+    assert not path.exists()

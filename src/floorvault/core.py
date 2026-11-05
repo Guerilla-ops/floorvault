@@ -312,12 +312,14 @@ class FloorVault:
             # Subkey A: AES-256-SIV requires a 64-byte key (two 256-bit subkeys)
             # Derive directly from the mutable buffer to avoid an extra bytes()
             # materialization outside our control.
-            raw_siv = HKDF(
-                algorithm=hashes.SHA256(),
-                length=64,
-                salt=None,
-                info=b"floorvault-v1-aes-siv",
-            ).derive(master_buffer)
+            raw_siv = bytearray(
+                HKDF(
+                    algorithm=hashes.SHA256(),
+                    length=64,
+                    salt=None,
+                    info=b"floorvault-v1-aes-siv",
+                ).derive(master_buffer)
+            )
 
             # 3. Pin derived subkeys into physical RAM containers
             self._siv_key = HardenedMemoryKey(raw_siv, mode=memory_mode)
