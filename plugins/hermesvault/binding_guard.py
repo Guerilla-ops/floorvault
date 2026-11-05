@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import sys
 from typing import Optional, Sequence
 
@@ -46,14 +47,14 @@ def started_as() -> str:
     """How this process was started, for a warning that tells the operator what to bind.
 
     Names the command line(s) ``secrets allow`` can record: ``allow`` refuses a program
-    that is not executable, so a script run as ``python script.py`` is bound as the
+    that is not executable on PATH (what `shutil.which` finds), so a script run as ``python script.py`` is bound as the
     interpreter line, and showing ``script.py ...`` alone would be advice that fails.
     """
     argv = list(getattr(sys, "argv", None) or [])
     if not argv:
         return "an unknown command line"
     lines = hermes_command_lines()
-    bindable = [line for line in lines if os.access(line[0], os.X_OK)] or lines
+    bindable = [line for line in lines if shutil.which(line[0])] or lines
     text = " or ".join(shlex.join(line) for line in bindable) if bindable else shlex.join(argv)
     if argv[0] and not os.path.isabs(argv[0]):
         text += " (a relative program path cannot be matched; start Hermes with its absolute path)"

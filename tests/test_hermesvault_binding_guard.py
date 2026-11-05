@@ -89,6 +89,15 @@ def test_a_relative_program_path_is_never_resolved_against_the_current_directory
     assert "relative program path cannot be matched" in started_as()
 
 
+def _executable(path):
+    path.write_text("")
+    path.chmod(0o755)
+    return path
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows decides what is executable by extension"
+)
 def test_the_warning_names_the_line_that_can_be_bound_not_a_script_that_cannot(
     monkeypatch, tmp_path
 ):
@@ -96,9 +105,7 @@ def test_the_warning_names_the_line_that_can_be_bound_not_a_script_that_cannot(
     # ("not executable"); the interpreter line is the one an operator can bind.
     script = tmp_path / "main.py"
     script.write_text("")
-    interpreter = tmp_path / "python3"
-    interpreter.write_text("")
-    interpreter.chmod(0o755)
+    interpreter = _executable(tmp_path / "python3")
     original = [str(interpreter), "-m", "hermes_cli.main", "gateway", "run"]
     _as_started(
         monkeypatch,
@@ -107,17 +114,13 @@ def test_the_warning_names_the_line_that_can_be_bound_not_a_script_that_cannot(
         executable=str(interpreter),
     )
     text = started_as()
-    assert str(interpreter) in text and "-m hermes_cli.main gateway run" in text
+    assert text == shlex.join(original)
     assert str(script) not in text
 
 
 def test_the_warning_names_every_spelling_that_can_be_bound(monkeypatch, tmp_path):
-    runner = tmp_path / "hermes"
-    runner.write_text("")
-    runner.chmod(0o755)
-    interpreter = tmp_path / "python3"
-    interpreter.write_text("")
-    interpreter.chmod(0o755)
+    runner = _executable(tmp_path / "hermes.bat")
+    interpreter = _executable(tmp_path / "python3.bat")
     _as_started(
         monkeypatch,
         [str(runner), "chat"],
@@ -125,7 +128,8 @@ def test_the_warning_names_every_spelling_that_can_be_bound(monkeypatch, tmp_pat
         executable=str(interpreter),
     )
     text = started_as()
-    assert f"{runner} chat" in text and f"{interpreter} {runner} chat" in text
+    assert shlex.join([str(runner), "chat"]) in text
+    assert shlex.join([str(interpreter), str(runner), "chat"]) in text
 
 
 def test_there_may_be_no_command_line_at_all(monkeypatch):
