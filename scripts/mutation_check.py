@@ -2505,8 +2505,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PRT-2",
         "src/floorvault/agent_cli.py",
-        "            if changed:\n                _err(prog, _binding_changed(changed[0]))\n                return 1\n            if rotation.generation(store)",
-        "            if False:  # MUTANT\n                _err(prog, _binding_changed(changed[0]))\n                return 1\n            if rotation.generation(store)",
+        "        if changed:\n            _err(prog, _binding_changed(changed[0]))\n            return 1\n        if new_key is None:\n            if rotation.generation(store)",
+        "        if False:  # MUTANT\n            _err(prog, _binding_changed(changed[0]))\n            return 1\n        if new_key is None:\n            if rotation.generation(store)",
         "A binding changed behind the CLI's back is laundered into the new key by a rotation (#84)",
     ),
     Mutation(
@@ -2561,16 +2561,44 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PRT-10",
         "src/floorvault/agent_cli.py",
-        "    _check_store_key(store, vault_dir)\n    old = _old_custody_name(args, vault_dir)\n",
+        "    _check_store_opens(store, vault_dir)\n    old = _old_custody_name(args, vault_dir)\n",
         "    old = _old_custody_name(args, vault_dir)\n",
         "The old custody is removed on the strength of a wrapped key that was never shown to open the store (#84)",
     ),
     Mutation(
         "PRT-11",
         "src/floorvault/agent_cli.py",
-        "                _check_store_key(candidate, vault_dir)\n                new_store = candidate\n",
+        "                _check_store_opens(candidate, vault_dir)\n                new_store = candidate\n",
         "                new_store = candidate\n",
         "A staged key that does not open the store is taken for one that finished the rotation (#84)",
+    ),
+    Mutation(
+        "PRT-12",
+        "src/floorvault/agent_cli.py",
+        "    try:\n        rotation.check_retirements(store)\n    except rotation.CustodyRotationError:\n",
+        "    try:\n        pass  # MUTANT\n    except rotation.CustodyRotationError:\n",
+        "Only an item can show a key is wrong: a store with no items but retirement records accepts any key (#84)",
+    ),
+    Mutation(
+        "PRT-13",
+        "src/floorvault/custody_rotation.py",
+        "        keys = {earlier: old_vault for earlier in range(old_generation + 1)}\n",
+        "        keys = {old_generation: old_vault}  # MUTANT\n",
+        "A store holding records labelled with an earlier generation cannot be rotated (#84)",
+    ),
+    Mutation(
+        "PRT-14",
+        "src/floorvault/agent_cli.py",
+        "        pending = rotation.unrotated_item_ids(store)\n",
+        "        pending = rotation.unrotated_item_ids(store) if new_key is None else []  # MUTANT\n",
+        "A binding cleared while the new key was staged is rotated into the new key (#84)",
+    ),
+    Mutation(
+        "PRT-15",
+        "src/floorvault/custody_rotation.py",
+        "    if target is None:\n        return ids\n    journal = store.rotation_journal()",
+        "    if True:  # MUTANT\n        return ids\n    journal = store.rotation_journal()",
+        "Items already re-sealed before a stop are judged against fingerprints the record never saw (#84)",
     ),
     Mutation(
         "BG-1",

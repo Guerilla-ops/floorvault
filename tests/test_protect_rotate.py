@@ -97,10 +97,10 @@ BOUND = [
 ]
 
 
-def make_store(vault, env, keyfile, *, items=2):
-    """A store whose key is the --key-file's, holding ``items`` items; ``tok`` is command-bound."""
+def make_store(vault, env, keyfile, *, items=2, bound="tok"):
+    """A store whose key is the --key-file's, holding ``items`` items; ``bound`` is command-bound."""
     for n in range(items):
-        item = "tok" if n == 0 else f"extra{n}"
+        item = bound if n == 0 else f"extra{n}"
         code, _out, err = cli(
             ["secrets", "add", "Token", "--id", item, "--stdin", "--vault", str(vault)]
             + ["--key-file", str(keyfile)],
@@ -109,7 +109,7 @@ def make_store(vault, env, keyfile, *, items=2):
         )
         assert code == 0, err
     code, _out, err = cli(
-        ["secrets", "allow", "tok", "--vault", str(vault), "--key-file", str(keyfile), "--"]
+        ["secrets", "allow", bound, "--vault", str(vault), "--key-file", str(keyfile), "--"]
         + BOUND,
         env,
     )
@@ -510,3 +510,115 @@ def test_rotation_refuses_a_key_generation_counter_that_is_full(vault):
             bytes.fromhex("55" * 32),
             app_context=APP_CONTEXT,
         )
+
+
+# ------------------------------------------- review of #131: what must be authenticated, and when
+
+
+def clear_binding_in_db(vault, item="tok"):
+    """What someone who can write vault.db but has no key can do (RUN-9)."""
+    import sqlite3
+
+    with contextlib.closing(sqlite3.connect(vault / "vault.db")) as db:
+        db.execute("UPDATE vault_items SET allowed_commands = NULL WHERE id = ?", (item,))
+        db.commit()
+
+
+def tombstone_only_store(vault):
+    """A store with no items, only a retirement record sealed under the old key."""
+    store = VaultStore(
+        vault, crypto=FloorVault(HardenedMemoryKey(OLD_KEY), app_instance_id=APP_CONTEXT)
+    )
+    store.retire_legacy_id("legacy1", "modern1")
+    return store
+
+
+def test_a_staged_key_that_was_never_used_is_not_taken_for_a_finished_rotation(vault, env, keyfile):
+    """With no items, only retirement records can show whether the staged key opens the store."""
+    tombstone_only_store(vault)
+    passphrase_custody.stage_wrapped_key(vault, bytes.fromhex("c3" * 32), PHRASE)
+    code, _out, err, _prompt = rotate(vault, env, keyfile, PHRASE)
+    assert code == 0, err
+    # The retirement record opens under the wrapped key: the store really was rotated.
+    assert new_store(vault).retired_modern_id("legacy1") == "modern1"
+
+
+def test_the_old_custody_is_kept_when_only_a_retirement_record_could_show_the_key_is_wrong(
+    vault, env, monkeypatch
+):
+    from floorvault.providers.platform_custody import write_protected
+
+    tombstone_only_store(vault)
+    credential = vault / "master.key.sdcred"
+    credential.write_bytes(b"sealed")
+    write_protected(
+        passphrase_store.wrap(bytes.fromhex("77" * 32), PHRASE),
+        vault / "master.key.fvpw",
+        header=passphrase_store.MAGIC,
+        expected_length=passphrase_store.PAYLOAD_BYTES,
+    )
+    code, _out, _err, _prompt = rotate(vault, env, None, PHRASE)
+    assert code == 1
+    assert credential.exists()
+
+
+def test_a_binding_cleared_after_the_new_key_was_staged_is_still_refused(vault, env, keyfile):
+    make_store(vault, env, keyfile)
+    passphrase_custody.stage_wrapped_key(vault, bytes.fromhex("c3" * 32), PHRASE)
+    clear_binding_in_db(vault)
+    code, _out, err, _prompt = rotate(vault, env, keyfile, PHRASE)
+    assert code == 1 and "command binding changed" in err
+    assert not (vault / "master.key.fvpw").exists()
+    old = VaultStore(
+        vault, crypto=FloorVault(HardenedMemoryKey(OLD_KEY), app_instance_id=APP_CONTEXT)
+    )
+    assert old.rotation_in_progress() is None  # nothing was rotated
+
+
+def test_a_binding_cleared_in_the_middle_of_a_rotation_is_refused_on_resume(
+    vault, env, keyfile, monkeypatch
+):
+    make_store(vault, env, keyfile, items=3)
+    original = fail_on_second_write(monkeypatch)
+    assert rotate(vault, env, keyfile, PHRASE)[0] == 1
+    monkeypatch.setattr(VaultStore, "write_sealed_item", original)
+    clear_binding_in_db(vault)  # `tok` sorts last, so it has not been re-sealed yet
+    code, _out, err, _prompt = rotate(vault, env, keyfile, PHRASE)
+    assert code == 1 and "command binding changed" in err
+    assert not (vault / "master.key.fvpw").exists()
+    assert passphrase_custody.staged_present(vault)
+
+
+def test_a_store_holding_records_labelled_with_an_earlier_generation_is_rotated(
+    vault, env, keyfile
+):
+    """Releases through 0.2.8 could write records labelled 0 after a rotation (SPEC 12.4)."""
+    from floorvault import KeyRing
+    from floorvault.vault_rotation import rotate_vault_store
+
+    first = FloorVault(HardenedMemoryKey(OLD_KEY), app_instance_id=APP_CONTEXT)
+    second_key = bytes.fromhex("66" * 32)
+    second = FloorVault(HardenedMemoryKey(second_key), app_instance_id=APP_CONTEXT)
+    store = VaultStore(vault, crypto=first)
+    store.add_item("generic", "Token", {"value": VALUE}, item_id="tok")
+    rotate_vault_store(store, source_ring=KeyRing({0: first}), new_vault=second, new_key_id=1)
+    sealed = store.read_sealed_item("tok", KeyRing({1: second}))
+    store.write_sealed_item("tok", sealed, new_vault=second, key_id=0)  # an old release's label
+    keyfile.write_text(second_key.hex(), encoding="utf-8")
+    code, _out, err, _prompt = rotate(vault, env, keyfile, PHRASE)
+    assert code == 0, err
+    assert new_store(vault).resolve_secret("tok") == {"value": VALUE}
+
+
+def test_an_item_already_re_sealed_before_the_stop_does_not_make_the_resume_refuse(
+    vault, env, keyfile, monkeypatch
+):
+    """The bound item sorts first, so it is re-sealed before the interruption: its fingerprint
+    is then of ciphertext the record never saw, which a resume must not read as tampering."""
+    make_store(vault, env, keyfile, items=3, bound="aaa")
+    original = fail_on_second_write(monkeypatch)
+    assert rotate(vault, env, keyfile, PHRASE)[0] == 1
+    monkeypatch.setattr(VaultStore, "write_sealed_item", original)
+    code, _out, err, _prompt = rotate(vault, env, keyfile, PHRASE)
+    assert code == 0, err
+    assert new_store(vault).get_allowed_commands("aaa") == [BOUND]

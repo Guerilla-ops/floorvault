@@ -1626,8 +1626,26 @@ def _store_unrotated(args, vault_dir: Path, *, check: bool):
         allow_rotation=True,
     )
     if check and store.rotation_in_progress() is None:
-        _check_store_key(store, vault_dir)
+        _check_store_opens(store, vault_dir)
     return store
+
+
+def _check_store_opens(store, vault_dir: Path) -> None:
+    """The store's key must open its items *and* its retirement records.
+
+    A store with no items passes the item check with any key; only a retirement record can
+    then show that a key is the store's.
+    """
+    from . import custody_rotation as rotation
+
+    _check_store_key(store, vault_dir)
+    try:
+        rotation.check_retirements(store)
+    except rotation.CustodyRotationError:
+        raise StoreUnavailable(
+            f"this key does not open the retirement records in the vault at {vault_dir}; "
+            "nothing was changed. Use the key the store was created with"
+        ) from None
 
 
 def _protect_report(prog: str, vault_dir: Path, removed: list[str], old: str, items: int) -> None:
@@ -1717,7 +1735,7 @@ def _protect_finish(args, prog: str, vault_dir: Path) -> int:
     store = open_store(
         vault_dir, key_bytes=key, sealed_listing=_sealed_listing_asserted(args, os.environ)
     )
-    _check_store_key(store, vault_dir)
+    _check_store_opens(store, vault_dir)
     old = _old_custody_name(args, vault_dir)
     removed = passphrase_custody.remove_replaced_custody(vault_dir)
     passphrase_custody.discard_staged_key(vault_dir)
@@ -1748,19 +1766,23 @@ def _protect_rotate_steps(args, prog: str, vault_dir: Path, *, staged: bool) -> 
                 vault_dir, key_bytes=new_key, sealed_listing=sealed, allow_rotation=True
             )
             if candidate.rotation_in_progress() is None:
-                _check_store_key(candidate, vault_dir)
+                _check_store_opens(candidate, vault_dir)
                 new_store = candidate
         except StoreUnavailable:
             new_store = None
     if new_store is None:
         store = _store_unrotated(args, vault_dir, check=True)
+        # Before anything is rotated: refuse what the rotation would launder. This runs
+        # whenever items are still under the old key, also when the new key was recovered
+        # from a staged file, since someone who can write vault.db can clear a binding in
+        # between runs. (Items already re-sealed in an interrupted rotation are not checked:
+        # their fingerprints are of ciphertext this CLI never saw.)
+        pending = rotation.unrotated_item_ids(store)
+        changed = record.check({item_id: store.binding_fingerprint(item_id) for item_id in pending})
+        if changed:
+            _err(prog, _binding_changed(changed[0]))
+            return 1
         if new_key is None:
-            # Preflight, before anything is written: refuse what the rotation would launder.
-            ids = [meta.id for meta in store.list_items()]
-            changed = record.check({item_id: store.binding_fingerprint(item_id) for item_id in ids})
-            if changed:
-                _err(prog, _binding_changed(changed[0]))
-                return 1
             if rotation.generation(store) + 1 > rotation.MAX_GENERATION:
                 raise rotation.CustodyRotationError(
                     "this store cannot be rotated again (its key generation counter is full)"
@@ -1770,7 +1792,7 @@ def _protect_rotate_steps(args, prog: str, vault_dir: Path, *, staged: bool) -> 
             passphrase_custody.stage_wrapped_key(vault_dir, new_key, phrase)
         rotation.rotate_store(store, store._crypto, new_key, app_context=APP_CONTEXT)
         new_store = open_store(vault_dir, key_bytes=new_key, sealed_listing=sealed)
-        _check_store_key(new_store, vault_dir)
+        _check_store_opens(new_store, vault_dir)
     items = [meta.id for meta in new_store.list_items()]
     for item_id in items:
         record.record(item_id, new_store.binding_fingerprint(item_id))

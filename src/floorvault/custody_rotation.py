@@ -17,8 +17,8 @@ from __future__ import annotations
 from .core import FloorVault
 from .keyring import KeyRing
 from .memory import HardenedMemoryKey
-from .vault_rotation import rotate_vault_store
-from .vaultkit.vault import VaultStore
+from .vault_rotation import _item_ids, _verify_retirements, rotate_vault_store
+from .vaultkit.vault import VaultError, VaultStore
 
 MAX_GENERATION = 255
 
@@ -35,6 +35,39 @@ def vault_for(key: bytes, app_context: str) -> FloorVault:
 def generation(store: VaultStore) -> int:
     """The key generation ``store``'s records are sealed under (0 for a store never rotated)."""
     return int(store._write_key_id)
+
+
+def check_retirements(store: VaultStore) -> None:
+    """Raise unless ``store``'s key authenticates every retirement record in the store.
+
+    Item metadata alone proves nothing for a store with no items, and a key that opens no
+    retirement record is not the store's key. Records labelled with an earlier generation
+    were sealed under the current key (see :func:`rotate_store`), so every label up to the
+    current one is read through it.
+    """
+    current = generation(store)
+    ring = KeyRing({g: store._crypto for g in range(current + 1)}, default_key_id=current)
+    try:
+        _verify_retirements(store, ring)
+    except VaultError:
+        raise CustodyRotationError(
+            "this key does not open the retirement records in the store"
+        ) from None
+
+
+def unrotated_item_ids(store: VaultStore) -> list[str]:
+    """Items still sealed under the old key: all of them before a rotation, the rest during one."""
+    target = store.rotation_in_progress()
+    ids = _item_ids(store)
+    if target is None:
+        return ids
+    journal = store.rotation_journal()
+    columns = ("payload", *(f"meta:{column}" for column in store._SEALED_META_COLUMNS))
+    return [
+        item_id
+        for item_id in ids
+        if not all(journal.get(("item", item_id, column)) == (target, "done") for column in columns)
+    ]
 
 
 def rotate_store(
@@ -56,7 +89,11 @@ def rotate_store(
                 f"this store has been rotated {old_generation} times, the most a key generation "
                 "number can count; it cannot be rotated again"
             )
-        ring = KeyRing({old_generation: old_vault}, default_key_id=old_generation)
+        # Every label up to the current generation reads through the old key: releases through
+        # 0.2.8 could write records labelled 0 after a rotation (SPEC 12.4), sealed under the
+        # key then current, so a store can hold labels 0 and its completed generation at once.
+        keys = {earlier: old_vault for earlier in range(old_generation + 1)}
+        ring = KeyRing(keys, default_key_id=old_generation)
     else:
         # Part of the store is already under the new key: the ring needs both. Every earlier
         # generation was this one old key, since a rotation here only ever moves one step.
