@@ -373,6 +373,46 @@ def test_cli_rejects_bad_yaml_even_when_host_returns_defaults(plugin_cli, tmp_pa
         plugin_cli._secrets_cfg()
 
 
+def _healthy_host_config(tmp_path, monkeypatch):
+    import types
+
+    config = tmp_path / "config.yaml"
+    config.write_text("secrets:\n  hermesvault:\n    enabled: true\n", encoding="utf-8")
+    module = types.ModuleType("hermes_cli.config")
+    module.get_config_path = lambda: config
+    module.load_config = lambda: {"secrets": {"hermesvault": {"enabled": True}}}
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+
+
+def test_cli_reads_config_with_hermes_own_reader_and_needs_no_pyyaml(
+    plugin_cli, tmp_path, monkeypatch
+):
+    """Hermes does not ship PyYAML (it reads config with hermes_yaml); neither may this check need it."""
+    import types
+
+    import yaml
+
+    _healthy_host_config(tmp_path, monkeypatch)
+    hermes_yaml = types.ModuleType("hermes_yaml")
+    hermes_yaml.safe_load = yaml.safe_load
+    monkeypatch.setitem(sys.modules, "hermes_yaml", hermes_yaml)
+    monkeypatch.setitem(sys.modules, "yaml", None)  # `import yaml` now raises ImportError
+    assert plugin_cli._secrets_cfg() == {"enabled": True}
+
+
+def test_cli_with_no_yaml_reader_says_so_instead_of_blaming_config_yaml(
+    plugin_cli, tmp_path, monkeypatch
+):
+    _healthy_host_config(tmp_path, monkeypatch)
+    monkeypatch.setitem(sys.modules, "hermes_yaml", None)
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    with pytest.raises(ValueError) as raised:
+        plugin_cli._secrets_cfg()
+    message = str(raised.value)
+    assert "neither Hermes' YAML reader" in message and "PyYAML" in message
+    assert "correct config.yaml" not in message  # config.yaml is fine; a reader is missing
+
+
 def test_cli_rejects_host_fallback_config(plugin_cli, tmp_path, monkeypatch):
     import types
 
