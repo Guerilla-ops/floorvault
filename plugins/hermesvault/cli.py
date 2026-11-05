@@ -44,9 +44,33 @@ def _field(value):
     return value
 
 
-def _secrets_cfg() -> dict:
+def _yaml_reader():
+    """A ``safe_load`` for config.yaml: Hermes' own reader, else PyYAML.
+
+    Hermes reads its configuration with its own parser (``hermes_yaml``) and does not
+    ship PyYAML, so the check below must not need it. A host with neither gets a
+    message that says so, not a claim that config.yaml is broken.
+    """
     try:
-        import yaml
+        from hermes_yaml import safe_load
+
+        return safe_load
+    except ImportError:
+        pass
+    try:
+        from yaml import safe_load
+
+        return safe_load
+    except ImportError:
+        raise CLIInputError(
+            "cannot check config.yaml: neither Hermes' YAML reader (hermes_yaml) nor PyYAML "
+            "can be imported"
+        ) from None
+
+
+def _secrets_cfg() -> dict:
+    safe_load = _yaml_reader()
+    try:
         from hermes_cli.config import get_config_path, load_config
 
         # Hermes may return defaults or a last-known-good config after a parse
@@ -56,7 +80,7 @@ def _secrets_cfg() -> dict:
             raw = path.read_text(encoding="utf-8-sig")
         except FileNotFoundError:
             raw = "{}"
-        parsed = yaml.safe_load(raw)
+        parsed = safe_load(raw)
         if parsed is not None and not isinstance(parsed, dict):
             raise ValueError("configuration must be a mapping")
         config = load_config()

@@ -43,11 +43,18 @@ def hermes_command_lines() -> list[list[str]]:
 
 
 def started_as() -> str:
-    """How this process was started, for a warning that tells the operator what to bind."""
+    """How this process was started, for a warning that tells the operator what to bind.
+
+    Names the command line(s) ``secrets allow`` can record: ``allow`` refuses a program
+    that is not executable, so a script run as ``python script.py`` is bound as the
+    interpreter line, and showing ``script.py ...`` alone would be advice that fails.
+    """
     argv = list(getattr(sys, "argv", None) or [])
     if not argv:
         return "an unknown command line"
-    text = shlex.join(argv)
+    lines = hermes_command_lines()
+    bindable = [line for line in lines if os.access(line[0], os.X_OK)] or lines
+    text = " or ".join(shlex.join(line) for line in bindable) if bindable else shlex.join(argv)
     if argv[0] and not os.path.isabs(argv[0]):
         text += " (a relative program path cannot be matched; start Hermes with its absolute path)"
     return text

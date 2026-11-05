@@ -233,6 +233,16 @@ hermes hvault show hv:service_token          # lists what it is bound to
   `ExecStart` already is one). An item bound to several lines resolves for any
   of them. Every Hermes command that loads secrets (`gateway run`, `chat`, ...)
   has its own line, so bind the ones that need the item.
+- **Chat and one-shot commands run through Hermes' local gateway.** `hermes -z "..."`
+  and other commands that talk to the agent start a gateway process, and the secrets
+  are resolved there, so that process's command line is the one to bind, not the
+  one you typed. With the Hermes checked (a source install) it is
+  `<python> -m hermes_cli.main --profile default gateway run --quiet --idle-exit`,
+  where `<python>` is the interpreter Hermes runs under. The flags are Hermes' to
+  change, so copy the line from the warning: when an item is skipped, the warning
+  prints the line(s) `secrets allow` can record. The gateway keeps running after the
+  command returns and keeps the decision it made at startup, so after changing a
+  binding run `hermes gateway stop`, or the old decision answers the next command.
 - **`require_binding: true`** also skips items that have no binding. A binding is
   stored in `vault.db`, so whoever can write that file can clear one without the
   key; the setting lives in Hermes' configuration, so a cleared binding then
