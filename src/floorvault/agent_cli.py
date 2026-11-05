@@ -41,6 +41,7 @@ import sys
 import tempfile
 import unicodedata
 from pathlib import Path
+from secrets import token_bytes
 from typing import Mapping, Optional, Sequence
 
 from . import key_agent, passphrase_custody, systemd_creds
@@ -285,6 +286,7 @@ def open_store(
     provider_environ: Optional[Mapping[str, str]] = None,
     sealed_listing: bool = False,
     migrate_listing: bool = False,
+    allow_rotation: bool = False,
 ):
     """Open the agent-secret store at ``vault_dir``.
 
@@ -301,7 +303,9 @@ def open_store(
     opened in sealed mode. ``sealed_listing=True`` asserts that mode, so a
     store holding cleartext rows (never converted, or turned back by someone
     who can write ``vault.db``) is refused. ``migrate_listing`` converts the
-    store (``secrets seal-listing``).
+    store (``secrets seal-listing``). ``allow_rotation`` opens a store that is part-way
+    through a key rotation instead of refusing it; only ``protect --rotate`` uses it,
+    to resume one.
     """
     from .core import FloorVault
     from .memory import HardenedMemoryKey
@@ -365,7 +369,7 @@ def open_store(
         ) from None
     except (KeyProviderError, VaultError, ValueError, OSError, sqlite3.Error) as exc:
         raise StoreUnavailable(f"cannot open vault at {vault_dir}: {exc}") from None
-    if target is not None:
+    if target is not None and not allow_rotation:
         # Part of the store is under the old key generation and part under the
         # new one; this CLI holds a single key, so it would open some items and
         # report the rest as sealed under "another key" (audit SEC-16, #99).
@@ -1133,15 +1137,27 @@ def add_secrets_parser(subparsers) -> None:
         choices=["systemd-creds", "passphrase"],
         help="where the key is kept",
     )
-    sub.add_parser(
+    protect = sub.add_parser(
         "protect",
-        parents=[init_options],
-        help="Wrap an existing store's raw key file (master.key) under a passphrase",
+        parents=[common],
+        help="Put an existing store's key under a passphrase",
         description=(
-            "Wrap the raw master.key beside a store under a passphrase (master.key.fvpw), "
-            "then overwrite and remove the raw file. The key is unchanged, so the data stays "
-            "readable. Only a raw key file is wrapped; a key in the OS key store or elsewhere "
-            "is not moved."
+            "Without --rotate: wrap the raw master.key beside a store under a passphrase "
+            "(master.key.fvpw), then overwrite and remove the raw file. The key is unchanged, "
+            "so the data stays readable. With --rotate: for a key held anywhere else (the OS "
+            "key store, a systemd-creds credential, --key-env, --key-file), which cannot be "
+            "moved without being read out: make a new random key, re-encrypt every item "
+            "under it, keep it only wrapped under the passphrase, and remove the old "
+            "custody. The old key then opens nothing in the store; a copy or backup made "
+            "before still opens with it."
+        ),
+    )
+    protect.add_argument(
+        "--rotate",
+        action="store_true",
+        help=(
+            "re-encrypt the store under a new key kept under the passphrase (needed unless "
+            "the key is a raw master.key)"
         ),
     )
 
@@ -1523,8 +1539,13 @@ def _cmd_protect(args, prog: str) -> int:
     from .providers.adaptive import protect_key_file
     from .providers.base import KeyProviderError
 
+    if args.rotate:
+        return _cmd_protect_rotate(args, prog)
     if args.key_env or args.key_file is not None:
-        _err(prog, "protect takes no --key-env or --key-file")
+        _err(prog, "protect takes no --key-env or --key-file without --rotate")
+        return 2
+    if args.sealed_listing:
+        _err(prog, "protect takes no --sealed-listing without --rotate")
         return 2
     vault_dir = _vault_dir(args.vault, os.environ)
     if passphrase_custody.wrapped_present(vault_dir):
@@ -1534,16 +1555,18 @@ def _cmd_protect(args, prog: str) -> int:
         _err(
             prog,
             f"the key for {vault_dir} is sealed by systemd-creds, not in a raw key file; "
-            "protect wraps only a raw master.key. Nothing was changed",
+            "protect wraps only a raw master.key. To move it under a passphrase, re-encrypt "
+            "the store under a new key with `floorvault secrets protect --rotate`. "
+            "Nothing was changed",
         )
         return 2
     if not _is_regular_file(vault_dir / "master.key"):
         _err(
             prog,
             f"there is no raw master.key beside {vault_dir}. protect wraps only that file; a "
-            "key in the OS key store, an environment variable or a --key-file is not moved. "
-            "Create a new store with `floorvault secrets init --custody passphrase` and "
-            "move the items across. Nothing was changed",
+            "key in the OS key store, an environment variable or a --key-file cannot be moved "
+            "without being read out; `floorvault secrets protect --rotate` re-encrypts the "
+            "store under a new key kept under a passphrase instead. Nothing was changed",
         )
         return 2
     try:
@@ -1574,6 +1597,217 @@ def _cmd_protect(args, prog: str) -> int:
         "filesystems, SSDs, snapshots and backups, earlier copies of the raw key can "
         "survive. If the raw key has ever sat on a backed-up disk, treat it as exposed.",
     )
+    return 0
+
+
+def _old_custody_name(args, vault_dir: Path) -> str:
+    if passphrase_custody.replaceable_custody_files(vault_dir):
+        if systemd_creds.credential_present(vault_dir):
+            return "the systemd-creds credential beside the store"
+        return "the OS key store"
+    if args.key_env:
+        return f"${args.key_env}"
+    key_file = _key_file_from(args, os.environ)
+    if key_file is not None:
+        return f"the key file {key_file}"
+    return "the key $FLOOR_VAULT_KEY or another key source"
+
+
+def _store_unrotated(args, vault_dir: Path, *, check: bool):
+    """The store opened under its current (old) key, allowing one that is part-way rotated."""
+    _check_key_options(args)
+    key_bytes, crypto = _custody(args, os.environ, vault_dir)
+    store = open_store(
+        vault_dir,
+        key_env=args.key_env,
+        key_bytes=key_bytes,
+        crypto=crypto,
+        sealed_listing=_sealed_listing_asserted(args, os.environ),
+        allow_rotation=True,
+    )
+    if check and store.rotation_in_progress() is None:
+        _check_store_opens(store, vault_dir)
+    return store
+
+
+def _check_store_opens(store, vault_dir: Path) -> None:
+    """The store's key must open its items *and* its retirement records.
+
+    A store with no items passes the item check with any key; only a retirement record can
+    then show that a key is the store's.
+    """
+    from . import custody_rotation as rotation
+
+    _check_store_key(store, vault_dir)
+    try:
+        rotation.check_retirements(store)
+    except rotation.CustodyRotationError:
+        raise StoreUnavailable(
+            f"this key does not open the retirement records in the vault at {vault_dir}; "
+            "nothing was changed. Use the key the store was created with"
+        ) from None
+
+
+def _protect_report(prog: str, vault_dir: Path, removed: list[str], old: str, items: int) -> None:
+    print(
+        f"protected: {vault_dir} now opens only with its passphrase ({items} item(s) re-encrypted)"
+    )
+    for name in removed:
+        extra = (
+            " (the OS key store entry itself is shared by other stores and was not touched)"
+            if name.endswith(".ostier")
+            else ""
+        )
+        print(f"removed the old custody file {name}{extra}")
+    _err(
+        prog,
+        f"the old key ({old}) no longer opens this store. It still opens any copy or backup "
+        "of the store made before today, so delete or retire it, and treat those copies as "
+        "protected only by the old key. Anything else that opens this store with the old key "
+        "(an MCP server's --key-file, the Hermes plugin) stops working: the plugin does not "
+        "support a passphrase, so a store it uses should not be protected this way. There "
+        "is no recovery: lose the passphrase or master.key.fvpw and the data is gone.",
+    )
+    _err(
+        prog,
+        "an unattended `run` (an MCP client, a service) cannot answer a prompt and will "
+        "refuse this store until a key agent is unlocked (`floorvault unlock`).",
+    )
+
+
+def _cmd_protect_rotate(args, prog: str) -> int:
+    """``secrets protect --rotate``: re-encrypt the store under a new key kept under a passphrase.
+
+    The order is what makes an interruption recoverable, and each step is repeatable:
+    the new key is first written *wrapped* beside the store (staged), so a stop during the
+    rotation can be resumed with the passphrase; the store is then rotated by the library's
+    resumable rotation; binding fingerprints are re-recorded (they are of the sealed bytes,
+    which the rotation changed); the staged key becomes the wrapped key without replacing
+    anything; and only then is the old custody removed. Running the command again finishes
+    whatever step an earlier run stopped at.
+    """
+    from . import custody_rotation as rotation
+    from .binding_record import BindingRecordError
+
+    _check_key_options(args)
+    vault_dir = _vault_dir(args.vault, os.environ)
+    explicit = bool(args.key_env) or args.key_file is not None
+    wrapped = passphrase_custody.wrapped_present(vault_dir)
+    staged = passphrase_custody.staged_present(vault_dir)
+    leftovers = passphrase_custody.replaceable_custody_files(vault_dir)
+    if wrapped and not staged and not leftovers:
+        _err(prog, f"{vault_dir} is already passphrase-protected; nothing was changed")
+        return 2
+    if passphrase_custody.raw_key_present(vault_dir):
+        _err(
+            prog,
+            f"a raw {vault_dir / 'master.key'} sits beside the store. `floorvault secrets "
+            "protect` without --rotate wraps it and keeps the key; --rotate is for a key held "
+            "anywhere else. Nothing was changed",
+        )
+        return 2
+    if explicit and leftovers and not wrapped:
+        _err(
+            prog,
+            f"{', '.join(leftovers)} beside the store already holds a key, and --key-env or "
+            "--key-file names another: name one key source. Nothing was changed",
+        )
+        return 2
+    try:
+        if wrapped:
+            return _protect_finish(args, prog, vault_dir)
+        return _protect_rotate_steps(args, prog, vault_dir, staged=staged)
+    except (
+        passphrase_custody.PassphraseCustodyError,
+        rotation.CustodyRotationError,
+        BindingRecordError,
+    ) as exc:
+        raise StoreUnavailable(str(exc)) from None
+
+
+def _protect_finish(args, prog: str, vault_dir: Path) -> int:
+    """A wrapped key is in place but the old custody (or the staged file) is still there."""
+    phrase = passphrase_custody.prompt_passphrase(f"Passphrase for {vault_dir}: ")
+    key = passphrase_custody.read_key(vault_dir, phrase)
+    if key is None:
+        raise StoreUnavailable(f"the wrapped key beside {vault_dir} disappeared; nothing changed")
+    # Only a key that opens the store may be the reason the old custody is removed.
+    store = open_store(
+        vault_dir, key_bytes=key, sealed_listing=_sealed_listing_asserted(args, os.environ)
+    )
+    _check_store_opens(store, vault_dir)
+    old = _old_custody_name(args, vault_dir)
+    removed = passphrase_custody.remove_replaced_custody(vault_dir)
+    passphrase_custody.discard_staged_key(vault_dir)
+    _protect_report(prog, vault_dir, removed, old, len(store.list_items()))
+    return 0
+
+
+def _protect_rotate_steps(args, prog: str, vault_dir: Path, *, staged: bool) -> int:
+    from . import custody_rotation as rotation
+
+    sealed = _sealed_listing_asserted(args, os.environ)
+    record = _binding_record(vault_dir)
+    old = _old_custody_name(args, vault_dir)
+    new_key: Optional[bytes] = None
+    new_store = None
+    store = None
+    if staged:
+        phrase = passphrase_custody.prompt_passphrase(
+            f"Passphrase for the staged key beside {vault_dir}: "
+        )
+        new_key = passphrase_custody.read_staged_key(vault_dir, phrase)
+        if new_key is None:
+            raise StoreUnavailable(
+                f"the staged key beside {vault_dir} disappeared; nothing changed"
+            )
+        try:  # an earlier run may have finished the rotation: then the new key alone opens it
+            candidate = open_store(
+                vault_dir, key_bytes=new_key, sealed_listing=sealed, allow_rotation=True
+            )
+            if candidate.rotation_in_progress() is None:
+                _check_store_opens(candidate, vault_dir)
+                new_store = candidate
+        except StoreUnavailable:
+            new_store = None
+    if new_store is None:
+        store = _store_unrotated(args, vault_dir, check=True)
+        # Before anything is rotated: refuse what the rotation would launder. This runs
+        # whenever items are still under the old key, also when the new key was recovered
+        # from a staged file, since someone who can write vault.db can clear a binding in
+        # between runs. (Items already re-sealed in an interrupted rotation are not checked:
+        # their fingerprints are of ciphertext this CLI never saw.)
+        pending = rotation.unrotated_item_ids(store)
+        changed = record.check({item_id: store.binding_fingerprint(item_id) for item_id in pending})
+        if changed:
+            _err(prog, _binding_changed(changed[0]))
+            return 1
+        if new_key is None:
+            if rotation.generation(store) + 1 > rotation.MAX_GENERATION:
+                raise rotation.CustodyRotationError(
+                    "this store cannot be rotated again (its key generation counter is full)"
+                )
+            phrase = passphrase_custody.prompt_passphrase("New passphrase: ", confirm=True)
+            new_key = token_bytes(32)
+            passphrase_custody.stage_wrapped_key(vault_dir, new_key, phrase)
+        rotation.rotate_store(store, store._crypto, new_key, app_context=APP_CONTEXT)
+        new_store = open_store(vault_dir, key_bytes=new_key, sealed_listing=sealed)
+        _check_store_opens(new_store, vault_dir)
+    items = [meta.id for meta in new_store.list_items()]
+    for item_id in items:
+        record.record(item_id, new_store.binding_fingerprint(item_id))
+    passphrase_custody.publish_staged_key(vault_dir, phrase)
+    removed = passphrase_custody.remove_replaced_custody(vault_dir)
+    check = passphrase_custody.read_key(vault_dir, phrase)
+    if check != new_key:
+        raise StoreUnavailable(f"{vault_dir}: the wrapped key does not match the new key")
+    _protect_report(prog, vault_dir, removed, old, len(items))
+    if len(phrase) < _WEAK_BELOW_CHARS:
+        _err(
+            prog,
+            f"warning: a passphrase of fewer than {_WEAK_BELOW_CHARS} characters is cheap to "
+            "guess offline",
+        )
     return 0
 
 
