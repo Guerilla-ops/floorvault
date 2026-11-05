@@ -39,6 +39,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import selectors
 import signal
 import socket
@@ -505,6 +506,7 @@ class Agent:
         poll: float = 0.5,
         hardening: Optional[Mapping[str, bool]] = None,
         identity: Optional[tuple[int, int]] = None,
+        start_token: Optional[str] = None,
         crypto: Any = None,
     ) -> None:
         self._key = key
@@ -512,6 +514,7 @@ class Agent:
         self.sock_path = Path(sock_path)
         #: (st_dev, st_ino) of the socket this agent bound; only that file is removed on exit.
         self._identity = identity
+        self._start_token = start_token
         self.ttl = ttl
         self.idle = idle
         self._clock = clock if clock is not None else _LimitClock()
@@ -609,6 +612,10 @@ class Agent:
                 },
             )
         elif op == "lock":
+            wanted_token = request.get("start_token")
+            if wanted_token is not None and wanted_token != self._start_token:
+                _send(conn, {"ok": False, "error": "a different agent holds this socket"})
+                return
             wanted = request.get("identity")
             if wanted is not None and not self._identity_matches(wanted):
                 # A lock aimed at a different agent that held this socket earlier (for
@@ -807,18 +814,22 @@ def request(
     *,
     timeout: float = IO_TIMEOUT,
     identity: Optional[tuple[int, int]] = None,
+    start_token: Optional[str] = None,
 ) -> dict[str, Any]:
     """Send one ``status`` or ``lock`` request and return the reply.
 
     ``identity`` (``(st_dev, st_ino)`` of the socket file the caller means) pins a
     ``lock`` to that one binding: an agent that re-bound the path since refuses,
-    instead of a stale instruction stopping a newer agent.
+    instead of a stale instruction stopping a newer agent. ``start_token`` pins a lock
+    to one agent start even if the socket's device and inode have since been reused.
     """
     if op not in ("status", "lock"):
         raise ValueError(f"unknown operation {op!r}")
     message: dict[str, Any] = {"op": op}
     if identity is not None:
         message["identity"] = [int(identity[0]), int(identity[1])]
+    if start_token is not None:
+        message["start_token"] = start_token
     reply = _exchange(sock_path, message, timeout)
     if not reply.get("ok"):
         raise AgentError(f"the agent refused the request ({reply.get('error', 'no reason')})")
@@ -928,8 +939,13 @@ def status(sock_path: Path) -> dict[str, Any]:
     return request(sock_path, "status")
 
 
-def lock(sock_path: Path, *, identity: Optional[tuple[int, int]] = None) -> None:
-    request(sock_path, "lock", identity=identity)
+def lock(
+    sock_path: Path,
+    *,
+    identity: Optional[tuple[int, int]] = None,
+    start_token: Optional[str] = None,
+) -> None:
+    request(sock_path, "lock", identity=identity, start_token=start_token)
 
 
 # ---------------------------------------------------------------------- starting
@@ -1004,10 +1020,16 @@ class PendingAgent:
     """
 
     def __init__(
-        self, path: Path, key_fd: int, ready_fd: int, identity: Optional[tuple[int, int]] = None
+        self,
+        path: Path,
+        key_fd: int,
+        ready_fd: int,
+        identity: Optional[tuple[int, int]] = None,
+        start_token: Optional[str] = None,
     ) -> None:
         self.path = path
         self._identity = identity  # (st_dev, st_ino) of the socket this agent was started on
+        self._start_token = start_token
         self._key_fd = key_fd
         self._ready_fd = ready_fd
         self._done = (
@@ -1062,9 +1084,8 @@ class PendingAgent:
         self._done = True
         self._finish()
         with contextlib.suppress(Exception):
-            # Pinned to the socket this agent bound: if a newer agent took the path in the
-            # meantime, the lock aimed at the interrupted start must not stop it.
-            lock(self.path, identity=self._identity)
+            # Pinned to this agent start, even if a replacement reuses the socket's identity.
+            lock(self.path, start_token=self._start_token)
 
     def cancel(self) -> None:
         """Stop the agent without a key and wait until its socket is gone.
@@ -1135,6 +1156,7 @@ def prepare(
     path = socket_path(vault_dir, environ)
     listener = _bind(path)
     identity = _socket_identity(path)
+    start_token = secrets.token_hex(32)
     key_read, key_write = os.pipe()
     ready_read, ready_write = os.pipe()
     try:
@@ -1154,6 +1176,7 @@ def prepare(
             ttl,
             idle,
             identity,
+            start_token,
             app_context,
             allow_unhardened,
             key_read,
@@ -1165,7 +1188,7 @@ def prepare(
     listener.close()  # the daemon owns it now
     with contextlib.suppress(ChildProcessError):
         os.waitpid(first, 0)
-    pending = PendingAgent(path, key_write, ready_read, identity)
+    pending = PendingAgent(path, key_write, ready_read, identity, start_token)
     try:
         verdict = _read_ready(ready_read, 1)
         if verdict == b"H":
@@ -1284,6 +1307,7 @@ def _daemon(  # pragma: no cover - runs in the forked child
     ttl: int,
     idle: int,
     identity: tuple[int, int],
+    start_token: str,
     app_context: str,
     allow_unhardened: bool,
     key_read: int,
@@ -1330,6 +1354,7 @@ def _daemon(  # pragma: no cover - runs in the forked child
                     idle=idle,
                     hardening=report,
                     identity=identity,
+                    start_token=start_token,
                     crypto=crypto,
                 )
                 for number in (signal.SIGTERM, signal.SIGINT):

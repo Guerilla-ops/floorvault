@@ -1506,10 +1506,14 @@ def test_a_lock_pinned_to_this_binding_stops_the_agent(running):
     assert not item.path.exists()
 
 
-def test_a_stop_after_delivery_aimed_at_an_old_binding_leaves_the_new_agent(running):
-    """The interrupted-start cleanup must not kill an agent that re-bound the path since."""
+def test_a_stop_after_delivery_with_a_reused_socket_identity_leaves_the_new_agent(running):
+    """A reused (dev, ino) must not let an old start's cleanup stop its replacement."""
     item = running()
-    pending = key_agent.PendingAgent(item.path, -1, -1, identity=(0, 0))
+    item.agent._start_token = "replacement"
+    identity = key_agent._socket_identity(item.path)
+    pending = key_agent.PendingAgent(
+        item.path, -1, -1, identity=identity, start_token="original"
+    )
     pending._stop_after_delivery()
     assert key_agent.status(item.path)["ok"]
     key_agent.lock(item.path)
@@ -1518,8 +1522,13 @@ def test_a_stop_after_delivery_aimed_at_an_old_binding_leaves_the_new_agent(runn
 
 def test_a_stop_after_delivery_locks_the_agent_it_started(running):
     item = running()
+    item.agent._start_token = "this-start"
     pending = key_agent.PendingAgent(
-        item.path, -1, -1, identity=key_agent._socket_identity(item.path)
+        item.path,
+        -1,
+        -1,
+        identity=key_agent._socket_identity(item.path),
+        start_token="this-start",
     )
     pending._stop_after_delivery()
     item.join()
