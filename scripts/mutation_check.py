@@ -2690,6 +2690,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "A relative interpreter path is resolved against the current directory and can match a binding",
     ),
     Mutation(
+        "BG-7",
+        "plugins/hermesvault/binding_guard.py",
+        '    if hasattr(store, "binding_fingerprint"):\n',
+        "    if True:  # MUTANT\n",
+        "The hint names `hermes hvault allow` where floorvault 0.2.x cannot run it, so a skipped item points at a command that refuses",
+    ),
+    Mutation(
         "AUD-2",
         "src/floorvault/agent_cli.py",
         "    return _launch(command_line[0], command, env)",

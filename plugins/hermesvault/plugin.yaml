@@ -15,17 +15,21 @@ platforms:
   - macos
   - windows
 python_dependencies:
-  # 0.2.8 is the first release that can hold and read command bindings
-  # (VaultStore.get_allowed_commands, floorvault.agentenv.command_allowed), and
-  # the plugin enforces them against Hermes' own command line, so an older
-  # floorvault would resolve a bound item for any command. It is also the first
-  # with custody: key_file and custody: systemd-creds (floorvault.key_file,
-  # floorvault.systemd_creds). 0.2.2 added AdaptiveKeyProvider(environ=,
-  # interactive=), which the secret source uses to read no ambient key variable
-  # and never prompt, and 0.2.1 VaultStore.update_generic_field(), which
-  # `hermes hvault put` uses. Hermes installs PyPI requirements only, so this
-  # must name a published release; tests/test_hermes_plugin_packaging.py keeps
-  # it within the checkout's own version.
+  # 0.2.8 is the first release with custody: key_file and custody:
+  # systemd-creds (floorvault.key_file, floorvault.systemd_creds); 0.2.2 added
+  # AdaptiveKeyProvider(environ=, interactive=), which the secret source uses
+  # to read no ambient key variable and never prompt; and 0.2.1
+  # VaultStore.update_generic_field(), which `hermes hvault put` uses.
+  # 0.2.8 is also the first release that can read command bindings
+  # (VaultStore.get_allowed_commands, floorvault.agentenv.command_allowed),
+  # which the plugin enforces against Hermes' own command line; an older
+  # floorvault would resolve a bound item for any command. Writing them from
+  # Hermes (`hermes hvault allow`) needs the sealed binding record of 0.3.0
+  # (VaultStore.binding_fingerprint); on 0.2.x that command refuses and
+  # `floorvault secrets allow` binds instead. Hermes
+  # installs PyPI requirements only, so this must name a published release;
+  # tests/test_hermes_plugin_packaging.py keeps it within the checkout's own
+  # version.
   - "floorvault>=0.2.8,<0.4"
   - "pyobjc-framework-Security>=10.0,<13; sys_platform == 'darwin'"
   - "secretstorage>=3.3,<4; sys_platform == 'linux'"

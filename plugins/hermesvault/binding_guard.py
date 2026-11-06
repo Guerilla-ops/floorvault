@@ -61,6 +61,19 @@ def started_as() -> str:
     return text
 
 
+def _bind_command(store, item_id: str) -> str:
+    """The command that binds ``item_id`` with the floorvault that is installed.
+
+    ``hermes hvault allow`` keeps the sealed binding record of floorvault 0.3.0
+    (``binding_fingerprint``). floorvault 0.2.x reads and enforces bindings but
+    only ``floorvault secrets allow`` writes them, so a hint naming the first
+    would send a 0.2.x user to a command that refuses.
+    """
+    if hasattr(store, "binding_fingerprint"):
+        return f"hermes hvault allow {item_id} -- <command line>"
+    return f"floorvault secrets allow {item_id} -- <command line>"
+
+
 def binding_problem(
     store, item_id: str, command_lines: Sequence[Sequence[str]], require_binding: bool
 ) -> Optional[str]:
@@ -86,7 +99,7 @@ def binding_problem(
         if require_binding:
             return (
                 "has no command binding, and secrets.hermesvault.require_binding is set; "
-                f"bind it with `floorvault secrets allow {item_id} -- <command line>`"
+                f"bind it with `{_bind_command(store, item_id)}`"
             )
         return None
     try:
@@ -97,5 +110,5 @@ def binding_problem(
         return None
     return (
         "is bound to other command lines than the one Hermes was started with "
-        f"({started_as()}); bind that with `floorvault secrets allow {item_id} -- <command line>`"
+        f"({started_as()}); bind that with `{_bind_command(store, item_id)}`"
     )
