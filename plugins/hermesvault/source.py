@@ -19,7 +19,7 @@ with ``custody``:
   the store (``master.key.sdcred``), unsealed with ``systemd-creds decrypt``.
   This is the only custody that starts a subprocess.
 
-Command bindings set with ``floorvault secrets allow`` are enforced against the
+Command bindings set with ``hermes hvault allow`` (or ``floorvault secrets allow``) are enforced against the
 command line Hermes itself was started with (see ``binding_guard``): a
 bound item is resolved only when that line is one of its bindings, and
 ``require_binding: true`` also refuses items that have none. This process has
@@ -304,8 +304,8 @@ class HermesVaultSource(SecretSource):
                 "default": False,
             },
             "require_binding": {
-                "description": "Also refuse items with no `floorvault secrets allow` "
-                "binding (a binding cleared in vault.db then blocks the item)",
+                "description": "Also refuse items with no command binding (`hermes hvault allow`) "
+                "(a binding cleared in vault.db then blocks the item)",
                 "default": False,
             },
             "timeout_seconds": {"description": "Fetch wall-clock budget", "default": 120},

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import getpass
 import json
+import os
 import shlex
 import sys
 import warnings
@@ -24,6 +25,7 @@ from pathlib import Path
 from agent.secret_sources.base import get_source_environment, is_valid_env_name
 from hermes_constants import get_hermes_home
 
+from .binding_guard import hermes_command_lines
 from .source import HermesVaultSource, parse_ref, resolve_base_dir, validate_config
 
 
@@ -44,53 +46,50 @@ def _field(value):
     return value
 
 
-def _yaml_reader():
-    """A ``safe_load`` for config.yaml: Hermes' own reader, else PyYAML.
+def _root_is_not_a_mapping() -> bool:
+    """Whether config.yaml holds anything but an empty mapping, for a file that read as ``{}``.
 
-    Hermes reads its configuration with its own parser (``hermes_yaml``) and does not
-    ship PyYAML, so the check below must not need it. A host with neither gets a
-    message that says so, not a claim that config.yaml is broken.
+    A mapping that reads as ``{}`` is an empty file, comments only, or ``{}``. Any
+    other content is a root that is not a mapping (a list, a scalar), which the
+    raw reader flattens to ``{}``: taking it for an empty configuration would
+    select the default store, so it is refused.
     """
-    try:
-        from hermes_yaml import safe_load
+    from hermes_cli.config import get_config_path
 
-        return safe_load
-    except ImportError:
-        pass
     try:
-        from yaml import safe_load
-
-        return safe_load
-    except ImportError:
-        raise CLIInputError(
-            "cannot check config.yaml: neither Hermes' YAML reader (hermes_yaml) nor PyYAML "
-            "can be imported"
-        ) from None
+        text = Path(get_config_path()).read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return False
+    body = "".join("".join(line.split("#", 1)[0].split()) for line in text.splitlines())
+    return body.replace("---", "").replace("...", "") not in ("", "{}")
 
 
 def _secrets_cfg() -> dict:
-    safe_load = _yaml_reader()
-    try:
-        from hermes_cli.config import get_config_path, load_config
+    """The ``secrets.hermesvault`` section exactly as the user wrote it.
 
-        # Hermes may return defaults or a last-known-good config after a parse
-        # failure. Vault commands must not silently select a different store.
-        path = Path(get_config_path())
-        try:
-            raw = path.read_text(encoding="utf-8-sig")
-        except FileNotFoundError:
-            raw = "{}"
-        parsed = safe_load(raw)
-        if parsed is not None and not isinstance(parsed, dict):
-            raise ValueError("configuration must be a mapping")
-        config = load_config()
-        if getattr(config, "read_error", None) is not None:
-            raise ValueError("Hermes returned a configuration fallback")
+    Read through ``read_user_config_raw``, Hermes' raw reader: it raises on a
+    file that does not parse. ``load_config()`` merges defaults and swallows a
+    parse failure into them, and defaults must never silently select a store or
+    custody. (Hermes' startup loader is more lenient: it treats an unparseable
+    file as empty, so the source is simply off. These commands are stricter on
+    purpose, because they write.) ``read_user_config_raw`` also turns a root that
+    is not a mapping into ``{}``; that is checked separately.
+    """
+    try:
+        from hermes_cli.config import read_user_config_raw
+    except ImportError:
+        raise CLIInputError(
+            "cannot read Hermes configuration: this hermesvault needs a Hermes "
+            "release with hermes_cli.config.read_user_config_raw"
+        ) from None
+    try:
+        config = read_user_config_raw()
+        not_a_mapping = not config and _root_is_not_a_mapping()
     except Exception:
         raise CLIInputError(
             "cannot load Hermes configuration; correct config.yaml before retrying"
         ) from None
-    if not isinstance(config, dict):
+    if not_a_mapping or not isinstance(config, dict):
         raise CLIInputError("Hermes configuration must be a mapping")
     secrets = config.get("secrets", {})
     if not isinstance(secrets, dict):
@@ -147,6 +146,45 @@ def register_cli(subparser) -> None:
         action="store_true",
         help="Do not edit config.yaml; print the mapping to paste instead",
     )
+    bind.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read the secret value from stdin (for scripts); no prompt",
+    )
+
+    allow = sub.add_parser(
+        "allow",
+        help=(
+            "Bind an item to command lines, so Hermes resolves it only when "
+            "started as one of them (default: this Hermes' own command line)"
+        ),
+        usage=(
+            "hermes hvault allow ITEM_ID [--clear | --accept | [--remove] [-- PROGRAM [ARGS...]]]"
+        ),
+        description=(
+            "Command bindings live in the vault; a bound item is resolved only "
+            "when the process was started as one of the bound command lines "
+            "(secrets.hermesvault.require_binding also refuses items with none). "
+            "With no command, the lines this Hermes was started with are bound — "
+            "run it from the same command Hermes runs as. Give an explicit line "
+            "after -- the way `floorvault secrets allow` takes it."
+        ),
+    )
+    allow.add_argument("item_id")
+    allow.add_argument(
+        "--clear",
+        action="store_true",
+        help="Remove every binding (the item resolves for any command)",
+    )
+    allow.add_argument("--remove", action="store_true", help="Remove one command line")
+    allow.add_argument(
+        "--accept",
+        action="store_true",
+        help="Trust the item's binding as stored, when it was changed outside this command",
+    )
+    # Named command_line rather than command: plugin args share the namespace
+    # hermes_cli.main dispatches on, and its `command` attribute is a string.
+    allow.add_argument("command_line", nargs="*", metavar="PROGRAM [ARGS...]")
 
     sub.add_parser(
         "setup",
@@ -443,6 +481,10 @@ def _cmd_bind(args) -> int:
     label = args.label if args.label is not None else args.env_name
     ref = f"hv:{item_id}" if field == "value" else f"hv:{item_id}:{field}"
 
+    if args.stdin and sys.stdin.isatty():
+        print("hvault bind: --stdin reads the value from a pipe or file", file=sys.stderr)
+        return 2
+
     cfg = _secrets_cfg()
     if args.env_name in HermesVaultSource().protected_env_vars(cfg):
         # Hermes never applies a mapping onto the bootstrap or key variables, so
@@ -475,7 +517,10 @@ def _cmd_bind(args) -> int:
         print(f"store created at {resolve_base_dir(cfg, home)}")
         print(_custody_line(cfg))
 
-    value = _read_secret(f"{args.env_name}: ", "bind")
+    if args.stdin:
+        value = sys.stdin.read().rstrip("\n")
+    else:
+        value = _read_secret(f"{args.env_name}: ", "bind")
     if value is None:
         return 2
     if not value.strip():
@@ -505,6 +550,179 @@ def _cmd_bind(args) -> int:
     return code
 
 
+class _AllowRefused(Exception):
+    """A binding change refused inside the store's write transaction; nothing was written."""
+
+
+def _binding_record(base: Path):
+    """This store's sealed-binding record — the same file `floorvault secrets allow` keeps."""
+    try:
+        from floorvault.binding_record import (
+            BindingRecord,
+            BindingRecordError,
+            default_state_dir,
+        )
+    except ImportError:
+        raise CLIInputError("command bindings need floorvault 0.3.0 or newer") from None
+    try:
+        return BindingRecord(base, default_state_dir(os.environ)), BindingRecordError
+    except BindingRecordError as exc:
+        raise CLIInputError(str(exc)) from None
+
+
+def _resolve_program(prog: str) -> str:
+    """The absolute program path a binding records, found exactly as `secrets allow` finds it.
+
+    It uses that command's own lookup (``agent_cli._find_command``), which on
+    Windows never searches the current directory, and then ``abspath``: a binding
+    must hold an absolute, normalised path, because the guard only compares those
+    and a relative one could never match.
+    """
+    from floorvault.agent_cli import _find_command
+
+    path, code = _find_command(prog, os.environ)
+    if path is None:
+        if code == 126:
+            raise CLIInputError(f"{prog} is not an executable file")
+        raise CLIInputError(f"{prog}: command not found")
+    return os.path.abspath(path)
+
+
+def _cmd_allow(args) -> int:
+    item_id = _item_id(args.item_id)
+    command = list(args.command_line or [])
+    if args.clear and (command or args.remove):
+        raise CLIInputError("--clear takes no command and cannot be combined with --remove")
+    if args.accept and (command or args.remove or args.clear):
+        raise CLIInputError(
+            "--accept takes no command and cannot be combined with --clear or --remove"
+        )
+    store = _store()
+    if any(
+        getattr(store, name, None) is None
+        for name in ("update_allowed_commands", "set_allowed_commands", "binding_fingerprint")
+    ):
+        print("hvault allow: command bindings need floorvault 0.3.0 or newer", file=sys.stderr)
+        return 1
+    # Only a missing item is "not found"; a database or decryption failure goes to
+    # hvault_command's redacted handler instead of being reported as a missing item.
+    if store.get_meta(item_id) is None:
+        print(f"hvault allow: item {item_id} not found", file=sys.stderr)
+        return 1
+    cfg = _secrets_cfg()
+    base = resolve_base_dir(cfg, Path(get_hermes_home()))
+    record, record_error = _binding_record(base)
+    try:
+        if args.accept:
+            # Read (and authenticate) before trusting: a binding that is corrupted or
+            # was copied from another item fails here, as it does for
+            # `floorvault secrets allow --accept`, and the record is left as it was.
+            fingerprint = store.binding_fingerprint(item_id)
+            store.get_allowed_commands(item_id)
+            record.record(item_id, fingerprint)
+            _print_binding(store, item_id)
+            print(f"{item_id}: this binding is trusted from now on")
+            return 0
+        if args.clear:
+            store.set_allowed_commands(item_id, None)
+            record.record(item_id, store.binding_fingerprint(item_id))
+            print(f"{item_id}: not bound; the plugin resolves it for any command")
+            return 0
+        # Adding to or removing from a binding that was changed behind our back
+        # would make the changed one look trusted.
+        if record.check({item_id: store.binding_fingerprint(item_id)}):
+            print(
+                f"hvault allow: the binding for {item_id} was changed outside this "
+                "command; inspect it with `hermes hvault show` and confirm it with "
+                f"`hermes hvault allow {item_id} --accept`",
+                file=sys.stderr,
+            )
+            return 1
+    except record_error as exc:
+        print(f"hvault allow: {exc}", file=sys.stderr)
+        return 1
+    if command:
+        if len(command) == 1 and command[0].lstrip().startswith("["):
+            # `hermes --print-runtime-command <argv>` prints the exact command
+            # line a launcher starts Hermes with, as a JSON list — pasting it
+            # after -- is the way to bind that start line.
+            try:
+                parsed = json.loads(command[0])
+            except ValueError:
+                parsed = None
+            if not (
+                isinstance(parsed, list) and parsed and all(isinstance(a, str) for a in parsed)
+            ):
+                raise CLIInputError(
+                    "after -- a JSON command line must be a non-empty list of strings, "
+                    "as `hermes --print-runtime-command` prints it"
+                )
+            command = parsed
+        line = [_resolve_program(command[0]), *command[1:]]
+        for arg in command[1:]:
+            if not arg.startswith("-") and not os.path.isabs(arg) and os.path.exists(arg):
+                print(
+                    f"hvault allow: warning: {arg} is a relative path; it is resolved "
+                    "against the directory the command starts in. Prefer an absolute path.",
+                    file=sys.stderr,
+                )
+        lines = [line]
+    else:
+        # A bound item resolves only for the commands it is bound to, and this
+        # `hvault` invocation is never the one a user means — the agent's start
+        # command is. Drop self-references from the captured lines; if the
+        # `allow` invocation is all there is, the operator must spell the line
+        # out (the skip warning prints what the source was started with).
+        captured = [line for line in hermes_command_lines() if "hvault" not in line]
+        if not captured:
+            raise CLIInputError(
+                "the only command line this process was started with is this "
+                "`hvault` invocation; bound to it the item would resolve for "
+                "hvault commands but not the agent. Give the start command after "
+                "-- instead: the skip warning prints it, and `hermes "
+                "--print-runtime-command gateway run` prints the launcher's line "
+                "as JSON (paste it quoted)"
+            )
+        lines = captured
+
+    def change(current):
+        # Runs under the store's write lock, so a concurrent change is not lost.
+        current = current or []
+        if not args.remove:
+            return [*current, *lines]
+        from floorvault.agentenv import command_allowed
+
+        remaining = list(current)
+        for line in lines:
+            remaining = [e for e in remaining if not command_allowed(line, [e])]
+        if len(remaining) == len(current):
+            raise _AllowRefused(
+                f"item {item_id} is not bound to {shlex.join(lines[0])}"
+                if len(lines) == 1
+                else f"item {item_id} is bound to none of this process's command lines"
+            )
+        if not remaining:
+            # Unbinding widens access to every command; make that explicit.
+            raise _AllowRefused(
+                f"that is the last command line {item_id} is bound to; removing it "
+                "would let the plugin resolve the item for any command. Use --clear for that."
+            )
+        return remaining
+
+    try:
+        store.update_allowed_commands(item_id, change)
+    except _AllowRefused as exc:
+        print(f"hvault allow: {exc}", file=sys.stderr)
+        return 1
+    try:
+        record.record(item_id, store.binding_fingerprint(item_id))
+    except record_error as exc:
+        print(f"hvault allow: the binding was written, but {exc}", file=sys.stderr)
+        return 1
+    _print_binding(store, item_id)
+    return 0
+
+
 def _cmd_status(_args) -> int:
     """``hermes hvault`` with no command: where things stand and the next step.
     Opens the store exactly as the secret source does — no prompt, nothing created."""
@@ -532,7 +750,7 @@ def _cmd_status(_args) -> int:
         print("next: set secrets.hermesvault.enabled: true, or run `hermes hvault bind`")
     else:
         print("next: hermes hvault doctor   # full check; `bind` adds more")
-    print("commands: bind, list, doctor, show, rm; advanced: setup, add, put, env")
+    print("commands: bind, allow, list, doctor, show, rm; advanced: setup, add, put, env")
     return 0
 
 
@@ -545,7 +763,8 @@ def _cmd_doctor(_args) -> int:
     print(_custody_line(cfg))
     if cfg.get("enabled") is not True:
         print(
-            "hvault doctor: source is disabled; set secrets.hermesvault.enabled: true",
+            "hvault doctor: source is disabled; set secrets.hermesvault.enabled: true "
+            "(or run `hermes hvault bind` once — it enables it)",
             file=sys.stderr,
         )
         return 1
@@ -566,14 +785,11 @@ def _cmd_doctor(_args) -> int:
     if not result.ok:
         print(f"hvault doctor: {result.error}", file=sys.stderr)
         return 1
-    if result.warnings:
-        # The warnings name configured variables and items (from the secrets: section),
-        # so only their number is printed here; the numbered checks below name none.
-        print(
-            f"hvault doctor: the secret source reported {len(result.warnings)} warning(s); "
-            "details are not printed",
-            file=sys.stderr,
-        )
+    # The same lines Hermes prints at startup: they name configured variables,
+    # items and bound command lines, never values. Naming them is the point of
+    # a doctor — "1 warning" alone cannot be acted on.
+    for warning in result.warnings:
+        print(f"hvault doctor: {warning}", file=sys.stderr)
     problems = bool(result.warnings)
     environ = get_source_environment()
     protected = source.protected_env_vars(cfg)
@@ -614,6 +830,8 @@ def hvault_command(args) -> int:
             return _cmd_status(args)
         if cmd == "bind":
             return _cmd_bind(args)
+        if cmd == "allow":
+            return _cmd_allow(args)
         if cmd == "setup":
             return _cmd_setup(args)
         if cmd == "add":
@@ -643,5 +861,7 @@ def hvault_command(args) -> int:
             file=sys.stderr,
         )
         return 2 if isinstance(error, ValueError) else 1
-    print("usage: hermes hvault {bind|list|doctor|show|rm|setup|add|put|env}", file=sys.stderr)
+    print(
+        "usage: hermes hvault {bind|allow|list|doctor|show|rm|setup|add|put|env}", file=sys.stderr
+    )
     return 2
