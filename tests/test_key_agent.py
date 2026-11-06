@@ -1511,9 +1511,7 @@ def test_a_stop_after_delivery_with_a_reused_socket_identity_leaves_the_new_agen
     item = running()
     item.agent._start_token = "replacement"
     identity = key_agent._socket_identity(item.path)
-    pending = key_agent.PendingAgent(
-        item.path, -1, -1, identity=identity, start_token="original"
-    )
+    pending = key_agent.PendingAgent(item.path, -1, -1, identity=identity, start_token="original")
     pending._stop_after_delivery()
     assert key_agent.status(item.path)["ok"]
     key_agent.lock(item.path)
