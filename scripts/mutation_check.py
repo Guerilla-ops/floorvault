@@ -446,6 +446,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "Batch path: cleartext header stops being authenticated",
     ),
     Mutation(
+        "CR-8",
+        "src/floorvault/core.py",
+        "            hkdf.derive_into(master_buffer, raw_siv)\n",
+        "            raw_siv[:] = hkdf.derive(master_buffer)  # MUTANT\n",
+        "The AES-SIV subkey is returned as an immutable bytes copy that nothing can zero",
+    ),
+    Mutation(
         "PC-13",
         "src/floorvault/providers/platform_custody.py",
         '        raise ProtectedStoreHeaderError("protected store has an unknown or missing header")',

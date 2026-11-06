@@ -9,6 +9,31 @@ from floorvault.core import (
 from floorvault.memory import HardenedMemoryKey
 
 
+def test_the_siv_subkey_is_derived_into_a_buffer_not_returned_as_bytes(monkeypatch):
+    """derive() hands back an immutable bytes copy of the subkey that nothing can zero."""
+    from floorvault import core
+
+    real = core.HKDF
+    asked_for = []
+
+    class Spy:
+        def __init__(self, **kwargs):
+            self._hkdf = real(**kwargs)
+
+        def derive(self, *args, **kwargs):
+            raise AssertionError("the subkey came back as immutable bytes")
+
+        def derive_into(self, material, buffer):
+            asked_for.append(len(buffer))
+            return self._hkdf.derive_into(material, buffer)
+
+    monkeypatch.setattr(core, "HKDF", Spy)
+    crypto = FloorVault(b"\x01" * 32, app_instance_id="inst-test-1", memory_mode="disabled")
+    assert asked_for == [64]
+    ciphertext = crypto.encrypt("x", table="t", record_id="r", column="c")
+    assert crypto.decrypt(ciphertext, table="t", record_id="r", column="c") == "x"
+
+
 def test_floorvault_round_trip():
     master_key = b"\x01" * 32
     crypto = FloorVault(master_key, app_instance_id="inst-test-1", memory_mode="disabled")
