@@ -1316,6 +1316,44 @@ def test_allow_missing_item_and_old_floorvault(allow_env, monkeypatch, capsys):
     assert "0.3.0" in capsys.readouterr().err
 
 
+def test_allow_reports_a_metadata_failure_as_a_failure_not_a_missing_item(
+    allow_env, monkeypatch, capsys
+):
+    from floorvault.vaultkit.vault import VaultStore
+
+    plugin_cli, _ = allow_env
+
+    def damaged(self, item_id):
+        raise RuntimeError("damaged metadata")
+
+    monkeypatch.setattr(VaultStore, "get_meta", damaged)
+    assert plugin_cli.hvault_command(_allow_args()) == 1
+    err = capsys.readouterr().err
+    assert "not found" not in err and "operation failed" in err
+
+
+def test_allow_accept_refuses_a_binding_that_does_not_authenticate(allow_env, capsys):
+    """A corrupted binding must not become trusted just because --accept was given."""
+    import contextlib
+    import sqlite3
+
+    plugin_cli, home = allow_env
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 0
+    db = home / "agent-vault" / "vault.db"
+    with contextlib.closing(sqlite3.connect(db)) as conn:
+        conn.execute(
+            "UPDATE vault_items SET allowed_commands = ? WHERE id = ?",
+            (b"not a sealed binding", "vault_testopenai"),
+        )
+        conn.commit()
+    capsys.readouterr()
+    assert plugin_cli.hvault_command(_allow_args(accept=True)) == 1
+    assert "trusted from now on" not in capsys.readouterr().out
+    # The record is unchanged, so the binding still counts as changed behind our back.
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 1
+    assert "--accept" in capsys.readouterr().err
+
+
 def test_allow_rejects_flag_combinations(allow_env):
     plugin_cli, _ = allow_env
     assert plugin_cli.hvault_command(_allow_args(clear=True, command=[sys.executable])) == 2

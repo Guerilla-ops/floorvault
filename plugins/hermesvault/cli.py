@@ -604,11 +604,9 @@ def _cmd_allow(args) -> int:
     ):
         print("hvault allow: command bindings need floorvault 0.3.0 or newer", file=sys.stderr)
         return 1
-    try:
-        meta = store.get_meta(item_id)
-    except Exception:
-        meta = None
-    if meta is None:
+    # Only a missing item is "not found"; a database or decryption failure goes to
+    # hvault_command's redacted handler instead of being reported as a missing item.
+    if store.get_meta(item_id) is None:
         print(f"hvault allow: item {item_id} not found", file=sys.stderr)
         return 1
     cfg = _secrets_cfg()
@@ -616,7 +614,11 @@ def _cmd_allow(args) -> int:
     record, record_error = _binding_record(base)
     try:
         if args.accept:
+            # Read (and authenticate) before trusting: a binding that is corrupted or
+            # was copied from another item fails here, as it does for
+            # `floorvault secrets allow --accept`, and the record is left as it was.
             fingerprint = store.binding_fingerprint(item_id)
+            store.get_allowed_commands(item_id)
             record.record(item_id, fingerprint)
             _print_binding(store, item_id)
             print(f"{item_id}: this binding is trusted from now on")
