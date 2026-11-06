@@ -700,6 +700,35 @@ def test_two_unlocks_started_together_cannot_both_take_the_socket(vault, env, mo
             winner.close()
 
 
+def test_a_bind_waits_for_the_lifecycle_lock(vault, env):
+    """The lock is not only a guard for the removal: until its winner has called listen(), a
+    freshly bound socket also answers a probe with ECONNREFUSED, which a second unlock would
+    take for stale. So nothing may bind, or probe, while another unlock holds the lock."""
+    path = key_agent.socket_path(vault, env)
+    key_agent.check_private_dir(path.parent, create=True)  # the lock file lives beside the socket
+    outcome = []
+
+    def bind():
+        try:
+            outcome.append(key_agent._bind(path))
+        except Exception as exc:  # noqa: BLE001 - reported by the assertions below
+            outcome.append(exc)
+
+    worker = threading.Thread(target=bind)
+    with exclusive_lock(key_agent._lock_path(path), timeout=5.0):
+        worker.start()
+        time.sleep(0.4)
+        assert not path.exists(), "an unlock bound the socket while another held the lock"
+    worker.join(15)
+    try:
+        assert len(outcome) == 1 and isinstance(outcome[0], socket.socket)
+        assert path.exists()
+    finally:
+        for item in outcome:
+            if isinstance(item, socket.socket):
+                item.close()
+
+
 def test_an_agent_that_exits_never_removes_a_socket_it_did_not_bind(running):
     item = running()
     original = item.path
