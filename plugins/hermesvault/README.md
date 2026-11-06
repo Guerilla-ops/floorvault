@@ -243,7 +243,8 @@ the same way as when it runs. `--remove` refuses to drop the last remaining
 line: that would widen the item to every command, and `--clear` is the explicit
 way to do that. `allow` also notices when a binding was changed by something
 else since the last `allow` — rerun with `--accept` to take over the new set
-(needs floorvault 0.3.0 or newer).
+(`allow` needs floorvault 0.3.0 or newer for its sealed binding record; with 0.2.x
+bind with `floorvault secrets allow`).
 
 - **What is compared.** `hermes gateway run` is `[<path of hermes>, gateway, run]`;
   `python -m hermes_cli gateway run` is `[<path of python>, -m, hermes_cli,
@@ -279,9 +280,12 @@ else since the last `allow` — rerun with `--accept` to take over the new set
   running as you, or anything that can start Hermes with the command you bound.
 - **A binding that cannot be read** (it fails authentication, or it was moved
   from another item) skips the item; it is never taken as "unbound".
-- **floorvault older than 0.3.0** cannot read or write bindings: `allow`
-  refuses, resolution warns that bindings are not enforced, and with
-  `require_binding` it resolves nothing.
+- **floorvault 0.2.x** (from 0.2.8) reads and enforces bindings, but cannot
+  write them from Hermes: `hermes hvault allow` needs the sealed binding record
+  of floorvault 0.3.0 and refuses, so bind with `floorvault secrets allow` there
+  (the skip warning names the command that works with the installed version).
+  **floorvault older than 0.2.8** cannot read bindings: resolution warns that
+  they are not enforced, and with `require_binding` it resolves nothing.
 
 ## What this plugin does on your machine
 

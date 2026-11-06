@@ -208,9 +208,40 @@ def test_a_binding_copied_from_another_item_does_not_authenticate(store):
 
 
 def test_a_floorvault_that_cannot_read_bindings_is_flagged_when_they_are_required():
-    class Old:  # floorvault before 0.3.0: no get_allowed_commands
+    class Old:  # floorvault before 0.2.8: no get_allowed_commands
         pass
 
     assert binding_problem(Old(), ITEM, [[HERMES, "chat"]], False) is None
     problem = binding_problem(Old(), ITEM, [[HERMES, "chat"]], True)
-    assert problem is not None and "older than 0.3.0" in problem
+    assert problem is not None and "older than 0.2.8" in problem
+
+
+class _Without:
+    """A store that lacks one attribute, as an older floorvault would."""
+
+    def __init__(self, store, missing):
+        self._store, self._missing = store, missing
+
+    def __getattr__(self, name):
+        if name == self._missing:
+            raise AttributeError(name)
+        return getattr(self._store, name)
+
+
+def test_the_hint_names_the_command_that_works_with_the_installed_floorvault(store, monkeypatch):
+    """`hermes hvault allow` needs the sealed record of floorvault 0.3.0; 0.2.x binds with `floorvault secrets allow`."""
+    _as_started(monkeypatch, [HERMES, "chat"])
+    store.set_allowed_commands(ITEM, [[HERMES, "gateway", "run"]])
+    lines = hermes_command_lines()
+    new = binding_problem(store, ITEM, lines, False)
+    assert new is not None and f"`hermes hvault allow {ITEM}" in new
+    old = binding_problem(_Without(store, "binding_fingerprint"), ITEM, lines, False)
+    assert old is not None and f"`floorvault secrets allow {ITEM}" in old
+    assert "hermes hvault allow" not in old
+    # An unbound item under require_binding gets the same capability-dependent hint.
+    unbound = binding_problem(_Without(store, "binding_fingerprint"), "vault_other", lines, True)
+    assert unbound is not None and "floorvault secrets allow vault_other" in unbound
+    assert "hermes hvault allow" in binding_problem(store, "vault_other", lines, True)
+    # Reading bindings does not need 0.3.0: a store with get_allowed_commands but no
+    # fingerprint still enforces.
+    assert binding_problem(_Without(store, "binding_fingerprint"), ITEM, [[HERMES, "x"]], False)

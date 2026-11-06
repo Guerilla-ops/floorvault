@@ -20,9 +20,13 @@ python_dependencies:
   # AdaptiveKeyProvider(environ=, interactive=), which the secret source uses
   # to read no ambient key variable and never prompt; and 0.2.1
   # VaultStore.update_generic_field(), which `hermes hvault put` uses.
-  # Command bindings (VaultStore.get_allowed_commands and friends) arrived in
-  # 0.3.0: on 0.2.x the plugin runs but cannot enforce a binding — it warns,
-  # and secrets.hermesvault.require_binding fails closed instead. Hermes
+  # 0.2.8 is also the first release that can read command bindings
+  # (VaultStore.get_allowed_commands, floorvault.agentenv.command_allowed),
+  # which the plugin enforces against Hermes' own command line; an older
+  # floorvault would resolve a bound item for any command. Writing them from
+  # Hermes (`hermes hvault allow`) needs the sealed binding record of 0.3.0
+  # (VaultStore.binding_fingerprint); on 0.2.x that command refuses and
+  # `floorvault secrets allow` binds instead. Hermes
   # installs PyPI requirements only, so this must name a published release;
   # tests/test_hermes_plugin_packaging.py keeps it within the checkout's own
   # version.

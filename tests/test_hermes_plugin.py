@@ -388,8 +388,11 @@ def test_cli_rejects_bad_yaml_even_when_host_returns_defaults(plugin_cli, tmp_pa
 def _healthy_host_config(tmp_path, monkeypatch):
     import types
 
+    config = tmp_path / "config.yaml"
+    config.write_text("secrets:\n  hermesvault:\n    enabled: true\n", encoding="utf-8")
     module = types.ModuleType("hermes_cli.config")
     module.read_user_config_raw = lambda: {"secrets": {"hermesvault": {"enabled": True}}}
+    module.get_config_path = lambda: config
     monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
 
 
@@ -424,6 +427,37 @@ def test_cli_rejects_a_non_mapping_config(plugin_cli, tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
     with pytest.raises(ValueError, match="must be a mapping"):
         plugin_cli._secrets_cfg()
+
+
+def _raw_reader_like_hermes(tmp_path, monkeypatch, text):
+    """Hermes' read_user_config_raw: ``{}`` for a root that is not a mapping, as the real one does."""
+    import types
+
+    config = tmp_path / "config.yaml"
+    if text is not None:
+        config.write_text(text, encoding="utf-8")
+    module = types.ModuleType("hermes_cli.config")
+    module.read_user_config_raw = lambda: {}
+    module.get_config_path = lambda: config
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+
+
+@pytest.mark.parametrize("text", ["- a\n- b\n", "just a string\n", "# note\n- a\n", "--- [1, 2]\n"])
+def test_cli_refuses_a_root_that_is_not_a_mapping_that_hermes_reads_as_empty(
+    plugin_cli, tmp_path, monkeypatch, text
+):
+    """read_user_config_raw flattens a list or scalar root to {}; that must not select the default store."""
+    _raw_reader_like_hermes(tmp_path, monkeypatch, text)
+    with pytest.raises(ValueError, match="must be a mapping"):
+        plugin_cli._secrets_cfg()
+
+
+@pytest.mark.parametrize(
+    "text", [None, "", "\n\n", "# only a comment\n", "---\n", "{}\n", "--- {}\n# x\n"]
+)
+def test_cli_accepts_a_missing_or_empty_config(plugin_cli, tmp_path, monkeypatch, text):
+    _raw_reader_like_hermes(tmp_path, monkeypatch, text)
+    assert plugin_cli._secrets_cfg() == {}
 
 
 # --- review of pin 6fc8132e: scope, prompts, creation, error text ---------------
@@ -1125,10 +1159,10 @@ def test_an_older_floorvault_cannot_check_bindings_and_says_so(vault_home, monke
     monkeypatch.delattr(VaultStore, "get_allowed_commands")
     result = fetch(vault_home, {"env": ENV})
     assert result.secrets["OPENAI_API_KEY"] == "sk-test-123"
-    assert any("older than 0.3.0: command bindings are not enforced" in w for w in result.warnings)
+    assert any("older than 0.2.8: command bindings are not enforced" in w for w in result.warnings)
     required = fetch(vault_home, {"env": ENV, "require_binding": True})
     assert required.secrets == {}
-    assert all("older than 0.3.0" in w for w in required.warnings if w.startswith("Skipped"))
+    assert all("older than 0.2.8" in w for w in required.warnings if w.startswith("Skipped"))
 
 
 def test_without_a_command_line_a_bound_item_is_refused(vault_home, monkeypatch):
@@ -1240,6 +1274,37 @@ def test_allow_refuses_a_binding_changed_behind_its_back(allow_env, capsys):
     assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 0
     bound = _stored_binding(home, "vault_testopenai")
     assert [HERMES, "other", "command"] in bound
+
+
+def test_allow_records_an_absolute_normalised_program_path(allow_env, tmp_path, monkeypatch):
+    """A relative or un-normalised path would be recorded as typed and never match the absolute argv[0]."""
+    plugin_cli, home = allow_env
+    exe = tmp_path / "bin" / "tool"
+    exe.parent.mkdir()
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    want = os.path.abspath(exe)
+    for typed in ("./bin/tool", "bin/../bin/tool", str(tmp_path / "bin" / ".." / "bin" / "tool")):
+        assert plugin_cli.hvault_command(_allow_args(command=[typed, "chat"])) == 0
+        bound = _stored_binding(home, "vault_testopenai")
+        assert bound[-1] == [want, "chat"], typed
+        plugin_cli.hvault_command(_allow_args(clear=True))
+    # A bare name is looked up on PATH, then recorded absolute.
+    monkeypatch.setenv("PATH", str(exe.parent))
+    assert plugin_cli.hvault_command(_allow_args(command=["tool", "chat"])) == 0
+    assert _stored_binding(home, "vault_testopenai") == [[want, "chat"]]
+
+
+def test_allow_refuses_a_missing_or_non_executable_program(allow_env, tmp_path, capsys):
+    plugin_cli, home = allow_env
+    for typed, message in (
+        (str(tmp_path / "nope"), "command not found"),
+        (str(tmp_path), "is not an executable file"),
+    ):
+        assert plugin_cli.hvault_command(_allow_args(command=[typed])) == 2
+        assert message in capsys.readouterr().err
+    assert _stored_binding(home, "vault_testopenai") is None
 
 
 def test_allow_missing_item_and_old_floorvault(allow_env, monkeypatch, capsys):

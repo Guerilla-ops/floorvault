@@ -19,7 +19,7 @@ with ``custody``:
   the store (``master.key.sdcred``), unsealed with ``systemd-creds decrypt``.
   This is the only custody that starts a subprocess.
 
-Command bindings set with ``floorvault secrets allow`` are enforced against the
+Command bindings set with ``hermes hvault allow`` (or ``floorvault secrets allow``) are enforced against the
 command line Hermes itself was started with (see ``binding_guard``): a
 bound item is resolved only when that line is one of its bindings, and
 ``require_binding: true`` also refuses items that have none. This process has
@@ -304,8 +304,8 @@ class HermesVaultSource(SecretSource):
                 "default": False,
             },
             "require_binding": {
-                "description": "Also refuse items with no `hermes hvault allow` "
-                "binding (a binding cleared in vault.db then blocks the item)",
+                "description": "Also refuse items with no command binding (`hermes hvault allow`) "
+                "(a binding cleared in vault.db then blocks the item)",
                 "default": False,
             },
             "timeout_seconds": {"description": "Fetch wall-clock budget", "default": 120},
@@ -349,7 +349,7 @@ class HermesVaultSource(SecretSource):
         require_binding = bool(cfg.get("require_binding", False))
         if not hasattr(store, "get_allowed_commands"):
             result.warnings.append(
-                "floorvault is older than 0.3.0: command bindings are not enforced"
+                "floorvault is older than 0.2.8: command bindings are not enforced"
             )
         for name, ref in env_map.items():
             if not is_valid_env_name(name):

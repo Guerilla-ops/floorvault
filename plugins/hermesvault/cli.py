@@ -18,7 +18,6 @@ import getpass
 import json
 import os
 import shlex
-import shutil
 import sys
 import warnings
 from pathlib import Path
@@ -47,14 +46,35 @@ def _field(value):
     return value
 
 
+def _root_is_not_a_mapping() -> bool:
+    """Whether config.yaml holds anything but an empty mapping, for a file that read as ``{}``.
+
+    A mapping that reads as ``{}`` is an empty file, comments only, or ``{}``. Any
+    other content is a root that is not a mapping (a list, a scalar), which the
+    raw reader flattens to ``{}``: taking it for an empty configuration would
+    select the default store, so it is refused.
+    """
+    from hermes_cli.config import get_config_path
+
+    try:
+        text = Path(get_config_path()).read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return False
+    body = "".join("".join(line.split("#", 1)[0].split()) for line in text.splitlines())
+    return body.replace("---", "").replace("...", "") not in ("", "{}")
+
+
 def _secrets_cfg() -> dict:
     """The ``secrets.hermesvault`` section exactly as the user wrote it.
 
-    Read through ``read_user_config_raw`` — Hermes' own raw reader, the same
-    parse the secret-source loader applies at startup: it raises on a
-    malformed file. ``load_config()`` merges defaults and swallows a parse
-    failure into them, and defaults must never silently select a store or
-    custody."""
+    Read through ``read_user_config_raw``, Hermes' raw reader: it raises on a
+    file that does not parse. ``load_config()`` merges defaults and swallows a
+    parse failure into them, and defaults must never silently select a store or
+    custody. (Hermes' startup loader is more lenient: it treats an unparseable
+    file as empty, so the source is simply off. These commands are stricter on
+    purpose, because they write.) ``read_user_config_raw`` also turns a root that
+    is not a mapping into ``{}``; that is checked separately.
+    """
     try:
         from hermes_cli.config import read_user_config_raw
     except ImportError:
@@ -64,11 +84,12 @@ def _secrets_cfg() -> dict:
         ) from None
     try:
         config = read_user_config_raw()
+        not_a_mapping = not config and _root_is_not_a_mapping()
     except Exception:
         raise CLIInputError(
             "cannot load Hermes configuration; correct config.yaml before retrying"
         ) from None
-    if not isinstance(config, dict):
+    if not_a_mapping or not isinstance(config, dict):
         raise CLIInputError("Hermes configuration must be a mapping")
     secrets = config.get("secrets", {})
     if not isinstance(secrets, dict):
@@ -354,7 +375,7 @@ def _print_binding(store, item_id: str) -> None:
     """
     getter = getattr(store, "get_allowed_commands", None)
     if getter is None:
-        print("bindings: not supported by this floorvault (older than 0.3.0)")
+        print("bindings: not supported by this floorvault (older than 0.2.8)")
         return
     try:
         allowed = getter(item_id)
@@ -550,17 +571,21 @@ def _binding_record(base: Path):
 
 
 def _resolve_program(prog: str) -> str:
-    """The absolute program path a binding records, resolved the way `secrets allow` does."""
-    seps = {os.sep, os.altsep} - {None}
-    if any(sep in prog for sep in seps) or os.path.splitdrive(prog)[0]:
-        candidate = Path(prog)
-        if not candidate.exists() or candidate.is_dir() or not os.access(candidate, os.X_OK):
+    """The absolute program path a binding records, found exactly as `secrets allow` finds it.
+
+    It uses that command's own lookup (``agent_cli._find_command``), which on
+    Windows never searches the current directory, and then ``abspath``: a binding
+    must hold an absolute, normalised path, because the guard only compares those
+    and a relative one could never match.
+    """
+    from floorvault.agent_cli import _find_command
+
+    path, code = _find_command(prog, os.environ)
+    if path is None:
+        if code == 126:
             raise CLIInputError(f"{prog} is not an executable file")
-        return str(candidate)
-    found = shutil.which(prog)
-    if found is None:
-        raise CLIInputError(f"{prog}: command not found on PATH")
-    return os.path.abspath(found)
+        raise CLIInputError(f"{prog}: command not found")
+    return os.path.abspath(path)
 
 
 def _cmd_allow(args) -> int:
