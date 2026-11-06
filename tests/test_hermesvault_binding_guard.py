@@ -153,7 +153,7 @@ def test_a_bound_item_may_not_be_resolved_for_another_command(store, monkeypatch
     problem = binding_problem(store, ITEM, lines, False)
     assert problem is not None and "bound to other command lines" in problem
     # shlex.join quotes a Windows path, as `floorvault run` does when it names a command.
-    assert shlex.join([HERMES, "chat"]) in problem and "floorvault secrets allow" in problem
+    assert shlex.join([HERMES, "chat"]) in problem and "hermes hvault allow" in problem
     assert "sk-test-123" not in problem
     for argv in ([HERMES], [HERMES, "gateway"], [HERMES, "gateway", "run", "--debug"]):
         assert binding_problem(store, ITEM, [argv], False) is not None, argv
@@ -182,7 +182,7 @@ def test_an_unbound_item_is_allowed_unless_a_binding_is_required(store):
     assert binding_problem(store, ITEM, [[HERMES, "chat"]], False) is None
     problem = binding_problem(store, ITEM, [[HERMES, "chat"]], True)
     assert problem is not None
-    assert "require_binding" in problem and f"floorvault secrets allow {ITEM}" in problem
+    assert "require_binding" in problem and f"hermes hvault allow {ITEM}" in problem
 
 
 def test_a_binding_cleared_in_vault_db_blocks_the_item_only_when_required(store):
@@ -208,9 +208,9 @@ def test_a_binding_copied_from_another_item_does_not_authenticate(store):
 
 
 def test_a_floorvault_that_cannot_read_bindings_is_flagged_when_they_are_required():
-    class Old:  # floorvault before 0.2.8: no get_allowed_commands
+    class Old:  # floorvault before 0.3.0: no get_allowed_commands
         pass
 
     assert binding_problem(Old(), ITEM, [[HERMES, "chat"]], False) is None
     problem = binding_problem(Old(), ITEM, [[HERMES, "chat"]], True)
-    assert problem is not None and "older than 0.2.8" in problem
+    assert problem is not None and "older than 0.3.0" in problem

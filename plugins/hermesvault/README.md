@@ -103,7 +103,9 @@ plugin now requires; install `floorvault[hermes]` where you run the import.
 ```bash
 hermes hvault                                # status and next step
 hermes hvault bind SERVICE_TOKEN             # store a value and map it (creates the store if needed)
+hermes hvault bind SERVICE_TOKEN --stdin     # ...with the value piped in from a password manager
 hermes hvault bind DB_PASSWORD --id vault_db --field password   # a named field on a chosen item
+hermes hvault allow <item_id>                # bind it to the command line this Hermes was started with
 hermes hvault list                           # metadata only
 hermes hvault doctor                         # check mappings, custody and precedence
 hermes hvault show hv:<item_id>              # field names and status, and bindings; never plaintext
@@ -211,18 +213,37 @@ for the custody model and its limits.
 
 ## Command bindings
 
-`floorvault secrets allow` binds an item to command lines. Inside Hermes the
-command is Hermes itself, so the plugin resolves a bound item only when the
-command line Hermes was started with is one of the item's bindings, and skips it
-with a warning otherwise. Other items in the same `env` map still resolve.
+`hermes hvault allow` binds an item to command lines without leaving Hermes: it
+opens the same store with the configured custody, so there are no `--vault` or
+key flags to translate. Inside Hermes the command is Hermes itself, so the
+plugin resolves a bound item only when the command line Hermes was started with
+is one of the item's bindings, and skips it with a warning otherwise. Other
+items in the same `env` map still resolve.
 
 ```bash
-# Bind the item to how you start Hermes: the program's absolute path, then
-# exactly its arguments. Use the plugin's store and key (see "Key custody").
-floorvault secrets allow service_token --vault ~/.hermes/agent-vault \
-  --key-env HERMES_VAULT_KEY -- hermes gateway run
+hermes hvault allow service_token            # bind to the command line Hermes was just started with
+hermes hvault allow service_token -- hermes gateway run   # ...or spell it out
+hermes hvault allow service_token --remove -- hermes gateway run  # drop one line
+hermes hvault allow service_token --clear    # unbind: resolves for any command
 hermes hvault show hv:service_token          # lists what it is bound to
 ```
+
+With no `--` the command records the command line(s) the *current* process was
+started with — useful when you launch Hermes through a wrapper script and run
+`allow` from inside that script. Lines that are `hvault` invocations themselves
+are never recorded silently: bound only to those, the item would resolve for
+hvault commands but not the agent, so `allow` refuses and tells you to pass the
+line explicitly. The usual flow is to start Hermes the way you normally do; when
+a bound item is skipped, the startup warning prints the exact line to put after
+`--`. For a Hermes started by a service/launcher, `hermes
+--print-runtime-command gateway run` prints that line as JSON — paste it quoted
+after `--` and `allow` takes it as-is. After `--`, the program is an absolute
+path or a name on `PATH`, resolved
+the same way as when it runs. `--remove` refuses to drop the last remaining
+line: that would widen the item to every command, and `--clear` is the explicit
+way to do that. `allow` also notices when a binding was changed by something
+else since the last `allow` — rerun with `--accept` to take over the new set
+(needs floorvault 0.3.0 or newer).
 
 - **What is compared.** `hermes gateway run` is `[<path of hermes>, gateway, run]`;
   `python -m hermes_cli gateway run` is `[<path of python>, -m, hermes_cli,
@@ -250,16 +271,17 @@ hermes hvault show hv:service_token          # lists what it is bound to
   for any command, as before.
 - **Not the same as `floorvault run`.** The plugin runs inside Hermes after it
   started, so it cannot refuse variables that steer what Hermes loads
-  (`PYTHONPATH`, `LD_PRELOAD`), which `run` checks for bound items. It also has
-  no record of the bindings kept outside the store, so an older, wider binding
-  written back into `vault.db` is not detected. A binding guards against mistakes
+  (`PYTHONPATH`, `LD_PRELOAD`), which `run` checks for bound items. Resolution
+  does not consult the record `allow` keeps outside the store, so an older,
+  wider binding written back into `vault.db` still resolves — the next `allow`
+  notices the change and refuses until `--accept`. A binding guards against mistakes
   and against another command using the same profile; it does not stop code
   running as you, or anything that can start Hermes with the command you bound.
 - **A binding that cannot be read** (it fails authentication, or it was moved
   from another item) skips the item; it is never taken as "unbound".
-- **floorvault older than 0.2.8** cannot read bindings. The plugin needs 0.2.8 or
-  newer; if an older package is installed anyway, it warns that bindings are not
-  enforced, and with `require_binding` it resolves nothing.
+- **floorvault older than 0.3.0** cannot read or write bindings: `allow`
+  refuses, resolution warns that bindings are not enforced, and with
+  `require_binding` it resolves nothing.
 
 ## What this plugin does on your machine
 

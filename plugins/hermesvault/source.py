@@ -304,7 +304,7 @@ class HermesVaultSource(SecretSource):
                 "default": False,
             },
             "require_binding": {
-                "description": "Also refuse items with no `floorvault secrets allow` "
+                "description": "Also refuse items with no `hermes hvault allow` "
                 "binding (a binding cleared in vault.db then blocks the item)",
                 "default": False,
             },
@@ -349,7 +349,7 @@ class HermesVaultSource(SecretSource):
         require_binding = bool(cfg.get("require_binding", False))
         if not hasattr(store, "get_allowed_commands"):
             result.warnings.append(
-                "floorvault is older than 0.2.8: command bindings are not enforced"
+                "floorvault is older than 0.3.0: command bindings are not enforced"
             )
         for name, ref in env_map.items():
             if not is_valid_env_name(name):

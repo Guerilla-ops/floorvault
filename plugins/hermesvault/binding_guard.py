@@ -74,9 +74,9 @@ def binding_problem(
     """
     getter = getattr(store, "get_allowed_commands", None)
     if getter is None:
-        # floorvault before 0.2.8 cannot hold or read bindings.
+        # floorvault before 0.3.0 cannot hold or read bindings.
         if require_binding:
-            return "cannot be checked for a command binding: floorvault is older than 0.2.8"
+            return "cannot be checked for a command binding: floorvault is older than 0.3.0"
         return None
     try:
         allowed = getter(item_id)
@@ -86,7 +86,7 @@ def binding_problem(
         if require_binding:
             return (
                 "has no command binding, and secrets.hermesvault.require_binding is set; "
-                f"bind it with `floorvault secrets allow {item_id} -- <command line>`"
+                f"bind it with `hermes hvault allow {item_id} -- <command line>`"
             )
         return None
     try:
@@ -97,5 +97,5 @@ def binding_problem(
         return None
     return (
         "is bound to other command lines than the one Hermes was started with "
-        f"({started_as()}); bind that with `floorvault secrets allow {item_id} -- <command line>`"
+        f"({started_as()}); bind that with `hermes hvault allow {item_id} -- <command line>`"
     )
