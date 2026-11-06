@@ -162,7 +162,7 @@ def test_platform_overrides_are_declared_explicitly():
         "BIND-7",
         "HIM-4",
         *[
-            f"AGT-{i}" for i in range(1, 63) if i != 45
+            f"AGT-{i}" for i in range(1, 68) if i != 45
         ],  # AGT-45 retired: equivalent once unlink checks for a listener
         "AUD-2",
     ], f"unexpected set of platform-relaxed mutants: {relaxed}"
