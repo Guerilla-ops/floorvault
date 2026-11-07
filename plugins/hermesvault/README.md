@@ -1,4 +1,10 @@
+<p>
+  <img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/hermesvault-plugin-v0.4.0-full.webp" width="100%" alt="hermesvault, a FloorVault plugin for Hermes Agent, version 0.4.0: keep secrets out of .env, released only to the command that starts Hermes. The hermes hvault commands (bind, allow, list, show, rm, doctor, setup, add and put, env), secret source, command bindings, key custody and .env import.">
+</p>
+
 # hermesvault: FloorVault secret source for Hermes Agent
+
+**Keep secrets out of `.env`. Released only to the command that starts Hermes.**
 
 `hermesvault` is a [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 secret-source plugin. At startup it resolves the environment variables you map
@@ -8,6 +14,21 @@ command for managing that store.
 
 It holds agent credentials only. The browser-fill login vault at
 `<profile-home>/vault` is never opened or migrated.
+
+- **Never prompts at startup.** The source runs inside Hermes and never unlocks,
+  creates or asks for anything. A missing store or key, or a locked Secret Service
+  collection, is reported and Hermes starts without those variables.
+- **Bound to the command.** `hermes hvault allow` (floorvault 0.3.0 or newer;
+  `floorvault secrets allow` works too) records the command lines an item may
+  reach. The plugin compares them with the command line Hermes was started with and
+  otherwise skips the item, with a warning that names a line you can bind.
+  `secrets.hermesvault.require_binding: true` also skips items that have none.
+- **Your key, your custody.** The store key comes from the OS key store, a key file
+  (such as a Docker or Kubernetes secret mount) or a systemd-creds credential. A
+  configured custody that fails is an error, never a quiet fallback. A
+  passphrase-protected store is not supported.
+- **`hermes hvault`** manages the store: `bind`, `allow`, `list`, `show`, `rm` and
+  `doctor`, plus `setup`, `add`, `put` and `env` for scripts.
 
 ## Install
 
