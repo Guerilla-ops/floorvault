@@ -25,7 +25,7 @@ from pathlib import Path
 from agent.secret_sources.base import get_source_environment, is_valid_env_name
 from hermes_constants import get_hermes_home
 
-from .binding_guard import hermes_command_lines
+from .binding_guard import gateway_command_line, hermes_command_lines
 from .source import HermesVaultSource, parse_ref, resolve_base_dir, validate_config
 
 
@@ -150,6 +150,14 @@ def register_cli(subparser) -> None:
         "--stdin",
         action="store_true",
         help="Read the secret value from stdin (for scripts); no prompt",
+    )
+    bind.add_argument(
+        "--no-bind",
+        action="store_true",
+        help=(
+            "Do not bind a new item to the command line Hermes resolves secrets in "
+            "(it then resolves for any command, unless require_binding is set)"
+        ),
     )
 
     allow = sub.add_parser(
@@ -533,6 +541,8 @@ def _cmd_bind(args) -> int:
     if existing is None:
         store.add_item(kind="generic", label=label, secret={field: value}, item_id=item_id)
         print(f"stored {item_id}.{field}")
+        if not getattr(args, "no_bind", False):
+            print(_bind_new_item_to_gateway(store, cfg, home, item_id))
     else:
         if not store.update_generic_field(item_id, field, value):
             print(f"hvault bind: item {item_id} vanished during update", file=sys.stderr)
@@ -548,6 +558,41 @@ def _cmd_bind(args) -> int:
     code = _cmd_doctor(args)
     print("restart Hermes to apply")
     return code
+
+
+def _bind_new_item_to_gateway(store, cfg: dict, home: Path, item_id: str) -> str:
+    """Bind an item ``bind`` just created to the gateway line, so it is released only there.
+
+    Only for a new item: an existing item's bindings are the operator's. The item
+    was created a moment ago, so the binding record has no entry to disagree with;
+    the record is written as ``allow`` writes it, so a later ``allow`` sees no change
+    behind its back. Returns the line printed to the operator; never raises for a
+    floorvault or platform that cannot bind here, which leaves the item unbound and
+    says so.
+    """
+    if any(
+        getattr(store, name, None) is None
+        for name in ("update_allowed_commands", "binding_fingerprint")
+    ):
+        return (
+            "not bound: command bindings need floorvault 0.3.0 or newer; the item "
+            "resolves for any command"
+        )
+    line = gateway_command_line(home)
+    if line is None:
+        return (
+            f"not bound on this platform; bind it with `hermes hvault allow {item_id} "
+            "-- <command line>` (the startup warning prints the line)"
+        )
+    record, _record_error = _binding_record(resolve_base_dir(cfg, home))
+    store.update_allowed_commands(item_id, lambda current: [*(current or []), line])
+    record.record(item_id, store.binding_fingerprint(item_id))
+    return (
+        f"bound to {shlex.join(line)}\n"
+        "  (the line Hermes starts its gateway with for chat and one-shot commands; "
+        f"a service's own line: `hermes hvault allow {item_id} -- <line>`; "
+        "to resolve for any command: --no-bind)"
+    )
 
 
 class _AllowRefused(Exception):

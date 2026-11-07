@@ -20,7 +20,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "plugins" / "hermesvault"))
 
-from binding_guard import binding_problem, hermes_command_lines, started_as  # noqa: E402
+from binding_guard import (  # noqa: E402
+    binding_problem,
+    gateway_command_line,
+    hermes_command_lines,
+    started_as,
+)
 
 from floorvault import FloorVault  # noqa: E402
 from floorvault.vaultkit.vault import VaultStore  # noqa: E402
@@ -245,3 +250,34 @@ def test_the_hint_names_the_command_that_works_with_the_installed_floorvault(sto
     # Reading bindings does not need 0.3.0: a store with get_allowed_commands but no
     # fingerprint still enforces.
     assert binding_problem(_Without(store, "binding_fingerprint"), ITEM, [[HERMES, "x"]], False)
+
+
+def test_the_gateway_line_follows_hermes_profile_selection(tmp_path, monkeypatch):
+    """Hermes passes --profile default unless the home is a profiles/<name> directory."""
+    monkeypatch.setattr(sys, "executable", PYTHON)
+    monkeypatch.setattr(sys, "platform", "linux")
+    tail = ["-m", "hermes_cli.main", "gateway", "run", "--quiet", "--idle-exit"]
+    root_home = tmp_path / "hermes"
+    root_home.mkdir()
+    assert gateway_command_line(root_home) == [
+        PYTHON,
+        "-m",
+        "hermes_cli.main",
+        "--profile",
+        "default",
+        *tail[2:],
+    ]
+    named = tmp_path / "hermes" / "profiles" / "work"
+    named.mkdir(parents=True)
+    assert gateway_command_line(named) == [PYTHON, *tail]
+
+
+def test_the_gateway_line_is_unknown_on_windows_or_without_an_absolute_interpreter(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(sys, "executable", PYTHON)
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert gateway_command_line(tmp_path) is None
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "executable", "python3")
+    assert gateway_command_line(tmp_path) is None

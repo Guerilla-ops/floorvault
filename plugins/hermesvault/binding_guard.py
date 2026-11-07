@@ -13,6 +13,7 @@ import os
 import shlex
 import shutil
 import sys
+from pathlib import Path
 from typing import Optional, Sequence
 
 
@@ -41,6 +42,34 @@ def hermes_command_lines() -> list[list[str]]:
         if interpreted not in lines:
             lines.append(interpreted)
     return lines
+
+
+def gateway_command_line(home) -> Optional[list[str]]:
+    """The command line Hermes starts its local gateway with, for a client of ``home``.
+
+    Chat and one-shot commands resolve secrets in a gateway that the client starts
+    detached (``spawn_unmanaged_gateway``): this interpreter, ``-m hermes_cli.main``,
+    ``--profile default`` unless the home is a ``profiles/<name>`` directory, then
+    ``gateway run --quiet --idle-exit``. A binding must equal that argv exactly, so
+    this returns the same list, built from the same two inputs Hermes uses. Hermes
+    rewrites the line on Windows (a windowless interpreter), so there it is None; a
+    gateway run by a service or by hand has its own line, which the skip warning
+    prints and ``hermes hvault allow`` records.
+    """
+    if sys.platform == "win32" or not sys.executable or not os.path.isabs(sys.executable):
+        return None
+    resolved = Path(home).resolve()
+    selector = [] if resolved.parent.name == "profiles" else ["--profile", "default"]
+    return [
+        os.path.abspath(sys.executable),
+        "-m",
+        "hermes_cli.main",
+        *selector,
+        "gateway",
+        "run",
+        "--quiet",
+        "--idle-exit",
+    ]
 
 
 def started_as() -> str:
