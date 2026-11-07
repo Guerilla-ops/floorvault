@@ -41,8 +41,9 @@ the key itself can sit behind a passphrase that you type once per session.
   and 1 hour idle by default, counted through sleep); `floorvault lock` wipes it.
   While it runs, `floorvault run` and `floorvault secrets` use it with no prompt
   and no terminal, so an MCP client or a service can resolve secrets. The agent
-  refuses to start unless core dumps are off and debuggers are blocked, is forked
-  before the passphrase is asked for, and checks every directory above its
+  refuses to start unless core dumps are off and debuggers are blocked
+  (`--allow-unhardened` overrides this, with a warning), is forked before the
+  passphrase is asked for, and checks every directory above its
   socket. It gives up after 15 minutes if its starter never delivers the key,
   does not take a busy agent for a stale socket, and cannot be stopped by a
   cleanup aimed at an earlier agent.
@@ -234,8 +235,10 @@ floorvault lock                                       # wipe the key and stop th
 `floorvault unlock --status` reports a running agent, and `--ttl` and `--idle` set
 its limits. A store whose key is somewhere else moves under a passphrase with
 `floorvault secrets protect --rotate` (add `--key-file PATH` or `--key-env NAME`
-for a key you supply); it re-encrypts every item under a new key and removes the
-old custody. A copy or backup made before still opens with the old key.
+for a key you supply). It re-encrypts every item under a new key and removes the
+credential or marker file beside the store that held the old one. It does not
+touch the shared OS key store entry, a key file or an environment variable:
+retire those yourself. A copy or backup made before still opens with the old key.
 
 > **The agent is a decryption oracle for code running as you.** It never hands
 > out the key, but any process of yours that can reach its socket can ask it to
@@ -269,7 +272,9 @@ there it takes precedence, and `doctor` flags it.
   or newer; with 0.2.x, bind with `floorvault secrets allow`.
 - It does not support a passphrase-protected store, because it never prompts. Use
   the OS key store, a key file or systemd-creds for a store Hermes reads.
-- It keeps no binding record; see [Security boundaries](#security-boundaries).
+- `hermes hvault allow` keeps a binding record outside the store, so a later
+  `allow` refuses a binding changed behind its back, but startup resolution does
+  not consult it; see [Security boundaries](#security-boundaries).
 
 [Plugin README](https://github.com/Guerilla-ops/floorvault/blob/main/plugins/hermesvault/README.md) ·
 [Hermes Agent](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#hermes-agent-integration)
@@ -287,9 +292,9 @@ Beta, unaudited, no policy broker, and search beacons leak equality. In detail:
 | Memory | Managed buffers can be wiped; other copies may persist, including the `cryptography` library's own copy of the AES-SIV subkey inside its engine. Page locking and anti-dump measures do not create an enclave. |
 | Migration | Deletion does not guarantee erasure from WAL, pages, backups, snapshots or storage media. |
 | Agent access | A compromised or prompt-injected authorised caller can request genuine plaintext. The library does not supply a policy broker. |
-| Key agent | While unlocked, code running as you can ask the agent to encrypt or decrypt any item; it hands out plaintext, not the key. It refuses to run without core-dump and debugger protection, but it is not an enclave. The macOS peer-credential check and the suspend-inclusive clock have not been run on a real Mac outside CI. |
-| Passphrase | The wrapping is only as strong as the passphrase, and there is no recovery: lose the passphrase or `master.key.fvpw` and the data is gone. After `protect --rotate`, backups made before still open with the old key. |
-| Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, and the state directory must persist and stay outside the store writer's control; restoring both the store and record can replay an older, wider binding undetected. The Hermes plugin keeps no record. |
+| Key agent | While unlocked, code running as you can ask the agent to encrypt or decrypt any item; it hands out plaintext, not the key. It refuses to start without core-dump and debugger protection unless `--allow-unhardened` is given, and it is not an enclave. The macOS peer-credential check and the suspend-inclusive clock have not been run on a real Mac outside CI. |
+| Passphrase | The wrapping is only as strong as the passphrase, and there is no recovery: lose the passphrase or `master.key.fvpw` and the data is gone. After `protect --rotate`, backups made before still open with the old key, and an external key file, environment key or the shared OS key store entry is not retired for you. |
+| Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, and the state directory must persist and stay outside the store writer's control; restoring both the store and record can replay an older, wider binding undetected. `hermes hvault allow` keeps the same kind of record, so a later `allow` refuses a binding changed behind its back, but the plugin's startup resolution does not consult it: a binding rolled back in `vault.db` still resolves there, and a cleared one is refused only with `require_binding: true`. |
 
 ## Documentation
 

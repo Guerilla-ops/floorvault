@@ -620,8 +620,9 @@ floorvault secrets allow github-pat --accept  # trust a change made outside this
   items and the binding record since 0.3.0). Older `floorvault` versions ignore
   bindings. The Hermes plugin enforces them against the command line Hermes was
   started with ([Command bindings](../plugins/hermesvault/README.md#command-bindings)),
-  but keeps no binding record and, unless `require_binding` is set, resolves
-  unbound items.
+  but its startup resolution does not consult a binding record (`hermes hvault
+  allow` keeps one, so a later `allow` refuses a binding changed behind its back)
+  and, unless `require_binding` is set, resolves unbound items.
 
 
 ### A passphrase-protected key
