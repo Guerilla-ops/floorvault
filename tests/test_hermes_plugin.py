@@ -833,9 +833,13 @@ def test_bind_creates_store_stores_value_and_writes_mapping(
     assert written == {"OPENAI_API_KEY": "hv:openai_api_key"}
     assert "store created" in out.out and "stored openai_api_key.value" in out.out
     assert "SECRET" not in out.out + out.err
-    assert fetch(tmp_path, {"env": {"OPENAI_API_KEY": "hv:openai_api_key"}}).secrets == {
-        "OPENAI_API_KEY": "sk-live-SECRET"
-    }
+    # The new item is bound to the gateway line, so it resolves there and nowhere else.
+    env_cfg = {"env": {"OPENAI_API_KEY": "hv:openai_api_key"}}
+    skipped = fetch(tmp_path, env_cfg)
+    assert skipped.secrets == {} and any("bound to other" in w for w in skipped.warnings)
+    gateway = _expected_gateway_line(tmp_path)
+    _as_started(monkeypatch, ["/opt/hermes/hermes_cli/main.py", *gateway[3:]], gateway, gateway[0])
+    assert fetch(tmp_path, env_cfg).secrets == {"OPENAI_API_KEY": "sk-live-SECRET"}
 
 
 def test_bind_updates_an_existing_item_and_honours_field_and_id(
@@ -1387,6 +1391,78 @@ def test_bind_reads_the_value_from_stdin(plugin_cli, vault_home, monkeypatch, ca
     assert "stored new_key.value" in out
     store = floorvault.get_vault_store(vault_home / "agent-vault", auto_migrate=False)
     assert store.resolve_secret("new_key") == {"value": "sk-from-stdin"}
+
+
+def _expected_gateway_line(home):
+    from hermesvault.binding_guard import gateway_command_line
+
+    line = gateway_command_line(home)
+    assert line == [
+        os.path.abspath(sys.executable),
+        "-m",
+        "hermes_cli.main",
+        "--profile",
+        "default",
+        "gateway",
+        "run",
+        "--quiet",
+        "--idle-exit",
+    ]
+    return line
+
+
+def _bind_new(plugin_cli, monkeypatch, env_name="NEW_KEY", **over):
+    import io
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("sk-from-stdin\n"))
+    return plugin_cli.hvault_command(_bind_cli_args(env_name, **over))
+
+
+def test_bind_binds_a_new_item_to_the_gateway_line(allow_env, monkeypatch, capsys):
+    """A new item resolves only in the gateway Hermes starts for chat and one-shot commands."""
+    plugin_cli, home = allow_env
+    assert _bind_new(plugin_cli, monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "bound to " in out and "--no-bind" in out
+    assert _stored_binding(home, "new_key") == [_expected_gateway_line(home)]
+    # The record was written as `allow` writes it: adding a line needs no --accept.
+    assert plugin_cli.hvault_command(_allow_args("new_key", command=[sys.executable, "chat"])) == 0
+    assert len(_stored_binding(home, "new_key")) == 2
+
+
+def test_bind_no_bind_leaves_the_new_item_unbound(allow_env, monkeypatch, capsys):
+    plugin_cli, home = allow_env
+    assert _bind_new(plugin_cli, monkeypatch, no_bind=True) == 0
+    assert "bound to " not in capsys.readouterr().out
+    assert _stored_binding(home, "new_key") is None
+
+
+def test_bind_leaves_an_existing_items_bindings_alone(allow_env, monkeypatch, capsys):
+    plugin_cli, home = allow_env
+    assert _bind_new(plugin_cli, monkeypatch) == 0
+    assert _bind_new(plugin_cli, monkeypatch) == 0  # updates the value only
+    assert _stored_binding(home, "new_key") == [_expected_gateway_line(home)]
+    assert "updated new_key.value" in capsys.readouterr().out
+
+
+def test_bind_on_an_older_floorvault_stores_unbound_and_says_so(allow_env, monkeypatch, capsys):
+    from floorvault.vaultkit.vault import VaultStore
+
+    plugin_cli, home = allow_env
+    monkeypatch.delattr(VaultStore, "binding_fingerprint")
+    assert _bind_new(plugin_cli, monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "not bound: command bindings need floorvault 0.3.0" in out
+    assert _stored_binding(home, "new_key") is None
+
+
+def test_bind_on_windows_stores_unbound_and_names_allow(allow_env, monkeypatch, capsys):
+    plugin_cli, home = allow_env
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _bind_new(plugin_cli, monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "not bound on this platform" in out and "hermes hvault allow new_key" in out
+    assert _stored_binding(home, "new_key") is None
 
 
 def test_bind_stdin_refuses_a_terminal(plugin_cli, tmp_path, monkeypatch, capsys):
