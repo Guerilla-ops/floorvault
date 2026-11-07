@@ -2697,6 +2697,15 @@ MUTATIONS: tuple[Mutation, ...] = (
         "The hint names `hermes hvault allow` where floorvault 0.2.x cannot run it, so a skipped item points at a command that refuses",
     ),
     Mutation(
+        "BG-8",
+        "plugins/hermesvault/binding_guard.py",
+        '    if sys.platform == "win32" or not sys.executable or not os.path.isabs(sys.executable):\n'
+        "        return None\n",
+        "    if True:  # MUTANT\n        return None\n",
+        "The gateway line is never known, so `hermes hvault bind` leaves every new item unbound "
+        "and it resolves for any command that reads the store",
+    ),
+    Mutation(
         "AUD-2",
         "src/floorvault/agent_cli.py",
         "    return _launch(command_line[0], command, env)",

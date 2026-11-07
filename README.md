@@ -258,13 +258,15 @@ Hermes' `.env`. It never prompts, and it holds agent credentials only.
 ```bash
 hermes plugins install Guerilla-ops/floorvault/plugins/hermesvault
 hermes plugins enable hermesvault
-hermes hvault bind OPENAI_API_KEY                           # prompts; stores the value, maps the variable
-hermes hvault allow openai_api_key -- hermes gateway run    # release it only to this command line
+hermes hvault bind OPENAI_API_KEY                           # prompts; stores, maps and binds it to Hermes' gateway line
+hermes hvault allow openai_api_key -- hermes gateway run    # a service's own line, if Hermes runs as one
 hermes hvault doctor                                        # mappings and .env precedence; never prints a value
 ```
 
-A bound item resolves only when Hermes was started with one of its bound command
-lines; otherwise it is skipped with a warning that prints the line to bind.
+`bind` binds a new item to the command line Hermes starts its local gateway with,
+which is where chat and one-shot commands resolve secrets (`--no-bind` to skip
+that). A bound item resolves only when Hermes was started with one of its bound
+command lines; otherwise it is skipped with a warning that prints the line to bind.
 Delete the key from Hermes' `.env` after binding it: while a plaintext copy is
 there it takes precedence, and `doctor` flags it.
 

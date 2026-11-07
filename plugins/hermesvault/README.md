@@ -123,10 +123,11 @@ plugin now requires; install `floorvault[hermes]` where you run the import.
 
 ```bash
 hermes hvault                                # status and next step
-hermes hvault bind SERVICE_TOKEN             # store a value and map it (creates the store if needed)
+hermes hvault bind SERVICE_TOKEN             # store a value, map it, bind it to the gateway line (creates the store if needed)
+hermes hvault bind SERVICE_TOKEN --no-bind   # ...leaving the item unbound (resolves for any command)
 hermes hvault bind SERVICE_TOKEN --stdin     # ...with the value piped in from a password manager
 hermes hvault bind DB_PASSWORD --id vault_db --field password   # a named field on a chosen item
-hermes hvault allow <item_id>                # bind it to the command line this Hermes was started with
+hermes hvault allow <item_id> -- <line>      # bind it to another command line, such as a service's
 hermes hvault list                           # metadata only
 hermes hvault doctor                         # check mappings, custody and precedence
 hermes hvault show hv:<item_id>              # field names and status, and bindings; never plaintext
@@ -233,6 +234,14 @@ reopening an existing store. See FloorVault's
 for the custody model and its limits.
 
 ## Command bindings
+
+A new item made by `hermes hvault bind` is bound to the command line Hermes
+starts its local gateway with, where chat and one-shot commands resolve secrets:
+this interpreter, `-m hermes_cli.main`, `--profile default` unless the profile
+home is a `profiles/<name>` directory, then `gateway run --quiet --idle-exit`.
+`bind --no-bind` leaves the item unbound. A Hermes run by a service, by hand or
+on Windows has its own line; `bind` says so and the item stays unbound until you
+bind that line as below. An existing item's bindings are never changed by `bind`.
 
 `hermes hvault allow` binds an item to command lines without leaving Hermes: it
 opens the same store with the configured custody, so there are no `--vault` or
