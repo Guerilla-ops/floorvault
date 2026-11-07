@@ -2698,10 +2698,12 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         "BG-8",
-        "plugins/hermesvault/cli.py",
-        '        if not getattr(args, "no_bind", False):\n',
-        "        if False:  # MUTANT\n",
-        "`hermes hvault bind` leaves a new item unbound, so it resolves for any command that reads the store",
+        "plugins/hermesvault/binding_guard.py",
+        '    if sys.platform == "win32" or not sys.executable or not os.path.isabs(sys.executable):\n'
+        "        return None\n",
+        "    if True:  # MUTANT\n        return None\n",
+        "The gateway line is never known, so `hermes hvault bind` leaves every new item unbound "
+        "and it resolves for any command that reads the store",
     ),
     Mutation(
         "AUD-2",
