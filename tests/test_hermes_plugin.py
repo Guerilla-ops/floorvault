@@ -1531,3 +1531,13 @@ def test_allow_rejects_a_malformed_json_line(allow_env, capsys):
     plugin_cli, _ = allow_env
     assert plugin_cli.hvault_command(_allow_args(command=['["unclosed'])) == 2
     assert "JSON" in capsys.readouterr().err
+
+
+def test_cli_refuses_a_secrets_section_that_is_not_a_mapping(plugin_cli, tmp_path, monkeypatch):
+    """The section is read through a helper; a list or scalar there is named, not guessed at."""
+    _healthy_host_config(tmp_path, monkeypatch)
+    sys.modules["hermes_cli.config"].read_user_config_raw = lambda: {"secrets": ["hermesvault"]}
+    with pytest.raises(plugin_cli.CLIInputError, match="secrets configuration must be a mapping"):
+        plugin_cli._secrets_cfg()
+    sys.modules["hermes_cli.config"].read_user_config_raw = lambda: {"other": 1}
+    assert plugin_cli._secrets_cfg() == {}
