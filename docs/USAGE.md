@@ -563,11 +563,14 @@ floorvault secrets allow github-pat --accept  # trust a change made outside this
   `run` refuses to start if the command's environment sets a variable that can
   change what it loads: `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`,
   `NODE_OPTIONS`, `NODE_PATH`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONHOME`,
-  `PYTHONUSERBASE`, `PERL5OPT`, `RUBYOPT`, `BASH_ENV`, `JAVA_TOOL_OPTIONS`,
+  `PYTHONUSERBASE`, `PYTHONPYCACHEPREFIX`, `PERL5OPT`, `RUBYOPT`, `BASH_ENV`,
+  `SHELLOPTS`, `PS4`, `GCONV_PATH`, `OPENSSL_CONF`, `JAVA_TOOL_OPTIONS`,
   package-index variables for pip and uv, and npm's registry, config-file and
   TLS settings (`agentenv.CODE_INJECTION_ENV_NAMES` has the full list). Unset
   them for that command. The list is best effort: `HOME`, `PATH` and a
-  program's own configuration files can steer it too.
+  program's own configuration files can steer it too, as can exported shell
+  functions (`BASH_FUNC_*`) and package caches (`NPM_CONFIG_CACHE`,
+  `UV_CACHE_DIR`), which are not refused because ordinary systems set them.
 - **Removing the last command line** is refused; use `--clear`, so widening an
   item to every command is always explicit.
 - **Interpreters and launchers.** Binding `npx -y <package>` or

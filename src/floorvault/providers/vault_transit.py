@@ -136,6 +136,14 @@ class UrllibTransport:
         )
 
     def _build_request(self, url: str, body: dict, token: str) -> urllib.request.Request:
+        # http.client refuses a header value with a line break by raising a
+        # ValueError that quotes the value. A token read from a file with its
+        # trailing newline would put the token in that message.
+        if not isinstance(token, str) or any(not "!" <= char <= "~" for char in token):
+            raise ValueError(
+                "the Vault token contains whitespace or non-ASCII characters "
+                "(a trailing newline from a file?); it is not sent"
+            )
         return urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),

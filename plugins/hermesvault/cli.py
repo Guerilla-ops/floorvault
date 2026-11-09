@@ -19,6 +19,7 @@ import json
 import os
 import shlex
 import sys
+import unicodedata
 import warnings
 from pathlib import Path
 
@@ -44,6 +45,13 @@ def _field(value):
     if not isinstance(value, str) or not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
         raise CLIInputError("field must be non-empty and contain no control characters")
     return value
+
+
+def _printable(text: str) -> str:
+    """``text`` with control characters escaped, so it cannot forge a line or drive the terminal."""
+    return "".join(
+        f"\\x{ord(char):02x}" if unicodedata.category(char) == "Cc" else char for char in text
+    )
 
 
 def _root_is_not_a_mapping() -> bool:
@@ -471,7 +479,9 @@ def _cmd_list(_args) -> int:
         parts = [meta.id, meta.kind, meta.label]
         if meta.origin:
             parts.append(meta.origin)
-        print("\t".join(str(p) for p in parts))
+        # One item, one line: kind and origin are cleartext columns anyone who
+        # can write vault.db can set, and a label may come from another tool.
+        print("\t".join(_printable(str(p)) for p in parts))
     return 0
 
 

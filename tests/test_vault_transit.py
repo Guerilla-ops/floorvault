@@ -599,3 +599,18 @@ def test_context_is_canonical_utf8_for_non_ascii_app_ids(tmp_path):
     assert decoded["app"] == "héllo-世界"
     assert decoded["v"] == 1
     assert decoded["purpose"] == "floorvault-master-wrap"
+
+
+@pytest.mark.parametrize("suffix", ["\n", "\r\n", " ", "\x00", "é"])
+def test_a_token_that_cannot_be_a_header_value_is_refused_without_being_quoted(suffix):
+    """http.client rejects a line break by quoting the whole value in its ValueError.
+
+    A token read from a file with its trailing newline is the usual way to get
+    there, and the transport promises the token never appears in raised errors.
+    """
+    transport = UrllibTransport(ADDR)
+    transport._opener = _StubOpener("https://standby.example/v1/x")
+    with pytest.raises(ValueError) as caught:
+        transport.post("/v1/x", {}, TOKEN + suffix)
+    assert TOKEN not in str(caught.value) and TOKEN not in repr(caught.value)
+    assert transport._opener.urls == [], "nothing may be sent"

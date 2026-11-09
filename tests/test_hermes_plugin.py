@@ -1581,3 +1581,19 @@ def test_rm_forgets_the_binding_so_a_new_item_of_that_id_resolves(allow_env, cap
     )
     result = fetch(home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
     assert result.secrets == {"OPENAI_API_KEY": "sk-new"} and not result.warnings
+
+
+def test_list_escapes_control_characters_from_the_store(allow_env, capsys):
+    """kind and origin are cleartext columns; a label may come from another tool."""
+    import contextlib
+    import sqlite3
+
+    plugin_cli, home = allow_env
+    forged = "generic\tReal\nprod-root\tgeneric\tProduction root\x1b[1A"
+    with contextlib.closing(sqlite3.connect(home / "agent-vault" / "vault.db")) as conn:
+        conn.execute("UPDATE vault_items SET kind = ? WHERE id = 'vault_multi'", (forged,))
+        conn.commit()
+    capsys.readouterr()
+    assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="list")) == 0
+    out = capsys.readouterr().out
+    assert len(out.splitlines()) == 2 and "\x1b" not in out
