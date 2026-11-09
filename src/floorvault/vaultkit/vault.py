@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 import threading
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -24,6 +25,7 @@ from urllib.parse import urlsplit
 
 from ..core import DecryptionVerificationError, FloorVault, FloorVaultError
 from ..keyring import KeyRing
+from ..platform_support import is_windows
 from ..providers.adaptive import AdaptiveKeyProvider
 from ..providers.platform_custody import _mkdir_owner_only
 
@@ -225,6 +227,41 @@ class VaultItemMeta:
         return out
 
 
+def _harden_db_file(path: Path) -> None:
+    """Make ``vault.db`` owner-only, as its directory and key files already are.
+
+    SQLite creates the file with the process umask, typically 0644, and its
+    rollback journal copies the database's mode. The directory is 0700, so this
+    matters where the directory travels without its mode: a bind mount, a
+    backup or a restore somewhere looser. The ciphertext and any sealed or
+    beacon columns would then be readable by others, which helps offline
+    analysis even though nothing in it is plaintext.
+
+    A new file is created 0600 so there is no wider window; an existing one is
+    tightened. A symlink is left alone, because chmod would change its target.
+    Windows has no POSIX mode bits, so there is nothing to set there.
+    """
+    if is_windows():
+        return
+    try:
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+        )
+    except FileExistsError:
+        pass
+    else:
+        os.close(descriptor)
+        return
+    info = os.lstat(path)
+    if stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) & 0o077:
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            # Not ours to change. The directory check already refuses a store
+            # owned by someone else, so this is not the only barrier.
+            pass
+
+
 class VaultStore:
     """floorvault-backed vault store backed by FloorVault.
 
@@ -301,6 +338,7 @@ class VaultStore:
             master_key = provider.resolve_key()
             self._crypto = FloorVault(master_key, app_instance_id="floor-agent")
 
+        _harden_db_file(self._db_path)
         self._init_db()
 
     def _init_db(self) -> None:

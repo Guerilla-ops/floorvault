@@ -732,6 +732,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         '            conn.execute("PRAGMA user_version = 2")',
         "The target-commitment schema loses its distinct version marker",
     ),
+    Mutation(
+        "VS-3",
+        "src/floorvault/vaultkit/vault.py",
+        "            os.chmod(path, 0o600)\n        except OSError:\n            # Not ours to change.",
+        "            pass  # MUTANT\n        except OSError:\n            # Not ours to change.",
+        "An existing group- or world-readable vault.db is no longer tightened when the store is opened",
+    ),
+    Mutation(
+        "VS-4",
+        "src/floorvault/vaultkit/vault.py",
+        'os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600',
+        'os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o666',
+        "A new vault.db is created with the process umask (typically 0644) instead of owner-only",
+    ),
     # --- Wrapped-master generation store (R1, roadmap issue #11) -------------
     Mutation(
         "GS-1",
