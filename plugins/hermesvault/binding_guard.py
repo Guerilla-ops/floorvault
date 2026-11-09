@@ -14,7 +14,7 @@ import shlex
 import shutil
 import sys
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
 
 def hermes_command_lines() -> list[list[str]]:
@@ -103,6 +103,85 @@ def _bind_command(store, item_id: str) -> str:
     return f"floorvault secrets allow {item_id} -- <command line>"
 
 
+def binding_record_problems(
+    store, base, item_ids: Iterable[str], environ: Optional[Mapping[str, str]] = None
+) -> Tuple[dict, list]:
+    """Check the items' stored bindings against the record `allow` keeps outside the store.
+
+    A binding lives in vault.db, so whoever can write that file can clear one, or
+    write back an older sealed binding of the same item, without the key (#97).
+    Both still decrypt. ``hermes hvault allow``, ``hermes hvault bind`` and
+    ``floorvault secrets allow`` keep each binding's fingerprint in the state
+    directory, which a writer of the store need not reach; this compares against
+    it and writes nothing.
+
+    Returns ``(problems, notes)``. ``problems`` maps an item id to the reason it
+    must not be resolved: its binding differs from the record, or a record exists
+    and cannot be read (which never counts as "unchanged"). ``notes`` are warnings
+    for the operator when no record can be consulted here; the items are then
+    judged by the store alone, as they were before this check existed, and the
+    note says so. An item the record does not hold is a first use and has no
+    problem. A floorvault without ``BindingRecord.compare`` (0.4.0 and older)
+    returns nothing: it has no way to read the record without writing it.
+    """
+    try:
+        from floorvault.binding_record import (
+            BindingRecord,
+            BindingRecordError,
+            BindingRecordLost,
+            default_state_dir,
+        )
+    except ImportError:
+        return {}, []
+    fingerprint = getattr(store, "binding_fingerprint", None)
+    if fingerprint is None or not hasattr(BindingRecord, "compare"):
+        return {}, []
+    current = {}
+    for item_id in item_ids:
+        try:
+            current[item_id] = fingerprint(item_id)
+        except Exception:
+            # A missing item, or a store that cannot be read: resolving it reports that.
+            continue
+    if not current:
+        return {}, []
+    try:
+        state_dir = default_state_dir(os.environ if environ is None else environ)
+    except RuntimeError:  # no home directory to put the default under
+        return {}, [
+            "the binding record cannot be located (no home directory and no "
+            "$FLOOR_VAULT_STATE_DIR), so a binding cleared or replaced in vault.db is "
+            "not noticed here"
+        ]
+    try:
+        record = BindingRecord(base, state_dir)
+    except BindingRecordError as exc:  # the state directory is inside the store
+        return {}, [
+            f"no binding record can be kept: {exc}; a binding cleared or replaced in "
+            "vault.db is not noticed here"
+        ]
+    try:
+        changed = record.compare(current)
+    except BindingRecordLost as exc:
+        return {}, [
+            f"{exc}, though this store has had one (a state directory that was wiped, "
+            "or a different $FLOOR_VAULT_STATE_DIR than `hermes hvault allow` ran with), "
+            "so a binding cleared or replaced in vault.db is not noticed here"
+        ]
+    except BindingRecordError as exc:
+        reason = f"cannot be checked against the binding record: {exc}"
+        return {item_id: reason for item_id in current}, []
+    return {
+        item_id: (
+            "has a command binding that changed since it was last recorded: cleared, "
+            "or replaced outside `hermes hvault allow` (an older copy written back into "
+            f"vault.db looks like this). Check it with `hermes hvault show hv:{item_id}`; "
+            f"if the change was yours, accept it with `hermes hvault allow {item_id} --accept`"
+        )
+        for item_id in changed
+    }, []
+
+
 def binding_problem(
     store, item_id: str, command_lines: Sequence[Sequence[str]], require_binding: bool
 ) -> Optional[str]:
@@ -110,9 +189,10 @@ def binding_problem(
 
     Fails closed: a binding that cannot be read or compared is a reason to skip
     the item, never a reason to release it. A binding lives in vault.db, so
-    whoever can write that file can clear one without the key (#97); only
+    whoever can write that file can clear one without the key (#97).
     ``require_binding``, which lives in Hermes' configuration, turns a cleared
-    binding into a refusal.
+    binding into a refusal; :func:`binding_record_problems` notices one that was
+    recorded and then cleared or replaced.
     """
     getter = getattr(store, "get_allowed_commands", None)
     if getter is None:

@@ -257,9 +257,12 @@ proof of a plaintext-recovery attack.
   load, and older readers ignore it. The Hermes plugin resolves a bound item only
   when Hermes was started with one of its bound command lines (and, with
   `require_binding`, refuses unbound items), but it cannot check the variables that
-  steer what Hermes loads, and its startup resolution does not consult a binding
-  record (`hermes hvault allow` keeps one, so a later `allow` refuses a binding
-  changed behind its back; a binding rolled back in `vault.db` still resolves).
+  steer what Hermes loads. `hermes hvault allow` keeps a binding record outside
+  the store: a later `allow` refuses a binding changed behind its back, and with
+  a floorvault newer than 0.4.0 startup resolution reads the record and skips an
+  item whose recorded binding was cleared or rolled back in `vault.db`. It only
+  reads: an item never recorded is judged by the store alone, and a record that
+  is missing where Hermes runs is reported, not refused.
   From 0.3.0 `run`
   refuses unbound items unless `--allow-unbound` is given, and refuses an item
   whose stored binding no longer matches a fingerprint it keeps outside the

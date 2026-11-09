@@ -302,14 +302,31 @@ bind with `floorvault secrets allow`).
   for any command, as before.
 - **Not the same as `floorvault run`.** The plugin runs inside Hermes after it
   started, so it cannot refuse variables that steer what Hermes loads
-  (`PYTHONPATH`, `LD_PRELOAD`), which `run` checks for bound items. Resolution
-  does not consult the record `allow` keeps outside the store, so an older,
-  wider binding written back into `vault.db` still resolves — the next `allow`
-  notices the change and refuses until `--accept`. A binding guards against mistakes
+  (`PYTHONPATH`, `LD_PRELOAD`), which `run` checks for bound items. A binding guards against mistakes
   and against another command using the same profile; it does not stop code
   running as you, or anything that can start Hermes with the command you bound.
 - **A binding that cannot be read** (it fails authentication, or it was moved
   from another item) skips the item; it is never taken as "unbound".
+- **A binding changed in `vault.db` behind `allow`'s back** skips the item.
+  `hermes hvault allow`, `hermes hvault bind` and `floorvault secrets allow` keep
+  a fingerprint of each binding in the state directory
+  (`$FLOOR_VAULT_STATE_DIR`, else the per-user state directory), outside the
+  store. Whoever can write `vault.db` can clear a binding or write an older,
+  wider one back without the key, and both still decrypt; resolution compares
+  the stored binding with that record and skips an item that differs, until you
+  inspect it (`hermes hvault show`) and run `hermes hvault allow ITEM --accept`.
+  Limits:
+  - It needs a floorvault newer than 0.4.0. With 0.4.0 or older nothing is
+    compared, and only the next `allow` notices.
+  - Resolution reads the record and never writes it. An item that was never
+    bound or recorded is judged by the store alone.
+  - Hermes must see the same state directory `allow` ran with. If the store has
+    had a record and none is found where Hermes runs (a different
+    `$FLOOR_VAULT_STATE_DIR` or home, a wiped state directory), a warning says
+    so and nothing is refused on that account. A record that is there but
+    cannot be read skips every mapped item.
+  - Someone who can roll the store and the state directory back together, or
+    who runs code as you, is not stopped.
 - **floorvault 0.2.x** (from 0.2.8) reads and enforces bindings, but cannot
   write them from Hermes: `hermes hvault allow` needs the sealed binding record
   of floorvault 0.3.0 and refuses, so bind with `floorvault secrets allow` there
@@ -320,7 +337,8 @@ bind with `floorvault secrets allow`).
 ## What this plugin does on your machine
 
 - **Reads** a FloorVault store under `<profile-home>/agent-vault` (or
-  `secrets.hermesvault.dir`) at startup, and only reads. `hermes hvault` commands
+  `secrets.hermesvault.dir`) at startup, and only reads. It also reads, and
+  never writes, that store's binding record in the state directory. `hermes hvault` commands
   write to it; `hermes hvault setup` and a first `hermes hvault bind` create it.
 - **Writes one mapping to config.yaml**, only during `hermes hvault bind`, through
   Hermes' own configuration writer, which merges into the existing file. Nothing

@@ -194,3 +194,32 @@ def test_only_a_regular_marker_counts_and_a_missing_store_dir_is_not_an_error(tm
     gone = BindingRecord(tmp_path / "nowhere", tmp_path / "state2")
     assert gone.check({"a": "none"}, refuse_lost=True) == []
     assert not gone.lost_on_last_update
+
+
+def test_compare_reports_changes_and_writes_nothing(tmp_path):
+    (tmp_path / "vault").mkdir()
+    record = BindingRecord(tmp_path / "vault", tmp_path / "state")
+    # Never kept: nothing to compare, nothing created, not even the directory.
+    assert record.compare({"a": "none"}) == []
+    assert not (tmp_path / "state").exists()
+    record.check({"a": "1" * 64, "b": "none"})
+    before = record.path.read_bytes()
+    assert record.compare({"a": "1" * 64, "b": "none"}) == []
+    assert record.compare({"a": "none", "b": "2" * 64}) == ["a", "b"]
+    # An item the record does not hold is neither reported nor added.
+    assert record.compare({"c": "3" * 64}) == []
+    assert record.path.read_bytes() == before
+    assert record.check({"c": "4" * 64}) == []  # still a first use
+
+
+def test_compare_says_when_the_record_is_lost_or_unreadable(tmp_path):
+    (tmp_path / "vault").mkdir()
+    record = BindingRecord(tmp_path / "vault", tmp_path / "state")
+    record.check({"a": "none"})
+    record.path.write_bytes(b"not a record")
+    with pytest.raises(BindingRecordError, match="unreadable"):
+        record.compare({"a": "none"})
+    record.path.unlink()
+    with pytest.raises(BindingRecordLost, match="missing"):
+        record.compare({"a": "none"})
+    assert not record.path.exists(), "a reader must not start a new record"

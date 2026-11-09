@@ -2720,6 +2720,38 @@ MUTATIONS: tuple[Mutation, ...] = (
         "and it resolves for any command that reads the store",
     ),
     Mutation(
+        "BG-9",
+        "plugins/hermesvault/binding_guard.py",
+        "        changed = record.compare(current)\n",
+        "        changed = record.compare({})  # MUTANT\n",
+        "The Hermes plugin resolves an item whose recorded binding was cleared or rolled back in vault.db (#97)",
+    ),
+    Mutation(
+        "BG-10",
+        "plugins/hermesvault/binding_guard.py",
+        "        return {item_id: reason for item_id in current}, []\n",
+        "        return {}, []  # MUTANT\n",
+        "A binding record that exists and cannot be read counts as every binding being unchanged",
+    ),
+    Mutation(
+        "BG-11",
+        "src/floorvault/binding_record.py",
+        "        return sorted(i for i, fp in current.items() if i in items and items[i] != fp)\n",
+        "        return []  # MUTANT\n",
+        "The read-only comparison a reader makes against the binding record reports no change",
+    ),
+    Mutation(
+        "BG-12",
+        "src/floorvault/binding_record.py",
+        "        if raw is None and self._marker_is_regular():\n"
+        '            raise BindingRecordLost(f"the binding record {self.path} is missing")\n'
+        "        items = self._parse(raw)\n        return sorted(",
+        "        if False:  # MUTANT\n"
+        '            raise BindingRecordLost(f"the binding record {self.path} is missing")\n'
+        "        items = self._parse(raw)\n        return sorted(",
+        "A reader takes a lost binding record for one that was never kept, and says nothing",
+    ),
+    Mutation(
         "AUD-2",
         "src/floorvault/agent_cli.py",
         "    return _launch(command_line[0], command, env)",

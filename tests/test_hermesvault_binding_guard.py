@@ -22,12 +22,14 @@ sys.path.insert(0, str(ROOT / "plugins" / "hermesvault"))
 
 from binding_guard import (  # noqa: E402
     binding_problem,
+    binding_record_problems,
     gateway_command_line,
     hermes_command_lines,
     started_as,
 )
 
 from floorvault import FloorVault  # noqa: E402
+from floorvault.binding_record import BindingRecord  # noqa: E402
 from floorvault.vaultkit.vault import VaultStore  # noqa: E402
 
 HERMES = os.path.abspath("/opt/hermes/bin/hermes")
@@ -281,3 +283,104 @@ def test_the_gateway_line_is_unknown_on_windows_or_without_an_absolute_interpret
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(sys, "executable", "python3")
     assert gateway_command_line(tmp_path) is None
+
+
+# ------------------------------------------------- the record kept outside the store
+
+
+@pytest.fixture()
+def recorded(store, tmp_path):
+    """The store, its directory, and the record `allow` would keep for it."""
+    base = tmp_path / "vault"
+    environ = {"FLOOR_VAULT_STATE_DIR": str(tmp_path / "state")}
+    return store, base, environ, BindingRecord(base, tmp_path / "state")
+
+
+def _problems(recorded, items=(ITEM, "vault_other")):
+    store, base, environ, _ = recorded
+    return binding_record_problems(store, base, items, environ)
+
+
+def test_a_store_that_never_had_a_record_is_judged_as_before(recorded, tmp_path):
+    assert _problems(recorded) == ({}, [])
+    assert not (tmp_path / "state").exists(), "resolving must create nothing"
+
+
+def test_a_recorded_binding_that_is_unchanged_has_no_problem(recorded):
+    store, _, _, record = recorded
+    store.set_allowed_commands(ITEM, [[HERMES, "gateway", "run"]])
+    record.record(ITEM, store.binding_fingerprint(ITEM))
+    before = record.path.read_bytes()
+    assert _problems(recorded) == ({}, [])
+    assert record.path.read_bytes() == before, "an unrecorded item must not be added"
+
+
+def test_a_binding_cleared_in_vault_db_is_refused_without_require_binding(recorded):
+    store, _, _, record = recorded
+    store.set_allowed_commands(ITEM, [[HERMES, "gateway", "run"]])
+    record.record(ITEM, store.binding_fingerprint(ITEM))
+    _write_binding(store, ITEM, None)  # whoever can write vault.db, with no key (#97)
+    assert binding_problem(store, ITEM, [[HERMES, "chat"]], False) is None  # the store alone
+    problems, notes = _problems(recorded)
+    assert list(problems) == [ITEM] and notes == []
+    assert "changed since it was last recorded" in problems[ITEM]
+    assert f"hermes hvault allow {ITEM} --accept" in problems[ITEM]
+
+
+def test_an_older_wider_binding_written_back_is_refused(recorded):
+    store, _, _, record = recorded
+    store.set_allowed_commands(ITEM, [[HERMES, "chat"], [HERMES, "gateway", "run"]])
+    older = _sealed(store, ITEM)
+    store.set_allowed_commands(ITEM, [[HERMES, "gateway", "run"]])
+    record.record(ITEM, store.binding_fingerprint(ITEM))
+    _write_binding(store, ITEM, older)
+    # It authenticates and allows the command, so only the record can refuse it.
+    assert binding_problem(store, ITEM, [[HERMES, "chat"]], True) is None
+    assert list(_problems(recorded)[0]) == [ITEM]
+
+
+def test_a_record_that_exists_and_cannot_be_read_refuses_every_item(recorded):
+    store, _, _, record = recorded
+    record.record(ITEM, store.binding_fingerprint(ITEM))
+    record.path.write_bytes(b"not a record")
+    problems, notes = _problems(recorded)
+    assert sorted(problems) == sorted([ITEM, "vault_other"]) and notes == []
+    assert all("cannot be checked against the binding record" in p for p in problems.values())
+
+
+def test_a_lost_record_is_said_and_refuses_nothing(recorded):
+    store, _, _, record = recorded
+    record.record(ITEM, store.binding_fingerprint(ITEM))
+    record.path.unlink()  # the marker in the store directory stays
+    problems, notes = _problems(recorded)
+    assert problems == {} and len(notes) == 1
+    assert "is missing" in notes[0] and "not noticed here" in notes[0]
+    assert not record.path.exists(), "resolving must not start a new record"
+
+
+def test_a_state_directory_inside_the_store_is_said_and_refuses_nothing(store, tmp_path):
+    base = tmp_path / "vault"
+    problems, notes = binding_record_problems(
+        store, base, [ITEM], {"FLOOR_VAULT_STATE_DIR": str(base / "state")}
+    )
+    assert problems == {} and len(notes) == 1 and "no binding record can be kept" in notes[0]
+
+
+def test_a_missing_item_is_left_to_resolution_to_report(recorded):
+    store, _, _, record = recorded
+    record.record(ITEM, "0" * 64)
+    assert _problems(recorded, items=["vault_gone"]) == ({}, [])
+
+
+def test_a_floorvault_that_cannot_read_the_record_checks_nothing(recorded, monkeypatch):
+    store, base, environ, record = recorded
+    record.record(ITEM, "0" * 64)  # differs from the stored "none"
+    assert list(_problems(recorded)[0]) == [ITEM]
+    monkeypatch.delattr(BindingRecord, "compare")  # floorvault 0.3.0 to 0.4.0
+    assert _problems(recorded) == ({}, [])
+    assert binding_record_problems(
+        _Without(store, "binding_fingerprint"), base, [ITEM], environ
+    ) == (
+        {},
+        [],
+    )

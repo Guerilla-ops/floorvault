@@ -206,6 +206,31 @@ class BindingRecord:
 
         return self._update(change, refuse_lost=refuse_lost)
 
+    def compare(self, current: Mapping[str, str]) -> list[str]:
+        """Return the items whose binding differs from the record, sorted; write nothing.
+
+        For a caller that only reads and must create nothing (the hermesvault
+        secret source resolving at startup). It differs from :meth:`check` in
+        what it does with an item the record does not hold: nothing. The item is
+        not reported and not added, so it is still a first use for the next
+        :meth:`check` or :meth:`record`.
+
+        A lost record (see :meth:`check`) raises :class:`BindingRecordLost`:
+        there is nothing to compare against, and a reader cannot start a new
+        record. No record and no marker means none was ever kept, and nothing
+        is reported.
+        """
+        try:
+            raw = self._anchors.load(self._name)
+        except OSError as exc:
+            raise BindingRecordError(
+                f"cannot read the binding record {self.path} ({type(exc).__name__})"
+            ) from None
+        if raw is None and self._marker_is_regular():
+            raise BindingRecordLost(f"the binding record {self.path} is missing")
+        items = self._parse(raw)
+        return sorted(i for i, fp in current.items() if i in items and items[i] != fp)
+
     def record(self, item_id: str, fp: str) -> None:
         """Record ``item_id``'s binding as it is now (after this CLI changed it)."""
 
