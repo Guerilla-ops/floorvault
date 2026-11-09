@@ -261,8 +261,12 @@ def _check_ancestor(ancestor: Path, path: Path, *, follow: bool) -> None:
 def peer_credentials(conn: socket.socket) -> tuple[Optional[int], int]:
     """``(pid or None, uid)`` of the process at the other end of a Unix socket."""
     if sys.platform == "linux":
+        # struct ucred { pid_t pid; uid_t uid; gid_t gid; }: the ids are unsigned.
+        # Read as signed, a uid of 2**31 or more (directory services, user
+        # namespaces) came out negative, never equal to geteuid(), and the agent
+        # and its own user refused each other.
         pid, uid, _gid = struct.unpack(
-            "3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+            "iII", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
         )
         return pid, uid
     if sys.platform == "darwin":
@@ -623,8 +627,11 @@ class Agent:
                 # the agent actually bound to it now.
                 _send(conn, {"ok": False, "error": "a different agent holds this socket"})
                 return
-            _send(conn, {"ok": True, "locked": True})
+            # Stop first, then answer. The reply can fail (a client that gave up
+            # while this agent was busy with earlier connections has closed its
+            # end), and a lock that was asked for must not depend on being heard.
             self.request_stop("locked")
+            _send(conn, {"ok": True, "locked": True})
         elif op in _CRYPTO_OPS and self._crypto is not None:
             # The limits and a stop apply when the key is used, not only while the request is
             # read: a deadline can pass between the last byte and here, and touching first

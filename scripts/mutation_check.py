@@ -2752,6 +2752,45 @@ MUTATIONS: tuple[Mutation, ...] = (
         "A reader takes a lost binding record for one that was never kept, and says nothing",
     ),
     Mutation(
+        "FRK-1",
+        "src/floorvault/memory.py",
+        '            if hasattr(mmap, "MAP_PRIVATE"):\n',
+        "            if False:  # MUTANT\n",
+        "The key page is shared with forked children, so a child's wipe zeroes the parent's key",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "FRK-2",
+        "src/floorvault/memory.py",
+        "        return self._fork_excluded and self._teardown_getpid() != self._owner_pid\n",
+        "        return False  # MUTANT\n",
+        "A forked child touches a key page it was excluded from and dies with SIGSEGV",
+    ),
+    Mutation(
+        "AGT-68",
+        "src/floorvault/key_agent.py",
+        '            self.request_stop("locked")\n            _send(conn, {"ok": True, "locked": True})\n',
+        '            _send(conn, {"ok": True, "locked": True})\n            self.request_stop("locked")\n',
+        "A lock whose reply cannot be delivered is dropped and the key stays loaded",
+    ),
+    Mutation(
+        "AGT-69",
+        "src/floorvault/key_agent.py",
+        '            "iII", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)\n',
+        '            "3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)\n',
+        "A peer uid of 2**31 or more is read as negative, so the agent and its own user refuse each other",
+    ),
+    Mutation(
+        "FL-1",
+        "src/floorvault/_filelock.py",
+        "                            if time.monotonic() >= deadline:\n"
+        '                                raise TimeoutError(f"timed out waiting for lock {path}") from None\n'
+        "                            time.sleep(0.05)\n",
+        "                            time.sleep(0.05)  # MUTANT\n",
+        "A lock wait that was given a timeout never ends while another process holds the lock",
+        expect_on_windows="survived",
+    ),
+    Mutation(
         "AUD-2",
         "src/floorvault/agent_cli.py",
         "    return _launch(command_line[0], command, env)",

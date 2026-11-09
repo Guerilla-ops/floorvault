@@ -207,7 +207,12 @@ proof of a plaintext-recovery attack.
   Python, provider or AEAD-engine copy. Locking and anti-dump advice depend on
   the platform. Key construction attempts to disable core dumps process-wide
   without restoring the setting. Required memory mode enforces its implemented
-  checks, not an enclave guarantee.
+  checks, not an enclave guarantee. A key handle belongs to the process that
+  made it: its page is private, so a forked child cannot change the parent's
+  key. On Linux the page is also kept out of children, where reading the handle
+  raises; on macOS, and with memory mode `disabled`, a child inherits a copy.
+  A `FloorVault` built before a fork keeps working in the child, because its
+  AEAD engine holds its own copy of the derived keys.
 - **Plaintext has a lifecycle.** Migration, deletion and SQLite cleanup do not
   guarantee erasure from pages, WAL, backups, snapshots or storage media.
   Plugin results and revealed CLI output become plaintext in the consuming
