@@ -1,12 +1,15 @@
 """Tests for universal hardware memory custody and page locking."""
 
+import ctypes
 import gc
+import os
 import sys
 from types import SimpleNamespace
 
 import pytest
 
 from floorvault.memory import HardenedMemoryKey
+from floorvault.platform_support import is_linux
 
 
 def test_hardened_memory_key_lifecycle():
@@ -242,3 +245,125 @@ def test_required_mode_fails_when_core_dumps_cannot_be_disabled(monkeypatch):
     key = mem.HardenedMemoryKey(b"\x81" * 32, mode="opportunistic")
     assert key._core_dumps_disabled is False
     key.wipe()
+
+
+# ---------------------------------------------------------------------------
+# fork()
+#
+# The buffer was a shared anonymous mapping, so it was the same page in every
+# forked child. A child that merely exited ran __del__ -> wipe() and zeroed the
+# parent's key under a handle that still reported it live; where the page was
+# excluded from children instead, the same wipe() touched an unmapped address
+# and the child died with SIGSEGV at exit.
+# ---------------------------------------------------------------------------
+
+_needs_fork = pytest.mark.skipif(not hasattr(os, "fork"), reason="no fork() on this platform")
+
+
+def _in_child(action) -> tuple[int, bytes]:
+    """Run ``action`` in a forked child; return (wait status, what it wrote).
+
+    The child leaves with ``os._exit`` so it does not run this test session's
+    own teardown; a test that means "the child exits" calls the finalizer the
+    interpreter would run.
+    """
+    read_end, write_end = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_end)
+        try:
+            os.write(write_end, action())
+        except BaseException as exc:  # noqa: BLE001 - reported to the parent
+            os.write(write_end, f"raised {type(exc).__name__}".encode())
+        os.close(write_end)
+        os._exit(0)
+    os.close(write_end)
+    with os.fdopen(read_end, "rb") as pipe:
+        output = pipe.read()
+    return os.waitpid(pid, 0)[1], output
+
+
+@_needs_fork
+@pytest.mark.parametrize("mode", ["disabled", "opportunistic"])
+def test_a_forked_child_that_exits_leaves_the_parents_key_alone(mode):
+    key = HardenedMemoryKey(b"\x11" * 32, mode=mode)
+
+    def exit_like_the_interpreter():
+        key.__del__()  # what a normal exit runs on every live handle
+        return b"done"
+
+    status, output = _in_child(exit_like_the_interpreter)
+    assert output == b"done"
+    assert status == 0, f"the child did not exit cleanly (wait status {status})"
+    assert not key.is_wiped
+    assert bytes(key.get_buffer()) == b"\x11" * 32
+
+
+@_needs_fork
+@pytest.mark.parametrize("mode", ["disabled", "opportunistic"])
+def test_a_wipe_in_a_forked_child_does_not_reach_the_parent(mode):
+    key = HardenedMemoryKey(b"\x22" * 32, mode=mode)
+
+    def wipe_there():
+        key.wipe()
+        return b"wiped" if key.is_wiped else b"still live"
+
+    status, output = _in_child(wipe_there)
+    assert (status, output) == (0, b"wiped")
+    assert not key.is_wiped
+    assert bytes(key.get_buffer()) == b"\x22" * 32
+
+
+@_needs_fork
+def test_a_child_the_page_is_excluded_from_is_refused_not_killed():
+    key = HardenedMemoryKey(b"\x33" * 32)
+    if not key._fork_excluded:
+        pytest.skip("MADV_DONTFORK is not available here; the child inherits a copy")
+    status, output = _in_child(lambda: bytes(key.get_buffer()))
+    assert status == 0, f"reading in the child killed it (wait status {status})"
+    assert output == b"raised RuntimeError"
+    status, output = _in_child(key.get_bytes)
+    assert (status, output) == (0, b"raised RuntimeError")
+
+
+@pytest.mark.skipif(not is_linux(), reason="MADV_DONTDUMP/DONTFORK are Linux advice")
+def test_dump_and_fork_exclusion_do_not_depend_on_the_page_lock(monkeypatch):
+    """RLIMIT_MEMLOCK can refuse the lock; the page must still be excluded."""
+    real = ctypes.CDLL
+
+    class NoLock:
+        def __init__(self, name):
+            self._libc = real(name)
+
+        def mlock(self, *args):
+            return -1
+
+        def __getattr__(self, name):
+            return getattr(self._libc, name)
+
+    monkeypatch.setattr(ctypes, "CDLL", NoLock)
+    key = HardenedMemoryKey(b"\x44" * 32)
+    assert not key.is_locked
+    assert key._dump_excluded and key._fork_excluded
+
+
+def test_a_handle_whose_page_is_absent_refuses_reads_and_wipes_without_touching_it():
+    """The fork-excluded child, on any platform: the page must never be dereferenced."""
+    key = HardenedMemoryKey(b"\x55" * 32, mode="disabled")
+    touched = []
+    real_memset = key._teardown_memset
+    key._teardown_memset = lambda *args: touched.append(args) or real_memset(*args)
+    # What a forked child of a fork-excluding platform sees: same handle, another pid.
+    key._fork_excluded = True
+    key._teardown_getpid = lambda: key._owner_pid + 1
+    with pytest.raises(RuntimeError, match="excluded from child processes"):
+        key.get_buffer()
+    with pytest.raises(RuntimeError, match="excluded from child processes"):
+        key.get_bytes()
+    mapping = key._mapping
+    key.wipe()
+    assert key.is_wiped and touched == []
+    # The owner's page was left as it was (this test is both processes).
+    if mapping is not None:
+        assert bytes(mapping[:32]) == b"\x55" * 32
+        mapping.close()

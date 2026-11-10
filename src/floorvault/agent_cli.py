@@ -1407,7 +1407,10 @@ def _cmd_put(args, prog: str) -> int:
 
 def _cmd_list(args, prog: str) -> int:
     for meta in sorted(_store_for(args).list_items(), key=lambda m: m.id):
-        print("\t".join((meta.id, meta.kind, _printable(meta.label))))
+        # kind is a cleartext column in the default store, so whoever can write
+        # vault.db can put anything there; escaped like the label, it cannot
+        # start a second line that looks like another item.
+        print("\t".join((meta.id, _printable(str(meta.kind)), _printable(meta.label))))
     return 0
 
 

@@ -41,6 +41,22 @@ otherwise inherit extra account permissions from the hosted runner. Production
 key-store ACL verification remains unchanged and continues to refuse those
 permissions.
 
+## What a job is given besides the commit
+
+A job's result should depend on the commit it checked out and nothing else.
+`tests/test_ci_workflow.py` keeps three rules for that, across every workflow:
+
+- **No checkout keeps the workflow token.** Every `actions/checkout` step sets
+  `persist-credentials: false`. No job pushes, so nothing needs the token in
+  `.git/config`, where test code, the build backend and tools fetched at run
+  time could read it.
+- **Jobs that build the wheel and sdist restore no dependency cache.** The
+  `Lint and build` job and the release workflow set `enable-cache: false` on
+  `setup-uv`. The other jobs keep the cache: they publish nothing.
+- **Every `uv sync` is `--locked`.** A `uv.lock` that no longer matches
+  `pyproject.toml` fails the job. Without the flag uv re-resolves, and the run
+  passes on dependencies no one reviewed.
+
 ## Required checks on main
 
 The repository's [floorvault branch governance ruleset](https://github.com/Guerilla-ops/floorvault/rules/24341865)

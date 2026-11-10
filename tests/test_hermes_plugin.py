@@ -1541,3 +1541,59 @@ def test_cli_refuses_a_secrets_section_that_is_not_a_mapping(plugin_cli, tmp_pat
         plugin_cli._secrets_cfg()
     sys.modules["hermes_cli.config"].read_user_config_raw = lambda: {"other": 1}
     assert plugin_cli._secrets_cfg() == {}
+
+
+# --- resolution consults the record `allow` keeps outside the store (#97) -----
+
+
+def _clear_binding_in_db(home, item_id):
+    import contextlib
+    import sqlite3
+
+    with contextlib.closing(sqlite3.connect(home / "agent-vault" / "vault.db")) as conn:
+        conn.execute("UPDATE vault_items SET allowed_commands = NULL WHERE id = ?", (item_id,))
+        conn.commit()
+
+
+def test_fetch_refuses_a_recorded_binding_cleared_in_vault_db(allow_env, monkeypatch, capsys):
+    """Without the key, a writer of vault.db can clear a binding; it still must not resolve."""
+    plugin_cli, home = allow_env
+    _as_started(monkeypatch, [HERMES, "gateway", "run"])
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 0
+    env = {"env": {"OPENAI_API_KEY": "hv:vault_testopenai", "TG": "hv:vault_multi:token"}}
+    assert "OPENAI_API_KEY" not in fetch(home, env).secrets  # bound to another command
+    _clear_binding_in_db(home, "vault_testopenai")
+    result = fetch(home, env)
+    assert result.ok and result.secrets == {"TG": "tok-abc"}
+    assert any("changed since it was last recorded" in w for w in result.warnings)
+    # The operator's own decision releases it again.
+    assert plugin_cli.hvault_command(_allow_args(accept=True)) == 0
+    assert fetch(home, env).secrets["OPENAI_API_KEY"] == "sk-test-123"
+
+
+def test_rm_forgets_the_binding_so_a_new_item_of_that_id_resolves(allow_env, capsys):
+    plugin_cli, home = allow_env
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 0
+    rm = SimpleNamespace(hvault_command="rm", item_id="vault_testopenai")
+    assert plugin_cli.hvault_command(rm) == 0
+    floorvault.get_vault_store(home / "agent-vault", auto_migrate=False).add_item(
+        kind="generic", label="again", secret={"value": "sk-new"}, item_id="vault_testopenai"
+    )
+    result = fetch(home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
+    assert result.secrets == {"OPENAI_API_KEY": "sk-new"} and not result.warnings
+
+
+def test_list_escapes_control_characters_from_the_store(allow_env, capsys):
+    """kind and origin are cleartext columns; a label may come from another tool."""
+    import contextlib
+    import sqlite3
+
+    plugin_cli, home = allow_env
+    forged = "generic\tReal\nprod-root\tgeneric\tProduction root\x1b[1A"
+    with contextlib.closing(sqlite3.connect(home / "agent-vault" / "vault.db")) as conn:
+        conn.execute("UPDATE vault_items SET kind = ? WHERE id = 'vault_multi'", (forged,))
+        conn.commit()
+    capsys.readouterr()
+    assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="list")) == 0
+    out = capsys.readouterr().out
+    assert len(out.splitlines()) == 2 and "\x1b" not in out

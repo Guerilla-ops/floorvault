@@ -64,3 +64,27 @@ def test_scrub_removes_jwt():
 def test_scrub_keeps_ordinary_text():
     text = "The quick brown fox jumps over the lazy dog."
     assert scrub_secrets_for_fts(text) == text
+
+
+def test_a_hex_secret_longer_than_64_digits_is_removed_whole():
+    """The pattern stopped at 64 digits and left the rest of a longer key behind."""
+    long_key = "ab12" * 20  # 80 hex digits: a 40-byte key
+    scrubbed = scrub_secrets_for_fts(f"key {long_key} end")
+    assert "ab12" not in scrubbed and scrubbed.endswith(" end")
+
+
+def test_a_value_that_starts_another_does_not_leave_the_others_tail():
+    from floorvault.vaultkit.vault import scrub_secret_from_text
+
+    short, long = "hunter2", "hunter2" + "-EXTRA-TAIL-9f3a"
+    for secret in ({"password": short, "api_key": long}, {"api_key": long, "password": short}):
+        scrubbed = scrub_secret_from_text(f"auth failed for {long}", secret)
+        assert scrubbed == "auth failed for [REDACTED]"
+
+
+def test_a_secret_stored_as_a_number_is_scrubbed_too():
+    from floorvault.vaultkit.vault import scrub_secret_from_text
+
+    assert scrub_secret_from_text("pin 4821 rejected", {"pin": 4821, "on": True}) == (
+        "pin [REDACTED] rejected"
+    )

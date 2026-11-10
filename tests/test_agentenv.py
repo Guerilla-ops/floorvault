@@ -376,3 +376,25 @@ def test_render_without_deletes_whole_lines_and_keeps_the_rest(tmp_path):
     )
     everything = render_env_file_without(env_file, by_name.values())
     assert everything == b"\xef\xbb\xbf# c\r\n"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "PYTHONPYCACHEPREFIX",  # a planted .pyc for a standard-library module runs in its place
+        "PYTHONBREAKPOINT",
+        "SHELLOPTS",  # xtrace, with PS4 holding a command substitution
+        "BASHOPTS",
+        "PS4",
+        "PERL5DB",
+        "GCONV_PATH",
+        "OPENSSL_CONF",
+        "OPENSSL_MODULES",
+        "OPENSSL_ENGINES",
+    ],
+)
+def test_variables_that_run_code_in_a_bound_command_are_flagged(name):
+    from floorvault.agentenv import code_injection_variables
+
+    assert code_injection_variables({name: "x", "PATH": "/bin"}) == [name]
+    assert code_injection_variables({name.lower(): "x"}) == [name.lower()]

@@ -43,6 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          persist-credentials: false
           # On a pull request this is the PR merged into its base: two parents.
           fetch-depth: 2
       - name: Do the changed files need the mutation controls?
@@ -98,6 +99,8 @@ jobs:
       matrix: ${{ steps.select.outputs.matrix }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
       - name: Select ordinary or expanded coverage
         id: select
         shell: bash
@@ -119,6 +122,8 @@ jobs:
       matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
         with:
           enable-cache: true
@@ -143,9 +148,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "macOS" ]; then
-            uv sync --extra dev --extra macos
+            uv sync --locked --extra dev --extra macos
           else
-            uv sync --extra dev
+            uv sync --locked --extra dev
           fi
       - name: Full test suite (includes native Windows DPAPI on Windows)
         run: uv run --no-sync pytest -q tests/
@@ -168,6 +173,8 @@ jobs:
         shard: ${{ fromJSON(needs.changes.outputs.platform_shards) }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
         with:
           enable-cache: true
@@ -190,9 +197,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "macOS" ]; then
-            uv sync --extra dev --extra macos
+            uv sync --locked --extra dev --extra macos
           else
-            uv sync --extra dev
+            uv sync --locked --extra dev
           fi
       - name: Platform mutation controls (shard)
         run: >
@@ -240,12 +247,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
         with:
+          # This job builds the wheel and sdist it uploads, and runs on version
+          # tags. A restored cache is input no review saw, so the build takes
+          # none: every package is fetched and checked against uv.lock.
+          enable-cache: false
           python-version: "3.13"
           version: "0.12.5"
       - name: Sync environment
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       - name: Lint and format
         run: |
           uv run --no-sync ruff check src/ tests/ scripts/ fuzz/
@@ -280,12 +293,14 @@ jobs:
         shard: ${{ fromJSON(needs.changes.outputs.linux_shards) }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
         with:
           python-version: "3.13"
           version: "0.12.5"
       - name: Sync environment
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       - name: Verify this shard of the curated mutants
         run: >
           uv run --no-sync python -u scripts/mutation_check.py --mode curated
@@ -323,6 +338,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          persist-credentials: false
           # A shallow checkout would make a history scan meaningless.
           fetch-depth: 0
       - name: Install gitleaks (pinned, checksum-verified)
@@ -358,12 +374,14 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
         with:
           python-version: "3.13"
           version: "0.12.5"
       - name: Sync environment
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       - name: Bandit
         # Same command as step 3a of scripts/security-check.sh.
         run: uv run bandit -q -r src/ scripts/ fuzz/
@@ -387,6 +405,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
         with:
           python-version: "3.13"
@@ -394,7 +414,7 @@ jobs:
       - name: Sync environment (all extras)
         # dev is itself a declared extra, so --all-extras covers it (and
         # pip-audit with it); --all-extras cannot be combined with --extra.
-        run: uv sync --all-extras
+        run: uv sync --all-extras --locked
       - name: pip-audit
         # --no-sync is required: plain `uv run` re-synchronizes the
         # environment to the default extras first, dropping the audited
@@ -415,12 +435,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
         with:
           python-version: "3.13"
           version: "0.12.5"
       - name: Sync environment
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       - name: Install Vault (pinned, checksum-verified)
         run: |
           set -euo pipefail

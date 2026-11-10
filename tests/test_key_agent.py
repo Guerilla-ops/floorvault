@@ -1074,6 +1074,18 @@ def test_neither_the_typed_passphrase_nor_a_copy_of_the_key_is_in_the_agent_memo
             maps, mem = open(f"/proc/{pid}/maps"), open(f"/proc/{pid}/mem", "rb", 0)
         except PermissionError:  # root without CAP_SYS_PTRACE (a container): cannot read it
             pytest.skip("this process may not read another process's memory")
+        # The protected mapping holds the key by design. It is a private
+        # anonymous page, so it has no name to go by; it is the one the kernel
+        # was told not to copy into children (VmFlags "dc", MADV_DONTFORK).
+        protected, start = set(), None
+        with open(f"/proc/{pid}/smaps") as smaps:
+            for line in smaps:
+                header = re.match(r"([0-9a-f]+)-[0-9a-f]+ ", line)
+                if header:
+                    start = int(header[1], 16)
+                elif line.startswith("VmFlags:") and "dc" in line.split()[1:]:
+                    protected.add(start)
+        assert protected, "no fork-excluded mapping: the protected page cannot be told apart"
         with maps, mem:
             for line in maps:
                 match = re.match(r"([0-9a-f]+)-([0-9a-f]+) (\S+) \S+ \S+ \S+\s*(.*)", line)
@@ -1086,7 +1098,7 @@ def test_neither_the_typed_passphrase_nor_a_copy_of_the_key_is_in_the_agent_memo
                 except OSError:
                     continue
                 found["passphrase"] += data.count(canary.encode())
-                if "/dev/zero" not in name:  # the protected mapping holds the key by design
+                if lo not in protected:
                     found["key"] += data.count(key)
     finally:
         cli(["lock", "--vault", str(vault)], env)
@@ -1580,3 +1592,89 @@ def test_a_pending_agent_left_waiting_for_its_key_gives_up_and_clears_the_path(
     finally:
         pending.cancel()
     assert not path.exists()
+
+
+# ------------------------------------------------- hardening: lock, peer uid, file lock
+
+
+def test_a_lock_takes_effect_even_when_its_reply_cannot_be_delivered(running, monkeypatch):
+    """The client that asked may be gone by the time the agent reaches its request.
+
+    The agent serves one connection at a time, so a lock queued behind slow
+    connections can outlive its client's patience. It was acknowledged first and
+    obeyed second: the failed reply skipped the stop and the key stayed loaded.
+    """
+    item = running()
+    real = key_agent._send
+
+    def reply_to_a_client_that_left(conn, message):
+        if threading.current_thread() is item.thread and message.get("locked"):
+            raise BrokenPipeError("the client closed its end")
+        return real(conn, message)
+
+    monkeypatch.setattr(key_agent, "_send", reply_to_a_client_that_left)
+    with pytest.raises(key_agent.AgentError):
+        key_agent.lock(item.path)  # the client is told nothing
+    item.join()
+    assert item.agent.reason == "locked"
+    assert item.key.is_wiped and not item.path.exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="SO_PEERCRED's struct ucred is Linux")
+def test_a_peer_uid_above_two_to_the_31_is_read_as_itself():
+    """uid_t is unsigned; read as signed such a user could never match geteuid()."""
+
+    class Peer:
+        def getsockopt(self, level, option, size):
+            assert size == 12
+            return struct.pack("iII", 4321, 3_000_000_000, 3_000_000_001)
+
+    assert key_agent.peer_credentials(Peer()) == (4321, 3_000_000_000)
+
+
+def test_a_lock_wait_with_a_timeout_ends_at_the_timeout(base):
+    """A stopped or hung holder must not hang a caller that asked for a bound."""
+    path = base / "held.lock"
+    release = threading.Event()
+    holding = threading.Event()
+
+    def hold_in_another_process():
+        # flock is per open file description, so a second descriptor stands in
+        # for another process; the in-process mutex is covered below.
+        import fcntl
+
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            holding.set()
+            release.wait(10)
+        finally:
+            os.close(fd)
+
+    holder = threading.Thread(target=hold_in_another_process, daemon=True)
+    holder.start()
+    assert holding.wait(5)
+    try:
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="timed out waiting for lock"):
+            with exclusive_lock(path, timeout=0.3):
+                pytest.fail("took a lock another holder has")
+        assert 0.25 <= time.monotonic() - started < 3
+    finally:
+        release.set()
+        holder.join(5)
+    with exclusive_lock(path, timeout=2.0):  # free again: taken at once
+        # The wait for another thread of this process is bounded too.
+        outcome = []
+
+        def second_thread():
+            try:
+                with exclusive_lock(path, timeout=0.2):
+                    outcome.append("took it")
+            except TimeoutError:
+                outcome.append("timed out")
+
+        other = threading.Thread(target=second_thread)
+        other.start()
+        other.join(5)
+        assert outcome == ["timed out"]

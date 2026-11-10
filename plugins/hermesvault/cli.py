@@ -19,6 +19,7 @@ import json
 import os
 import shlex
 import sys
+import unicodedata
 import warnings
 from pathlib import Path
 
@@ -44,6 +45,13 @@ def _field(value):
     if not isinstance(value, str) or not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
         raise CLIInputError("field must be non-empty and contain no control characters")
     return value
+
+
+def _printable(text: str) -> str:
+    """``text`` with control characters escaped, so it cannot forge a line or drive the terminal."""
+    return "".join(
+        f"\\x{ord(char):02x}" if unicodedata.category(char) == "Cc" else char for char in text
+    )
 
 
 def _root_is_not_a_mapping() -> bool:
@@ -414,9 +422,52 @@ def _cmd_rm(args) -> int:
     _item_id(args.item_id)
     if _store().remove_item(args.item_id):
         print(f"removed {args.item_id}")
+        _forget_binding(args.item_id)
         return 0
     print(f"hvault rm: item {args.item_id} not found", file=sys.stderr)
     return 1
+
+
+def _forget_binding(item_id: str) -> None:
+    """Drop a removed item from the binding record, as `floorvault secrets rm` does.
+
+    Left there, the fingerprint of the removed item's binding would be compared
+    with a later item of the same id, which would then be skipped as "changed"
+    until `allow --accept`. The item is already gone, so a record that cannot be
+    updated is a warning, not a failure.
+    """
+    try:
+        from floorvault.binding_record import BindingRecordError
+    except ImportError:  # floorvault 0.2.x keeps no record
+        return
+    try:
+        base = resolve_base_dir(_secrets_cfg(), Path(get_hermes_home()))
+        record, _record_error = _binding_record(base)
+        record.forget(item_id)
+    except (BindingRecordError, CLIInputError) as exc:
+        print(f"hvault rm: warning: {exc}", file=sys.stderr)
+
+
+def _record_unbound_new_item(store, cfg: dict, home: Path, item_id: str) -> None:
+    """Record that an item `bind` just created has no binding.
+
+    The secret source refuses an item whose binding differs from the record, so
+    recording "none" at creation means a binding that appears later without
+    `allow` is noticed, and an entry left by an earlier item of the same id does
+    not get the new one skipped. Nothing to do on a floorvault that keeps no
+    record; a record that cannot be written is said so and the item stays usable.
+    """
+    if getattr(store, "binding_fingerprint", None) is None:
+        return
+    try:
+        record, record_error = _binding_record(resolve_base_dir(cfg, home))
+    except CLIInputError as exc:
+        print(f"hvault bind: warning: {exc}", file=sys.stderr)
+        return
+    try:
+        record.record(item_id, store.binding_fingerprint(item_id))
+    except record_error as exc:
+        print(f"hvault bind: warning: {exc}", file=sys.stderr)
 
 
 def _cmd_list(_args) -> int:
@@ -428,7 +479,9 @@ def _cmd_list(_args) -> int:
         parts = [meta.id, meta.kind, meta.label]
         if meta.origin:
             parts.append(meta.origin)
-        print("\t".join(str(p) for p in parts))
+        # One item, one line: kind and origin are cleartext columns anyone who
+        # can write vault.db can set, and a label may come from another tool.
+        print("\t".join(_printable(str(p)) for p in parts))
     return 0
 
 
@@ -555,6 +608,8 @@ def _cmd_bind(args) -> int:
         print(f"stored {item_id}.{field}")
         if not getattr(args, "no_bind", False):
             print(_bind_new_item_to_gateway(store, cfg, home, item_id))
+        else:
+            _record_unbound_new_item(store, cfg, home, item_id)
     else:
         if not store.update_generic_field(item_id, field, value):
             print(f"hvault bind: item {item_id} vanished during update", file=sys.stderr)
@@ -592,6 +647,7 @@ def _bind_new_item_to_gateway(store, cfg: dict, home: Path, item_id: str) -> str
         )
     line = gateway_command_line(home)
     if line is None:
+        _record_unbound_new_item(store, cfg, home, item_id)
         return (
             f"not bound on this platform; bind it with `hermes hvault allow {item_id} "
             "-- <command line>` (the startup warning prints the line)"

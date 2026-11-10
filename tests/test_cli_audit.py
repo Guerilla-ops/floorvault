@@ -1121,3 +1121,21 @@ def test_ins_7_schema_id_and_version_select_the_record_identity(tmp_path, base_e
     empty = _inspect([*row, "--schema-id", " "], base_env)
     assert empty.returncode == 1
     assert "--schema-id must not be empty" in empty.stderr
+
+
+def test_a_kind_written_into_vault_db_cannot_forge_a_listing_line(base_env, store):
+    """kind is a cleartext column: whoever can write vault.db needs no key to set it.
+
+    SEC-8 escaped the label for this reason; kind was printed as stored.
+    """
+    forged = "generic\tReal item\nprod-db-root\tgeneric\tProduction DB root\x1b[1A"
+    with contextlib.closing(sqlite3.connect(store / "vault.db")) as db:
+        db.execute("UPDATE vault_items SET kind = ? WHERE id = 'one'", (forged,))
+        db.commit()
+    result = fv(["secrets", "list"], base_env)
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert len(lines) == 2, "one item, one line"
+    assert "\x1b" not in result.stdout and not any(
+        line.startswith("prod-db-root") for line in lines
+    )

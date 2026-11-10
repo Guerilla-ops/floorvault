@@ -42,7 +42,9 @@ SECRET_PATTERNS = [
     re.compile(r"sk-[a-zA-Z0-9_-]{20,}", re.IGNORECASE),
     re.compile(r"gh[pousr]_[a-zA-Z0-9]{36,}", re.IGNORECASE),
     re.compile(r"Bearer\s+[a-zA-Z0-9._-]{20,}", re.IGNORECASE),
-    re.compile(r"[a-f0-9]{32,64}", re.IGNORECASE),  # Raw hex tokens
+    # Raw hex tokens. No upper bound: a bounded match left the tail of a longer
+    # key (80 hex digits for a 40-byte one) in the text.
+    re.compile(r"[a-f0-9]{32,}", re.IGNORECASE),
     # AWS access key ids (AKIA/ASIA followed by 16 uppercase alphanumerics).
     re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     # Slack tokens (xoxb/xoxp/xoxa/xoxr/xoxs followed by hyphenated parts).

@@ -274,9 +274,10 @@ there it takes precedence, and `doctor` flags it.
   or newer; with 0.2.x, bind with `floorvault secrets allow`.
 - It does not support a passphrase-protected store, because it never prompts. Use
   the OS key store, a key file or systemd-creds for a store Hermes reads.
-- `hermes hvault allow` keeps a binding record outside the store, so a later
-  `allow` refuses a binding changed behind its back, but startup resolution does
-  not consult it; see [Security boundaries](#security-boundaries).
+- `hermes hvault allow` keeps a binding record outside the store. A later
+  `allow` refuses a binding changed behind its back, and with a floorvault newer
+  than 0.4.0 startup resolution skips such an item too; see
+  [Security boundaries](#security-boundaries).
 
 [Plugin README](https://github.com/Guerilla-ops/floorvault/blob/main/plugins/hermesvault/README.md) ·
 [Hermes Agent](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#hermes-agent-integration)
@@ -296,7 +297,7 @@ Beta, unaudited, no policy broker, and search beacons leak equality. In detail:
 | Agent access | A compromised or prompt-injected authorised caller can request genuine plaintext. The library does not supply a policy broker. |
 | Key agent | While unlocked, code running as you can ask the agent to encrypt or decrypt any item; it hands out plaintext, not the key. It refuses to start without core-dump and debugger protection unless `--allow-unhardened` is given, and it is not an enclave. The macOS peer-credential check and the suspend-inclusive clock have not been run on a real Mac outside CI. |
 | Passphrase | The wrapping is only as strong as the passphrase, and there is no recovery: lose the passphrase or `master.key.fvpw` and the data is gone. After `protect --rotate`, backups made before still open with the old key, and an external key file, environment key or the shared OS key store entry is not retired for you. |
-| Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, and the state directory must persist and stay outside the store writer's control; restoring both the store and record can replay an older, wider binding undetected. `hermes hvault allow` keeps the same kind of record, so a later `allow` refuses a binding changed behind its back, but the plugin's startup resolution does not consult it: a binding rolled back in `vault.db` still resolves there, and a cleared one is refused only with `require_binding: true`. |
+| Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, and the state directory must persist and stay outside the store writer's control; restoring both the store and record can replay an older, wider binding undetected. `hermes hvault allow` keeps the same kind of record: a later `allow` refuses a binding changed behind its back, and with a floorvault newer than 0.4.0 the plugin's startup resolution reads it and skips an item whose recorded binding was cleared or rolled back in `vault.db`. The plugin only reads the record, so an item it was never recorded for is judged by the store alone (a cleared binding is then refused only with `require_binding: true`), and with 0.4.0 or older nothing is compared. |
 
 ## Documentation
 
