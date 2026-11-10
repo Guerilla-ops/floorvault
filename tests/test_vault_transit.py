@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 import urllib.error
 
@@ -614,3 +615,114 @@ def test_a_token_that_cannot_be_a_header_value_is_refused_without_being_quoted(s
         transport.post("/v1/x", {}, TOKEN + suffix)
     assert TOKEN not in str(caught.value) and TOKEN not in repr(caught.value)
     assert transport._opener.urls == [], "nothing may be sent"
+
+
+# ---------------------------------------------------------------------------
+# A crash between the generation file and the pointer
+#
+# The store adopts an orphaned generation only when a retry presents the same
+# bytes. The provider never can: Vault mints a fresh datakey and a fresh
+# rewrap nonce on every call. (The plain FakeVault above returns the same blob
+# each time, which is why this went unseen.) One crash at that point refused
+# every later provision or rewrap until a file was deleted by hand.
+# ---------------------------------------------------------------------------
+
+
+class FreshVault(FakeVault):
+    """Like real Transit: no two datakeys and no two rewraps are the same."""
+
+    def post(self, path, body, token):
+        op = path.split("/")[3]
+        context = body.get("context")
+        if op == "datakey":
+            self.calls.append((path, dict(body)))
+            plaintext = os.urandom(32)
+            blob = "vault:v1:" + base64.b64encode(context.encode() + b"|" + plaintext).decode()
+            return {"data": {"ciphertext": blob, "plaintext": base64.b64encode(plaintext).decode()}}
+        return super().post(path, body, token)  # a rewrap already differs: the version moves
+
+
+def _fresh_provider(tmp_path, fake=None):
+    fake = fake or FreshVault()
+    provider = VaultTransitProvider(
+        vault_addr=ADDR,
+        key_name="floorvault",
+        store_dir=tmp_path / "vt",
+        token=TOKEN,
+        transport=fake,
+        cache_ttl=0,
+    )
+    return provider, fake
+
+
+def _crash_before_the_pointer(monkeypatch):
+    def crash(self, generation, payload):
+        raise KeyboardInterrupt("simulated crash before the pointer is published")
+
+    monkeypatch.setattr(GenerationStore, "_publish_pointer", crash)
+
+
+def test_a_provision_that_crashed_before_its_pointer_is_finished_by_the_next(tmp_path, monkeypatch):
+    provider, fake = _fresh_provider(tmp_path)
+    with monkeypatch.context() as patch:
+        _crash_before_the_pointer(patch)
+        with pytest.raises(KeyboardInterrupt):
+            provider.resolve_key()
+    store = GenerationStore(tmp_path / "vt")
+    orphan = store.unpublished_generation(1)
+    assert orphan is not None
+    datakeys = sum(1 for path, _ in fake.calls if "/datakey/" in path)
+
+    again, _ = _fresh_provider(tmp_path, fake)
+    key = again.resolve_key().get_bytes()
+    assert store.read_active() == (1, orphan)
+    assert sum(1 for path, _ in fake.calls if "/datakey/" in path) == datakeys, (
+        "a second key was minted over the unpublished one"
+    )
+    # It is the key the orphan wraps, and it is stable from then on.
+    assert _fresh_provider(tmp_path, fake)[0].resolve_key().get_bytes() == key
+
+
+def test_an_unpublished_generation_vault_does_not_unwrap_is_never_adopted(tmp_path, monkeypatch):
+    provider, fake = _fresh_provider(tmp_path)
+    with monkeypatch.context() as patch:
+        _crash_before_the_pointer(patch)
+        with pytest.raises(KeyboardInterrupt):
+            provider.resolve_key()
+    # Wrapped under another store's context: not this store's key.
+    foreign = b"vault:v1:" + base64.b64encode(b"some-other-context|" + bytes(32))
+    store = GenerationStore(tmp_path / "vt")
+    store._generation_path(1).unlink()
+    store._write_generation(1, foreign)
+    with pytest.raises(CustodyDowngradeError, match="unpublished generation 1 .* not adopted"):
+        _fresh_provider(tmp_path, fake)[0].resolve_key()
+    with pytest.raises(Exception, match="."):
+        store.read_active()  # still unprovisioned: nothing was published
+
+
+def test_a_rewrap_that_crashed_before_its_pointer_is_finished_by_the_next(tmp_path, monkeypatch):
+    provider, fake = _fresh_provider(tmp_path)
+    key = provider.resolve_key().get_bytes()
+    with monkeypatch.context() as patch:
+        _crash_before_the_pointer(patch)
+        with pytest.raises(KeyboardInterrupt):
+            provider.rewrap()
+    store = GenerationStore(tmp_path / "vt")
+    orphan = store.unpublished_generation(2)
+    assert orphan is not None and store.read_active()[0] == 1
+    assert provider.rewrap() == 2
+    assert store.read_active() == (2, orphan)
+    assert _fresh_provider(tmp_path, fake)[0].resolve_key().get_bytes() == key
+    assert provider.rewrap() == 3  # and rotation carries on
+
+
+def test_a_rewrap_does_not_adopt_a_generation_that_wraps_another_key(tmp_path):
+    provider, fake = _fresh_provider(tmp_path)
+    provider.resolve_key()
+    store = GenerationStore(tmp_path / "vt")
+    context = fake.calls[0][1]["context"]
+    other_key = b"vault:v2:" + base64.b64encode(context.encode() + b"|" + b"\x99" * 32)
+    store._write_generation(2, other_key)
+    with pytest.raises(CustodyDowngradeError, match="unpublished generation 2 .* not adopted"):
+        provider.rewrap()
+    assert store.read_active()[0] == 1

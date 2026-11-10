@@ -30,6 +30,7 @@ sockets (``hvac`` remains a possible optional extra, not a dependency).
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import os
 import re
@@ -273,6 +274,15 @@ def _require_wrapped_blob(value: object) -> bytes:
     return raw
 
 
+def _require_wrapped_blob_bytes(raw: bytes) -> bytes:
+    """The same check for bytes read back from the store's own generation file."""
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        text = None
+    return _require_wrapped_blob(text)
+
+
 class VaultTransitProvider(KeyProvider):
     """Resolve the master key from a Vault-Transit-wrapped generation store.
 
@@ -364,6 +374,33 @@ class VaultTransitProvider(KeyProvider):
             raise CustodyDowngradeError(
                 f"cannot rewrap: wrapped-master store is unusable ({exc})"
             ) from exc
+        # A rewrap that died between writing the next generation file and
+        # repointing ``active`` left that file behind. Vault never returns the
+        # same blob twice, so a fresh rewrap can never match it and every later
+        # rewrap would fail until someone deleted the file by hand. Finish the
+        # interrupted one instead, once Vault confirms the file wraps this very
+        # key under this store's context.
+        try:
+            leftover = self._store.unpublished_generation(generation + 1)
+        except ProtectedStoreError as exc:
+            raise CustodyDowngradeError(
+                f"cannot rewrap: wrapped-master store is unusable ({exc})"
+            ) from exc
+        if leftover is not None:
+            current = self._transit_decrypt(blob, context)
+            try:
+                same = hmac.compare_digest(
+                    self._transit_decrypt(_require_wrapped_blob_bytes(leftover), context), current
+                )
+            except CustodyDowngradeError:
+                same = False
+            if not same:
+                raise CustodyDowngradeError(
+                    f"cannot rewrap: an unpublished generation {generation + 1} is in the "
+                    "store and does not unwrap to this store's key; it is not adopted. "
+                    "Inspect and remove that generation file to rewrap again"
+                )
+            return self._store.update(leftover, expected_generation=generation)
         response = self._call("rewrap", {"ciphertext": blob.decode("ascii"), "context": context})
         new_blob = self._unwrap_response(response)
         return self._store.update(new_blob, expected_generation=generation)
@@ -378,6 +415,30 @@ class VaultTransitProvider(KeyProvider):
         # ensure-or-read rather than create-or-fail.
         store_id = self._ensure_store_id()
         context = self._context_for(store_id)
+        # A provision that died between writing generation 1 and publishing the
+        # pointer left the file behind. A new datakey can never match it (Vault
+        # mints a fresh one each time), so every later attempt would be refused
+        # as "different content" and reported as a lost race that nobody won.
+        # Finish that provision instead: the file is adopted only if Vault
+        # unwraps it under this store's context to a 32-byte key.
+        leftover = self._store.unpublished_generation(1)
+        if leftover is not None:
+            try:
+                plaintext = self._transit_decrypt(_require_wrapped_blob_bytes(leftover), context)
+            except CustodyDowngradeError as exc:
+                raise CustodyDowngradeError(
+                    "an unpublished generation 1 is in the store and cannot be confirmed "
+                    f"as this store's key ({exc}); it is not adopted and no new key is "
+                    "minted over it. Retry when Vault is reachable, or inspect and remove "
+                    "that generation file"
+                ) from None
+            try:
+                self._store.provision(leftover)
+            except ProtectedStoreError:
+                # It was not a crash: a live provisioner published it meanwhile.
+                winner = self._await_active()
+                plaintext = self._transit_decrypt(winner[1], self._context())
+            return self._cache(plaintext)
         # The plaintext/ciphertext selector is a path segment in the Vault
         # API, not a request field.
         response = self._call("datakey/plaintext", {"context": context})

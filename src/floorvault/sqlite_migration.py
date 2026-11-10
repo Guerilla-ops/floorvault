@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from .core import FloorVault
 from .sqlite_adapter import _fold_sqlite, _quoted_identifier, _safe_column, _safe_identifier
@@ -33,6 +34,31 @@ def _validate_inputs(
     return table_name, id_name, source_name, destination_name
 
 
+@contextmanager
+def _one_transaction(connection: sqlite3.Connection) -> Iterator[None]:
+    """Run the block in exactly one transaction: all of it commits, or none.
+
+    ``with connection:`` only commits or rolls back a transaction that is
+    already open. On a connection in autocommit mode (``isolation_level=None``,
+    or Python 3.12's ``autocommit=True``) none is, so every statement committed
+    on its own and a failure part-way left the rows before it encrypted, which
+    the next run then refused as "destination column already contains data".
+    The transaction is opened explicitly here unless one is open already (the
+    caller's own, or the one ``autocommit=False`` always holds), which is used
+    and ended as ``with connection:`` did. Explicit COMMIT/ROLLBACK statements,
+    because ``commit()`` and ``rollback()`` do nothing under ``autocommit=True``.
+    """
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    connection.execute("COMMIT")
+
+
 def migrate_plaintext_column(
     connection: sqlite3.Connection,
     crypto: FloorVault,
@@ -44,9 +70,9 @@ def migrate_plaintext_column(
 ) -> dict[str, int]:
     """Encrypt a plaintext column into an existing destination BLOB column.
 
-    The source column is never deleted or modified. The operation is atomic from
-    SQLite's transaction perspective: an exception rolls back all destination
-    writes. It refuses to overwrite any non-NULL destination value when a source
+    The source column is never deleted or modified. The operation is one
+    SQLite transaction, opened here if none is open, on a connection in any
+    transaction mode: an exception rolls back all destination writes. It refuses to overwrite any non-NULL destination value when a source
     value exists, preventing an ambiguous partial migration. The caller owns the
     connection and should not rely on implicit commit behavior outside this
     function.
@@ -67,7 +93,7 @@ def migrate_plaintext_column(
     sql_table, sql_id, sql_source, sql_dest = (
         _quoted_identifier(n) for n in (table, id_column, source_column, destination_column)
     )
-    with connection:
+    with _one_transaction(connection):
         conflict = connection.execute(
             f"SELECT 1 FROM {sql_table} WHERE {sql_source} IS NOT NULL "  # identifiers allow-listed + quoted  # nosec B608
             f"AND {sql_dest} IS NOT NULL LIMIT 1"
