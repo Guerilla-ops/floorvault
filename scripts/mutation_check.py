@@ -1652,9 +1652,11 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "SDC-6",
         "src/floorvault/systemd_creds.py",
-        "os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr",
-        "os.O_WRONLY | os.O_CREAT | getattr",
-        "An existing credential is overwritten: the store's key is replaced and its data is lost",
+        "            os.link(temporary, path)\n",
+        "            os.replace(temporary, path)  # MUTANT\n",
+        "An existing credential is overwritten: the store's key is replaced and its data is lost "
+        "(the credential is written under a temporary name, so the no-clobber guarantee is the "
+        "link into place, not the exclusive create)",
     ),
     Mutation(
         "SDC-7",

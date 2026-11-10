@@ -733,3 +733,30 @@ def test_a_write_cut_short_leaves_no_credential_behind(fake, vault, monkeypatch)
     assert sdc.read_key(vault, binary=str(fake.binary)) is not None
     with pytest.raises(sdc.SystemdCredsError, match="never replaced"):
         sdc.create_credential(vault, binary=str(fake.binary))
+
+
+@linux_only
+def test_an_existing_credential_is_never_replaced_even_if_it_appears_after_the_check(
+    fake, vault, monkeypatch
+):
+    """The existence check and the link are two steps; the link is the real guarantee.
+
+    The check can be raced: another process creates the credential between it and
+    the link. The link must then refuse and leave the existing credential alone.
+    """
+    path = sdc.create_credential(vault, binary=str(fake.binary))
+    before = path.read_bytes()
+    real_lexists = sdc.os.path.lexists
+    monkeypatch.setattr(
+        sdc.os.path,
+        "lexists",
+        lambda candidate: (
+            False if os.fspath(candidate) == os.fspath(path) else real_lexists(candidate)
+        ),
+    )
+    with pytest.raises(sdc.SystemdCredsError, match="never replaced"):
+        sdc.create_credential(vault, binary=str(fake.binary))
+    assert path.read_bytes() == before
+    assert [entry.name for entry in vault.iterdir()] == [path.name], (
+        "a temporary file was left behind"
+    )
