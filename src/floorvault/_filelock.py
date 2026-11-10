@@ -14,7 +14,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Optional
 
 # flock is per open file description, so two threads of one process that each
 # open the lock file do exclude each other; the process-wide mutex below makes
@@ -29,10 +29,27 @@ def _process_lock(path: Path) -> threading.Lock:
         return _PROCESS_LOCKS.setdefault(key, threading.Lock())
 
 
+#: How long Windows waits when the caller names no timeout (it always polls).
+_DEFAULT_WINDOWS_TIMEOUT = 30.0
+
+
 @contextmanager
-def exclusive_lock(path: Path, *, timeout: float = 30.0) -> Iterator[None]:
-    """Hold an exclusive lock on ``path`` (created 0600 if absent) for the block."""
-    with _process_lock(path):
+def exclusive_lock(path: Path, *, timeout: Optional[float] = None) -> Iterator[None]:
+    """Hold an exclusive lock on ``path`` (created 0600 if absent) for the block.
+
+    With a ``timeout``, :class:`TimeoutError` is raised when the lock cannot be
+    taken within that many seconds, on every platform, counting the wait for
+    another thread of this process too. Without one, POSIX waits for as long as
+    it takes (a holder may be waiting on a person: a key-store unlock prompt)
+    and Windows waits 30 seconds.
+    """
+    deadline = None if timeout is None else time.monotonic() + timeout
+    process_lock = _process_lock(path)
+    if deadline is None:
+        process_lock.acquire()
+    elif not process_lock.acquire(timeout=max(timeout, 0.0)):
+        raise TimeoutError(f"timed out waiting for lock {path}")
+    try:
         # Looked up through the custody module at call time (and imported
         # lazily, to avoid an import cycle) so every non-directory open in the
         # custody paths carries the same binary-mode flag.
@@ -50,7 +67,8 @@ def exclusive_lock(path: Path, *, timeout: float = 30.0) -> Iterator[None]:
             if os.name == "nt":  # pragma: no cover - exercised on Windows CI legs
                 import msvcrt
 
-                deadline = time.monotonic() + timeout
+                if deadline is None:
+                    deadline = time.monotonic() + _DEFAULT_WINDOWS_TIMEOUT
                 while True:
                     try:
                         msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
@@ -67,10 +85,24 @@ def exclusive_lock(path: Path, *, timeout: float = 30.0) -> Iterator[None]:
             else:
                 import fcntl
 
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                if deadline is None:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                else:
+                    # A blocking flock has no deadline: a holder that is stopped
+                    # or hung would hang every caller that asked for a bound.
+                    while True:
+                        try:
+                            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            break
+                        except BlockingIOError:
+                            if time.monotonic() >= deadline:
+                                raise TimeoutError(f"timed out waiting for lock {path}") from None
+                            time.sleep(0.05)
                 try:
                     yield
                 finally:
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
             os.close(descriptor)
+    finally:
+        process_lock.release()

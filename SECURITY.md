@@ -13,7 +13,7 @@ rotation, recovery, optional integrations, and build and release machinery.
 ## Supported versions
 
 Security fixes cover `main` and the latest release; earlier releases are
-unsupported. Current package metadata is `0.3.0` (Beta). Reports against development
+unsupported. Current package metadata is `0.4.0` (Beta). Reports against development
 commits are welcome; provide the exact revision. Branch names do not define release
 versions. Python 3.10 and newer is the declared interpreter range.
 
@@ -207,7 +207,12 @@ proof of a plaintext-recovery attack.
   Python, provider or AEAD-engine copy. Locking and anti-dump advice depend on
   the platform. Key construction attempts to disable core dumps process-wide
   without restoring the setting. Required memory mode enforces its implemented
-  checks, not an enclave guarantee.
+  checks, not an enclave guarantee. A key handle belongs to the process that
+  made it: its page is private, so a forked child cannot change the parent's
+  key. On Linux the page is also kept out of children, where reading the handle
+  raises; on macOS, and with memory mode `disabled`, a child inherits a copy.
+  A `FloorVault` built before a fork keeps working in the child, because its
+  AEAD engine holds its own copy of the derived keys.
 - **Plaintext has a lifecycle.** Migration, deletion and SQLite cleanup do not
   guarantee erasure from pages, WAL, backups, snapshots or storage media.
   Plugin results and revealed CLI output become plaintext in the consuming
@@ -257,7 +262,13 @@ proof of a plaintext-recovery attack.
   load, and older readers ignore it. The Hermes plugin resolves a bound item only
   when Hermes was started with one of its bound command lines (and, with
   `require_binding`, refuses unbound items), but it cannot check the variables that
-  steer what Hermes loads; it keeps no binding record. From 0.3.0 `run`
+  steer what Hermes loads. `hermes hvault allow` keeps a binding record outside
+  the store: a later `allow` refuses a binding changed behind its back, and with
+  a floorvault newer than 0.4.0 startup resolution reads the record and skips an
+  item whose recorded binding was cleared or rolled back in `vault.db`. It only
+  reads: an item never recorded is judged by the store alone, and a record that
+  is missing where Hermes runs is reported, not refused.
+  From 0.3.0 `run`
   refuses unbound items unless `--allow-unbound` is given, and refuses an item
   whose stored binding no longer matches a fingerprint it keeps outside the
   store, so a binding cleared or rolled back in `vault.db` without the key

@@ -71,8 +71,8 @@ echo "=== 3. Running Static Analysis & Linting (Ruff) ==="
 # decides step 12 and the wheel verifier that decides step 11, so a regression
 # there must not be the one part of the tree CI never checks. The README's dev
 # commands are scoped to these same directories so the gate and the docs agree.
-ruff check src/ tests/ scripts/ fuzz/
-ruff format --check src/ tests/ scripts/ fuzz/
+ruff check src/ tests/ scripts/ fuzz/ plugins/
+ruff format --check src/ tests/ scripts/ fuzz/ plugins/
 echo "[PASS] Ruff: Zero lint or code quality violations."
 
 echo ""
@@ -81,7 +81,7 @@ echo "=== 3a. Python Security Static Analysis (Bandit) ==="
 # of the tests, and every reviewed exception in the scanned tree is a per-line
 # `# nosec <id>` with its reason, never a blanket skip.
 if require_tool bandit; then
-    bandit -q -r src/ scripts/ fuzz/
+    bandit -q -r src/ scripts/ fuzz/ plugins/
     echo "[PASS] Bandit: Zero unreviewed findings in src/, scripts/ and fuzz/."
 fi
 
@@ -90,7 +90,7 @@ echo "=== 3b. Semgrep Community Edition (p/python) ==="
 if [ "${FLOORVAULT_SKIP_SEMGREP:-0}" = "1" ]; then
     echo "[SKIP] Semgrep disabled (FLOORVAULT_SKIP_SEMGREP=1)."
 elif require_tool semgrep; then
-    semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/
+    semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/ plugins/
     echo "[PASS] Semgrep: Zero unreviewed findings in src/, scripts/ and fuzz/."
 fi
 

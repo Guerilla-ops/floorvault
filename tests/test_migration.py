@@ -358,3 +358,63 @@ def test_migrate_all_creates_key_backup_when_vault_backup_predates_it(tmp_path):
     facade.migrate_all()
 
     assert (base / "modern" / "vault.key.pre-migration.bak").exists()
+
+
+# ---- the key backup is never readable by others, not even while it is written ----
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits")
+def test_the_key_backup_is_created_owner_only_under_a_permissive_umask(tmp_path, monkeypatch):
+    """copy2 created the file with the umask, wrote the key, then copied the mode.
+
+    Under umask 022 the legacy key sat in a 0644 file for that long, and for good
+    after a crash in between. The backup must be owner-only from its first byte.
+    """
+    import stat as stat_module
+
+    from floorvault import migration
+
+    base = tmp_path / "vault"
+    modern = VaultStore(base / "modern", crypto=_make_crypto())
+    key, _, _ = _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
+    key_backup = base / "modern" / "vault.key.pre-migration.bak"
+    modes_while_holding_the_key = []
+    real_fsync, real_copy2 = os.fsync, shutil.copy2
+
+    def look_at_the_backup(descriptor):
+        if key_backup.exists() and key_backup.read_bytes() == key:
+            modes_while_holding_the_key.append(stat_module.S_IMODE(os.stat(key_backup).st_mode))
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(migration.os, "fsync", look_at_the_backup)
+    monkeypatch.setattr(
+        migration.shutil,
+        "copy2",
+        lambda src, dst, **kw: (
+            pytest.fail("the key backup went through copy2")
+            if Path(dst) == key_backup
+            else real_copy2(src, dst, **kw)
+        ),
+    )
+    previous = os.umask(0o022)
+    try:
+        MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern").migrate_all()
+    finally:
+        os.umask(previous)
+    assert modes_while_holding_the_key and set(modes_while_holding_the_key) == {0o600}
+    assert key_backup.read_bytes() == key
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_a_dangling_link_where_the_vault_backup_goes_is_refused(tmp_path):
+    """exists() is False for a dangling link, so the copy was written through it."""
+    base = tmp_path / "vault"
+    modern = VaultStore(base / "modern", crypto=_make_crypto())
+    _write_legacy_fernet(base / "modern", {"legacy-1": {"password": "pw"}})
+    elsewhere = tmp_path / "elsewhere.bin"
+    (base / "modern" / "vault.json.enc.pre-migration.bak").symlink_to(elsewhere)
+    facade = MigratingVaultStore(modern_store=modern, legacy_base_dir=base / "modern")
+    with pytest.raises(LegacyVaultError, match="symbolic link"):
+        facade.migrate_all()
+    assert not elsewhere.exists()
+    assert (base / "modern" / "vault.json.enc").exists(), "the legacy source must be left intact"

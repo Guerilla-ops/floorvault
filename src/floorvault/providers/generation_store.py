@@ -459,6 +459,20 @@ class GenerationStore:
             else:
                 _fsync_directory(self.directory)
 
+    def unpublished_generation(self, generation: int) -> bytes | None:
+        """Payload of generation ``generation`` if its file exists, or ``None``.
+
+        For a caller whose payloads are never the same twice (a Vault datakey or
+        rewrap is fresh on every call), so its retry after a crash between the
+        generation file and the pointer cannot present the orphan's bytes.
+        Such a caller reads the orphan here, checks by its own means that it is
+        the state it meant to publish, and passes those bytes to
+        :meth:`provision` or :meth:`update`, which adopt an identical orphan.
+        Nothing is published by this call, and the store still never decides on
+        its own that an orphan is authoritative.
+        """
+        return self._adoptable_orphan(generation)
+
     def _adoptable_orphan(self, generation: int) -> bytes | None:
         """Payload of an unpublished generation file, or ``None``.
 

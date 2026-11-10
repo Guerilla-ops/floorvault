@@ -446,6 +446,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "Batch path: cleartext header stops being authenticated",
     ),
     Mutation(
+        "CR-8",
+        "src/floorvault/core.py",
+        "            hkdf.derive_into(master_buffer, raw_siv)\n",
+        "            raw_siv[:] = hkdf.derive(master_buffer)  # MUTANT\n",
+        "The AES-SIV subkey is returned as an immutable bytes copy that nothing can zero",
+    ),
+    Mutation(
         "PC-13",
         "src/floorvault/providers/platform_custody.py",
         '        raise ProtectedStoreHeaderError("protected store has an unknown or missing header")',
@@ -724,6 +731,20 @@ MUTATIONS: tuple[Mutation, ...] = (
         '            conn.execute(f"PRAGMA user_version = {self._SCHEMA_VERSION}")',
         '            conn.execute("PRAGMA user_version = 2")',
         "The target-commitment schema loses its distinct version marker",
+    ),
+    Mutation(
+        "VS-3",
+        "src/floorvault/vaultkit/vault.py",
+        "            os.chmod(path, 0o600)\n        except OSError:\n            # Not ours to change.",
+        "            pass  # MUTANT\n        except OSError:\n            # Not ours to change.",
+        "An existing group- or world-readable vault.db is no longer tightened when the store is opened",
+    ),
+    Mutation(
+        "VS-4",
+        "src/floorvault/vaultkit/vault.py",
+        'os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600',
+        'os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o666',
+        "A new vault.db is created with the process umask (typically 0644) instead of owner-only",
     ),
     # --- Wrapped-master generation store (R1, roadmap issue #11) -------------
     Mutation(
@@ -1631,9 +1652,11 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "SDC-6",
         "src/floorvault/systemd_creds.py",
-        "os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr",
-        "os.O_WRONLY | os.O_CREAT | getattr",
-        "An existing credential is overwritten: the store's key is replaced and its data is lost",
+        "            os.link(temporary, path)\n",
+        "            os.replace(temporary, path)  # MUTANT\n",
+        "An existing credential is overwritten: the store's key is replaced and its data is lost "
+        "(the credential is written under a temporary name, so the no-clobber guarantee is the "
+        "link into place, not the exclusive create)",
     ),
     Mutation(
         "SDC-7",
@@ -1993,8 +2016,18 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "PWC-11",
         "src/floorvault/passphrase_custody.py",
-        "            stack.enter_context(_creation_lock(vault_dir))\n",
-        "            pass  # MUTANT\n",
+        "            stack.enter_context(_creation_lock(vault_dir))\n"
+        "        except (OSError, ValueError) as exc:\n"
+        "            raise PassphraseCustodyError(\n"
+        '                f"cannot take the creation lock for {vault_dir} ({type(exc).__name__})"\n'
+        "            ) from None\n"
+        "        other = other_custody_present(vault_dir)\n",
+        "            pass  # MUTANT\n"
+        "        except (OSError, ValueError) as exc:\n"
+        "            raise PassphraseCustodyError(\n"
+        '                f"cannot take the creation lock for {vault_dir} ({type(exc).__name__})"\n'
+        "            ) from None\n"
+        "        other = other_custody_present(vault_dir)\n",
         "The wrapped key is created without the shared creation lock (#84)",
     ),
     Mutation(
@@ -2080,8 +2113,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AGT-11",
         "src/floorvault/key_agent.py",
-        '        if "stale" in str(exc):\n',
-        "        if False:  # MUTANT\n",
+        "            if exc.stale:\n",
+        "            if False:  # MUTANT\n",
         "A stale socket file blocks starting an agent (#84)",
         expect_on_windows="survived",
     ),
@@ -2136,8 +2169,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AGT-18",
         "src/floorvault/key_agent.py",
-        "            if identity is not None and (info.st_dev, info.st_ino) != identity:\n                return\n",
-        "            if False:  # MUTANT\n                return\n",
+        "    if identity is not None and (info.st_dev, info.st_ino) != identity:\n        return\n",
+        "    if False:  # MUTANT\n        return\n",
         "An exiting agent removes a socket another agent has since bound (#84)",
         expect_on_windows="survived",
     ),
@@ -2440,16 +2473,16 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AGT-57",
         "src/floorvault/key_agent.py",
-        "            if not _nobody_listens(sock_path):\n                return\n",
-        "            if False:  # MUTANT\n                return\n",
+        "    if not _nobody_listens(sock_path):\n        return\n",
+        "    if False:  # MUTANT\n        return\n",
         "A socket with a live agent listening on it is removed because its inode number matches (#84)",
         expect_on_windows="survived",
     ),
     Mutation(
         "AGT-58",
         "src/floorvault/key_agent.py",
-        "            if not stat.S_ISSOCK(info.st_mode):\n                return\n",
-        "            if False:  # MUTANT\n                return\n",
+        "    if not stat.S_ISSOCK(info.st_mode):\n        return\n",
+        "    if False:  # MUTANT\n        return\n",
         "Whatever now sits at the agent's socket path is removed as if it were the socket (#84)",
         expect_on_windows="survived",
     ),
@@ -2484,6 +2517,151 @@ MUTATIONS: tuple[Mutation, ...] = (
         "            if False:  # MUTANT\n",
         "A key from a wrapped file replaced during the prompt is handed to an agent nobody can find (#84)",
         expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-63",
+        "src/floorvault/key_agent.py",
+        '            wanted_token = request.get("start_token")\n            if wanted_token is not None and wanted_token != self._start_token:\n',
+        '            wanted_token = request.get("start_token")\n            if False:  # MUTANT\n',
+        "A lock pinned to an earlier agent start stops the newer agent (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-64",
+        "src/floorvault/key_agent.py",
+        '            wanted = request.get("identity")\n            if wanted is not None and not self._identity_matches(wanted):\n',
+        '            wanted = request.get("identity")\n            if False:  # MUTANT\n',
+        "A lock pinned to a different socket binding stops the agent bound now (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-65",
+        "src/floorvault/key_agent.py",
+        "            remaining = deadline - time.monotonic()\n            if remaining <= 0:\n                break\n",
+        "            remaining = deadline - time.monotonic()\n            if False:  # MUTANT\n                break\n",
+        "An agent whose starter never delivers the key holds the socket path forever (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-66",
+        "src/floorvault/key_agent.py",
+        "    for attempt in range(3):\n",
+        "    for attempt in range(1):  # MUTANT\n",
+        "One refused connect takes a live agent with a full accept queue for stale (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-67",
+        "src/floorvault/key_agent.py",
+        "                else:\n                    _unlink_socket_locked(sock_path, probed)\n",
+        "                else:\n                    pass  # MUTANT\n",
+        "A socket the staleness probe found dead is left in place and the bind fails (#84)",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "PRT-1",
+        "src/floorvault/agent_cli.py",
+        "        record.record(item_id, new_store.binding_fingerprint(item_id))\n",
+        "        pass  # MUTANT\n",
+        "After a protect --rotate, the binding fingerprints are not re-recorded and every bound item is refused (#84)",
+    ),
+    Mutation(
+        "PRT-2",
+        "src/floorvault/agent_cli.py",
+        "        if changed:\n            _err(prog, _binding_changed(changed[0]))\n            return 1\n        if new_key is None:\n            if rotation.generation(store)",
+        "        if False:  # MUTANT\n            _err(prog, _binding_changed(changed[0]))\n            return 1\n        if new_key is None:\n            if rotation.generation(store)",
+        "A binding changed behind the CLI's back is laundered into the new key by a rotation (#84)",
+    ),
+    Mutation(
+        "PRT-3",
+        "src/floorvault/agent_cli.py",
+        "            passphrase_custody.stage_wrapped_key(vault_dir, new_key, phrase)\n",
+        "            pass  # MUTANT\n",
+        "The new key is not written wrapped before the store is rotated, so a stop loses it (#84)",
+    ),
+    Mutation(
+        "PRT-4",
+        "src/floorvault/passphrase_custody.py",
+        '        if not wrapped_present(vault_dir):\n            raise PassphraseCustodyError(\n                f"no wrapped key beside {vault_dir}; the old custody was left in place"',
+        '        if False:  # MUTANT\n            raise PassphraseCustodyError(\n                f"no wrapped key beside {vault_dir}; the old custody was left in place"',
+        "The old custody is removed with no wrapped key in place (#84)",
+    ),
+    Mutation(
+        "PRT-5",
+        "src/floorvault/passphrase_custody.py",
+        "_REPLACEABLE_CUSTODY_FILES = (SYSTEMD_CREDENTIAL_FILENAME, OS_TIER_MARKER_FILENAME)",
+        '_REPLACEABLE_CUSTODY_FILES = (SYSTEMD_CREDENTIAL_FILENAME, OS_TIER_MARKER_FILENAME, "master.key")',
+        "A raw master.key is removed as if it were a replaced custody (#84)",
+    ),
+    Mutation(
+        "PRT-6",
+        "src/floorvault/passphrase_custody.py",
+        "            if existing != payload:\n",
+        "            if False:  # MUTANT\n",
+        "A different wrapped key is accepted as the one the staged key became (#84)",
+    ),
+    Mutation(
+        "PRT-7",
+        "src/floorvault/agent_cli.py",
+        "    if explicit and leftovers and not wrapped:\n",
+        "    if False:  # MUTANT\n",
+        "An explicit key option beside another custody's key is not refused as two key sources (#84)",
+    ),
+    Mutation(
+        "PRT-8",
+        "src/floorvault/agent_cli.py",
+        "    if passphrase_custody.raw_key_present(vault_dir):\n        _err(\n            prog,\n            f\"a raw {vault_dir / 'master.key'} sits beside the store.",
+        "    if False:  # MUTANT\n        _err(\n            prog,\n            f\"a raw {vault_dir / 'master.key'} sits beside the store.",
+        "protect --rotate runs on a store whose key is a raw master.key (#84)",
+    ),
+    Mutation(
+        "PRT-9",
+        "src/floorvault/custody_rotation.py",
+        "        if new_id > MAX_GENERATION:\n",
+        "        if False:  # MUTANT\n",
+        "A store whose key generation counter is full is rotated anyway (#84)",
+    ),
+    Mutation(
+        "PRT-10",
+        "src/floorvault/agent_cli.py",
+        "    _check_store_opens(store, vault_dir)\n    old = _old_custody_name(args, vault_dir)\n",
+        "    old = _old_custody_name(args, vault_dir)\n",
+        "The old custody is removed on the strength of a wrapped key that was never shown to open the store (#84)",
+    ),
+    Mutation(
+        "PRT-11",
+        "src/floorvault/agent_cli.py",
+        "                _check_store_opens(candidate, vault_dir)\n                new_store = candidate\n",
+        "                new_store = candidate\n",
+        "A staged key that does not open the store is taken for one that finished the rotation (#84)",
+    ),
+    Mutation(
+        "PRT-12",
+        "src/floorvault/agent_cli.py",
+        "    try:\n        rotation.check_retirements(store)\n    except rotation.CustodyRotationError:\n",
+        "    try:\n        pass  # MUTANT\n    except rotation.CustodyRotationError:\n",
+        "Only an item can show a key is wrong: a store with no items but retirement records accepts any key (#84)",
+    ),
+    Mutation(
+        "PRT-13",
+        "src/floorvault/custody_rotation.py",
+        "        keys = {earlier: old_vault for earlier in range(old_generation + 1)}\n",
+        "        keys = {old_generation: old_vault}  # MUTANT\n",
+        "A store holding records labelled with an earlier generation cannot be rotated (#84)",
+    ),
+    Mutation(
+        "PRT-14",
+        "src/floorvault/agent_cli.py",
+        "        pending = rotation.unrotated_item_ids(store)\n",
+        "        pending = rotation.unrotated_item_ids(store) if new_key is None else []  # MUTANT\n",
+        "A binding cleared while the new key was staged is rotated into the new key (#84)",
+    ),
+    Mutation(
+        "PRT-15",
+        "src/floorvault/custody_rotation.py",
+        "    if target is None:\n        return ids\n    journal = store.rotation_journal()",
+        "    if True:  # MUTANT\n        return ids\n    journal = store.rotation_journal()",
+        "Items already re-sealed before a stop are judged against fingerprints the record never saw (#84)",
     ),
     Mutation(
         "BG-1",
@@ -2528,6 +2706,191 @@ MUTATIONS: tuple[Mutation, ...] = (
         "A relative interpreter path is resolved against the current directory and can match a binding",
     ),
     Mutation(
+        "BG-7",
+        "plugins/hermesvault/binding_guard.py",
+        '    if hasattr(store, "binding_fingerprint"):\n',
+        "    if True:  # MUTANT\n",
+        "The hint names `hermes hvault allow` where floorvault 0.2.x cannot run it, so a skipped item points at a command that refuses",
+    ),
+    Mutation(
+        "BG-8",
+        "plugins/hermesvault/binding_guard.py",
+        '    if sys.platform == "win32" or not sys.executable or not os.path.isabs(sys.executable):\n'
+        "        return None\n",
+        "    if True:  # MUTANT\n        return None\n",
+        "The gateway line is never known, so `hermes hvault bind` leaves every new item unbound "
+        "and it resolves for any command that reads the store",
+    ),
+    Mutation(
+        "BG-9",
+        "plugins/hermesvault/binding_guard.py",
+        "        changed = record.compare(current)\n",
+        "        changed = record.compare({})  # MUTANT\n",
+        "The Hermes plugin resolves an item whose recorded binding was cleared or rolled back in vault.db (#97)",
+    ),
+    Mutation(
+        "BG-10",
+        "plugins/hermesvault/binding_guard.py",
+        "        return {item_id: reason for item_id in current}, []\n",
+        "        return {}, []  # MUTANT\n",
+        "A binding record that exists and cannot be read counts as every binding being unchanged",
+    ),
+    Mutation(
+        "BG-11",
+        "src/floorvault/binding_record.py",
+        "        return sorted(i for i, fp in current.items() if i in items and items[i] != fp)\n",
+        "        return []  # MUTANT\n",
+        "The read-only comparison a reader makes against the binding record reports no change",
+    ),
+    Mutation(
+        "BG-12",
+        "src/floorvault/binding_record.py",
+        "        if raw is None and self._marker_is_regular():\n"
+        '            raise BindingRecordLost(f"the binding record {self.path} is missing")\n'
+        "        items = self._parse(raw)\n        return sorted(",
+        "        if False:  # MUTANT\n"
+        '            raise BindingRecordLost(f"the binding record {self.path} is missing")\n'
+        "        items = self._parse(raw)\n        return sorted(",
+        "A reader takes a lost binding record for one that was never kept, and says nothing",
+    ),
+    Mutation(
+        "FRK-1",
+        "src/floorvault/memory.py",
+        '            if hasattr(mmap, "MAP_PRIVATE"):\n',
+        "            if False:  # MUTANT\n",
+        "The key page is shared with forked children, so a child's wipe zeroes the parent's key",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "FRK-2",
+        "src/floorvault/memory.py",
+        "        return self._fork_excluded and self._teardown_getpid() != self._owner_pid\n",
+        "        return False  # MUTANT\n",
+        "A forked child touches a key page it was excluded from and dies with SIGSEGV",
+    ),
+    Mutation(
+        "AGT-68",
+        "src/floorvault/key_agent.py",
+        '            self.request_stop("locked")\n            _send(conn, {"ok": True, "locked": True})\n',
+        '            _send(conn, {"ok": True, "locked": True})\n            self.request_stop("locked")\n',
+        "A lock whose reply cannot be delivered is dropped and the key stays loaded",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "AGT-69",
+        "src/floorvault/key_agent.py",
+        '            "iII", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)\n',
+        '            "3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)\n',
+        "A peer uid of 2**31 or more is read as negative, so the agent and its own user refuse each other",
+    ),
+    Mutation(
+        "FL-1",
+        "src/floorvault/_filelock.py",
+        "                            if time.monotonic() >= deadline:\n"
+        '                                raise TimeoutError(f"timed out waiting for lock {path}") from None\n'
+        "                            time.sleep(0.05)\n",
+        "                            time.sleep(0.05)  # MUTANT\n",
+        "A lock wait that was given a timeout never ends while another process holds the lock",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "HRD-1",
+        "src/floorvault/migration.py",
+        '                | getattr(os, "O_BINARY", 0),\n                0o600,\n',
+        '                | getattr(os, "O_BINARY", 0),\n                0o644,  # MUTANT\n',
+        "The legacy key backup is created readable by others while it holds the key",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "HRD-2",
+        "src/floorvault/migration.py",
+        "        if os.path.islink(backup):\n",
+        "        if False:  # MUTANT\n",
+        "The legacy vault backup is written through a dangling symbolic link",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "HRD-3",
+        "src/floorvault/agent_cli.py",
+        '        print("\\t".join((meta.id, _printable(str(meta.kind)), _printable(meta.label))))\n',
+        '        print("\\t".join((meta.id, str(meta.kind), _printable(meta.label))))  # MUTANT\n',
+        "A kind written into vault.db without the key forges a line of `secrets list`",
+    ),
+    Mutation(
+        "HRD-4",
+        "src/floorvault/providers/vault_transit.py",
+        '        if not isinstance(token, str) or any(not "!" <= char <= "~" for char in token):\n',
+        "        if False:  # MUTANT\n",
+        "A Vault token with a trailing newline is quoted in the transport's error",
+    ),
+    Mutation(
+        "HRD-5",
+        "src/floorvault/vaultkit/vault.py",
+        "    for value in sorted(values, key=len, reverse=True):\n",
+        "    for value in sorted(values, key=len):  # MUTANT\n",
+        "Scrubbing a value that starts another leaves the tail of the longer secret in the text",
+    ),
+    Mutation(
+        "HRD-6",
+        "src/floorvault/vaultkit/vault.py",
+        "    if stat.S_ISLNK(info.st_mode) and not os.path.exists(path):\n",
+        "    if False:  # MUTANT\n",
+        "A store is created through a dangling vault.db link, outside its directory and with the umask",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "HRD-7",
+        "src/floorvault/freshness.py",
+        '            if getattr(connection, "in_transaction", None) is True:\n',
+        "            if False:  # MUTANT\n",
+        "A COMMIT that SQLite refused leaves the anchor pending, and the database is refused from then on",
+    ),
+    Mutation(
+        "HRD-8",
+        "src/floorvault/sqlite_migration.py",
+        '    if not connection.in_transaction:\n        connection.execute("BEGIN IMMEDIATE")\n',
+        '    if False:  # MUTANT\n        connection.execute("BEGIN IMMEDIATE")\n',
+        "On an autocommit connection a failed column migration leaves the rows before the failure encrypted",
+    ),
+    Mutation(
+        "HRD-9",
+        "src/floorvault/providers/vault_transit.py",
+        "        leftover = self._store.unpublished_generation(1)\n",
+        "        leftover = None  # MUTANT\n",
+        "A provision that crashed before its pointer blocks every later provision",
+    ),
+    Mutation(
+        "HRD-10",
+        "src/floorvault/providers/vault_transit.py",
+        "            if not same:\n",
+        "            if False:  # MUTANT\n",
+        "A rewrap adopts an unpublished generation that does not wrap this store's key",
+    ),
+    Mutation(
+        "HRD-11",
+        "src/floorvault/providers/vault_transit.py",
+        "            if time.monotonic() > deadline:\n"
+        '                raise TimeoutError("the Vault response body did not arrive in time")\n',
+        "            if False:  # MUTANT\n"
+        '                raise TimeoutError("the Vault response body did not arrive in time")\n',
+        "A Vault response that trickles holds the caller far past its timeout",
+    ),
+    Mutation(
+        "HRD-12",
+        "src/floorvault/agent_cli.py",
+        "path=os.pathsep.join(entry for entry in search.split(os.pathsep) if entry)",
+        "path=os.pathsep.join(entry for entry in search.split(os.pathsep))  # MUTANT",
+        "An empty PATH entry resolves the command from the current directory",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "HRD-13",
+        "src/floorvault/platform_support.py",
+        '    return "unknown"\n',
+        '    return "deny"  # MUTANT\n',
+        "A Windows ACE of a type the check does not parse is skipped, and the store passes as owner-only",
+    ),
+    Mutation(
         "AUD-2",
         "src/floorvault/agent_cli.py",
         "    return _launch(command_line[0], command, env)",
@@ -2554,8 +2917,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AUD-5",
         "src/floorvault/agent_cli.py",
-        "        _check_store_key(store, vault_dir)\n",
-        "        pass  # MUTANT\n",
+        "    if existed:\n        _check_store_key(store, vault_dir)\n",
+        "    if existed:\n        pass  # MUTANT\n",
         "secrets add under another key writes to an existing store, leaving it sealed under two keys",
     ),
     Mutation(
@@ -2660,7 +3023,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AUD-15",
         "src/floorvault/agent_cli.py",
-        "    if target is not None:\n        # Part of the store",
+        "    if target is not None and not allow_rotation:\n        # Part of the store",
         "    if False:  # MUTANT\n        # Part of the store",
         "A half-finished rotation is opened with one key and reported as the wrong key (SEC-16)",
     ),

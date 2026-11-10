@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 import threading
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -24,6 +25,7 @@ from urllib.parse import urlsplit
 
 from ..core import DecryptionVerificationError, FloorVault, FloorVaultError
 from ..keyring import KeyRing
+from ..platform_support import is_windows
 from ..providers.adaptive import AdaptiveKeyProvider
 from ..providers.platform_custody import _mkdir_owner_only
 
@@ -97,21 +99,25 @@ def _validated_command(command: Any, item_id: str) -> list[str]:
 
 
 def normalize_origin(url_or_origin: str) -> str:
-    """Normalize a URL or origin to scheme://host[:port]."""
+    """Normalize a URL or origin to scheme://host[:port].
+
+    Errors never quote the input: a URL can carry ``user:password@``, and
+    VaultError text is meant to be safe to show.
+    """
     value = (url_or_origin or "").strip()
     if not value:
         raise VaultError("origin is required")
     if "://" not in value:
-        raise VaultError(f"origin must include a scheme (got {value!r})")
+        raise VaultError("origin must include a scheme, as in https://host")
     parts = urlsplit(value)
     scheme = (parts.scheme or "").lower()
     host = (parts.hostname or "").lower()
     if not scheme or not host:
-        raise VaultError(f"could not parse origin from {value!r}")
+        raise VaultError("could not parse a scheme and host from the origin")
     try:
         port = parts.port
-    except ValueError as exc:
-        raise VaultError(f"invalid port in origin {value!r}") from exc
+    except ValueError:
+        raise VaultError("invalid port in origin") from None
     if port is None or port == _DEFAULT_PORTS.get(scheme):
         return f"{scheme}://{host}"
     return f"{scheme}://{host}:{port}"
@@ -187,10 +193,20 @@ def totp_now(seed: str, *, digits: int = 6, period: int = 30, at: Optional[float
 
 def scrub_secret_from_text(text: str, secret: dict[str, Any]) -> str:
     """Defensively strip any secret values from a string (e.g. an exception
-    message) before it can be surfaced. Case-sensitive exact substring scrub."""
+    message) before it can be surfaced. Case-sensitive exact substring scrub.
+
+    Longest value first: when one value is the start of another, replacing the
+    short one first would leave the rest of the long one in the text. Numbers
+    are scrubbed as they print (a PIN stored as an int is still a secret).
+    """
     scrubbed = text
-    for value in secret.values():
-        if isinstance(value, str) and len(value) >= 3 and value in scrubbed:
+    values = {
+        str(value)
+        for value in secret.values()
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool)
+    }
+    for value in sorted(values, key=len, reverse=True):
+        if len(value) >= 3 and value in scrubbed:
             scrubbed = scrubbed.replace(value, "[REDACTED]")
     scrubbed = re.sub(r"(password['\"]?\s*[:=]\s*)\S+", r"\1[REDACTED]", scrubbed)
     return scrubbed
@@ -223,6 +239,47 @@ class VaultItemMeta:
         if self.has_otp:
             out["has_otp"] = True
         return out
+
+
+def _harden_db_file(path: Path) -> None:
+    """Make ``vault.db`` owner-only, as its directory and key files already are.
+
+    SQLite creates the file with the process umask, typically 0644, and its
+    rollback journal copies the database's mode. The directory is 0700, so this
+    matters where the directory travels without its mode: a bind mount, a
+    backup or a restore somewhere looser. The ciphertext and any sealed or
+    beacon columns would then be readable by others, which helps offline
+    analysis even though nothing in it is plaintext.
+
+    A new file is created 0600 so there is no wider window; an existing one is
+    tightened. A symlink to an existing database is left alone, because chmod
+    would change its target; a dangling one is refused.
+    Windows has no POSIX mode bits, so there is nothing to set there.
+    """
+    if is_windows():
+        return
+    try:
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+        )
+    except FileExistsError:
+        pass
+    else:
+        os.close(descriptor)
+        return
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) and not os.path.exists(path):
+        # SQLite would create the link's target itself, with the umask, wherever
+        # the link points: a store outside its own directory and readable by
+        # others. A link to an existing database is the operator's arrangement.
+        raise VaultError(f"{path} is a symbolic link to a file that does not exist")
+    if stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) & 0o077:
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            # Not ours to change. The directory check already refuses a store
+            # owned by someone else, so this is not the only barrier.
+            pass
 
 
 class VaultStore:
@@ -301,6 +358,7 @@ class VaultStore:
             master_key = provider.resolve_key()
             self._crypto = FloorVault(master_key, app_instance_id="floor-agent")
 
+        _harden_db_file(self._db_path)
         self._init_db()
 
     def _init_db(self) -> None:

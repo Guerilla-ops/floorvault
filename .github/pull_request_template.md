@@ -6,7 +6,7 @@
 
 <!-- How was this verified? -->
 
-- [ ] `uv run --no-sync ruff check src/ tests/ scripts/ fuzz/` and `ruff format --check` pass
+- [ ] `uv run --no-sync ruff check src/ tests/ scripts/ fuzz/ plugins/` and `ruff format --check` pass
 - [ ] `uv run --no-sync pytest -q tests/` passes
 - [ ] `uv run --no-sync python -u scripts/mutation_check.py --mode curated` passes (security guards changed or added)
 

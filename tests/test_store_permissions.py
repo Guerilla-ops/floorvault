@@ -241,3 +241,21 @@ def test_synthesised_windows_mode_is_not_a_posix_mode(tmp_path, monkeypatch):
     problem = store_permission_problem(tmp_path / "master.key", 0o100666)
     assert problem is not None
     assert "group" in problem or "other" in problem
+
+
+def test_only_known_deny_aces_are_skipped_and_unknown_types_are_never_fine():
+    """Only plain allow ACEs were counted, so other allow types granted access unseen."""
+    from floorvault.platform_support import ace_disposition
+
+    assert ace_disposition(0) == "sid"  # ACCESS_ALLOWED_ACE
+    assert ace_disposition(9) == "sid"  # ACCESS_ALLOWED_CALLBACK_ACE: same layout
+    for deny in (1, 6, 10, 12):
+        assert ace_disposition(deny) == "deny"
+    # Object and callback-object allow ACEs, and anything not yet invented.
+    for other in (5, 11, 2, 19, 255):
+        assert ace_disposition(other) == "unknown"
+    # What the DACL walk records for one is never the owner or a trusted SID.
+    offenders = acl_sids_granting_others_access(
+        {"S-1-5-18", "<ace-type-5>"}, owner_sid="S-1-5-21-1-2-3-1001"
+    )
+    assert offenders == frozenset({"<ace-type-5>"})

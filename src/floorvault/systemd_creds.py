@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Optional
 
 from .providers.adaptive import SYSTEMD_CREDENTIAL_FILENAME
-from .providers.platform_custody import _mkdir_owner_only
+from .providers.platform_custody import _fsync_directory, _mkdir_owner_only
 
 __all__ = [
     "CREDENTIAL_FILENAME",
@@ -204,10 +204,18 @@ def create_credential(vault_dir: Path, *, binary: Optional[str] = None) -> Path:
             "the sealed credential did not unseal to the same key; nothing written"
         )
     path = credential_path(vault_dir)
+    # Written under a temporary name and then linked into place. Created at its
+    # final name, a write cut short (a kill, power loss) left a truncated
+    # credential that reads as "this home has a key": every custody refused the
+    # store from then on, until someone removed the file by hand. The link is
+    # no-clobber, so an existing credential is still never replaced.
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
     try:
         _mkdir_owner_only(Path(vault_dir))
+        if os.path.lexists(path):
+            raise FileExistsError(path)
         fd = os.open(
-            path,
+            temporary,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
             0o600,
         )
@@ -220,12 +228,18 @@ def create_credential(vault_dir: Path, *, binary: Optional[str] = None) -> Path:
             handle.write(ciphertext)
             handle.flush()
             os.fsync(handle.fileno())
-    except BaseException:
         try:
-            os.unlink(path)
+            os.link(temporary, path)
+        except FileExistsError:
+            raise SystemdCredsError(f"{path} already exists; it is never replaced") from None
+        except OSError as exc:
+            raise SystemdCredsError(f"cannot create {path} ({type(exc).__name__})") from None
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            os.unlink(temporary)
         except OSError:
-            pass  # best effort: the write error below is the one to report
-        raise
+            pass  # best effort: whatever went wrong above is the error to report
     return path
 
 

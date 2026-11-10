@@ -1,5 +1,6 @@
 """Tests for floorvault storage adapters (vaultkit)."""
 
+import os
 import sqlite3
 
 import pytest
@@ -401,3 +402,38 @@ def test_session_crypto_unicode_and_legacy_ciphertext_is_rejected():
             message_id="legacy-msg-99",
             payload_cipher=legacy_cipher,
         )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://alice:hunter2pw@example.com:99999/x",  # port out of range
+        "https://alice:hunter2pw@:443",  # no host
+        "alice:hunter2pw@example.com",  # no scheme
+    ],
+)
+def test_an_origin_error_never_quotes_the_input(origin, tmp_path):
+    """A URL can carry user:password@, and VaultError text is meant to be shown."""
+    from floorvault.vaultkit.vault import normalize_origin
+
+    with pytest.raises(VaultError) as caught:
+        normalize_origin(origin)
+    assert "hunter2pw" not in str(caught.value) and "alice" not in str(caught.value)
+    assert caught.value.__cause__ is None
+    store = VaultStore(tmp_path / "v", crypto=FloorVault(b"\x07" * 32, memory_mode="disabled"))
+    with pytest.raises(VaultError) as caught:
+        store.add_item("login", "site", {"username": "alice", "password": "x"}, origin=origin)
+    assert "hunter2pw" not in str(caught.value)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_a_dangling_link_named_vault_db_is_refused_not_created_through(tmp_path):
+    """SQLite would create the link's target itself: outside the store, with the umask."""
+    base = tmp_path / "store"
+    base.mkdir(mode=0o700)
+    elsewhere = tmp_path / "out" / "elsewhere.db"
+    elsewhere.parent.mkdir()
+    (base / "vault.db").symlink_to(elsewhere)
+    with pytest.raises(VaultError, match="symbolic link to a file that does not exist"):
+        VaultStore(base, crypto=FloorVault(b"\x07" * 32, memory_mode="disabled"))
+    assert not elsewhere.exists()

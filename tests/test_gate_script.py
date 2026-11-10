@@ -114,19 +114,21 @@ def test_gate_reports_the_archive_metadata_that_varies_by_platform():
 
 def test_lint_covers_the_fuzz_targets():
     """fuzz/ decides what ClusterFuzzLite checks, so it is linted like scripts/."""
-    assert _has_line("ruff check src/ tests/ scripts/ fuzz/")
-    assert _has_line("ruff format --check src/ tests/ scripts/ fuzz/")
+    assert _has_line("ruff check src/ tests/ scripts/ fuzz/ plugins/")
+    assert _has_line("ruff format --check src/ tests/ scripts/ fuzz/ plugins/")
 
 
 def test_gate_runs_bandit_over_the_shipped_and_tooling_trees():
     assert _has_line("if require_tool bandit; then"), "a missing Bandit must fail the strict gate"
-    assert _has_line("bandit -q -r src/ scripts/ fuzz/")
+    assert _has_line("bandit -q -r src/ scripts/ fuzz/ plugins/")
 
 
 def test_gate_runs_semgrep_with_an_explicit_skip_knob():
     """Semgrep runs once in CI, so the matrix legs need a documented opt-out."""
     assert _has_line("elif require_tool semgrep; then")
-    assert _has_line("semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/")
+    assert _has_line(
+        "semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/ plugins/"
+    )
     assert _has_line('if [ "${FLOORVAULT_SKIP_SEMGREP:-0}" = "1" ]; then')
 
 

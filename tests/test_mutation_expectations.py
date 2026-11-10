@@ -151,7 +151,8 @@ def test_platform_overrides_are_declared_explicitly():
     relaxed = [mutant.id for mutant in module.MUTATIONS if mutant.expect_on_windows == "survived"]
     # The key agent's suite is skipped on Windows (no AF_UNIX peer credentials), so its
     # mutants cannot be killed there. AUD-2 (CLI audit): like BIND-7, only a symlink test
-    # can kill it.
+    # can kill it. FRK-1 and FL-1 mutate POSIX-only branches (a private mapping, flock).
+    # HRD-1, HRD-2, HRD-6 and HRD-12 are killed by tests of POSIX modes, symlinks and PATH.
     assert relaxed == [
         "DS-5",
         "PC-18",
@@ -162,8 +163,15 @@ def test_platform_overrides_are_declared_explicitly():
         "BIND-7",
         "HIM-4",
         *[
-            f"AGT-{i}" for i in range(1, 63) if i != 45
+            f"AGT-{i}" for i in range(1, 68) if i != 45
         ],  # AGT-45 retired: equivalent once unlink checks for a listener
+        "FRK-1",
+        "AGT-68",
+        "FL-1",
+        "HRD-1",
+        "HRD-2",
+        "HRD-6",
+        "HRD-12",
         "AUD-2",
     ], f"unexpected set of platform-relaxed mutants: {relaxed}"
     # The reverse: a guard that exists only on Windows is dead code elsewhere,

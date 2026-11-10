@@ -205,8 +205,8 @@ def test_every_action_in_every_workflow_is_pinned_to_a_commit():
 
 def test_sast_job_runs_the_gates_own_commands():
     for command in (
-        "bandit -q -r src/ scripts/ fuzz/",
-        "semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/",
+        "bandit -q -r src/ scripts/ fuzz/ plugins/",
+        "semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/ plugins/",
     ):
         assert command in GATE, f"the gate no longer runs: {command}"
         assert command in TEXT, f"the sast job does not run the gate's command: {command}"
@@ -358,3 +358,75 @@ def test_dependency_audit_covers_platform_marked_extras():
         assert system in audit
     assert "uv sync --all-extras" in audit
     assert "uv run --no-sync pip-audit" in audit
+
+
+# ---------------------------------------------------------------------------
+# What a job is handed besides the commit
+#
+# A job's result should be a function of the commit it checked out. Three
+# things reached jobs that were not: the workflow token left behind by the
+# checkout, a dependency cache restored from an earlier run, and a lockfile
+# `uv sync` was free to re-resolve.
+# ---------------------------------------------------------------------------
+
+
+def _steps(text: str, action: str) -> list[str]:
+    """Every step that uses ``action``, from its ``- `` line to the next step's."""
+    lines = text.splitlines()
+    found = []
+    for start, line in enumerate(lines):
+        if not re.match(rf"\s*- uses: {re.escape(action)}@", line):
+            continue
+        indent = len(line) - len(line.lstrip())
+        end = start + 1
+        while end < len(lines) and (
+            not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > indent
+        ):
+            end += 1
+        found.append("\n".join(lines[start:end]))
+    return found
+
+
+def test_no_checkout_leaves_the_workflow_token_in_the_working_tree():
+    """actions/checkout writes the token into .git/config unless told not to.
+
+    No job here pushes, so nothing needs it there, and every later step (test
+    code, the build backend, a tool fetched at run time) could read it.
+    """
+    checkouts = [
+        (path.name, step)
+        for path in WORKFLOWS
+        for step in _steps(path.read_text(encoding="utf-8"), "actions/checkout")
+    ]
+    assert checkouts, "no checkout step found; the step parser no longer matches"
+    kept = [name for name, step in checkouts if "persist-credentials: false" not in step]
+    assert not kept, f"checkout keeps the token in .git/config in: {kept}"
+
+
+def test_jobs_that_build_artifacts_restore_no_dependency_cache():
+    """setup-uv restores a cache by default on hosted runners.
+
+    The CI build job and the release job produce the wheel and sdist that are
+    uploaded, attested and published. A cache written by an earlier run is
+    input to that build which no review of the tagged commit covers.
+    """
+    for name, job in (("ci.yml", _job("build")), ("release.yml", _workflow("release.yml"))):
+        setups = _steps(job, "astral-sh/setup-uv")
+        assert setups, f"{name}: no setup-uv step found"
+        for step in setups:
+            assert "enable-cache: false" in step, f"{name}: an artifact build restores a cache"
+
+
+def test_every_sync_installs_exactly_what_the_lockfile_says():
+    """Plain `uv sync` re-resolves and rewrites a stale uv.lock, then carries on.
+
+    The run would be green on dependencies nobody reviewed. ``--locked`` fails
+    instead.
+    """
+    unlocked = [
+        f"{path.name}: {line.strip()}"
+        for path in WORKFLOWS
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if re.search(r"\buv sync\b", line) and "--locked" not in line
+    ]
+    assert not unlocked, f"uv sync without --locked: {unlocked}"

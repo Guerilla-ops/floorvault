@@ -700,6 +700,35 @@ def test_two_unlocks_started_together_cannot_both_take_the_socket(vault, env, mo
             winner.close()
 
 
+def test_a_bind_waits_for_the_lifecycle_lock(vault, env):
+    """The lock is not only a guard for the removal: until its winner has called listen(), a
+    freshly bound socket also answers a probe with ECONNREFUSED, which a second unlock would
+    take for stale. So nothing may bind, or probe, while another unlock holds the lock."""
+    path = key_agent.socket_path(vault, env)
+    key_agent.check_private_dir(path.parent, create=True)  # the lock file lives beside the socket
+    outcome = []
+
+    def bind():
+        try:
+            outcome.append(key_agent._bind(path))
+        except Exception as exc:  # noqa: BLE001 - reported by the assertions below
+            outcome.append(exc)
+
+    worker = threading.Thread(target=bind)
+    with exclusive_lock(key_agent._lock_path(path), timeout=5.0):
+        worker.start()
+        time.sleep(0.4)
+        assert not path.exists(), "an unlock bound the socket while another held the lock"
+    worker.join(15)
+    try:
+        assert len(outcome) == 1 and isinstance(outcome[0], socket.socket)
+        assert path.exists()
+    finally:
+        for item in outcome:
+            if isinstance(item, socket.socket):
+                item.close()
+
+
 def test_an_agent_that_exits_never_removes_a_socket_it_did_not_bind(running):
     item = running()
     original = item.path
@@ -1045,6 +1074,18 @@ def test_neither_the_typed_passphrase_nor_a_copy_of_the_key_is_in_the_agent_memo
             maps, mem = open(f"/proc/{pid}/maps"), open(f"/proc/{pid}/mem", "rb", 0)
         except PermissionError:  # root without CAP_SYS_PTRACE (a container): cannot read it
             pytest.skip("this process may not read another process's memory")
+        # The protected mapping holds the key by design. It is a private
+        # anonymous page, so it has no name to go by; it is the one the kernel
+        # was told not to copy into children (VmFlags "dc", MADV_DONTFORK).
+        protected, start = set(), None
+        with open(f"/proc/{pid}/smaps") as smaps:
+            for line in smaps:
+                header = re.match(r"([0-9a-f]+)-[0-9a-f]+ ", line)
+                if header:
+                    start = int(header[1], 16)
+                elif line.startswith("VmFlags:") and "dc" in line.split()[1:]:
+                    protected.add(start)
+        assert protected, "no fork-excluded mapping: the protected page cannot be told apart"
         with maps, mem:
             for line in maps:
                 match = re.match(r"([0-9a-f]+)-([0-9a-f]+) (\S+) \S+ \S+ \S+\s*(.*)", line)
@@ -1057,7 +1098,7 @@ def test_neither_the_typed_passphrase_nor_a_copy_of_the_key_is_in_the_agent_memo
                 except OSError:
                     continue
                 found["passphrase"] += data.count(canary.encode())
-                if "/dev/zero" not in name:  # the protected mapping holds the key by design
+                if lo not in protected:
                     found["key"] += data.count(key)
     finally:
         cli(["lock", "--vault", str(vault)], env)
@@ -1440,3 +1481,200 @@ def test_a_key_file_replaced_while_the_passphrase_is_asked_for_starts_nothing(va
     assert not key_agent.socket_path(vault, env).exists()
     with pytest.raises(key_agent.AgentNotRunning):
         key_agent.status(key_agent.socket_path(vault, env))
+
+
+# ------------------------------------------- staleness probes and pinned locks
+
+
+def test_a_refused_connect_marks_the_not_running_error_stale(base):
+    """``stale`` travels on the exception, so callers do not match on the message text."""
+    sock = base / "s.sock"
+    dead = socket.socket(socket.AF_UNIX)
+    dead.bind(str(sock))
+    dead.close()
+    with pytest.raises(key_agent.AgentNotRunning) as excinfo:
+        key_agent._exchange(sock, {"op": "status"}, 1.0)
+    assert excinfo.value.stale
+
+
+def test_one_refused_probe_does_not_take_a_live_socket_for_stale(base, monkeypatch):
+    """A live agent with a full accept queue also answers ECONNREFUSED; one refusal is not proof."""
+    listener = socket.socket(socket.AF_UNIX)
+    listener.bind(str(base / "s.sock"))
+    listener.listen(4)
+    calls = {"n": 0}
+    real_socket = key_agent.socket.socket
+
+    class RefuseOnce:
+        def __init__(self):
+            self.inner = real_socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            calls["n"] += 1
+            self.n = calls["n"]
+
+        def settimeout(self, value):
+            self.inner.settimeout(value)
+
+        def connect(self, path):
+            if self.n == 1:
+                raise ConnectionRefusedError("the accept queue is full")
+            return self.inner.connect(path)
+
+        def close(self):
+            self.inner.close()
+
+    monkeypatch.setattr(key_agent.socket, "socket", lambda *a, **k: RefuseOnce())
+    try:
+        assert key_agent._nobody_listens(base / "s.sock") is False
+    finally:
+        listener.close()
+
+
+def test_a_lock_pinned_to_another_binding_is_refused_and_the_agent_stays(running):
+    """A lock carrying a stale (dev, ino) must not stop the agent bound to the path now."""
+    item = running()
+    with pytest.raises(key_agent.AgentError, match="a different agent"):
+        key_agent.lock(item.path, identity=(0, 0))
+    assert key_agent.status(item.path)["ok"]
+    key_agent.lock(item.path)  # an unpinned lock still works
+    item.join()
+    assert not item.path.exists()
+
+
+def test_a_lock_pinned_to_this_binding_stops_the_agent(running):
+    item = running()
+    key_agent.lock(item.path, identity=key_agent._socket_identity(item.path))
+    item.join()
+    assert not item.path.exists()
+
+
+def test_a_stop_after_delivery_with_a_reused_socket_identity_leaves_the_new_agent(running):
+    """A reused (dev, ino) must not let an old start's cleanup stop its replacement."""
+    item = running()
+    item.agent._start_token = "replacement"
+    identity = key_agent._socket_identity(item.path)
+    pending = key_agent.PendingAgent(item.path, -1, -1, identity=identity, start_token="original")
+    pending._stop_after_delivery()
+    assert key_agent.status(item.path)["ok"]
+    key_agent.lock(item.path)
+    item.join()
+
+
+def test_a_stop_after_delivery_locks_the_agent_it_started(running):
+    item = running()
+    item.agent._start_token = "this-start"
+    pending = key_agent.PendingAgent(
+        item.path,
+        -1,
+        -1,
+        identity=key_agent._socket_identity(item.path),
+        start_token="this-start",
+    )
+    pending._stop_after_delivery()
+    item.join()
+    assert not item.path.exists()
+
+
+def test_a_pending_agent_left_waiting_for_its_key_gives_up_and_clears_the_path(
+    vault, env, monkeypatch
+):
+    """Until the key arrives no Agent exists to enforce limits, so the daemon bounds the wait
+    itself: a starter that hangs instead of dying cannot wedge the socket path forever."""
+    monkeypatch.setattr(key_agent, "KEY_WAIT_TIMEOUT", 0.5)
+    pending = key_agent.prepare(vault, environ=env, app_context=APP_CONTEXT)
+    path = pending.path
+    assert path.exists()
+    try:
+        assert wait_until(lambda: not path.exists()), "the abandoned agent kept the socket"
+        with pytest.raises(key_agent.AgentNotRunning):
+            key_agent.status(path)
+        with pytest.raises(key_agent.AgentError, match="went away"):
+            pending.send_key(b"k" * 32)
+    finally:
+        pending.cancel()
+    assert not path.exists()
+
+
+# ------------------------------------------------- hardening: lock, peer uid, file lock
+
+
+def test_a_lock_takes_effect_even_when_its_reply_cannot_be_delivered(running, monkeypatch):
+    """The client that asked may be gone by the time the agent reaches its request.
+
+    The agent serves one connection at a time, so a lock queued behind slow
+    connections can outlive its client's patience. It was acknowledged first and
+    obeyed second: the failed reply skipped the stop and the key stayed loaded.
+    """
+    item = running()
+    real = key_agent._send
+
+    def reply_to_a_client_that_left(conn, message):
+        if threading.current_thread() is item.thread and message.get("locked"):
+            raise BrokenPipeError("the client closed its end")
+        return real(conn, message)
+
+    monkeypatch.setattr(key_agent, "_send", reply_to_a_client_that_left)
+    with pytest.raises(key_agent.AgentError):
+        key_agent.lock(item.path)  # the client is told nothing
+    item.join()
+    assert item.agent.reason == "locked"
+    assert item.key.is_wiped and not item.path.exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="SO_PEERCRED's struct ucred is Linux")
+def test_a_peer_uid_above_two_to_the_31_is_read_as_itself():
+    """uid_t is unsigned; read as signed such a user could never match geteuid()."""
+
+    class Peer:
+        def getsockopt(self, level, option, size):
+            assert size == 12
+            return struct.pack("iII", 4321, 3_000_000_000, 3_000_000_001)
+
+    assert key_agent.peer_credentials(Peer()) == (4321, 3_000_000_000)
+
+
+def test_a_lock_wait_with_a_timeout_ends_at_the_timeout(base):
+    """A stopped or hung holder must not hang a caller that asked for a bound."""
+    path = base / "held.lock"
+    release = threading.Event()
+    holding = threading.Event()
+
+    def hold_in_another_process():
+        # flock is per open file description, so a second descriptor stands in
+        # for another process; the in-process mutex is covered below.
+        import fcntl
+
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            holding.set()
+            release.wait(10)
+        finally:
+            os.close(fd)
+
+    holder = threading.Thread(target=hold_in_another_process, daemon=True)
+    holder.start()
+    assert holding.wait(5)
+    try:
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match="timed out waiting for lock"):
+            with exclusive_lock(path, timeout=0.3):
+                pytest.fail("took a lock another holder has")
+        assert 0.25 <= time.monotonic() - started < 3
+    finally:
+        release.set()
+        holder.join(5)
+    with exclusive_lock(path, timeout=2.0):  # free again: taken at once
+        # The wait for another thread of this process is bounded too.
+        outcome = []
+
+        def second_thread():
+            try:
+                with exclusive_lock(path, timeout=0.2):
+                    outcome.append("took it")
+            except TimeoutError:
+                outcome.append("timed out")
+
+        other = threading.Thread(target=second_thread)
+        other.start()
+        other.join(5)
+        assert outcome == ["timed out"]

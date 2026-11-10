@@ -8,6 +8,7 @@ installed/editable package or this repo's ``src`` via pytest pythonpath.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import sys
@@ -288,6 +289,16 @@ def test_doctor_missing_store_does_not_create_it(plugin_cli, tmp_path, monkeypat
         ("add", {"label": "x", "fields": ["value=x"], "stdin": False, "item_id": "bad id"}),
         ("put", {"item_id": "bad id", "field": "value"}),
         ("rm", {"item_id": "bad id"}),
+        (
+            "allow",
+            {
+                "item_id": "bad id",
+                "command_line": [],
+                "clear": False,
+                "remove": False,
+                "accept": False,
+            },
+        ),
     ],
 )
 def test_cli_rejects_invalid_identifiers_before_opening_store(
@@ -334,7 +345,7 @@ def test_config_load_errors_do_not_fall_back_to_default_store(plugin_cli, monkey
     def fail():
         raise RuntimeError("private config payload")
 
-    module.load_config = fail
+    module.read_user_config_raw = fail
     monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
     with pytest.raises(ValueError, match="configuration"):
         plugin_cli._secrets_cfg()
@@ -363,40 +374,115 @@ def test_source_rejects_malformed_settings(vault_home, cfg):
 def test_cli_rejects_bad_yaml_even_when_host_returns_defaults(plugin_cli, tmp_path, monkeypatch):
     import types
 
-    config = tmp_path / "config.yaml"
-    config.write_text("secrets: [broken\n", encoding="utf-8")
     module = types.ModuleType("hermes_cli.config")
-    module.get_config_path = lambda: config
-    module.load_config = lambda: {}
+
+    def fail():
+        raise ValueError("mapping values are not allowed here")
+
+    module.read_user_config_raw = fail
     monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
     with pytest.raises(ValueError, match="configuration"):
         plugin_cli._secrets_cfg()
 
 
-def test_cli_rejects_host_fallback_config(plugin_cli, tmp_path, monkeypatch):
+def _healthy_host_config(tmp_path, monkeypatch):
     import types
 
     config = tmp_path / "config.yaml"
-    config.write_text("agent: broken\nmax_turns: 4\n", encoding="utf-8")
+    config.write_text("secrets:\n  hermesvault:\n    enabled: true\n", encoding="utf-8")
+    module = types.ModuleType("hermes_cli.config")
+    module.read_user_config_raw = lambda: {"secrets": {"hermesvault": {"enabled": True}}}
+    module.get_config_path = lambda: config
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
 
-    class Fallback(dict):
-        read_error = ValueError("private config value")
+
+def test_cli_reads_config_with_hermes_raw_reader_and_needs_no_yaml(
+    plugin_cli, tmp_path, monkeypatch
+):
+    """Hermes does not ship PyYAML; the raw-config reader means this check needs neither."""
+    _healthy_host_config(tmp_path, monkeypatch)
+    monkeypatch.setitem(sys.modules, "hermes_yaml", None)
+    monkeypatch.setitem(sys.modules, "yaml", None)  # an import of either now raises ImportError
+    assert plugin_cli._secrets_cfg() == {"enabled": True}
+
+
+def test_cli_with_no_raw_reader_names_the_missing_seam(plugin_cli, tmp_path, monkeypatch):
+    """A Hermes without read_user_config_raw is told so, not told config.yaml is broken."""
+    import types
+
+    module = types.ModuleType("hermes_cli.config")  # no read_user_config_raw attribute
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+    with pytest.raises(ValueError) as raised:
+        plugin_cli._secrets_cfg()
+    message = str(raised.value)
+    assert "read_user_config_raw" in message
+    assert "correct config.yaml" not in message  # config.yaml is fine; the seam is missing
+
+
+def test_cli_rejects_a_non_mapping_config(plugin_cli, tmp_path, monkeypatch):
+    import types
 
     module = types.ModuleType("hermes_cli.config")
-    module.get_config_path = lambda: config
-    module.load_config = lambda: Fallback()
+    module.read_user_config_raw = lambda: ["a", "list"]
     monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
-    with pytest.raises(ValueError, match="configuration"):
+    with pytest.raises(ValueError, match="must be a mapping"):
         plugin_cli._secrets_cfg()
+
+
+def _raw_reader_like_hermes(tmp_path, monkeypatch, text):
+    """Hermes' read_user_config_raw: ``{}`` for a root that is not a mapping, as the real one does."""
+    import types
+
+    config = tmp_path / "config.yaml"
+    if text is not None:
+        config.write_text(text, encoding="utf-8")
+    module = types.ModuleType("hermes_cli.config")
+    module.read_user_config_raw = lambda: {}
+    module.get_config_path = lambda: config
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
+
+
+@pytest.mark.parametrize("text", ["- a\n- b\n", "just a string\n", "# note\n- a\n", "--- [1, 2]\n"])
+def test_cli_refuses_a_root_that_is_not_a_mapping_that_hermes_reads_as_empty(
+    plugin_cli, tmp_path, monkeypatch, text
+):
+    """read_user_config_raw flattens a list or scalar root to {}; that must not select the default store."""
+    _raw_reader_like_hermes(tmp_path, monkeypatch, text)
+    with pytest.raises(ValueError, match="must be a mapping"):
+        plugin_cli._secrets_cfg()
+
+
+@pytest.mark.parametrize(
+    "text", [None, "", "\n\n", "# only a comment\n", "---\n", "{}\n", "--- {}\n# x\n"]
+)
+def test_cli_accepts_a_missing_or_empty_config(plugin_cli, tmp_path, monkeypatch, text):
+    _raw_reader_like_hermes(tmp_path, monkeypatch, text)
+    assert plugin_cli._secrets_cfg() == {}
 
 
 # --- review of pin 6fc8132e: scope, prompts, creation, error text ---------------
 
 
-def test_an_empty_fetch_scope_does_not_unlock_with_the_ambient_key(vault_home):
+def _fail_os_custody(monkeypatch):
+    """Make the OS-custody tier report no key, deterministically.
+
+    The plugin must fail the same way whether or not the host's key store
+    actually holds a floor-vault key (it does on any machine that runs
+    FloorVault for real), so tests that assert the no-key path force it."""
+    import floorvault.providers.adaptive as adaptive
+    from floorvault.providers.base import KeyProviderError
+
+    def no_key(self, *, allow_create=True):
+        raise KeyProviderError("no key in the OS key store")
+
+    monkeypatch.setattr(adaptive.AdaptiveKeyProvider, "resolve_key", no_key)
+
+
+def test_an_empty_fetch_scope_does_not_unlock_with_the_ambient_key(vault_home, monkeypatch):
     """Under multiplex the process environment is another profile's: ignore it."""
     from agent.secret_sources.base import reset_source_environment, set_source_environment
 
+    _fail_os_custody(monkeypatch)
     token = set_source_environment({})  # this profile's scope: no key at all
     try:
         result = fetch(vault_home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
@@ -433,8 +519,10 @@ def test_fetch_resolves_os_custody_read_only_and_without_prompts(vault_home, mon
             super().__init__(*args, **kwargs)
 
         def resolve_key(self, *, allow_create=True):
+            from floorvault.providers.base import KeyProviderError
+
             seen["allow_create"] = allow_create
-            return super().resolve_key(allow_create=allow_create)
+            raise KeyProviderError("no key in the OS key store")
 
     monkeypatch.setattr(adaptive, "AdaptiveKeyProvider", Spy)
     result = fetch(vault_home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
@@ -563,6 +651,7 @@ def test_custody_key_file_opens_the_store_from_the_configured_file(file_home):
 
 def test_custody_key_file_ignores_floor_vault_key_file(file_home, monkeypatch):
     """The process-wide $FLOOR_VAULT_KEY_FILE never names the plugin's key."""
+    _fail_os_custody(monkeypatch)
     monkeypatch.setenv("FLOOR_VAULT_KEY_FILE", str(file_home / "secrets" / "vault.key"))
     result = fetch(file_home, {"env": {"A": "hv:vault_k"}})  # custody: os (default)
     assert not result.ok and result.secrets == {}
@@ -725,7 +814,7 @@ def test_os_custody_on_a_sealed_store_names_the_custody_setting(sdc_fake, tmp_pa
 
 
 def _bind_args(env_name="OPENAI_API_KEY", **over):
-    base = dict(item_id=None, field="value", label=None, print_only=False)
+    base = dict(item_id=None, field="value", label=None, print_only=False, stdin=False)
     base.update(over)
     return base | {"env_name": env_name}
 
@@ -744,9 +833,13 @@ def test_bind_creates_store_stores_value_and_writes_mapping(
     assert written == {"OPENAI_API_KEY": "hv:openai_api_key"}
     assert "store created" in out.out and "stored openai_api_key.value" in out.out
     assert "SECRET" not in out.out + out.err
-    assert fetch(tmp_path, {"env": {"OPENAI_API_KEY": "hv:openai_api_key"}}).secrets == {
-        "OPENAI_API_KEY": "sk-live-SECRET"
-    }
+    # The new item is bound to the gateway line, so it resolves there and nowhere else.
+    env_cfg = {"env": {"OPENAI_API_KEY": "hv:openai_api_key"}}
+    skipped = fetch(tmp_path, env_cfg)
+    assert skipped.secrets == {} and any("bound to other" in w for w in skipped.warnings)
+    gateway = _expected_gateway_line(tmp_path)
+    _as_started(monkeypatch, ["/opt/hermes/hermes_cli/main.py", *gateway[3:]], gateway, gateway[0])
+    assert fetch(tmp_path, env_cfg).secrets == {"OPENAI_API_KEY": "sk-live-SECRET"}
 
 
 def test_bind_updates_an_existing_item_and_honours_field_and_id(
@@ -959,7 +1052,7 @@ def test_a_bound_item_is_not_resolved_for_another_command(vault_home, monkeypatc
     assert result.secrets == {"ALSO": "tok-abc"}
     (warning,) = result.warnings
     assert warning.startswith("Skipped OPENAI_API_KEY: vault item vault_testopenai is bound to ")
-    assert shlex.join([HERMES, "chat"]) in warning and "floorvault secrets allow" in warning
+    assert shlex.join([HERMES, "chat"]) in warning and "hermes hvault allow" in warning
     assert "sk-test-123" not in warning
 
 
@@ -1006,7 +1099,7 @@ def test_unbound_items_resolve_unless_a_binding_is_required(vault_home, monkeypa
     result = fetch(vault_home, {"env": ENV, "require_binding": True})
     assert result.secrets == {}
     assert len(result.warnings) == 2
-    assert all("require_binding" in w and "floorvault secrets allow" in w for w in result.warnings)
+    assert all("require_binding" in w and "hermes hvault allow" in w for w in result.warnings)
     _bind(vault_home, "vault_testopenai", [HERMES, "chat"])
     assert fetch(vault_home, {"env": ENV, "require_binding": True}).secrets == {
         "OPENAI_API_KEY": "sk-test-123"
@@ -1102,3 +1195,405 @@ def test_hvault_show_prints_the_bindings(plugin_cli, vault_home, monkeypatch, ca
     assert "bindings: 1 command line(s); resolved only when Hermes was started as:" in out
     assert f"  {shlex.join([HERMES, 'gateway', 'run'])}" in out
     assert "sk-test-123" not in out
+
+
+# --- `hvault allow`: binding items without leaving Hermes --------------------
+
+
+def _allow_args(item_id="vault_testopenai", command=None, **flags):
+    return SimpleNamespace(
+        hvault_command="allow",
+        item_id=item_id,
+        command_line=command or [],
+        clear=flags.pop("clear", False),
+        remove=flags.pop("remove", False),
+        accept=flags.pop("accept", False),
+    )
+
+
+@pytest.fixture()
+def allow_env(plugin_cli, vault_home, monkeypatch):
+    """CLI wired to the fixture store, with the binding record in a temp state dir."""
+    monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
+    monkeypatch.setattr(plugin_cli, "_secrets_cfg", lambda: {"enabled": True})
+    monkeypatch.setenv("FLOOR_VAULT_STATE_DIR", str(vault_home / "state"))
+    return plugin_cli, vault_home
+
+
+def _stored_binding(home, item_id):
+    store = floorvault.get_vault_store(home / "agent-vault", auto_migrate=False)
+    return store.get_allowed_commands(item_id)
+
+
+def test_allow_binds_this_hermes_command_lines(allow_env, monkeypatch, capsys):
+    plugin_cli, home = allow_env
+    lines = [[HERMES, "gateway", "run"], ["/usr/bin/python3", "-m", "hermes_cli", "gateway", "run"]]
+    monkeypatch.setattr(plugin_cli, "hermes_command_lines", lambda: lines)
+    assert plugin_cli.hvault_command(_allow_args()) == 0
+    assert _stored_binding(home, "vault_testopenai") == [list(line) for line in lines]
+    out = capsys.readouterr().out
+    assert "resolved only when Hermes was started as:" in out
+
+
+def test_allow_binds_an_explicit_command(allow_env, capsys):
+    plugin_cli, home = allow_env
+    args = _allow_args(command=[sys.executable, "-m", "hermes_cli", "gateway", "run"])
+    assert plugin_cli.hvault_command(args) == 0
+    bound = _stored_binding(home, "vault_testopenai")
+    assert bound == [[os.path.abspath(sys.executable), "-m", "hermes_cli", "gateway", "run"]]
+
+
+def test_allow_remove_then_refuses_the_last_line(allow_env, capsys):
+    plugin_cli, home = allow_env
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 0
+    assert (
+        plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"], remove=True)) == 1
+    )
+    assert "--clear" in capsys.readouterr().err
+    # Two lines bound: removing one works.
+    second = [os.path.abspath(sys.executable), "gateway", "run"]
+    plugin_cli.hvault_command(_allow_args(command=[sys.executable, "gateway", "run"]))
+    assert (
+        plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"], remove=True)) == 0
+    )
+    assert _stored_binding(home, "vault_testopenai") == [second]
+
+
+def test_allow_clear_unbinds(allow_env, capsys):
+    plugin_cli, home = allow_env
+    plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"]))
+    assert plugin_cli.hvault_command(_allow_args(clear=True)) == 0
+    assert _stored_binding(home, "vault_testopenai") is None
+    assert "resolves it for any command" in capsys.readouterr().out
+
+
+def test_allow_refuses_a_binding_changed_behind_its_back(allow_env, capsys):
+    plugin_cli, home = allow_env
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 0
+    _bind(home, "vault_testopenai", [HERMES, "other", "command"])  # outside hvault allow
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 1
+    assert "--accept" in capsys.readouterr().err
+    # --accept trusts the stored binding and records it; the next change is allowed.
+    assert plugin_cli.hvault_command(_allow_args(accept=True)) == 0
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 0
+    bound = _stored_binding(home, "vault_testopenai")
+    assert [HERMES, "other", "command"] in bound
+
+
+def test_allow_records_an_absolute_normalised_program_path(allow_env, tmp_path, monkeypatch):
+    """A relative or un-normalised path would be recorded as typed and never match the absolute argv[0]."""
+    plugin_cli, home = allow_env
+    exe = tmp_path / "bin" / "tool"
+    exe.parent.mkdir()
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    want = os.path.abspath(exe)
+    for typed in ("./bin/tool", "bin/../bin/tool", str(tmp_path / "bin" / ".." / "bin" / "tool")):
+        assert plugin_cli.hvault_command(_allow_args(command=[typed, "chat"])) == 0
+        bound = _stored_binding(home, "vault_testopenai")
+        assert bound[-1] == [want, "chat"], typed
+        plugin_cli.hvault_command(_allow_args(clear=True))
+    # A bare name is looked up on PATH, then recorded absolute.
+    monkeypatch.setenv("PATH", str(exe.parent))
+    assert plugin_cli.hvault_command(_allow_args(command=["tool", "chat"])) == 0
+    assert _stored_binding(home, "vault_testopenai") == [[want, "chat"]]
+
+
+def test_allow_refuses_a_missing_or_non_executable_program(allow_env, tmp_path, capsys):
+    plugin_cli, home = allow_env
+    for typed, message in (
+        (str(tmp_path / "nope"), "command not found"),
+        (str(tmp_path), "is not an executable file"),
+    ):
+        assert plugin_cli.hvault_command(_allow_args(command=[typed])) == 2
+        assert message in capsys.readouterr().err
+    assert _stored_binding(home, "vault_testopenai") is None
+
+
+def test_allow_missing_item_and_old_floorvault(allow_env, monkeypatch, capsys):
+    plugin_cli, home = allow_env
+    assert plugin_cli.hvault_command(_allow_args(item_id="no_such_item")) == 1
+    assert "not found" in capsys.readouterr().err
+    monkeypatch.setattr(plugin_cli, "_store", lambda *a, **k: SimpleNamespace())
+    assert plugin_cli.hvault_command(_allow_args()) == 1
+    assert "0.3.0" in capsys.readouterr().err
+
+
+def test_allow_reports_a_metadata_failure_as_a_failure_not_a_missing_item(
+    allow_env, monkeypatch, capsys
+):
+    from floorvault.vaultkit.vault import VaultStore
+
+    plugin_cli, _ = allow_env
+
+    def damaged(self, item_id):
+        raise RuntimeError("damaged metadata")
+
+    monkeypatch.setattr(VaultStore, "get_meta", damaged)
+    assert plugin_cli.hvault_command(_allow_args()) == 1
+    err = capsys.readouterr().err
+    assert "not found" not in err and "operation failed" in err
+
+
+def test_allow_accept_refuses_a_binding_that_does_not_authenticate(allow_env, capsys):
+    """A corrupted binding must not become trusted just because --accept was given."""
+    import contextlib
+    import sqlite3
+
+    plugin_cli, home = allow_env
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 0
+    db = home / "agent-vault" / "vault.db"
+    with contextlib.closing(sqlite3.connect(db)) as conn:
+        conn.execute(
+            "UPDATE vault_items SET allowed_commands = ? WHERE id = ?",
+            (b"not a sealed binding", "vault_testopenai"),
+        )
+        conn.commit()
+    capsys.readouterr()
+    assert plugin_cli.hvault_command(_allow_args(accept=True)) == 1
+    assert "trusted from now on" not in capsys.readouterr().out
+    # The record is unchanged, so the binding still counts as changed behind our back.
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 1
+    assert "--accept" in capsys.readouterr().err
+
+
+def test_allow_rejects_flag_combinations(allow_env):
+    plugin_cli, _ = allow_env
+    assert plugin_cli.hvault_command(_allow_args(clear=True, command=[sys.executable])) == 2
+    assert plugin_cli.hvault_command(_allow_args(accept=True, remove=True)) == 2
+
+
+# --- `bind --stdin`: the one-step path without a terminal --------------------
+
+
+def _bind_cli_args(env_name="OPENAI_API_KEY", **over):
+    return SimpleNamespace(
+        hvault_command="bind",
+        env_name=env_name,
+        item_id=None,
+        field="value",
+        label=None,
+        print_only=True,
+        stdin=True,
+        **over,
+    )
+
+
+def test_bind_reads_the_value_from_stdin(plugin_cli, vault_home, monkeypatch, capsys):
+    import io
+
+    monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
+    monkeypatch.setattr(plugin_cli, "_secrets_cfg", lambda: {"enabled": True})
+    monkeypatch.setattr(sys, "stdin", io.StringIO("sk-from-stdin\n"))
+    assert plugin_cli.hvault_command(_bind_cli_args("NEW_KEY")) == 0
+    out = capsys.readouterr().out
+    assert "stored new_key.value" in out
+    store = floorvault.get_vault_store(vault_home / "agent-vault", auto_migrate=False)
+    assert store.resolve_secret("new_key") == {"value": "sk-from-stdin"}
+
+
+def _expected_gateway_line(home):
+    from hermesvault.binding_guard import gateway_command_line
+
+    line = gateway_command_line(home)
+    assert line == [
+        os.path.abspath(sys.executable),
+        "-m",
+        "hermes_cli.main",
+        "--profile",
+        "default",
+        "gateway",
+        "run",
+        "--quiet",
+        "--idle-exit",
+    ]
+    return line
+
+
+def _bind_new(plugin_cli, monkeypatch, env_name="NEW_KEY", **over):
+    import io
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO("sk-from-stdin\n"))
+    return plugin_cli.hvault_command(_bind_cli_args(env_name, **over))
+
+
+def test_bind_binds_a_new_item_to_the_gateway_line(allow_env, monkeypatch, capsys):
+    """A new item resolves only in the gateway Hermes starts for chat and one-shot commands."""
+    plugin_cli, home = allow_env
+    assert _bind_new(plugin_cli, monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "bound to " in out and "--no-bind" in out
+    assert _stored_binding(home, "new_key") == [_expected_gateway_line(home)]
+    # The record was written as `allow` writes it: adding a line needs no --accept.
+    assert plugin_cli.hvault_command(_allow_args("new_key", command=[sys.executable, "chat"])) == 0
+    assert len(_stored_binding(home, "new_key")) == 2
+
+
+def test_bind_no_bind_leaves_the_new_item_unbound(allow_env, monkeypatch, capsys):
+    plugin_cli, home = allow_env
+    assert _bind_new(plugin_cli, monkeypatch, no_bind=True) == 0
+    assert "bound to " not in capsys.readouterr().out
+    assert _stored_binding(home, "new_key") is None
+
+
+def test_bind_leaves_an_existing_items_bindings_alone(allow_env, monkeypatch, capsys):
+    plugin_cli, home = allow_env
+    assert _bind_new(plugin_cli, monkeypatch) == 0
+    assert _bind_new(plugin_cli, monkeypatch) == 0  # updates the value only
+    assert _stored_binding(home, "new_key") == [_expected_gateway_line(home)]
+    assert "updated new_key.value" in capsys.readouterr().out
+
+
+def test_bind_on_an_older_floorvault_stores_unbound_and_says_so(allow_env, monkeypatch, capsys):
+    from floorvault.vaultkit.vault import VaultStore
+
+    plugin_cli, home = allow_env
+    monkeypatch.delattr(VaultStore, "binding_fingerprint")
+    assert _bind_new(plugin_cli, monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "not bound: command bindings need floorvault 0.3.0" in out
+    assert _stored_binding(home, "new_key") is None
+
+
+def test_bind_on_windows_stores_unbound_and_names_allow(allow_env, monkeypatch, capsys):
+    plugin_cli, home = allow_env
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _bind_new(plugin_cli, monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "not bound on this platform" in out and "hermes hvault allow new_key" in out
+    assert _stored_binding(home, "new_key") is None
+
+
+def test_bind_stdin_refuses_a_terminal(plugin_cli, tmp_path, monkeypatch, capsys):
+    class Tty:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(plugin_cli, "_secrets_cfg", lambda: {"enabled": True})
+    monkeypatch.setattr(sys, "stdin", Tty())
+    assert plugin_cli.hvault_command(_bind_cli_args()) == 2
+    assert "pipe or file" in capsys.readouterr().err
+
+
+def test_doctor_prints_the_actual_warnings(plugin_cli, vault_home, monkeypatch, capsys):
+    monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
+    monkeypatch.setattr(
+        plugin_cli,
+        "_secrets_cfg",
+        lambda: {"enabled": True, "env": {"GONE": "hv:no_such_item"}},
+    )
+    assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="doctor")) == 1
+    err = capsys.readouterr().err
+    assert "GONE" in err and "no_such_item" in err  # the warning itself, not a count
+
+
+def test_allow_never_binds_the_hvault_invocation_itself(allow_env, monkeypatch, capsys):
+    plugin_cli, home = allow_env
+    monkeypatch.setattr(
+        plugin_cli,
+        "hermes_command_lines",
+        lambda: [["/usr/bin/python3", "hvault", "allow", "vault_testopenai"]],
+    )
+    assert plugin_cli.hvault_command(_allow_args()) == 2
+    assert "after --" in capsys.readouterr().err
+    assert _stored_binding(home, "vault_testopenai") is None  # unchanged
+
+
+def test_allow_drops_self_referential_lines_but_binds_the_rest(allow_env, monkeypatch, capsys):
+    plugin_cli, home = allow_env
+    agent_line = [HERMES, "gateway", "run"]
+    monkeypatch.setattr(
+        plugin_cli,
+        "hermes_command_lines",
+        lambda: [["/usr/bin/python3", "hvault", "allow"], agent_line],
+    )
+    assert plugin_cli.hvault_command(_allow_args()) == 0
+    assert _stored_binding(home, "vault_testopenai") == [agent_line]
+
+
+def test_allow_accepts_a_print_runtime_command_json_line(allow_env, capsys):
+    plugin_cli, home = allow_env
+    line = [
+        os.path.abspath(sys.executable),
+        "-I",
+        "-c",
+        "import runpy; runpy.run_module('hermes_cli.main')",
+        "gateway",
+        "run",
+    ]
+    assert plugin_cli.hvault_command(_allow_args(command=[json.dumps(line)])) == 0
+    assert _stored_binding(home, "vault_testopenai") == [line]
+
+
+def test_allow_rejects_a_malformed_json_line(allow_env, capsys):
+    plugin_cli, _ = allow_env
+    assert plugin_cli.hvault_command(_allow_args(command=['["unclosed'])) == 2
+    assert "JSON" in capsys.readouterr().err
+
+
+def test_cli_refuses_a_secrets_section_that_is_not_a_mapping(plugin_cli, tmp_path, monkeypatch):
+    """The section is read through a helper; a list or scalar there is named, not guessed at."""
+    _healthy_host_config(tmp_path, monkeypatch)
+    sys.modules["hermes_cli.config"].read_user_config_raw = lambda: {"secrets": ["hermesvault"]}
+    with pytest.raises(plugin_cli.CLIInputError, match="secrets configuration must be a mapping"):
+        plugin_cli._secrets_cfg()
+    sys.modules["hermes_cli.config"].read_user_config_raw = lambda: {"other": 1}
+    assert plugin_cli._secrets_cfg() == {}
+
+
+# --- resolution consults the record `allow` keeps outside the store (#97) -----
+
+
+def _clear_binding_in_db(home, item_id):
+    import contextlib
+    import sqlite3
+
+    with contextlib.closing(sqlite3.connect(home / "agent-vault" / "vault.db")) as conn:
+        conn.execute("UPDATE vault_items SET allowed_commands = NULL WHERE id = ?", (item_id,))
+        conn.commit()
+
+
+def test_fetch_refuses_a_recorded_binding_cleared_in_vault_db(allow_env, monkeypatch, capsys):
+    """Without the key, a writer of vault.db can clear a binding; it still must not resolve."""
+    plugin_cli, home = allow_env
+    _as_started(monkeypatch, [HERMES, "gateway", "run"])
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 0
+    env = {"env": {"OPENAI_API_KEY": "hv:vault_testopenai", "TG": "hv:vault_multi:token"}}
+    assert "OPENAI_API_KEY" not in fetch(home, env).secrets  # bound to another command
+    _clear_binding_in_db(home, "vault_testopenai")
+    result = fetch(home, env)
+    assert result.ok and result.secrets == {"TG": "tok-abc"}
+    assert any("changed since it was last recorded" in w for w in result.warnings)
+    # The operator's own decision releases it again.
+    assert plugin_cli.hvault_command(_allow_args(accept=True)) == 0
+    assert fetch(home, env).secrets["OPENAI_API_KEY"] == "sk-test-123"
+
+
+def test_rm_forgets_the_binding_so_a_new_item_of_that_id_resolves(allow_env, capsys):
+    plugin_cli, home = allow_env
+    assert plugin_cli.hvault_command(_allow_args(command=[sys.executable, "chat"])) == 0
+    rm = SimpleNamespace(hvault_command="rm", item_id="vault_testopenai")
+    assert plugin_cli.hvault_command(rm) == 0
+    floorvault.get_vault_store(home / "agent-vault", auto_migrate=False).add_item(
+        kind="generic", label="again", secret={"value": "sk-new"}, item_id="vault_testopenai"
+    )
+    result = fetch(home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
+    assert result.secrets == {"OPENAI_API_KEY": "sk-new"} and not result.warnings
+
+
+def test_list_escapes_control_characters_from_the_store(allow_env, capsys):
+    """kind and origin are cleartext columns; a label may come from another tool."""
+    import contextlib
+    import sqlite3
+
+    plugin_cli, home = allow_env
+    forged = "generic\tReal\nprod-root\tgeneric\tProduction root\x1b[1A"
+    with contextlib.closing(sqlite3.connect(home / "agent-vault" / "vault.db")) as conn:
+        conn.execute("UPDATE vault_items SET kind = ? WHERE id = 'vault_multi'", (forged,))
+        conn.commit()
+    capsys.readouterr()
+    assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="list")) == 0
+    out = capsys.readouterr().out
+    assert len(out.splitlines()) == 2 and "\x1b" not in out

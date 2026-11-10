@@ -363,19 +363,31 @@ class MigratingVaultStore:
         # beside a backup that cannot decrypt after the key is removed.
         backup = self._vault_path.with_name(f"{self._vault_path.name}{self._backup_suffix}")
         key_backup = self._key_path.with_name(f"{self._key_path.name}{self._backup_suffix}")
+        if os.path.islink(backup):
+            # exists() is False for a dangling link, and the copy would then be
+            # written through it, to wherever it points.
+            raise LegacyVaultError(f"Refusing legacy vault backup: {backup} is a symbolic link")
         if not backup.exists():
             shutil.copy2(self._vault_path, backup)
         if self._key_path.is_file() and not os.path.lexists(key_backup):
-            shutil.copy2(self._key_path, key_backup)
-            # copy2 preserves the source's owner-only mode, which
-            # read_protected just verified; pin it anyway so the backup's
-            # protection never depends on copy semantics.
-            try:
-                os.chmod(key_backup, 0o600)
-            except OSError:
-                # POSIX mode bits do not exist on Windows; the ACL check
-                # below is the control there.
-                pass
+            # Created owner-only before a byte of the key is written, and never
+            # through a link. copy2 created the file with the umask, wrote the
+            # key, and only then copied the mode: under umask 022 the legacy key
+            # was readable by others for that long, and for good after a crash.
+            key_bytes = self._key_path.read_bytes()
+            descriptor = os.open(
+                key_backup,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(key_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
         # The key backup holds the legacy master key, so it is held to the
         # same protected-store bar as the key itself. A backup that already
         # existed never passed through read_protected - refuse to report a

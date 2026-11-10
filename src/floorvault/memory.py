@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import mmap
+import os
 from typing import Any
 
 from .platform_support import is_linux, is_macos, is_windows
@@ -80,6 +81,15 @@ class HardenedMemoryKey:
     allocation (or any control it demands) cannot be established, the
     constructor raises :class:`SecurityHardeningError` rather than silently
     holding the key on a plain heap buffer.
+
+    Across ``fork()``: the handle belongs to the process that made it. The
+    buffer is a private mapping, so nothing a child does to its copy reaches
+    the parent's key. Where the page is excluded from children (Linux
+    ``MADV_DONTFORK``) a child has no page at all: :meth:`get_buffer` and
+    :meth:`get_bytes` raise there, and :meth:`wipe` only forgets the handle.
+    Elsewhere (macOS, ``mode="disabled"``, a page that could not be excluded)
+    a child inherits a copy of the key, which its own ``wipe()`` zeroes; that
+    copy is the platform's limit, not something this class can prevent.
     """
 
     def __init__(
@@ -105,6 +115,9 @@ class HardenedMemoryKey:
         self._teardown_is_macos = is_macos()
         self._teardown_is_linux = is_linux()
         self._teardown_is_windows = is_windows()
+        self._teardown_getpid = os.getpid
+        #: The process that made this handle; a forked child is not it.
+        self._owner_pid = os.getpid()
 
         if mode not in {"disabled", "opportunistic", "required"}:
             raise ValueError("mode must be one of 'disabled', 'opportunistic', or 'required'")
@@ -138,7 +151,15 @@ class HardenedMemoryKey:
             else key_bytes
         )
         try:
-            self._mapping = mmap.mmap(-1, self._alloc_size)
+            # Private, never shared: Python's default for an anonymous mapping
+            # is MAP_SHARED, and a shared page is the same page in every forked
+            # child, so a child's wipe() (its __del__ at exit) zeroed the
+            # parent's key under a handle that still said it was live.
+            # Windows has no fork and no flags argument.
+            if hasattr(mmap, "MAP_PRIVATE"):
+                self._mapping = mmap.mmap(-1, self._alloc_size, flags=mmap.MAP_PRIVATE)
+            else:
+                self._mapping = mmap.mmap(-1, self._alloc_size)
             self._mmap_base = ctypes.addressof(ctypes.c_char.from_buffer(self._mapping))
             self._buffer = (ctypes.c_char * self._alloc_size).from_address(self._mmap_base)
             ctypes.memmove(self._buffer, source_addr, self._size)
@@ -177,6 +198,16 @@ class HardenedMemoryKey:
                 res = libc.mlock(self._buffer, ctypes.c_size_t(self._locked_size))
                 if res == 0:
                     self._locked = True
+                elif self._mode == "required":
+                    raise SecurityHardeningError(
+                        "mlock() failed: insufficient privileges or RLIMIT_MEMLOCK exceeded. "
+                        "Refusing to operate with unpinned master key in production."
+                    )
+                # Dump and fork exclusion do not depend on the lock, so a page
+                # that could not be pinned (RLIMIT_MEMLOCK) is still kept out
+                # of core dumps and forked children. madvise needs the
+                # page-aligned mapping; the heap fallback cannot have either.
+                if self._mmap_base is not None:
                     # Shield from core dumps (Linux only; EINVAL on Darwin)
                     if MADV_DONTDUMP is not None:
                         try:
@@ -203,11 +234,6 @@ class HardenedMemoryKey:
                             )
                         except Exception:  # madvise hardening is best-effort  # nosec B110
                             pass
-                elif self._mode == "required":
-                    raise SecurityHardeningError(
-                        "mlock() failed: insufficient privileges or RLIMIT_MEMLOCK exceeded. "
-                        "Refusing to operate with unpinned master key in production."
-                    )
                 # Required mode only demands advice the platform actually
                 # implements. Darwin has neither MADV_DONTDUMP nor MADV_DONTFORK
                 # (src/floorvault/memory.py:19-20), so requiring them there
@@ -273,6 +299,7 @@ class HardenedMemoryKey:
         """
         if self._closed:
             raise RuntimeError("Attempted to access wiped HardenedMemoryKey")
+        self._refuse_absent_page()
         if self._mapping is not None:
             return memoryview(self._mapping)[: self._size]
         return memoryview(self._buffer)[: self._size]
@@ -281,7 +308,23 @@ class HardenedMemoryKey:
         """Return raw bytes view. Use sparingly to avoid heap ghost copies."""
         if self._closed:
             raise RuntimeError("Attempted to access wiped HardenedMemoryKey")
+        self._refuse_absent_page()
         return bytes(memoryview(self._buffer)[: self._size])
+
+    def _page_absent(self) -> bool:
+        """Whether this process is a forked child the key page was kept out of.
+
+        ``MADV_DONTFORK`` leaves the address unmapped in a child, so reading or
+        zeroing it there is a segmentation fault, not an error.
+        """
+        return self._fork_excluded and self._teardown_getpid() != self._owner_pid
+
+    def _refuse_absent_page(self) -> None:
+        if self._page_absent():
+            raise RuntimeError(
+                "this HardenedMemoryKey was made before fork() and its page is excluded "
+                "from child processes; resolve the key again in the child"
+            )
 
     def wipe(self) -> None:
         """Securely zero memory buffer, unlock physical RAM pages, release mapping."""
@@ -298,7 +341,18 @@ class HardenedMemoryKey:
         memset = self._teardown_memset
         c_size_t = self._teardown_c_size_t
 
-        # 1. Overwrite the whole mapped region with zeroes
+        if self._page_absent():
+            # A forked child the page was excluded from: there is nothing here
+            # to zero (touching the address would kill the process at exit),
+            # and the lock and the mapping are the parent's. Forget the handle.
+            self._locked = False
+            self._buffer = None
+            self._mapping = None
+            self._mmap_base = None
+            return
+
+        # 1. Overwrite the whole mapped region with zeroes. In a forked child
+        # that inherited the page this zeroes the child's private copy only.
         memset(self._buffer, 0, self._alloc_size)
 
         # 2. Unlock memory pages

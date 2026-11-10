@@ -37,8 +37,8 @@ uv sync --extra dev            # add --extra macos on macOS, --extra linux on Li
 These mirror the required CI checks (see [docs/CI.md](docs/CI.md)):
 
 ```bash
-uv run --no-sync ruff check src/ tests/ scripts/ fuzz/
-uv run --no-sync ruff format --check src/ tests/ scripts/ fuzz/
+uv run --no-sync ruff check src/ tests/ scripts/ fuzz/ plugins/
+uv run --no-sync ruff format --check src/ tests/ scripts/ fuzz/ plugins/
 uv run --no-sync pytest -q tests/
 uv run --no-sync python -u scripts/mutation_check.py --mode curated
 ```

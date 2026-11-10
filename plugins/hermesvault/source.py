@@ -19,10 +19,13 @@ with ``custody``:
   the store (``master.key.sdcred``), unsealed with ``systemd-creds decrypt``.
   This is the only custody that starts a subprocess.
 
-Command bindings set with ``floorvault secrets allow`` are enforced against the
+Command bindings set with ``hermes hvault allow`` (or ``floorvault secrets allow``) are enforced against the
 command line Hermes itself was started with (see ``binding_guard``): a
 bound item is resolved only when that line is one of its bindings, and
-``require_binding: true`` also refuses items that have none. This process has
+``require_binding: true`` also refuses items that have none. A binding that
+differs from the record ``allow`` keeps outside the store (cleared, or an older
+one written back into vault.db) is refused too; reading that record needs a
+floorvault newer than 0.4.0. This process has
 already started, so unlike ``floorvault run`` the plugin cannot check variables
 that steer what the command loads.
 
@@ -51,9 +54,9 @@ from agent.secret_sources.base import (
 )
 
 try:
-    from .binding_guard import binding_problem, hermes_command_lines
+    from .binding_guard import binding_problem, binding_record_problems, hermes_command_lines
 except ImportError:  # imported as a top-level module, with this directory on sys.path
-    from binding_guard import binding_problem, hermes_command_lines
+    from binding_guard import binding_problem, binding_record_problems, hermes_command_lines
 
 
 def _import_floorvault():
@@ -68,7 +71,7 @@ def _import_floorvault():
 
 
 DEFAULT_DIR_NAME = "agent-vault"
-DEFAULT_TOKEN_ENV = "HERMES_VAULT_KEY"
+DEFAULT_TOKEN_ENV = "HERMES_VAULT_KEY"  # nosec B105 - a variable's name, not a key
 DEFAULT_CUSTODY = "os"
 CUSTODIES = ("os", "key_file", "systemd-creds")
 #: floorvault's own key variables. The plugin does not read them, but a mapped
@@ -264,7 +267,7 @@ class HermesVaultSource(SecretSource):
     label = "FloorVault"
     shape = "mapped"
     scheme = "hv"
-    token_env_key = "token_env"
+    token_env_key = "token_env"  # nosec B105 - a configuration key's name
     default_token_env = DEFAULT_TOKEN_ENV
     remediation_hints = {
         ErrorKind.NOT_CONFIGURED: "Set secrets.hermesvault.enabled: true and map vars under secrets.hermesvault.env.",
@@ -304,8 +307,8 @@ class HermesVaultSource(SecretSource):
                 "default": False,
             },
             "require_binding": {
-                "description": "Also refuse items with no `floorvault secrets allow` "
-                "binding (a binding cleared in vault.db then blocks the item)",
+                "description": "Also refuse items with no command binding (`hermes hvault allow`) "
+                "(a binding cleared in vault.db then blocks the item)",
                 "default": False,
             },
             "timeout_seconds": {"description": "Fetch wall-clock budget", "default": 120},
@@ -351,6 +354,14 @@ class HermesVaultSource(SecretSource):
             result.warnings.append(
                 "floorvault is older than 0.2.8: command bindings are not enforced"
             )
+        # One read of the record `allow` keeps outside the store, for every mapped
+        # item: a binding cleared or rolled back in vault.db still decrypts, and
+        # only that record can tell (#97).
+        mapped_items = sorted({item for item, _ in map(parse_ref, env_map.values()) if item})
+        record_problems, record_notes = binding_record_problems(
+            store, resolve_base_dir(cfg, home_path), mapped_items
+        )
+        result.warnings.extend(record_notes)
         for name, ref in env_map.items():
             if not is_valid_env_name(name):
                 result.warnings.append(f"Skipped invalid env-var name {name!r}")
@@ -359,7 +370,9 @@ class HermesVaultSource(SecretSource):
             if item_id is None:
                 result.warnings.append(f"Skipped {name}: ref must be hv:<item_id>[:<field>]")
                 continue
-            problem = binding_problem(store, item_id, command_lines, require_binding)
+            problem = record_problems.get(item_id) or binding_problem(
+                store, item_id, command_lines, require_binding
+            )
             if problem is not None:
                 result.warnings.append(f"Skipped {name}: vault item {item_id} {problem}")
                 continue

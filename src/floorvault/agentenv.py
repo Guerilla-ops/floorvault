@@ -81,6 +81,11 @@ CODE_INJECTION_ENV_NAMES = frozenset(
         "PYTHONSTARTUP",
         "PYTHONHOME",
         "PYTHONUSERBASE",
+        # Where compiled modules are read from: a planted .pyc for a standard
+        # library module runs in place of it.
+        "PYTHONPYCACHEPREFIX",
+        # Names the callable breakpoint() runs.
+        "PYTHONBREAKPOINT",
         "PERL5OPT",
         "PERL5LIB",
         "PERLLIB",
@@ -88,6 +93,17 @@ CODE_INJECTION_ENV_NAMES = frozenset(
         "RUBYLIB",
         "BASH_ENV",
         "ENV",
+        # xtrace expands PS4 before each command, command substitutions included.
+        "SHELLOPTS",
+        "BASHOPTS",
+        "PS4",
+        "PERL5DB",
+        # Shared objects loaded by name: glibc's character-set converters and
+        # OpenSSL's configuration, providers and engines.
+        "GCONV_PATH",
+        "OPENSSL_CONF",
+        "OPENSSL_MODULES",
+        "OPENSSL_ENGINES",
         "JAVA_TOOL_OPTIONS",
         "_JAVA_OPTIONS",
         "JDK_JAVA_OPTIONS",

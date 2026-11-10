@@ -275,9 +275,14 @@ def derive_beacon_key(master_key: Union[bytes, bytearray, HardenedMemoryKey]) ->
     outputs in general, so the two must not be derived with the same label; this
     function exists so callers do not invent one.
 
-    Returns the key as ``bytes``. If the caller's master key is a hardened
-    handle, the derived key is returned to the caller and is that caller's to
-    wipe; :class:`BeaconIndexer` never retains more than the object it is given.
+    Returns the key as ``bytes``. That is an immutable object, so it cannot be
+    zeroed: the derived subkey lives on the Python heap until the interpreter
+    reclaims it, and neither this function nor the caller can wipe it. Keep it
+    only as long as it is needed and drop every reference. This is the one
+    place the module hands back an immutable copy, because the return type is
+    part of the public API. The snapshot of the master key made along the way
+    is a mutable buffer and is zeroed before this returns.
+    :class:`BeaconIndexer` never retains more than the object it is given.
     """
     source = _snapshot_key(
         _coerce_key_material(master_key, what="master key"),
@@ -294,7 +299,8 @@ def derive_beacon_key(master_key: Union[bytes, bytearray, HardenedMemoryKey]) ->
         ).derive(source)
     finally:
         # The snapshot is ours; zero it rather than leaving key-derived material
-        # on the heap. The returned subkey is the caller's to wipe.
+        # on the heap. The returned subkey is immutable ``bytes`` and cannot be
+        # zeroed (see the docstring).
         for index in range(len(source)):
             source[index] = 0
 
