@@ -55,9 +55,11 @@ import hmac
 import json
 import os
 import struct
+import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Optional, Protocol, Union
+from typing import Any, Iterator, Mapping, Optional, Protocol, TypeVar, Union
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -66,6 +68,7 @@ from ._filelock import exclusive_lock
 from .beacons import _KEY_BYTES, _coerce_key_material, _snapshot_key
 from .core import FloorVaultError
 from .memory import HardenedMemoryKey
+from .platform_support import is_windows
 from .providers.platform_custody import _fsync_directory
 from .sqlite_adapter import _fold_sqlite, _quoted_identifier, _safe_column
 
@@ -121,6 +124,35 @@ class AnchorStore(Protocol):
     def compare_and_swap(self, name: str, expected: Optional[bytes], new: bytes) -> bool: ...
 
 
+_T = TypeVar("_T")
+
+#: How long Windows retries a file another process holds open, in seconds.
+_SHARING_RETRY_SECONDS = 2.0
+
+
+def _retry_sharing_violation(operation: Callable[[], _T]) -> _T:
+    """Run ``operation``, retrying a momentary Windows ``PermissionError``.
+
+    Windows refuses to open, replace or delete a file that another process has
+    open without delete sharing, and reports it as ``PermissionError``. Several
+    processes reading and replacing one anchor record at once (an MCP client
+    starting its servers together) hit that for a few milliseconds each. Retried
+    briefly, they succeed; the compare-and-swap lock already makes the order
+    safe. Everywhere else ``PermissionError`` is a real refusal and is raised
+    at once, and on Windows too once the wait runs out.
+    """
+    deadline = time.monotonic() + _SHARING_RETRY_SECONDS
+    delay = 0.005
+    while True:
+        try:
+            return operation()
+        except PermissionError:
+            if not is_windows() or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.1)
+
+
 class FileAnchorStore:
     """An :class:`AnchorStore` backed by one small file per anchor name.
 
@@ -140,7 +172,7 @@ class FileAnchorStore:
 
     def load(self, name: str) -> Optional[bytes]:
         try:
-            return self._path(name).read_bytes()
+            return _retry_sharing_violation(self._path(name).read_bytes)
         except FileNotFoundError:
             return None
 
@@ -173,7 +205,7 @@ class FileAnchorStore:
                     os.fsync(descriptor)
                 finally:
                     os.close(descriptor)
-                os.replace(temporary, path)
+                _retry_sharing_violation(lambda: os.replace(temporary, path))
                 # Flush the rename itself: without it a power loss can revert
                 # the directory entry to the previous anchor record, which a
                 # database restored to that same earlier state would match.
