@@ -8,6 +8,8 @@ Lint/build, static analysis, history scanning and the complete mutation roster
 run in shared jobs. macOS/Windows also run platform mutation controls. Dependency
 audits resolve all extras on each OS so platform-marked dependencies are covered.
 The standalone `scripts/security-check.sh` remains a complete local gate.
+Lint, Bandit and Semgrep cover `plugins/` as well as `src/`, `scripts/` and
+`fuzz/`: the Hermes plugin ships to users like the library does.
 
 ## How the mutation controls are split
 

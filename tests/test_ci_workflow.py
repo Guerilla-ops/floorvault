@@ -205,8 +205,8 @@ def test_every_action_in_every_workflow_is_pinned_to_a_commit():
 
 def test_sast_job_runs_the_gates_own_commands():
     for command in (
-        "bandit -q -r src/ scripts/ fuzz/",
-        "semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/",
+        "bandit -q -r src/ scripts/ fuzz/ plugins/",
+        "semgrep scan --config p/python --metrics=off --error src/ scripts/ fuzz/ plugins/",
     ):
         assert command in GATE, f"the gate no longer runs: {command}"
         assert command in TEXT, f"the sast job does not run the gate's command: {command}"

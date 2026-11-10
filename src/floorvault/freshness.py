@@ -500,7 +500,21 @@ class FreshnessAnchor:
         # An explicit COMMIT statement, not connection.commit(): under Python
         # 3.12's sqlite3 autocommit=True, commit() is a no-op, so the write
         # would be dropped while the anchor advanced past it.
-        connection.execute("COMMIT")
+        try:
+            connection.execute("COMMIT")
+        except Exception:
+            # SQLite refused the COMMIT (another connection's read lock, a
+            # deferred constraint, a full disk) and says the transaction is
+            # still open: the write did not land, and this process knows it.
+            # Take the pending mark back, or every later verify() refuses the
+            # database until an operator calls discard_interrupted_commit(),
+            # the one call that can also accept a real rollback. A crash
+            # (BaseException) or a connection that cannot say is left pending:
+            # there the outcome is not known.
+            if getattr(connection, "in_transaction", None) is True:
+                self.store.compare_and_swap(self.name, pending_blob, blob)
+            self._trust(None, None)
+            raise
         if not self.store.compare_and_swap(
             self.name, pending_blob, self._encode_record(new_state, None)
         ):
@@ -521,7 +535,10 @@ class FreshnessAnchor:
         ``BEGIN IMMEDIATE`` takes the database's reserved lock before the
         check, so no other writer can change the anchored rows or schema
         between the verification and the commit. On an exception the
-        transaction is rolled back and the anchor is left untouched::
+        transaction is rolled back and the anchor is left as it was, including
+        when SQLite refuses the COMMIT itself. Only a crash between the pending
+        mark and the commit leaves the anchor pending (see the module
+        docstring)::
 
             with anchor.transaction(connection):
                 table.store("u1", "token_cipher", new_token)

@@ -87,6 +87,30 @@ WINDOWS_TRUSTED_SIDS = frozenset(
 )
 
 
+#: ACCESS_ALLOWED_ACE (0) and ACCESS_ALLOWED_CALLBACK_ACE (9, a conditional
+#: grant): ACE_HEADER, ACCESS_MASK, then the SID.
+_ACE_TYPES_WITH_SID_AT_8 = frozenset({0, 9})
+#: The four access-denied types. They grant nothing.
+_ACE_TYPES_DENYING = frozenset({1, 6, 10, 12})
+
+
+def ace_disposition(ace_type: int) -> str:
+    """How the DACL walk treats an ACE of ``ace_type``: ``sid``, ``deny`` or ``unknown``.
+
+    Pure, so the policy is testable without a Windows host. Only plain allow
+    ACEs used to be counted, so a grant made through any other allow type (an
+    object ACE, a conditional one) was skipped and the store passed as
+    owner-only. Anything that is not a known deny type and whose SID cannot be
+    read at the known offset is ``unknown``, which the caller reports as access
+    it cannot account for: "cannot tell" is never "fine".
+    """
+    if ace_type in _ACE_TYPES_WITH_SID_AT_8:
+        return "sid"
+    if ace_type in _ACE_TYPES_DENYING:
+        return "deny"
+    return "unknown"
+
+
 def acl_sids_granting_others_access(
     sids: Iterable[str],
     *,
@@ -127,7 +151,6 @@ def windows_dacl_sids(path: str | Path) -> tuple[frozenset[str], str | None]:
     owner_security_information = 0x00000001
     dacl_security_information = 0x00000004
     acl_size_information = 2
-    access_allowed_ace_type = 0
 
     class ACL_SIZE_INFORMATION(ctypes.Structure):
         _fields_ = [
@@ -199,7 +222,13 @@ def windows_dacl_sids(path: str | Path) -> tuple[frozenset[str], str | None]:
             if not advapi32.GetAce(dacl_ptr, index, ctypes.byref(ace_ptr)):
                 raise OSError(ctypes.get_last_error(), "GetAce failed")
             header = ctypes.cast(ace_ptr, ctypes.POINTER(ACE_HEADER)).contents
-            if header.AceType != access_allowed_ace_type:
+            disposition = ace_disposition(header.AceType)
+            if disposition == "deny":
+                continue
+            if disposition == "unknown":
+                # Not a SID, so it is never the owner or a trusted principal:
+                # the store is reported as granting access beyond its owner.
+                sids.add(f"<ace-type-{header.AceType}>")
                 continue
             # ACCESS_ALLOWED_ACE: ACE_HEADER (4 bytes) + ACCESS_MASK (4 bytes),
             # then the SID. The address is computed rather than described with a

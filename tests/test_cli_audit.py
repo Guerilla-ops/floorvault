@@ -1139,3 +1139,27 @@ def test_a_kind_written_into_vault_db_cannot_forge_a_listing_line(base_env, stor
     assert "\x1b" not in result.stdout and not any(
         line.startswith("prod-db-root") for line in lines
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX PATH semantics; Windows is RUN-10 above")
+@pytest.mark.parametrize("shape", ["{real}:", ":{real}", "{real}::{real}"])
+def test_an_empty_path_entry_does_not_mean_the_current_directory(tmp_path, monkeypatch, shape):
+    """POSIX reads an empty PATH entry as ".", so a file in the working directory won."""
+    from floorvault.agent_cli import _find_command
+
+    here = tmp_path / "cwd"
+    real = tmp_path / "bin"
+    for directory in (here, real):
+        directory.mkdir()
+    planted = here / "fvprobe"
+    planted.write_text("#!/bin/sh\n")
+    planted.chmod(0o755)
+    monkeypatch.chdir(here)
+    environ = {"PATH": shape.format(real=real)}
+    assert _find_command("fvprobe", environ) == (None, 127)
+    # An explicit "." is the operator's choice, and a real entry still works.
+    assert _find_command("fvprobe", {"PATH": f"{real}:."})[1] == 0
+    installed = real / "fvprobe"
+    installed.write_text("#!/bin/sh\n")
+    installed.chmod(0o755)
+    assert _find_command("fvprobe", environ) == (str(installed), 0)

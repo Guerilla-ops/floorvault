@@ -790,3 +790,41 @@ def test_file_store_refuses_unsafe_names(tmp_path, name):
     with pytest.raises(ValueError, match="name"):
         store.load(name)
     assert not any(p.name.startswith("escaped") for p in tmp_path.iterdir())
+
+
+def test_a_commit_sqlite_refuses_leaves_the_anchor_usable(tmp_path):
+    """A refused COMMIT did not land, and the process knows it.
+
+    Another connection's read lock makes COMMIT fail with "database is locked"
+    in rollback-journal mode. The anchor was left pending, so every later
+    verify() refused the database until discard_interrupted_commit(): routine
+    lock contention taught callers to reach for the one call that can also
+    accept a real rollback.
+    """
+    path = tmp_path / "app.db"
+    connection = sqlite3.connect(path, timeout=0)
+    connection.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+    connection.execute("INSERT INTO t (v) VALUES ('a')")
+    connection.commit()
+    anchor = FreshnessAnchor(KEY, MemoryStore(), name="app", tables={"t": "id"})
+    anchor.initialize(connection)
+    before = dict(anchor.store.records)
+
+    reader = sqlite3.connect(path, timeout=0)
+    cursor = reader.execute("SELECT * FROM t")  # holds a SHARED lock while unread
+    cursor.fetchone()
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM t").fetchone()
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        with anchor.transaction(connection):
+            connection.execute("INSERT INTO t (v) VALUES ('b')")
+    assert not connection.in_transaction
+    assert anchor.store.records == before, "the pending mark was left behind"
+    reader.rollback()
+    reader.close()
+
+    anchor.verify(connection)  # no discard_interrupted_commit() needed
+    with anchor.transaction(connection):
+        connection.execute("INSERT INTO t (v) VALUES ('b')")
+    anchor.verify(connection)
+    assert connection.execute("SELECT count(*) FROM t").fetchone()[0] == 2

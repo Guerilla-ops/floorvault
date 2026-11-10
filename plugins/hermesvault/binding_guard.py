@@ -140,7 +140,7 @@ def binding_record_problems(
     for item_id in item_ids:
         try:
             current[item_id] = fingerprint(item_id)
-        except Exception:
+        except Exception:  # nosec B112 - not swallowed: resolving the item reports it
             # A missing item, or a store that cannot be read: resolving it reports that.
             continue
     if not current:

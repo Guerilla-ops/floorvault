@@ -71,7 +71,7 @@ def _import_floorvault():
 
 
 DEFAULT_DIR_NAME = "agent-vault"
-DEFAULT_TOKEN_ENV = "HERMES_VAULT_KEY"
+DEFAULT_TOKEN_ENV = "HERMES_VAULT_KEY"  # nosec B105 - a variable's name, not a key
 DEFAULT_CUSTODY = "os"
 CUSTODIES = ("os", "key_file", "systemd-creds")
 #: floorvault's own key variables. The plugin does not read them, but a mapped
@@ -267,7 +267,7 @@ class HermesVaultSource(SecretSource):
     label = "FloorVault"
     shape = "mapped"
     scheme = "hv"
-    token_env_key = "token_env"
+    token_env_key = "token_env"  # nosec B105 - a configuration key's name
     default_token_env = DEFAULT_TOKEN_ENV
     remediation_hints = {
         ErrorKind.NOT_CONFIGURED: "Set secrets.hermesvault.enabled: true and map vars under secrets.hermesvault.env.",

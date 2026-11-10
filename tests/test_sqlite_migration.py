@@ -229,3 +229,52 @@ def test_drop_plaintext_column_reports_busy_wal_checkpoint(tmp_path):
     finally:
         reader.close()
         connection.close()
+
+
+def _autocommit_connections():
+    yield "isolation_level=None", lambda: sqlite3.connect(":memory:", isolation_level=None)
+    yield "default", lambda: sqlite3.connect(":memory:")
+    if hasattr(sqlite3.Connection, "autocommit"):  # Python 3.12
+        yield "autocommit=True", lambda: sqlite3.connect(":memory:", autocommit=True)
+        yield "autocommit=False", lambda: sqlite3.connect(":memory:", autocommit=False)
+
+
+@pytest.mark.parametrize(
+    "connect",
+    [c for _, c in _autocommit_connections()],
+    ids=[n for n, _ in _autocommit_connections()],
+)
+def test_a_failed_migration_writes_nothing_in_any_transaction_mode(connect):
+    """`with connection:` opens no transaction on an autocommit connection.
+
+    Each UPDATE committed on its own, so a bad row part-way left the rows before
+    it encrypted, and the rerun was refused as "destination column already
+    contains data": the partial migration the helper says cannot happen.
+    """
+    connection = connect()
+    crypto = FloorVault(b"\x05" * 32, memory_mode="disabled")
+    connection.execute("CREATE TABLE users (id TEXT PRIMARY KEY, email, email_cipher BLOB)")
+    connection.executemany(
+        "INSERT INTO users (id, email) VALUES (?, ?)",
+        [("u1", "a@example.test"), ("u2", "b@example.test"), ("u3", 12345), ("u4", "d@x.test")],
+    )
+    connection.execute("COMMIT") if connection.in_transaction else None
+    arguments = dict(
+        table="users", id_column="id", source_column="email", destination_column="email_cipher"
+    )
+    with pytest.raises(TypeError, match="plaintext values must be str or bytes"):
+        migrate_plaintext_column(connection, crypto, **arguments)
+    written = connection.execute(
+        "SELECT count(*) FROM users WHERE email_cipher IS NOT NULL"
+    ).fetchone()[0]
+    assert written == 0, "rows encrypted before the failure were committed"
+    connection.execute("UPDATE users SET email = 'c@example.test' WHERE id = 'u3'")
+    assert migrate_plaintext_column(connection, crypto, **arguments)["migrated"] == 4
+    # Committed, not left in an open transaction for the caller to lose.
+    connection.execute("ROLLBACK") if connection.in_transaction else None
+    assert (
+        connection.execute("SELECT count(*) FROM users WHERE email_cipher IS NOT NULL").fetchone()[
+            0
+        ]
+        == 4
+    )
