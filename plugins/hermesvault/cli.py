@@ -34,6 +34,11 @@ class CLIInputError(ValueError):
     """An operator-facing validation message containing no input values."""
 
 
+#: Longest secret read from a pipe. A bounded read cannot be turned into an
+#: unbounded allocation by whatever is on the other end of the pipe.
+_MAX_STDIN_CHARS = 65536
+
+
 def _item_id(value):
     item, field = parse_ref(f"hv:{value}")
     if item is None or field is not None or item != value:
@@ -591,7 +596,14 @@ def _cmd_bind(args) -> int:
         print(_custody_line(cfg))
 
     if args.stdin:
-        value = sys.stdin.read().rstrip("\n")
+        value = sys.stdin.read(_MAX_STDIN_CHARS + 1)
+        if len(value) > _MAX_STDIN_CHARS:
+            print(
+                "hvault bind: the value from stdin is longer than 64 KiB; nothing stored",
+                file=sys.stderr,
+            )
+            return 2
+        value = value.rstrip("\n")
     else:
         value = _read_secret(f"{args.env_name}: ", "bind")
     if value is None:
