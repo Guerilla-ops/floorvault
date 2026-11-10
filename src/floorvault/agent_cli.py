@@ -543,7 +543,15 @@ def _find_command(command: str, env: Mapping[str, str]) -> tuple[Optional[str], 
             # Not os.defpath: on Windows it starts with the current directory.
             found = _windows_which(command, env.get("PATH", ""), env.get("PATHEXT"))
         else:
-            found = shutil.which(command, path=env.get("PATH", os.defpath))
+            # POSIX reads an empty PATH entry (a leading, trailing or doubled
+            # ":") as the current directory, so a file there named like the
+            # command would be the one started, and the one `secrets allow`
+            # binds. Skipped, as on Windows above; an explicit "." is the
+            # operator's choice and is kept.
+            search = env.get("PATH", os.defpath)
+            found = shutil.which(
+                command, path=os.pathsep.join(entry for entry in search.split(os.pathsep) if entry)
+            )
     except PermissionError:
         return None, 126
     except (OSError, ValueError):  # e.g. a name too long for the filesystem

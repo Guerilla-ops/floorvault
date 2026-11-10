@@ -701,3 +701,35 @@ def test_inspect_reads_the_key_from_a_credential_in_key_dir(
     out = capsys.readouterr()
     assert code == 0, out.err
     assert "Decrypted value: sealed-secret" in out.out
+
+
+@linux_only
+def test_a_write_cut_short_leaves_no_credential_behind(fake, vault, monkeypatch):
+    """A truncated credential reads as "this home has a key" and blocks every custody.
+
+    It was created at its final name, so a kill or power loss mid-write left one.
+    It is now written under another name and linked into place when complete.
+    """
+    real_fsync = os.fsync
+    seen = []
+
+    def die_while_writing(descriptor):
+        # The first fsync with a file in the store directory is the credential's own.
+        if not seen and vault.is_dir() and any(vault.iterdir()):
+            seen.append(sdc.credential_present(vault))
+            raise KeyboardInterrupt("simulated kill before the write is durable")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(sdc.os, "fsync", die_while_writing)
+    with pytest.raises(KeyboardInterrupt):
+        sdc.create_credential(vault, binary=str(fake.binary))
+    assert seen == [False], "the credential was visible before it was complete"
+    assert not sdc.credential_present(vault)
+    assert [p.name for p in vault.iterdir()] == [], "the temporary file was left behind"
+    # And the next attempt is not blocked by the failed one.
+    monkeypatch.setattr(sdc.os, "fsync", real_fsync)
+    path = sdc.create_credential(vault, binary=str(fake.binary))
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert sdc.read_key(vault, binary=str(fake.binary)) is not None
+    with pytest.raises(sdc.SystemdCredsError, match="never replaced"):
+        sdc.create_credential(vault, binary=str(fake.binary))

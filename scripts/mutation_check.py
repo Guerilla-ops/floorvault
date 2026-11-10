@@ -2837,6 +2837,58 @@ MUTATIONS: tuple[Mutation, ...] = (
         expect_on_windows="survived",
     ),
     Mutation(
+        "HRD-7",
+        "src/floorvault/freshness.py",
+        '            if getattr(connection, "in_transaction", None) is True:\n',
+        "            if False:  # MUTANT\n",
+        "A COMMIT that SQLite refused leaves the anchor pending, and the database is refused from then on",
+    ),
+    Mutation(
+        "HRD-8",
+        "src/floorvault/sqlite_migration.py",
+        '    if not connection.in_transaction:\n        connection.execute("BEGIN IMMEDIATE")\n',
+        '    if False:  # MUTANT\n        connection.execute("BEGIN IMMEDIATE")\n',
+        "On an autocommit connection a failed column migration leaves the rows before the failure encrypted",
+    ),
+    Mutation(
+        "HRD-9",
+        "src/floorvault/providers/vault_transit.py",
+        "        leftover = self._store.unpublished_generation(1)\n",
+        "        leftover = None  # MUTANT\n",
+        "A provision that crashed before its pointer blocks every later provision",
+    ),
+    Mutation(
+        "HRD-10",
+        "src/floorvault/providers/vault_transit.py",
+        "            if not same:\n",
+        "            if False:  # MUTANT\n",
+        "A rewrap adopts an unpublished generation that does not wrap this store's key",
+    ),
+    Mutation(
+        "HRD-11",
+        "src/floorvault/providers/vault_transit.py",
+        "            if time.monotonic() > deadline:\n"
+        '                raise TimeoutError("the Vault response body did not arrive in time")\n',
+        "            if False:  # MUTANT\n"
+        '                raise TimeoutError("the Vault response body did not arrive in time")\n',
+        "A Vault response that trickles holds the caller far past its timeout",
+    ),
+    Mutation(
+        "HRD-12",
+        "src/floorvault/agent_cli.py",
+        "path=os.pathsep.join(entry for entry in search.split(os.pathsep) if entry)",
+        "path=os.pathsep.join(entry for entry in search.split(os.pathsep))  # MUTANT",
+        "An empty PATH entry resolves the command from the current directory",
+        expect_on_windows="survived",
+    ),
+    Mutation(
+        "HRD-13",
+        "src/floorvault/platform_support.py",
+        '    return "unknown"\n',
+        '    return "deny"  # MUTANT\n',
+        "A Windows ACE of a type the check does not parse is skipped, and the store passes as owner-only",
+    ),
+    Mutation(
         "AUD-2",
         "src/floorvault/agent_cli.py",
         "    return _launch(command_line[0], command, env)",

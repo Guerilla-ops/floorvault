@@ -119,6 +119,9 @@ the master key, not the key itself. Rotating the actual master key means
 | Redirect to a non-allowlisted or non-HTTPS host | `CustodyDowngradeError` |
 | `store.id` corrupt or pointer/generation tampered | `CustodyDowngradeError` |
 | Writer lock held | `StoreLockError` |
+| A provision or rewrap died between writing its generation file and publishing the pointer | The next provision or rewrap finishes it, after Vault unwraps the file under this store's context (and, for a rewrap, to the same key). No new key is minted over it |
+| That unpublished file does not unwrap to this store's key, or Vault cannot be asked | `CustodyDowngradeError` naming the generation; it is never adopted |
+| Response body still arriving after `timeout` seconds | `CustodyDowngradeError` (the timeout bounds the whole body, not each read) |
 
 **There is no fallback to weaker custody.** If the provider is configured and
 Vault is down, resolution fails — it does not write a `master.key` and it does

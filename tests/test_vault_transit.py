@@ -323,7 +323,9 @@ class _StubResponse:
         self._payload = payload
 
     def read(self, _n: int) -> bytes:
-        return self._payload
+        # Like a real response: the body once, then end of stream.
+        payload, self._payload = self._payload, b""
+        return payload
 
     def __enter__(self):
         return self
@@ -726,3 +728,57 @@ def test_a_rewrap_does_not_adopt_a_generation_that_wraps_another_key(tmp_path):
     with pytest.raises(CustodyDowngradeError, match="unpublished generation 2 .* not adopted"):
         provider.rewrap()
     assert store.read_active()[0] == 1
+
+
+class _TrickleResponse(_StubResponse):
+    """A body that arrives a byte at a time, each inside the socket timeout."""
+
+    def __init__(self, clock):
+        self._clock = clock
+        self.reads = 0
+
+    def read1(self, _n: int) -> bytes:
+        self.reads += 1
+        self._clock.now += 0.4
+        return b" "
+
+    read = read1
+
+
+def test_a_response_that_trickles_is_cut_off_at_the_timeout(monkeypatch):
+    """The socket timeout bounds each receive, so a slow drip never tripped it."""
+    from floorvault.providers import vault_transit
+
+    class Clock:
+        now = 1000.0
+
+    clock = Clock()
+    monkeypatch.setattr(vault_transit.time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(vault_transit.time, "sleep", lambda _s: None)
+    transport = UrllibTransport(ADDR, timeout=2.0, retries=0)
+    response = _TrickleResponse(clock)
+    transport._opener = type("Opener", (), {"open": lambda self, request, timeout: response})()
+    with pytest.raises(CustodyDowngradeError, match="unreachable .TimeoutError."):
+        transport.post("/v1/x", {}, TOKEN)
+    assert response.reads <= 7, "the read went on past the deadline"
+
+
+def test_a_body_in_several_pieces_is_put_together_and_still_bounded():
+    from floorvault.providers import vault_transit
+
+    class Pieces(_StubResponse):
+        def __init__(self, pieces):
+            self._pieces = list(pieces)
+
+        def read1(self, n: int) -> bytes:
+            return self._pieces.pop(0)[:n] if self._pieces else b""
+
+    transport = UrllibTransport(ADDR, retries=0)
+    body = Pieces([b'{"data": ', b'{"ok": ', b"true}}"])
+    transport._opener = type("Opener", (), {"open": lambda self, request, timeout: body})()
+    assert transport.post("/v1/x", {}, TOKEN) == {"data": {"ok": True}}
+    huge = Pieces([b"x" * 16384] * 10)
+    transport._opener = type("Opener", (), {"open": lambda self, request, timeout: huge})()
+    with pytest.raises(CustodyDowngradeError, match="exceeds the bounded size"):
+        transport.post("/v1/x", {}, TOKEN)
+    assert vault_transit._MAX_RESPONSE_BYTES < 16384 * 10

@@ -156,6 +156,28 @@ class UrllibTransport:
             method="POST",
         )
 
+    def _read_bounded(self, response: Any) -> bytes:
+        """The response body, at most one byte over the size bound, within ``timeout``.
+
+        The socket timeout bounds each receive, not the body: an endpoint that
+        sends a byte every few seconds never trips it, and one ``read()`` for
+        the whole bound would wait through every one of them. Read in pieces
+        against one deadline instead.
+        """
+        deadline = time.monotonic() + self._timeout
+        read_piece = getattr(response, "read1", None) or response.read
+        pieces: list[bytes] = []
+        size = 0
+        while size <= _MAX_RESPONSE_BYTES:
+            piece = read_piece(min(16384, _MAX_RESPONSE_BYTES + 1 - size))
+            if not piece:
+                break
+            pieces.append(piece)
+            size += len(piece)
+            if time.monotonic() > deadline:
+                raise TimeoutError("the Vault response body did not arrive in time")
+        return b"".join(pieces)
+
     def post(self, path: str, body: dict, token: str) -> dict:
         url = f"{self._base}{path}"
         request = self._build_request(url, body, token)
@@ -171,7 +193,7 @@ class UrllibTransport:
             http_failure: str | None = None
             try:
                 with self._opener.open(request, timeout=self._timeout) as response:
-                    raw = response.read(_MAX_RESPONSE_BYTES + 1)
+                    raw = self._read_bounded(response)
             except urllib.error.HTTPError as exc:
                 code = exc.code
                 if code in (307, 308):
