@@ -2730,6 +2730,21 @@ MUTATIONS: tuple[Mutation, ...] = (
         "and it resolves for any command that reads the store",
     ),
     Mutation(
+        "PWC-12",
+        "src/floorvault/agent_cli.py",
+        "    for number, step in enumerate(_retirement_steps(old), start=1):\n",
+        "    for number, step in enumerate([], start=1):  # MUTANT\n",
+        "`protect --rotate` stops telling the operator how to retire the old key and its backups",
+    ),
+    Mutation(
+        "BG-13",
+        "plugins/hermesvault/binding_guard.py",
+        '    if fingerprint is None or not hasattr(BindingRecord, "compare"):\n        return {}, too_old\n',
+        '    if fingerprint is None or not hasattr(BindingRecord, "compare"):\n        return {}, []  # MUTANT\n',
+        "A floorvault too old to read the binding record leaves the plugin checking nothing, "
+        "and says nothing: the missing check reads as a passed one",
+    ),
+    Mutation(
         "BG-9",
         "plugins/hermesvault/binding_guard.py",
         "        changed = record.compare(current)\n",
