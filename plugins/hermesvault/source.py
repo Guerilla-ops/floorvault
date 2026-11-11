@@ -80,6 +80,19 @@ FLOORVAULT_KEY_ENV_NAMES = frozenset(
     {"FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "FLOOR_VAULT_KEY_FILE"}
 )
 _ITEM_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def valid_env_name(name) -> bool:
+    """Hermes' variable-name rule, made strict.
+
+    Hermes' ``is_valid_env_name`` matches with ``$``, which also accepts a name
+    ending in a newline ("FOO\\n" would be written to config.yaml and echoed as
+    a forged line), and raises TypeError on a non-string YAML key such as ``1``.
+    """
+    return isinstance(name, str) and bool(_ENV_NAME.fullmatch(name)) and is_valid_env_name(name)
+
+
 #: Must equal VaultStore's default custody so stores made either way open alike.
 _SERVICE_NAME = "floor-vault"
 #: floorvault.systemd_creds.CREDENTIAL_FILENAME, named here for floorvault 0.2.2.
@@ -115,8 +128,13 @@ def validate_config(cfg: dict) -> None:
     if not isinstance(cfg.get("dir", ""), str):
         raise ValueError("secrets.hermesvault.dir must be a string")
     token = cfg.get("token_env", DEFAULT_TOKEN_ENV)
-    if not isinstance(token, str) or not is_valid_env_name(token):
+    if not valid_env_name(token):
         raise ValueError("secrets.hermesvault.token_env must be an environment variable name")
+    env_map = cfg.get("env")
+    if env_map is not None and not isinstance(env_map, dict):
+        # One rule for every reader: null is "no mappings", anything else that is
+        # not a map is refused (startup, `doctor` and `status` alike).
+        raise ValueError("secrets.hermesvault.env must be a map of ENV_VAR to hv: refs")
     for name in ("enabled", "override_existing", "require_binding"):
         if name in cfg and not isinstance(cfg[name], bool):
             raise ValueError(f"secrets.hermesvault.{name} must be a boolean")
@@ -315,6 +333,16 @@ class HermesVaultSource(SecretSource):
         }
 
     def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
+        return self.fetch_for(cfg, home_path, hermes_command_lines())
+
+    def fetch_for(self, cfg: dict, home_path: Path, command_lines) -> FetchResult:
+        """``fetch``, with bindings compared against ``command_lines``.
+
+        ``None`` skips only that comparison, for `hermes hvault doctor` and
+        `status`: they run as the ``hvault`` process, which no binding names, so
+        compared against it every bound item would read as skipped. The binding
+        record, an unreadable binding and ``require_binding`` are still checked.
+        """
         result = FetchResult()
         try:
             validate_config(cfg)
@@ -348,7 +376,6 @@ class HermesVaultSource(SecretSource):
                 "check the profile directory and key custody",
                 ErrorKind.AUTH_FAILED,
             )
-        command_lines = hermes_command_lines()
         require_binding = bool(cfg.get("require_binding", False))
         if not hasattr(store, "get_allowed_commands"):
             result.warnings.append(
@@ -363,7 +390,7 @@ class HermesVaultSource(SecretSource):
         )
         result.warnings.extend(record_notes)
         for name, ref in env_map.items():
-            if not is_valid_env_name(name):
+            if not valid_env_name(name):
                 result.warnings.append(f"Skipped invalid env-var name {name!r}")
                 continue
             item_id, field = parse_ref(ref)
@@ -397,6 +424,16 @@ class HermesVaultSource(SecretSource):
                 result.warnings.append(
                     f"Skipped {name}: item {item_id} holds {len(secret)} fields — "
                     "name one with hv:<item_id>:<field>"
+                )
+                continue
+            if "\x00" in value:
+                # No environment variable can hold a NUL: Hermes' publish step
+                # (os.environ[name] = value) would raise and stop startup. Such a
+                # value predates the CLI's write-time check or came from another
+                # tool; skip it like any other unusable field.
+                result.warnings.append(
+                    f"Skipped {name}: item {item_id} holds a NUL byte, which no "
+                    "environment variable can hold"
                 )
                 continue
             result.secrets[name] = value

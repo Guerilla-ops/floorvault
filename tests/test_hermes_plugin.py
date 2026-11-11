@@ -1225,12 +1225,11 @@ def _stored_binding(home, item_id):
     return store.get_allowed_commands(item_id)
 
 
-def test_allow_binds_this_hermes_command_lines(allow_env, monkeypatch, capsys):
+def test_allow_with_no_command_binds_the_gateway_line(allow_env, capsys):
+    """The no-command default is the line `bind` binds a new item to (HV-11)."""
     plugin_cli, home = allow_env
-    lines = [[HERMES, "gateway", "run"], ["/usr/bin/python3", "-m", "hermes_cli", "gateway", "run"]]
-    monkeypatch.setattr(plugin_cli, "hermes_command_lines", lambda: lines)
     assert plugin_cli.hvault_command(_allow_args()) == 0
-    assert _stored_binding(home, "vault_testopenai") == [list(line) for line in lines]
+    assert _stored_binding(home, "vault_testopenai") == [_expected_gateway_line(home)]
     out = capsys.readouterr().out
     assert "resolved only when Hermes was started as:" in out
 
@@ -1489,28 +1488,27 @@ def test_doctor_prints_the_actual_warnings(plugin_cli, vault_home, monkeypatch, 
     assert "GONE" in err and "no_such_item" in err  # the warning itself, not a count
 
 
-def test_allow_never_binds_the_hvault_invocation_itself(allow_env, monkeypatch, capsys):
+def test_allow_never_binds_the_hvault_invocation_itself(allow_env, monkeypatch):
+    """A real `hermes hvault allow` has "hvault" in sys.argv and sys.orig_argv alike,
+    so the old default of "this process's lines" could only refuse (HV-11)."""
     plugin_cli, home = allow_env
-    monkeypatch.setattr(
-        plugin_cli,
-        "hermes_command_lines",
-        lambda: [["/usr/bin/python3", "hvault", "allow", "vault_testopenai"]],
-    )
+    invocation = [HERMES, "hvault", "allow", "vault_testopenai"]
+    monkeypatch.setattr(sys, "argv", invocation)
+    monkeypatch.setattr(sys, "orig_argv", ["/usr/bin/python3", *invocation], raising=False)
+    assert plugin_cli.hvault_command(_allow_args()) == 0
+    bound = _stored_binding(home, "vault_testopenai")
+    assert bound == [_expected_gateway_line(home)]
+    assert not any("hvault" in line for line in bound)
+
+
+def test_allow_with_no_command_asks_for_the_line_where_there_is_no_default(
+    allow_env, monkeypatch, capsys
+):
+    plugin_cli, home = allow_env
+    monkeypatch.setattr(plugin_cli, "gateway_command_line", lambda _home: None)
     assert plugin_cli.hvault_command(_allow_args()) == 2
     assert "after --" in capsys.readouterr().err
     assert _stored_binding(home, "vault_testopenai") is None  # unchanged
-
-
-def test_allow_drops_self_referential_lines_but_binds_the_rest(allow_env, monkeypatch, capsys):
-    plugin_cli, home = allow_env
-    agent_line = [HERMES, "gateway", "run"]
-    monkeypatch.setattr(
-        plugin_cli,
-        "hermes_command_lines",
-        lambda: [["/usr/bin/python3", "hvault", "allow"], agent_line],
-    )
-    assert plugin_cli.hvault_command(_allow_args()) == 0
-    assert _stored_binding(home, "vault_testopenai") == [agent_line]
 
 
 def test_allow_accepts_a_print_runtime_command_json_line(allow_env, capsys):
