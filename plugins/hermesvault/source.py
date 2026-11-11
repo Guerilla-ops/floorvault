@@ -189,7 +189,7 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False, warnings=Non
 
 #: The wrapped key of a passphrase-protected store (floorvault 0.4: ``init --custody passphrase``,
 #: ``secrets protect``). Named here, not imported, so an older floorvault still loads this module.
-_PASSPHRASE_KEY_FILENAME = "master.key.fvpw"
+_PASSPHRASE_KEY_FILENAME = "master.key.fvpw"  # nosec B105 - a file name, not a secret
 
 
 def _refuse_passphrase_store(base: Path) -> None:
