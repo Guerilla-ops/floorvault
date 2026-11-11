@@ -377,10 +377,12 @@ def test_a_floorvault_that_cannot_read_the_record_checks_nothing(recorded, monke
     record.record(ITEM, "0" * 64)  # differs from the stored "none"
     assert list(_problems(recorded)[0]) == [ITEM]
     monkeypatch.delattr(BindingRecord, "compare")  # floorvault 0.3.0 to 0.4.0
-    assert _problems(recorded) == ({}, [])
-    assert binding_record_problems(
+    problems, notes = _problems(recorded)
+    assert problems == {}
+    # Silence would read as "checked and fine": the operator is told it is not checked.
+    assert len(notes) == 1 and "cannot check the binding record" in notes[0]
+    assert "upgrade floorvault" in notes[0]
+    problems, notes = binding_record_problems(
         _Without(store, "binding_fingerprint"), base, [ITEM], environ
-    ) == (
-        {},
-        [],
     )
+    assert problems == {} and len(notes) == 1 and "cannot check the binding record" in notes[0]

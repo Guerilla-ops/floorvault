@@ -39,6 +39,34 @@ FloorVault follows Semantic Versioning.
    - publishes to PyPI via Trusted Publishing with PEP 740 attestations.
 4. The release notes MUST carry the SHA-256 digests printed by the workflow.
 
+## Checks that need a real host
+
+CI runs on virtual machines. Some behaviour cannot be exercised there, and a release note
+that says "not exercised on a real host" should become "checked on ..." once it has been.
+Before a release that changes the key agent, custody or `bind`, run these on a real machine
+and put the result in the release notes (or leave the "not exercised" line in).
+
+**macOS, key agent and sleep** (the limits count suspended time with `CLOCK_MONOTONIC_RAW`;
+CI cannot suspend a machine):
+
+```sh
+floorvault unlock --ttl 2m
+floorvault unlock --status          # an agent is reported
+pmset sleepnow                      # wake the Mac after more than two minutes
+floorvault unlock --status          # no agent: it ended and wiped its key
+```
+
+Also, with an agent unlocked: `floorvault secrets list` works without a prompt,
+`floorvault lock` stops it, and `unlock` without `--allow-unhardened` starts only if
+hardening succeeded.
+
+**macOS and Windows, `hermes hvault bind`:** bind a new item and check that it resolves from
+`hermes -z` or chat and is refused for another command line. The gateway line is built from
+this platform's interpreter and profile home; Windows rewrites it, and `bind` says so.
+
+**A real systemd host:** `floorvault secrets protect --rotate` on a store whose key is a
+systemd-creds credential. The tests use a stand-in for the sealed credential.
+
 ## Verifying a download
 
 - `pip download floorvault==X.Y.Z` and compare the wheel's SHA-256 against the

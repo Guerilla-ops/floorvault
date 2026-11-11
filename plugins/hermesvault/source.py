@@ -176,6 +176,7 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False, warnings=Non
     if key_hex:
         key = bytes.fromhex(key_hex.strip())
     else:
+        _refuse_passphrase_store(base)
         custody = cfg.get("custody", DEFAULT_CUSTODY)
         if custody == "key_file":
             key = _key_from_file(resolve_key_file(cfg, home_path), warnings)
@@ -184,6 +185,35 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False, warnings=Non
         else:
             key = _key_from_os(base, setup=setup)
     return VaultStore(base, crypto=FloorVault(key, app_instance_id=_APP_INSTANCE_ID))
+
+
+#: The wrapped key of a passphrase-protected store (floorvault 0.4: ``init --custody passphrase``,
+#: ``secrets protect``). Named here, not imported, so an older floorvault still loads this module.
+_PASSPHRASE_KEY_FILENAME = "master.key.fvpw"
+
+
+def _refuse_passphrase_store(base: Path) -> None:
+    """Say plainly that a passphrase-protected store cannot be opened from here.
+
+    This plugin never prompts, so it cannot unwrap the key. Without this check
+    every custody failed with its own message ("refusing headless fallback",
+    "run `hermes hvault setup`"), none of which mentions the passphrase, and one
+    of which points at a step that cannot help. A key given in ``token_env`` is
+    not affected: plain ``protect`` keeps the key, so it can still open the
+    store, and that is the caller's choice.
+    """
+    try:
+        (base / _PASSPHRASE_KEY_FILENAME).lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise CustodyUnavailable(f"cannot check {base} for a passphrase-wrapped key") from None
+    raise CustodyUnavailable(
+        f"the store at {base} is protected by a passphrase ({_PASSPHRASE_KEY_FILENAME}), and "
+        "this plugin never prompts, so it cannot open it. Hermes needs a store whose key is "
+        "in the OS key store, a key file or a systemd-creds credential; passphrase protection "
+        "is for stores that `floorvault run` opens after `floorvault unlock`"
+    )
 
 
 def _newer_floorvault(custody: str) -> CustodyUnavailable:

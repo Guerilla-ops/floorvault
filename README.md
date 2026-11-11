@@ -242,8 +242,10 @@ retire those yourself. A copy or backup made before still opens with the old key
 
 > **The agent is a decryption oracle for code running as you.** It never hands
 > out the key, but any process of yours that can reach its socket can ask it to
-> decrypt anything in the store. Bindings are checked by the caller, not by the
-> agent. A reboot ends it, and root is out of scope.
+> decrypt anything in the store, and to encrypt too, so it can also write a
+> widened binding. Bindings are checked by the caller, not by the agent. Unlock
+> for the work and no longer (`floorvault unlock --ttl 1h --idle 10m`, then
+> `floorvault lock`). A reboot ends it, and root is out of scope.
 
 [Passphrase-protected key and key agent](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#a-passphrase-protected-key)
 

@@ -622,3 +622,27 @@ def test_an_item_already_re_sealed_before_the_stop_does_not_make_the_resume_refu
     code, _out, err, _prompt = rotate(vault, env, keyfile, PHRASE)
     assert code == 0, err
     assert new_store(vault).get_allowed_commands("aaa") == [BOUND]
+
+
+# --- what the operator must still do to retire the old key ---------------------
+
+
+@pytest.mark.parametrize(
+    ("old", "expected"),
+    [
+        ("the OS key store", "remove the old OS key store entry"),
+        ("the systemd-creds credential beside the store", "master.key.sdcred"),
+        ("$MY_STORE_KEY", "remove $MY_STORE_KEY from every shell profile"),
+        ("the key file /etc/fv/key", "delete /etc/fv/key and any backup of it"),
+        ("the key $FLOOR_VAULT_KEY or another key source", "remove the old key from wherever"),
+    ],
+)
+def test_the_rotation_notice_names_how_to_retire_the_old_key(old, expected, tmp_path, capsys):
+    from floorvault import agent_cli
+
+    agent_cli._protect_report("floorvault", tmp_path, [], old, 3)
+    err = capsys.readouterr().err
+    assert "to retire the old key:" in err
+    assert "find every copy of the store made before today" in err  # backups open with it
+    assert expected in err
+    assert "change what read the old key" in err
