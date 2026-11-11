@@ -1597,3 +1597,72 @@ def test_list_escapes_control_characters_from_the_store(allow_env, capsys):
     assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="list")) == 0
     out = capsys.readouterr().out
     assert len(out.splitlines()) == 2 and "\x1b" not in out
+
+
+# ------------------------------------------------- mid-resolve rebinding (TOCTOU)
+
+
+def test_fetch_rechecks_the_binding_after_resolving(vault_home, monkeypatch):
+    """A binding rewritten between the check and the decrypt must not release the value."""
+    from floorvault.vaultkit.vault import VaultStore
+
+    _as_started(monkeypatch, [HERMES, "gateway", "run"])
+    _bind(vault_home, "vault_testopenai", [HERMES, "gateway", "run"])
+    real_resolve = VaultStore.resolve_secret
+
+    def resolve_and_tamper(self, item_id):
+        secret = real_resolve(self, item_id)
+        self.update_allowed_commands(item_id, lambda current: [*(current or []), ["/bin/attacker"]])
+        return secret
+
+    monkeypatch.setattr(VaultStore, "resolve_secret", resolve_and_tamper)
+    result = fetch(vault_home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
+    assert result.secrets == {}
+    assert any("while it was being resolved" in w for w in result.warnings)
+
+
+def test_fetch_still_resolves_when_the_binding_is_untouched(vault_home, monkeypatch):
+    """The second look costs two fingerprint reads and changes nothing else."""
+    _as_started(monkeypatch, [HERMES, "gateway", "run"])
+    _bind(vault_home, "vault_testopenai", [HERMES, "gateway", "run"])
+    result = fetch(vault_home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
+    assert result.ok and result.secrets == {"OPENAI_API_KEY": "sk-test-123"}
+    assert result.warnings == []
+
+
+# -------------------------------------------------------- key custody strictness
+
+
+def test_a_truncated_token_env_key_is_refused_by_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_VAULT_KEY", "00" * 16)  # 16 bytes, not 32
+    result = fetch(tmp_path, {"env": {"X": "hv:vault_a"}})
+    assert not result.ok and result.error_kind == ErrorKind.NOT_CONFIGURED
+    assert "HERMES_VAULT_KEY" in result.error and "64 hex" in result.error
+    assert "00" not in result.error, "the key material itself must not be echoed"
+
+
+def test_a_non_hex_token_env_key_is_refused_by_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_VAULT_KEY", "zz" * 32)
+    result = fetch(tmp_path, {"env": {"X": "hv:vault_a"}})
+    assert not result.ok and "64 hex" in result.error
+
+
+def test_the_plugin_wipes_its_own_key_copy_after_construction(tmp_path, monkeypatch):
+    """The source's key buffer is zeroed once FloorVault has derived from it."""
+    from source import _open_store
+
+    seen = {}
+    real_init = floorvault.FloorVault.__init__
+
+    def spy_init(self, master_key, **kwargs):
+        seen["buffer"] = master_key
+        real_init(self, master_key, **kwargs)
+
+    monkeypatch.setattr(floorvault.FloorVault, "__init__", spy_init)
+    key = "ab" * 32  # non-zero, so zeroing is observable
+    monkeypatch.setenv("HERMES_VAULT_KEY", key)
+    store = _open_store({}, tmp_path, setup=True)
+    assert store
+    buffer = seen["buffer"]
+    assert isinstance(buffer, bytearray), "the plugin hands FloorVault a mutable buffer"
+    assert bytes(buffer) == b"\x00" * 32, "the plugin's key copy must be zeroed after construction"
