@@ -668,8 +668,8 @@ and the data is gone.
   sleep if the wall clock is corrected backwards during that same suspend.
   While it runs, `floorvault run` and `floorvault secrets` for that store use it
   instead of asking for the passphrase, with no terminal needed. **The agent never
-  hands out the key.** It encrypts and decrypts for the caller: the store code is given
-  an object whose `encrypt` and `decrypt` ask the agent, so the key stays in the agent's
+  hands out the key.** It decrypts for the caller (and encrypts, only if unlocked with
+  `--write`): the store code is given an object whose `encrypt` and `decrypt` ask the agent, so the key stays in the agent's
   protected memory and the caller sees only plaintext and ciphertext. Each of those
   calls counts as use (it restarts the `--idle` clock); `status` does not. An explicit
   `--key-env` or `--key-file` is never replaced by the agent, a store that also has a
@@ -711,25 +711,46 @@ and the data is gone.
     Decrypted values the agent handles stay in ordinary memory until it exits (Python
     strings cannot be wiped); the debugger block above is what protects them.
   - **What it does not stop:** code running as you can connect to the socket and ask the
-    agent to decrypt anything in the store (it is a decryption oracle for you, as a key
+    agent to decrypt anything it serves (it is a decryption oracle for you, as a key
     file would be a key for you; the per-item command bindings `run` checks are checked by
     the caller, not by the agent); `ptrace` hardening makes inspection
     harder, not impossible; root; and a reboot ends it. `memfd_secret` is not used.
     Another user's connection could not be tested here (the test environment is root
     only); it is checked in unit tests by replacing the peer-uid lookup, and the macOS
-    peer-credential call has not been run on a real Mac outside CI.
-  - **It encrypts as well as decrypts.** The same socket accepts `encrypt` for any table,
-    record and column, so code running as you can also write valid sealed data into
-    `vault.db`, a widened command binding included. The binding record kept outside the
-    store makes `floorvault run` (and a Hermes plugin new enough to check it) refuse such a
-    binding; a process that talks to the socket directly never goes through either, and
-    needs no binding to read. On macOS the agent is given no process ID for the peer
-    (only its uid), so nothing about which program is asking can be checked there.
-  - **How to run it with that in mind.** Treat an unlocked agent as the key being open to
-    all your code. Unlock for the work and no longer: a short total and idle limit
-    (`floorvault unlock --ttl 1h --idle 10m`), `floorvault lock` when done, and no
-    unlocked agent on a machine that runs code you do not trust. The defaults (8h and 1h)
-    are a convenience, not a recommendation for such a machine.
+    peer-credential calls (`LOCAL_PEERCRED`, and `LOCAL_PEERPID` for the use log) have not
+    been run on a real Mac outside CI.
+  - **It only decrypts, unless you ask for more.** Everything `floorvault run` does is a
+    read, so by default the agent refuses to encrypt. `secrets add`, `put`, `allow` and
+    the other commands that write ask for the passphrase even while an agent runs, and say
+    why. `floorvault unlock --write` starts an agent that also encrypts. Use it for a
+    session of edits and lock it after: an agent that encrypts lets any process running as
+    you write valid sealed data into `vault.db`, a widened command binding included, and
+    then update the binding record to match, so that `run` notices nothing. (The record is
+    a guard against whoever can write `vault.db` but not act as you. Code running as you
+    can write the record too.)
+  - **`unlock --only ITEM` narrows it to the items you name** (repeat the option). The
+    agent then serves those items' records and refuses every other record; `run` for
+    another item fails and says so. The item id is part of what is decrypted, so one item
+    cannot be asked for under another's name. An MCP setup that needs two tokens then
+    exposes two while it runs, not the store. With a sealed listing (`--seal-listing`),
+    `secrets list` needs every item and is refused by a scoped agent.
+  - **Every use is counted and logged.** `floorvault unlock --status` reports how many
+    decrypts, of how many items, and how many requests were refused; those counts are kept
+    inside the agent. Each request is also written to `<id>.uselog` beside the socket
+    (owner-only; the previous agent's log is kept once as `.prev`; it stops at 1 MiB): the
+    time, the operation, the item, the result and the caller's process ID, plus its program
+    on Linux. Never a value. Code running as you can edit that file, so read it as a record
+    of ordinary use and of careless misuse, not as proof.
+  - **What none of this does.** It does not tell one of your programs from another. While
+    the agent is unlocked, code running as you can read whatever it serves, and can read
+    the environment of any command `run` has started. To keep a program away from the
+    agent, do not run it as you: the socket's directory is yours alone and the peer's user
+    is checked, so a program run as another user, or in a container that does not mount
+    your runtime directory, cannot reach it.
+  - **How to run it with that in mind.** Unlock for the work and no longer: name the items
+    (`--only`), keep the limits short (`floorvault unlock --ttl 1h --idle 10m`), leave
+    `--write` off, and `floorvault lock` when done. The default limits (8h and 1h) are a
+    convenience, not a recommendation for a machine that runs code you do not trust.
 - **`floorvault secrets protect`** wraps the key of an *existing* store that keeps
   it in a raw `master.key` beside the store (the Tier-3 file): it first checks
   that the raw key opens the store (a stale `master.key` is refused), writes
