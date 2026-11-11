@@ -93,6 +93,11 @@ def valid_env_name(name) -> bool:
     return isinstance(name, str) and bool(_ENV_NAME.fullmatch(name)) and is_valid_env_name(name)
 
 
+#: A master key is 32 bytes; token_env must hold exactly that as hex. Anything
+#: else is a mistake (a truncated paste, the wrong variable) and is refused with
+#: a message that says so, rather than a failure deep inside FloorVault that
+#: only names an exception type.
+_TOKEN_KEY_HEX = re.compile(r"[0-9a-fA-F]{64}")
 #: Must equal VaultStore's default custody so stores made either way open alike.
 _SERVICE_NAME = "floor-vault"
 #: floorvault.systemd_creds.CREDENTIAL_FILENAME, named here for floorvault 0.2.2.
@@ -186,14 +191,24 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False, warnings=Non
     from floorvault.vaultkit import VaultStore
 
     base = resolve_base_dir(cfg, home_path)
+    token_env = str(cfg.get("token_env") or DEFAULT_TOKEN_ENV)
+    # The key is validated before the store-existence check: a truncated or
+    # non-hex value is a more specific mistake than "no store yet", and either
+    # way nothing can be opened.
+    key_hex = get_source_environment().get(token_env)
+    key: bytes | None = None
+    if key_hex:
+        hex_text = key_hex.strip()
+        if not _TOKEN_KEY_HEX.fullmatch(hex_text):
+            raise StoreNotSetUp(
+                f"{token_env} must hold exactly 64 hex characters (a 32-byte key); "
+                f"it holds {len(hex_text)}. Nothing was opened"
+            )
+        key = bytes.fromhex(hex_text)
     store_exists = (base / "vault.db").is_file()
     if not setup and not store_exists:
         raise StoreNotSetUp(f"no store at {base}; run `hermes hvault setup` once")
-    token_env = str(cfg.get("token_env") or DEFAULT_TOKEN_ENV)
-    key_hex = get_source_environment().get(token_env)
-    if key_hex:
-        key = bytes.fromhex(key_hex.strip())
-    else:
+    if key is None:
         custody = cfg.get("custody", DEFAULT_CUSTODY)
         if custody == "key_file":
             key = _key_from_file(resolve_key_file(cfg, home_path), warnings)
@@ -201,7 +216,19 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False, warnings=Non
             key = _key_from_credential(base, setup=setup, store_exists=store_exists)
         else:
             key = _key_from_os(base, setup=setup)
-    return VaultStore(base, crypto=FloorVault(key, app_instance_id=_APP_INSTANCE_ID))
+    # Our own copy is mutable and wiped as soon as FloorVault has derived from
+    # it: the custody providers return immutable bytes, which nothing can zero,
+    # but nothing here has to keep a second one alive past construction.
+    key_buffer = bytearray(key)
+    del key
+    try:
+        return VaultStore(
+            base,
+            crypto=FloorVault(key_buffer, app_instance_id=_APP_INSTANCE_ID, wipe_source_key=True),
+        )
+    finally:
+        for index in range(len(key_buffer)):
+            key_buffer[index] = 0
 
 
 def _newer_floorvault(custody: str) -> CustodyUnavailable:
@@ -278,6 +305,18 @@ def _key_from_credential(base: Path, *, setup: bool, store_exists: bool) -> byte
             "run `hermes hvault setup` once"
         )
     return key
+
+
+def _binding_moved(fingerprint_of, item_id: str, before: str) -> bool:
+    """Whether the item's binding fingerprint changed since ``before`` was read.
+
+    A read error counts as moved: the guard cannot be shown to be the one that
+    was checked, so the resolved value is not applied.
+    """
+    try:
+        return fingerprint_of(item_id) != before
+    except Exception:
+        return True
 
 
 class HermesVaultSource(SecretSource):
@@ -389,6 +428,18 @@ class HermesVaultSource(SecretSource):
             store, resolve_base_dir(cfg, home_path), mapped_items
         )
         result.warnings.extend(record_notes)
+        # What each item's binding looked like when it was checked, for a second
+        # look after the decrypt: a binding rewritten between the check and the
+        # resolve must not release the value into the environment.
+        fingerprint_of = getattr(store, "binding_fingerprint", None)
+        checked: dict[str, str] = {}
+        for item_id in mapped_items:
+            if fingerprint_of is None:
+                break
+            try:
+                checked[item_id] = fingerprint_of(item_id)
+            except Exception:
+                checked.pop(item_id, None)
         for name, ref in env_map.items():
             if not valid_env_name(name):
                 result.warnings.append(f"Skipped invalid env-var name {name!r}")
@@ -407,6 +458,15 @@ class HermesVaultSource(SecretSource):
                 secret = store.resolve_secret(item_id)
             except Exception:
                 result.warnings.append(f"Skipped {name}: vault item {item_id} is unavailable")
+                continue
+            if item_id in checked and _binding_moved(fingerprint_of, item_id, checked[item_id]):
+                # The binding was rewritten between the check above and this
+                # decrypt. The value is already in this process's memory, but it
+                # does not go into the environment under a guard that changed.
+                result.warnings.append(
+                    f"Skipped {name}: vault item {item_id}'s command binding changed "
+                    "while it was being resolved; the value was not applied"
+                )
                 continue
             if field is not None:
                 value = secret.get(field)
