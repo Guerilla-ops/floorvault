@@ -79,9 +79,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Linux mutants run about 1 minute each and macOS/Windows about 1.5, so
-          # these give 25 to 30 minute shards at the current roster. Raise them
-          # as the roster grows; the harness refuses more shards than mutants.
+          # Measured on main at 9082cca (2026-11-11, 372 mutants, 159 of them
+          # platform): Linux shards of 38 took 44-69 minutes (1.2-1.8 min per
+          # mutant), macOS shards of 27-28 took 39-52 and Windows 69-81 (about
+          # 2.8 min per mutant), all under the 120 minute limit. Raise these
+          # when the slowest shard nears 90 minutes; the harness refuses more
+          # shards than mutants.
           linux=10
           platform=6
           list() { python3 -c 'import json, sys; print(json.dumps(list(range(1, int(sys.argv[1]) + 1))))' "$1"; }
@@ -158,8 +161,8 @@ jobs:
         run: uv run --no-sync python scripts/realworld_exercise.py
 
   # The platform mutation controls: native custody, filesystem and memory
-  # mutants, run where their behaviour can differ. Sharded so a leg takes about
-  # 25 minutes, not two hours.
+  # mutants, run where their behaviour can differ. Sharded under the 120 minute
+  # limit: on 2026-11-11 a macOS shard took 39-52 minutes and Windows 69-81.
   platform-mutations:
     name: Platform mutants ${{ matrix.os }} ${{ matrix.shard }}/${{ needs.changes.outputs.platform_count }}
     needs: changes
@@ -279,8 +282,10 @@ jobs:
 
   # The curated roster, split across parallel jobs: each mutant runs the whole
   # suite, so one job took 3.5 hours at 236 mutants (and 87 minutes at 165, with
-  # a 120 minute limit once cancelling it 13 mutants short). A shard takes about
-  # 25 minutes.
+  # a 120 minute limit once cancelling it 13 mutants short). Sharding keeps the
+  # 120 minute limit: at 372 mutants a Linux shard took 44-69 minutes on
+  # 2026-11-11, and the shard counts in the changes job are what to raise as
+  # the roster grows, not this limit.
   mutation-shards:
     name: Linux mutants ${{ matrix.shard }}/${{ needs.changes.outputs.linux_count }}
     needs: changes
