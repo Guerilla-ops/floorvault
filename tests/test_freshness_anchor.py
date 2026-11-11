@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -828,3 +829,73 @@ def test_a_commit_sqlite_refuses_leaves_the_anchor_usable(tmp_path):
         connection.execute("INSERT INTO t (v) VALUES ('b')")
     anchor.verify(connection)
     assert connection.execute("SELECT count(*) FROM t").fetchone()[0] == 2
+
+
+# --- Windows sharing violations on the anchor file -------------------------
+
+
+def _flaky(real, failures):
+    calls = {"n": 0}
+
+    def wrapper(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] <= failures:
+            raise PermissionError("simulated sharing violation")
+        return real(*args, **kwargs)
+
+    return wrapper, calls
+
+
+def test_a_momentary_windows_sharing_violation_is_retried_on_replace(tmp_path, monkeypatch):
+    """Eight runs starting together read and replace one record; Windows refuses briefly."""
+    from floorvault import freshness
+
+    monkeypatch.setattr(freshness, "is_windows", lambda: True)
+    monkeypatch.setattr(freshness.time, "sleep", lambda _seconds: None)
+    wrapper, calls = _flaky(os.replace, 2)
+    monkeypatch.setattr(freshness.os, "replace", wrapper)
+    store = FileAnchorStore(tmp_path / "anchors")
+    assert store.compare_and_swap("a", None, b"one") is True
+    assert calls["n"] == 3
+    assert store.load("a") == b"one"
+    assert [p.name for p in (tmp_path / "anchors").iterdir() if p.suffix == ".tmp"] == []
+
+
+def test_a_momentary_windows_sharing_violation_is_retried_on_load(tmp_path, monkeypatch):
+    from floorvault import freshness
+
+    store = FileAnchorStore(tmp_path / "anchors")
+    assert store.compare_and_swap("a", None, b"one") is True
+    monkeypatch.setattr(freshness, "is_windows", lambda: True)
+    monkeypatch.setattr(freshness.time, "sleep", lambda _seconds: None)
+    wrapper, calls = _flaky(Path.read_bytes, 2)
+    monkeypatch.setattr(Path, "read_bytes", wrapper)
+    assert store.load("a") == b"one"
+    assert calls["n"] == 3
+
+
+def test_a_sharing_violation_that_does_not_clear_is_raised(tmp_path, monkeypatch):
+    from floorvault import freshness
+
+    monkeypatch.setattr(freshness, "is_windows", lambda: True)
+    monkeypatch.setattr(freshness.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(freshness, "_SHARING_RETRY_SECONDS", 0.0)
+    wrapper, calls = _flaky(os.replace, 10**6)
+    monkeypatch.setattr(freshness.os, "replace", wrapper)
+    store = FileAnchorStore(tmp_path / "anchors")
+    with pytest.raises(PermissionError):
+        store.compare_and_swap("a", None, b"one")
+    assert calls["n"] == 1
+
+
+def test_permission_errors_are_not_retried_off_windows(tmp_path, monkeypatch):
+    """Elsewhere PermissionError is a real refusal: no waiting, no second attempt."""
+    from floorvault import freshness
+
+    monkeypatch.setattr(freshness, "is_windows", lambda: False)
+    wrapper, calls = _flaky(os.replace, 10**6)
+    monkeypatch.setattr(freshness.os, "replace", wrapper)
+    store = FileAnchorStore(tmp_path / "anchors")
+    with pytest.raises(PermissionError):
+        store.compare_and_swap("a", None, b"one")
+    assert calls["n"] == 1
