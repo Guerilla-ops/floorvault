@@ -203,13 +203,21 @@ def _custody_key(args, environ: Mapping[str, str], vault_dir: Optional[Path]) ->
 
 
 def _agent_crypto(
-    args, environ: Mapping[str, str], vault_dir: Optional[Path], *, writes: bool = False
+    args,
+    environ: Mapping[str, str],
+    vault_dir: Optional[Path],
+    *,
+    writes: bool = False,
+    policy: bool = False,
 ):
     """A ``RemoteVault`` for a running key agent, or None when there is none to use.
 
     An agent only decrypts unless it was unlocked with ``--write``. For a command that
     ``writes`` such an agent is no agent: None is returned and the passphrase is asked for,
-    as if nothing were running, and a note says why.
+    as if nothing were running, and a note says why. A ``policy`` command (one that seals
+    or clears a command binding) also needs an agent unlocked ``--bindings``; a writing
+    agent without it leaves the passphrase to be asked, so the socket alone can never
+    change which commands get a secret.
 
     Only a store with a passphrase-wrapped key and no explicit key option
     (``--key-env``, ``--key-file``) can have one. The refusals ``_custody_key``
@@ -253,12 +261,30 @@ def _agent_crypto(
             "encrypts)",
         )
         return None
+    if policy and info.get("bindings") is False:
+        # ``is False``: an agent from before this flag existed has no such report and
+        # does seal bindings; only an agent that names the capability and lacks it is
+        # stepped around.
+        _err(
+            "floorvault",
+            "the key agent for this store does not seal command bindings, so the "
+            "passphrase is needed (`floorvault unlock --write --bindings` starts an "
+            "agent that does)",
+        )
+        return None
     return key_agent.RemoteVault(sock)
 
 
-def _custody(args, environ: Mapping[str, str], vault_dir: Optional[Path], *, writes: bool = False):
+def _custody(
+    args,
+    environ: Mapping[str, str],
+    vault_dir: Optional[Path],
+    *,
+    writes: bool = False,
+    policy: bool = False,
+):
     """``(key_bytes, crypto)``: a running key agent's ``RemoteVault``, else the key from ``_custody_key``."""
-    crypto = _agent_crypto(args, environ, vault_dir, writes=writes)
+    crypto = _agent_crypto(args, environ, vault_dir, writes=writes, policy=policy)
     if crypto is not None:
         return None, crypto
     return _custody_key(args, environ, vault_dir), None
@@ -987,10 +1013,20 @@ def add_agent_parsers(subparsers) -> None:
         "--write",
         action="store_true",
         help=(
-            "let the agent encrypt as well as decrypt, so `secrets add`, `put` and `allow` "
+            "let the agent encrypt as well as decrypt, so `secrets add` and `put` "
             "need no passphrase while it runs. Without this the agent only decrypts, which "
             "is all `floorvault run` needs; an agent that encrypts lets any process running "
-            "as you write to the store, a wider command binding included"
+            "as you write to the store"
+        ),
+    )
+    unlock.add_argument(
+        "--bindings",
+        action="store_true",
+        help=(
+            "with --write, also let the agent seal command bindings, so `secrets allow` "
+            "needs no passphrase while it runs. Without it `allow` asks for the passphrase "
+            "and no process running as you can widen a binding through the agent: a forged "
+            "binding does not end with the unlock that wrote it"
         ),
     )
     unlock.add_argument(
@@ -1040,6 +1076,9 @@ def agent_main(args: argparse.Namespace) -> int:
         except ValueError as exc:
             _err(prog, str(exc))
             return 2
+        if args.bindings and not args.write:
+            _err(prog, "--bindings needs --write")
+            return 2
         only = None if args.only is None else sorted(set(args.only))
         for item_id in only or ():
             if not _ITEM_ID.fullmatch(item_id):
@@ -1067,6 +1106,7 @@ def agent_main(args: argparse.Namespace) -> int:
             app_context=APP_CONTEXT,
             allow_unhardened=args.allow_unhardened,
             writable=args.write,
+            bindings=args.bindings,
             only=only,
         )
         try:
@@ -1165,6 +1205,10 @@ def _describe_mode(info: Mapping[str, object]) -> str:
     if "writable" not in info:
         return ""  # an agent started by an older floorvault: it encrypts and serves everything
     mode = "decrypts and encrypts" if info.get("writable") else "decrypts only"
+    if info.get("writable"):
+        mode += (
+            ", command bindings included" if info.get("bindings") else " (command bindings refused)"
+        )
     only = info.get("only")
     scope = "every item" if only is None else "only " + ", ".join(str(i) for i in only)  # type: ignore[union-attr]
     return f"; {mode}; serves {scope}"
@@ -1406,6 +1450,7 @@ def _store_for(
     environ=None,
     assert_listing=True,
     writes: bool = False,
+    policy: bool = False,
 ):
     """Open the store; with ``create``, create it (and a key) only if there is none.
 
@@ -1418,7 +1463,9 @@ def _store_for(
     _check_key_options(args)
     vault_dir = _vault_dir(args.vault, os.environ)
     existed = _is_regular_file(vault_dir / "vault.db")
-    key_bytes, crypto = _custody(args, os.environ, vault_dir, writes=writes or create)
+    key_bytes, crypto = _custody(
+        args, os.environ, vault_dir, writes=writes or create, policy=policy
+    )
     store = open_store(
         vault_dir,
         key_env=args.key_env,
@@ -1974,8 +2021,11 @@ def _cmd_allow(args, prog: str) -> int:
     if not args.clear and not args.accept and not command:
         _err(prog, "give the command after --, for example: -- npx -y @scope/server")
         return 2
-    # --accept only reads the binding; every other form seals a new one.
-    store = _store_for(args, writes=not args.accept)
+    # --accept only reads the binding. Every other form changes the command policy,
+    # which a key agent is not trusted with unless it was unlocked --bindings: the
+    # passphrase is asked instead (clearing is included — it is a policy change too,
+    # even though the NULL it writes needs no sealing).
+    store = _store_for(args, writes=not args.accept, policy=not args.accept)
     if store.get_meta(args.item_id) is None:
         _err(prog, f"item {args.item_id} not found")
         return 1
@@ -2941,7 +2991,11 @@ def secrets_main(args: argparse.Namespace) -> int:
     except VaultError as exc:
         _err(prog, str(exc))
         return 1
-    except (key_agent.AgentReadOnly, key_agent.AgentOutOfScope) as exc:
+    except (
+        key_agent.AgentReadOnly,
+        key_agent.AgentOutOfScope,
+        key_agent.AgentPolicyRefused,
+    ) as exc:
         _err(prog, f"{exc}. Nothing was changed")
         return 1
     except ValueError as exc:

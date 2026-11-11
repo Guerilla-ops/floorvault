@@ -77,6 +77,12 @@ _CRYPTO_OPS = ("encrypt", "decrypt")
 #: The table whose records are a store's items; ``record_id`` there is the item id. A scoped
 #: agent (``unlock --only``) serves these records for its items and nothing else.
 ITEM_TABLE = "vault_items"
+#: The column that is a store's command policy: which command lines ``run`` may resolve an
+#: item for (``vaultkit`` seals it as ``meta:allowed_commands``). Sealing it is never
+#: delegated to the agent unless it was unlocked for it (``--bindings``): an agent that
+#: could seal it is a forge-a-binding oracle for any process running as the user, and a
+#: forged binding outlives the unlock it was made under.
+BINDING_COLUMN = "meta:allowed_commands"
 #: The use log stops growing here; the counters in ``status`` keep counting.
 USE_LOG_LIMIT = 1024 * 1024
 _DURATION = re.compile(r"^(\d+)([smhd]?)$")
@@ -92,6 +98,10 @@ class AgentReadOnly(AgentError):
 
 class AgentOutOfScope(AgentError):
     """The agent was unlocked for named items only, and was asked about another record."""
+
+
+class AgentPolicyRefused(AgentError):
+    """The agent was not unlocked to seal command bindings (``unlock --write --bindings``)."""
 
 
 class AgentNotRunning(AgentError):
@@ -582,7 +592,10 @@ class Agent:
 
     - It only decrypts unless ``writable``. Everything ``floorvault run`` does is a read; an
       agent that also encrypts lets any process of the same user write valid sealed data
-      into the store, a widened command binding included.
+      into the store.
+    - Even when ``writable``, it refuses to seal ``BINDING_COLUMN`` unless ``bindings``.
+      That column is the store's command policy, and a binding sealed through the socket
+      outlives the unlock; ``secrets allow`` asks for the passphrase instead.
     - With ``only`` it serves the records of those items and refuses every other record.
       The item id is the ``record_id`` each request names, and it is bound into what is
       decrypted, so one item cannot be asked for under another's name.
@@ -606,12 +619,14 @@ class Agent:
         start_token: Optional[str] = None,
         crypto: Any = None,
         writable: bool = False,
+        bindings: bool = False,
         only: Optional[Iterable[str]] = None,
         use_log: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> None:
         self._key = key
         self._crypto = crypto
         self._writable = bool(writable)
+        self._bindings = bool(bindings)
         self._only = None if only is None else frozenset(only)
         self._use_log = use_log
         self._counts = {"decrypt": 0, "encrypt": 0, "refused": 0}
@@ -715,6 +730,7 @@ class Agent:
                     "protected_memory": bool(getattr(self._key, "is_locked", False)),
                     **self._hardening,
                     "writable": self._writable,
+                    "bindings": self._bindings,
                     "only": None if self._only is None else sorted(self._only),
                     "decrypts": self._counts["decrypt"],
                     "encrypts": self._counts["encrypt"],
@@ -751,8 +767,22 @@ class Agent:
 
     def _refusal(self, op: str, coords: Mapping[str, Any]) -> Optional[dict[str, Any]]:
         """Why this agent will not do ``op`` on that record, or None when it will."""
-        if op == "encrypt" and not self._writable:
-            return {"ok": False, "kind": "read_only", "error": "this agent only decrypts"}
+        if op == "encrypt":
+            if not self._writable:
+                return {"ok": False, "kind": "read_only", "error": "this agent only decrypts"}
+            if (
+                coords["table"] == ITEM_TABLE
+                and coords["column"] == BINDING_COLUMN
+                and not self._bindings
+            ):
+                # A writable agent seals data, not policy: a forged command binding does
+                # not end with the unlock that wrote it, so sealing one is left to the
+                # passphrase (or an explicit --bindings unlock).
+                return {
+                    "ok": False,
+                    "kind": "policy",
+                    "error": "this agent does not seal command bindings",
+                }
         if self._only is not None and not (
             coords["table"] == ITEM_TABLE and coords["record_id"] in self._only
         ):
@@ -767,7 +797,7 @@ class Agent:
         self, op: str, coords: Mapping[str, Any], pid: Optional[int], reply: Mapping[str, Any]
     ) -> None:
         """Count the request and write it to the use log. Never raises."""
-        refused = reply.get("kind") in ("read_only", "scope")
+        refused = reply.get("kind") in ("read_only", "scope", "policy")
         if refused:
             self._counts["refused"] += 1
         elif reply.get("ok"):
@@ -1040,6 +1070,12 @@ class RemoteVault:
                 "the key agent for this store was unlocked for other items only "
                 "(`floorvault unlock --status` lists them)"
             )
+        if kind == "policy":
+            raise AgentPolicyRefused(
+                "the key agent for this store does not seal command bindings; "
+                "`floorvault lock` and repeat the command (it asks for the passphrase), or "
+                "unlock with `floorvault unlock --write --bindings`"
+            )
         raise AgentError(f"the agent refused the request ({reply.get('error', 'no reason')})")
 
     def encrypt(
@@ -1311,6 +1347,7 @@ def prepare(
     app_context: str,
     allow_unhardened: bool = False,
     writable: bool = False,
+    bindings: bool = False,
     only: Optional[Iterable[str]] = None,
 ) -> PendingAgent:
     """Bind the socket, fork the agent, and have it protect itself; it then waits for its key.
@@ -1333,6 +1370,10 @@ def prepare(
     """
     if not SUPPORTED:
         raise AgentError("the key agent needs Linux or macOS")
+    if bindings and not writable:
+        raise AgentError(
+            "sealing command bindings needs a writing agent (--bindings needs --write)"
+        )
     environ = os.environ if environ is None else environ
     path = socket_path(vault_dir, environ)
     listener = _bind(path)
@@ -1363,6 +1404,7 @@ def prepare(
             key_read,
             ready_write,
             writable,
+            bindings,
             None if only is None else frozenset(only),
         )
         os._exit(0)
@@ -1408,6 +1450,7 @@ def start(
     app_context: str,
     allow_unhardened: bool = False,
     writable: bool = False,
+    bindings: bool = False,
     only: Optional[Iterable[str]] = None,
 ) -> dict[str, Any]:
     """Start a background agent holding ``key`` for ``vault_dir``; return its first status.
@@ -1428,6 +1471,7 @@ def start(
         app_context=app_context,
         allow_unhardened=allow_unhardened,
         writable=writable,
+        bindings=bindings,
         only=only,
     )
     return pending.send_key(key)
@@ -1500,6 +1544,7 @@ def _daemon(  # pragma: no cover - runs in the forked child
     key_read: int,
     ready_write: int,
     writable: bool = False,
+    bindings: bool = False,
     only: Optional[frozenset[str]] = None,
 ) -> None:
     code = 1
@@ -1546,6 +1591,7 @@ def _daemon(  # pragma: no cover - runs in the forked child
                     start_token=start_token,
                     crypto=crypto,
                     writable=writable,
+                    bindings=bindings,
                     only=only,
                     use_log=UseLog(use_log_path(path)),
                 )
