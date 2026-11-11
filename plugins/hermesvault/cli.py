@@ -23,11 +23,17 @@ import unicodedata
 import warnings
 from pathlib import Path
 
-from agent.secret_sources.base import get_source_environment, is_valid_env_name
+from agent.secret_sources.base import get_source_environment
 from hermes_constants import get_hermes_home
 
-from .binding_guard import gateway_command_line, hermes_command_lines
-from .source import HermesVaultSource, parse_ref, resolve_base_dir, validate_config
+from .binding_guard import gateway_command_line
+from .source import (
+    HermesVaultSource,
+    parse_ref,
+    resolve_base_dir,
+    valid_env_name,
+    validate_config,
+)
 
 
 class CLIInputError(ValueError):
@@ -47,9 +53,31 @@ def _item_id(value):
 
 
 def _field(value):
-    if not isinstance(value, str) or not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+    # Cc covers C0, DEL and the C1 range (0x9b is a terminal CSI); Zl/Zp are the
+    # Unicode line and paragraph separators. A field name is echoed back, so none
+    # of them may forge a line or drive the terminal.
+    if (
+        not isinstance(value, str)
+        or not value
+        or any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in value)
+    ):
         raise CLIInputError("field must be non-empty and contain no control characters")
     return value
+
+
+def _value_problem(value: str) -> "str | None":
+    """Why ``value`` cannot be stored, or None. Names the problem, never the value.
+
+    A blank value is refused by the store, or silently dropped by ``add_item``.
+    A NUL byte cannot be held by any environment variable: Hermes would fail
+    while publishing the resolved values, so it is refused at write time, as
+    `floorvault secrets add` and `put` refuse it.
+    """
+    if not value.strip():
+        return "empty value"
+    if "\x00" in value:
+        return "the value contains a NUL byte, which no environment variable can hold"
+    return None
 
 
 def _printable(text: str) -> str:
@@ -143,6 +171,9 @@ def _field_values(pairs, *, where: str = "argument", start: int = 1) -> dict:
         field = field.strip()
         if not sep or not field:
             raise CLIInputError(f"{where} {number} is not in field=value form")
+        problem = _value_problem(value)
+        if problem is not None:
+            raise CLIInputError(f"{where} {number}: {problem}; nothing stored")
         out[_field(field)] = value
     return out
 
@@ -189,7 +220,7 @@ def register_cli(subparser) -> None:
         "allow",
         help=(
             "Bind an item to command lines, so Hermes resolves it only when "
-            "started as one of them (default: this Hermes' own command line)"
+            "started as one of them (default: the gateway line `bind` uses)"
         ),
         usage=(
             "hermes hvault allow ITEM_ID [--clear | --accept | [--remove] [-- PROGRAM [ARGS...]]]"
@@ -198,9 +229,9 @@ def register_cli(subparser) -> None:
             "Command bindings live in the vault; a bound item is resolved only "
             "when the process was started as one of the bound command lines "
             "(secrets.hermesvault.require_binding also refuses items with none). "
-            "With no command, the lines this Hermes was started with are bound — "
-            "run it from the same command Hermes runs as. Give an explicit line "
-            "after -- the way `floorvault secrets allow` takes it."
+            "With no command, the gateway line Hermes starts for chat and one-shot "
+            "commands is bound, as `bind` binds a new item. Give another line, such "
+            "as a service's, after -- the way `floorvault secrets allow` takes it."
         ),
     )
     allow.add_argument("item_id")
@@ -276,7 +307,8 @@ def _custody_line(cfg: dict) -> str:
     from .source import CUSTODIES, DEFAULT_CUSTODY, DEFAULT_TOKEN_ENV
 
     token_env = str(cfg.get("token_env") or DEFAULT_TOKEN_ENV)
-    if token_env in get_source_environment():
+    # The value, not the name: an empty variable is ignored by _open_store too.
+    if get_source_environment().get(token_env):
         return "key: the token_env variable (set in this environment; custody is not used)"
     configured = cfg.get("custody", DEFAULT_CUSTODY)
     label = next((name for name in CUSTODIES if name == configured), "unknown")
@@ -307,15 +339,32 @@ def _cmd_add(args) -> int:
         _item_id(args.item_id)
     fields = _field_values(args.fields)
     if args.stdin:
+        if sys.stdin.isatty():
+            # Typed at a terminal, the values would be echoed, as `bind --stdin` refuses.
+            print(
+                "hvault add: --stdin reads field=value lines from a pipe or file",
+                file=sys.stderr,
+            )
+            return 2
         for number, line in enumerate(sys.stdin, start=1):
-            line = line.strip()
-            if not line or line.startswith("#"):
+            # Only the line ending goes: the value is stored as written, so a
+            # passphrase that ends in a space keeps it.
+            line = line.rstrip("\r\n")
+            if not line.strip() or line.lstrip().startswith("#"):
                 continue
             fields.update(_field_values([line], where="stdin line", start=number))
     if not fields:
         print("hvault add: give at least one field=value (argv, or --stdin)", file=sys.stderr)
         return 2
-    meta = _store().add_item(kind="generic", label=args.label, secret=fields, item_id=args.item_id)
+    store = _store()
+    if args.item_id is not None and store.get_meta(args.item_id) is not None:
+        print(
+            f"hvault add: item {args.item_id} already exists; set a field with "
+            f"`hermes hvault put {args.item_id} FIELD`",
+            file=sys.stderr,
+        )
+        return 1
+    meta = store.add_item(kind="generic", label=args.label, secret=fields, item_id=args.item_id)
     print(f"created {meta.id}")
     return 0
 
@@ -341,19 +390,17 @@ def _cmd_put(args) -> int:
     _item_id(args.item_id)
     _field(args.field)
     store = _store()
-    try:
-        meta = store.get_meta(args.item_id)
-    except Exception:
-        print(f"hvault put: item {args.item_id} not found", file=sys.stderr)
-        return 1
-    if meta is None:
+    # Only a missing item is "not found"; a store that cannot be read or decrypted
+    # goes to hvault_command's redacted handler, which says to check custody.
+    if store.get_meta(args.item_id) is None:
         print(f"hvault put: item {args.item_id} not found", file=sys.stderr)
         return 1
     value = _read_secret(f"{args.item_id}.{args.field}: ", "put")
     if value is None:
         return 2
-    if not value:
-        print("hvault put: empty value", file=sys.stderr)
+    problem = _value_problem(value)
+    if problem is not None:
+        print(f"hvault put: {problem}; nothing changed", file=sys.stderr)
         return 2
     try:
         if not store.update_generic_field(args.item_id, args.field, value):
@@ -376,12 +423,13 @@ def _cmd_show(args) -> int:
     _item_id(item_id)
     if field is not None:
         _field(field)
-    try:
-        store = _store()
-        secret = store.resolve_secret(item_id)
-    except Exception:
+    store = _store()
+    # As in `put`: only a missing item is "not found"; an unopenable store or a
+    # failed decryption reaches the redacted handler and its custody hint.
+    if store.get_meta(item_id) is None:
         print(f"hvault show: item {item_id} not found", file=sys.stderr)
         return 1
+    secret = store.resolve_secret(item_id)
     if args.reveal:
         items = {field: secret.get(field)} if field else secret
         for _name, value in items.items():
@@ -420,7 +468,8 @@ def _print_binding(store, item_id: str) -> None:
         return
     print(f"bindings: {len(allowed)} command line(s); resolved only when Hermes was started as:")
     for line in allowed:
-        print(f"  {shlex.join(line)}")
+        # A bound line is stored text; anyone who can bind can put escapes in it.
+        print(f"  {_printable(shlex.join(line))}")
 
 
 def _cmd_rm(args) -> int:
@@ -428,9 +477,33 @@ def _cmd_rm(args) -> int:
     if _store().remove_item(args.item_id):
         print(f"removed {args.item_id}")
         _forget_binding(args.item_id)
+        _warn_still_mapped(args.item_id)
         return 0
     print(f"hvault rm: item {args.item_id} not found", file=sys.stderr)
     return 1
+
+
+def _warn_still_mapped(item_id: str) -> None:
+    """Say when config.yaml still maps variables to an item just removed.
+
+    Hermes skips such a mapping at startup with a warning; saying so here is the
+    moment the operator can act. Counted, not named: no name from the secrets
+    section is echoed (see ``_cmd_bind``).
+    """
+    try:
+        env_map = _secrets_cfg().get("env")
+    except CLIInputError:
+        return
+    if not isinstance(env_map, dict):
+        return
+    count = sum(1 for ref in env_map.values() if parse_ref(ref)[0] == item_id)
+    if count:
+        print(
+            f"hvault rm: warning: {count} variable(s) in secrets.hermesvault.env still "
+            f"map to {item_id}; Hermes skips them until they are removed from config.yaml "
+            "(`hermes hvault doctor` lists them)",
+            file=sys.stderr,
+        )
 
 
 def _forget_binding(item_id: str) -> None:
@@ -500,7 +573,7 @@ def _print_mapping(env_name: str, ref: str) -> None:
 
 def _cmd_env(args) -> int:
     _item_id(args.item_id)
-    if not is_valid_env_name(args.env_name):
+    if not valid_env_name(args.env_name):
         raise CLIInputError("invalid environment variable name")
     if args.field is not None:
         _field(args.field)
@@ -552,7 +625,7 @@ def _write_mapping(env_name: str, ref: str) -> bool:
 
 
 def _cmd_bind(args) -> int:
-    if not is_valid_env_name(args.env_name):
+    if not valid_env_name(args.env_name):
         raise CLIInputError("invalid environment variable name")
     item_id = _item_id(args.item_id if args.item_id is not None else args.env_name.lower())
     field = _field(args.field)
@@ -603,16 +676,20 @@ def _cmd_bind(args) -> int:
                 file=sys.stderr,
             )
             return 2
-        value = value.rstrip("\n")
+        # Line endings only, CRLF included: a key piped from a file saved on
+        # Windows would otherwise keep a "\r", which passes Hermes' ASCII
+        # sanitiser and fails at the provider as an invalid key.
+        value = value.rstrip("\r\n")
     else:
         value = _read_secret(f"{args.env_name}: ", "bind")
     if value is None:
         return 2
-    if not value.strip():
+    problem = _value_problem(value)
+    if problem is not None:
         # add_item() drops whitespace-only fields, which would leave an empty
         # record and a mapping to a field that does not exist. The value itself
         # is stored as typed, not stripped.
-        print("hvault bind: empty value; nothing stored", file=sys.stderr)
+        print(f"hvault bind: {problem}; nothing stored", file=sys.stderr)
         return 2
     existing = store.get_meta(item_id)
     if existing is None:
@@ -668,7 +745,7 @@ def _bind_new_item_to_gateway(store, cfg: dict, home: Path, item_id: str) -> str
     store.update_allowed_commands(item_id, lambda current: [*(current or []), line])
     record.record(item_id, store.binding_fingerprint(item_id))
     return (
-        f"bound to {shlex.join(line)}\n"
+        f"bound to {_printable(shlex.join(line))}\n"
         "  (the line Hermes starts its gateway with for chat and one-shot commands; "
         f"a service's own line: `hermes hvault allow {item_id} -- <line>`; "
         "to resolve for any command: --no-bind)"
@@ -767,7 +844,12 @@ def _cmd_allow(args) -> int:
         print(f"hvault allow: {exc}", file=sys.stderr)
         return 1
     if command:
-        if len(command) == 1 and command[0].lstrip().startswith("["):
+        if (
+            len(command) == 1
+            and command[0].strip().startswith("[")
+            # A lone "[" is the test program (/usr/bin/[), not JSON.
+            and command[0].strip() != "["
+        ):
             # `hermes --print-runtime-command <argv>` prints the exact command
             # line a launcher starts Hermes with, as a JSON list — pasting it
             # after -- is the way to bind that start line.
@@ -783,7 +865,12 @@ def _cmd_allow(args) -> int:
                     "as `hermes --print-runtime-command` prints it"
                 )
             command = parsed
-        line = [_resolve_program(command[0]), *command[1:]]
+        if args.remove and os.path.isabs(command[0]):
+            # A line is removed as stored; its program need not exist any more,
+            # or a binding to a deleted program could only be dropped by --clear.
+            line = [os.path.abspath(command[0]), *command[1:]]
+        else:
+            line = [_resolve_program(command[0]), *command[1:]]
         for arg in command[1:]:
             if not arg.startswith("-") and not os.path.isabs(arg) and os.path.exists(arg):
                 print(
@@ -793,22 +880,18 @@ def _cmd_allow(args) -> int:
                 )
         lines = [line]
     else:
-        # A bound item resolves only for the commands it is bound to, and this
-        # `hvault` invocation is never the one a user means — the agent's start
-        # command is. Drop self-references from the captured lines; if the
-        # `allow` invocation is all there is, the operator must spell the line
-        # out (the skip warning prints what the source was started with).
-        captured = [line for line in hermes_command_lines() if "hvault" not in line]
-        if not captured:
+        # This process is always the `hermes hvault allow` invocation, a line no
+        # one means to bind. The line meant by default is the one `bind` binds a
+        # new item to: the gateway Hermes starts for chat and one-shot commands.
+        gateway = gateway_command_line(Path(get_hermes_home()))
+        if gateway is None:
             raise CLIInputError(
-                "the only command line this process was started with is this "
-                "`hvault` invocation; bound to it the item would resolve for "
-                "hvault commands but not the agent. Give the start command after "
-                "-- instead: the skip warning prints it, and `hermes "
+                "this platform has no default line to bind; give the start command "
+                "after --: the skip warning prints it, and `hermes "
                 "--print-runtime-command gateway run` prints the launcher's line "
                 "as JSON (paste it quoted)"
             )
-        lines = captured
+        lines = [gateway]
 
     def change(current):
         # Runs under the store's write lock, so a concurrent change is not lost.
@@ -822,9 +905,9 @@ def _cmd_allow(args) -> int:
             remaining = [e for e in remaining if not command_allowed(line, [e])]
         if len(remaining) == len(current):
             raise _AllowRefused(
-                f"item {item_id} is not bound to {shlex.join(lines[0])}"
+                f"item {item_id} is not bound to {_printable(shlex.join(lines[0]))}"
                 if len(lines) == 1
-                else f"item {item_id} is bound to none of this process's command lines"
+                else f"item {item_id} is bound to none of these command lines"
             )
         if not remaining:
             # Unbinding widens access to every command; make that explicit.
@@ -863,12 +946,15 @@ def _cmd_status(_args) -> int:
     print(f"store: {base} ({'present' if exists else 'missing'})")
     print(_custody_line(cfg))
     print(f"source: {'enabled' if enabled else 'disabled'}, {mappings} mapping(s)")
+    code = 0
     if exists and enabled and mappings:
-        result = HermesVaultSource().fetch(cfg, home)
+        result = HermesVaultSource().fetch_for(cfg, home, None)
         if result.ok:
+            # A partial map is status, not failure: the next step names doctor.
             print(f"resolved {len(result.secrets)}/{mappings} mapping(s); values are not displayed")
         else:
             print(f"resolve failed: {result.error}", file=sys.stderr)
+            code = 1
     if not mappings:
         print("next: hermes hvault bind <ENV_NAME>   # stores a secret and maps it")
     elif not enabled:
@@ -876,7 +962,7 @@ def _cmd_status(_args) -> int:
     else:
         print("next: hermes hvault doctor   # full check; `bind` adds more")
     print("commands: bind, allow, list, doctor, show, rm; advanced: setup, add, put, env")
-    return 0
+    return code
 
 
 def _cmd_doctor(_args) -> int:
@@ -893,9 +979,8 @@ def _cmd_doctor(_args) -> int:
             file=sys.stderr,
         )
         return 1
-    env_map = cfg.get("env", {})
-    if not isinstance(env_map, dict):
-        raise CLIInputError("secrets.hermesvault.env must be a mapping")
+    # validate_config (in _secrets_cfg) refused an env that is neither a map nor null.
+    env_map = cfg.get("env") or {}
     if not env_map:
         print("hvault doctor: no mappings configured", file=sys.stderr)
         return 1
@@ -906,7 +991,9 @@ def _cmd_doctor(_args) -> int:
         )
         return 1
     source = HermesVaultSource()
-    result = source.fetch(cfg, home)
+    # Everything startup checks except "was Hermes started as a bound line": this
+    # is the hvault process, which no binding names. Bound items are listed below.
+    result = source.fetch_for(cfg, home, None)
     if not result.ok:
         print(f"hvault doctor: {result.error}", file=sys.stderr)
         return 1
@@ -919,7 +1006,7 @@ def _cmd_doctor(_args) -> int:
     environ = get_source_environment()
     protected = source.protected_env_vars(cfg)
     for idx, name in enumerate(env_map, start=1):
-        if not is_valid_env_name(name):
+        if not valid_env_name(name):
             continue
         if name in protected:
             print(
@@ -938,6 +1025,7 @@ def _cmd_doctor(_args) -> int:
                     file=sys.stderr,
                 )
                 problems = True
+    _print_binding_notes(cfg, home, env_map)
     print(f"resolved {len(result.secrets)}/{len(env_map)} mapping(s); values are not displayed")
     print(
         "Restart Hermes after changes and verify the consuming service; this checks the current process environment."
@@ -945,11 +1033,46 @@ def _cmd_doctor(_args) -> int:
     return 1 if problems else 0
 
 
+def _print_binding_notes(cfg: dict, home: Path, env_map: dict) -> None:
+    """For each mapping to a bound item: Hermes resolves it only when started as a bound line.
+
+    Not a problem, and not checkable from here: whether Hermes is started as one
+    of those lines is decided when it starts. Says when the gateway line `bind`
+    uses is not among them. Mappings are numbered, not named (see ``_cmd_bind``).
+    """
+    try:
+        store = _store()
+    except Exception:  # noqa: BLE001 — fetch_for has already reported the store
+        return
+    getter = getattr(store, "get_allowed_commands", None)
+    if getter is None:
+        return
+    gateway = gateway_command_line(home)
+    for idx, ref in enumerate(env_map.values(), start=1):
+        item_id = parse_ref(ref)[0]
+        if item_id is None:
+            continue
+        try:
+            allowed = getter(item_id)
+        except Exception:  # noqa: BLE001  # nosec B112 - fetch_for already warned about it
+            continue
+        if not allowed:
+            continue
+        where = (
+            "" if gateway is None or gateway in allowed else "; the gateway line is not one of them"
+        )
+        print(
+            f"mapping #{idx}: bound to {len(allowed)} command line(s){where}; Hermes "
+            f"resolves it only when started as one (`hermes hvault show hv:{item_id}`)"
+        )
+
+
 def hvault_command(args) -> int:
     """``hermes hvault ...`` dispatch. Returns the process exit code."""
     from .source import CustodyUnavailable, StoreNotSetUp
 
     cmd = getattr(args, "hvault_command", None)
+    prog = f"hvault {cmd}" if cmd else "hvault"
     try:
         if cmd is None:
             return _cmd_status(args)
@@ -975,17 +1098,20 @@ def hvault_command(args) -> int:
             return _cmd_doctor(args)
     except (StoreNotSetUp, CustodyUnavailable) as error:
         # Messages written by this plugin or floorvault; they name no key material.
-        print(f"hvault {cmd}: {error}", file=sys.stderr)
+        print(f"{prog}: {error}", file=sys.stderr)
         return 1
     except CLIInputError as error:
-        print(f"hvault {cmd}: {error}", file=sys.stderr)
+        print(f"{prog}: {error}", file=sys.stderr)
         return 2
     except Exception as error:  # noqa: BLE001 — operator CLI surfaces the reason, never a traceback value
+        # 2 is kept for what the operator typed or configured (CLIInputError,
+        # including a malformed config.yaml); a store, key or custody failure is
+        # a runtime failure, whatever its class (VaultError is a ValueError).
         print(
-            f"hvault {cmd}: operation failed ({type(error).__name__}); check configuration, item and key custody",
+            f"{prog}: operation failed ({type(error).__name__}); check configuration, item and key custody",
             file=sys.stderr,
         )
-        return 2 if isinstance(error, ValueError) else 1
+        return 1
     print(
         "usage: hermes hvault {bind|allow|list|doctor|show|rm|setup|add|put|env}", file=sys.stderr
     )
