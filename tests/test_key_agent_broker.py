@@ -16,6 +16,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -82,7 +83,18 @@ class FakeClock:
 class Broker:
     """An Agent with a crypto engine over KEY, served from a thread."""
 
-    def __init__(self, vault, env, clock=None, *, idle=600, with_crypto=True):
+    def __init__(
+        self,
+        vault,
+        env,
+        clock=None,
+        *,
+        idle=600,
+        with_crypto=True,
+        writable=True,
+        only=None,
+        use_log=None,
+    ):
         self.path = key_agent.socket_path(vault, env)
         self.listener = key_agent._bind(self.path)
         self.key = HardenedMemoryKey(bytearray(KEY))
@@ -96,6 +108,11 @@ class Broker:
             poll=0.02,
             identity=key_agent._socket_identity(self.path),
             crypto=self.crypto,
+            # Most tests here round-trip, so they ask for an agent that also encrypts;
+            # the default (decrypt only) has its own tests below.
+            writable=writable,
+            only=only,
+            use_log=use_log,
         )
         self.thread = threading.Thread(target=self.agent.serve, args=(self.listener,))
         self.thread.start()
@@ -404,7 +421,24 @@ def test_run_and_secrets_use_a_real_agent_with_no_terminal_and_stop_when_it_is_l
         shown = floorvault("secrets", "show", "tok", "--vault", str(vault))
         assert shown.returncode == 0 and "1 set" in shown.stdout
         assert VALUE not in shown.stdout + shown.stderr
-        # A write through the agent: sealed by the agent, read back with the key by the library.
+        # The agent only decrypts: a write is not taken through it, and with no terminal to
+        # ask for the passphrase it is refused, changing nothing.
+        refused = floorvault(
+            "secrets", "add", "Second", "--id", "two", "--stdin", "--vault", str(vault),
+            stdin="value=written-through-the-agent\n",
+        )  # fmt: skip
+        assert refused.returncode == 1
+        assert "only decrypts" in refused.stderr and "unlock --write" in refused.stderr
+        assert "two" not in floorvault("secrets", "list", "--vault", str(vault)).stdout
+        status = floorvault("unlock", "--status", "--vault", str(vault))
+        assert "decrypts only; serves every item" in status.stdout
+        # Restarted with --write, the same command is sealed by the agent and read back.
+        assert floorvault("lock", "--vault", str(vault)).returncode == 0
+        assert wait_until(lambda: not alive(pid))
+        code, out, err = in_process(["unlock", "--write", "--vault", str(vault)], env, [PHRASE])
+        assert code == 0, err
+        assert "decrypts and encrypts" in out
+        pid = key_agent.status(key_agent.socket_path(vault, env))["pid"]
         added = floorvault(
             "secrets", "add", "Second", "--id", "two", "--stdin", "--vault", str(vault),
             stdin="value=written-through-the-agent\n",
@@ -423,6 +457,15 @@ def test_run_and_secrets_use_a_real_agent_with_no_terminal_and_stop_when_it_is_l
         # The child got the value and nothing that would open the store.
         assert KEY.hex() not in ran.stdout and "master.key" not in ran.stdout
         assert not (vault / "master.key").exists()
+        # Each use was counted in the agent and written to an owner-only log, without values.
+        status = floorvault("unlock", "--status", "--vault", str(vault))
+        assert "use: " in status.stdout and " decrypt(s) of 2 item(s)" in status.stdout
+        log = key_agent.use_log_path(key_agent.socket_path(vault, env))
+        assert stat.S_IMODE(os.lstat(log).st_mode) == 0o600
+        entries = [json.loads(line) for line in log.read_text().splitlines()]
+        assert {"tok", "two"} <= {entry["record"] for entry in entries}
+        assert {entry["op"] for entry in entries} == {"decrypt", "encrypt"}
+        assert VALUE not in log.read_text() and "written-through-the-agent" not in log.read_text()
 
         locked = floorvault("lock", "--vault", str(vault))
         assert locked.returncode == 0, locked.stderr
@@ -587,3 +630,190 @@ def test_a_request_completed_after_a_stop_is_not_served(broker, monkeypatch):
     with pytest.raises(key_agent.AgentError):
         remote.decrypt(sealed, **coords())
     assert served == []
+
+
+# ------------------------------------------------- what the agent will do with the key
+
+
+def item_coords(item_id, column="payload"):
+    return {"table": key_agent.ITEM_TABLE, "record_id": item_id, "column": column}
+
+
+def local_engine():
+    return FloorVault(HardenedMemoryKey(bytearray(KEY)), app_instance_id=APP_CONTEXT)
+
+
+def test_an_agent_only_decrypts_unless_it_was_asked_to_write(broker):
+    """Everything `run` does is a read. An agent that encrypts lets any process of the same
+    user write valid sealed data into the store, a widened command binding included."""
+    item = broker(writable=False)
+    remote = key_agent.RemoteVault(item.path)
+    sealed = local_engine().encrypt("v", **coords())
+    assert remote.decrypt(sealed, **coords()) == "v"
+    with pytest.raises(key_agent.AgentReadOnly, match="only decrypts"):
+        remote.encrypt("forged", **coords())
+    info = key_agent.status(item.path)
+    assert info["writable"] is False and info["encrypts"] == 0 and info["refused"] == 1
+
+
+def test_the_default_agent_is_the_one_that_only_decrypts(vault, env):
+    """The safe mode is what you get without asking: the class, and a started agent."""
+    path = key_agent.socket_path(vault, env)
+    listener = key_agent._bind(path)
+    try:
+        agent = key_agent.Agent(HardenedMemoryKey(bytearray(KEY)), path, crypto=local_engine())
+        assert agent._refusal("encrypt", coords()) == {
+            "ok": False,
+            "kind": "read_only",
+            "error": "this agent only decrypts",
+        }
+        assert agent._refusal("decrypt", coords()) is None
+    finally:
+        listener.close()
+        os.unlink(path)
+
+
+def test_a_scoped_agent_serves_its_items_and_no_other_record(broker):
+    item = broker(only=["a"])
+    remote = key_agent.RemoteVault(item.path)
+    engine = local_engine()
+    sealed_a = engine.encrypt("A", **item_coords("a"))
+    sealed_b = engine.encrypt("B", **item_coords("b"))
+    assert remote.decrypt(sealed_a, **item_coords("a")) == "A"
+    # The binding of an item in scope is one of its records and is served too.
+    bound = engine.encrypt("[]", **item_coords("a", "meta:allowed_commands"))
+    assert remote.decrypt(bound, **item_coords("a", "meta:allowed_commands")) == "[]"
+    with pytest.raises(key_agent.AgentOutOfScope, match="other items only"):
+        remote.decrypt(sealed_b, **item_coords("b"))
+    # Another table is not an item, whatever its record is called.
+    elsewhere = engine.encrypt("x", **coords(record_id="a"))
+    with pytest.raises(key_agent.AgentOutOfScope):
+        remote.decrypt(elsewhere, **coords(record_id="a"))
+    # And b cannot be asked for under a's name: the name is bound into what is decrypted.
+    with pytest.raises(DecryptionVerificationError):
+        remote.decrypt(sealed_b, **item_coords("a"))
+    info = key_agent.status(item.path)
+    assert info["only"] == ["a"] and info["refused"] == 2 and info["items_used"] == 1
+
+
+def test_a_scoped_agent_that_writes_still_writes_only_its_items(broker):
+    item = broker(only=["a"], writable=True)
+    remote = key_agent.RemoteVault(item.path)
+    assert remote.encrypt("A", **item_coords("a"))
+    with pytest.raises(key_agent.AgentOutOfScope):
+        remote.encrypt("B", **item_coords("b"))
+
+
+def test_every_use_is_counted_and_logged_without_values(broker):
+    seen = []
+    item = broker(use_log=seen.append)
+    remote = key_agent.RemoteVault(item.path)
+    sealed = remote.encrypt("s3cret-value", **item_coords("a"))
+    remote.decrypt(sealed, **item_coords("a"))
+    with pytest.raises(DecryptionVerificationError):
+        remote.decrypt(sealed, **item_coords("b"))
+    assert [(e["op"], e["record"], e["result"]) for e in seen] == [
+        ("encrypt", "a", "ok"),
+        ("decrypt", "a", "ok"),
+        ("decrypt", "b", "verification"),
+    ]
+    # The peer here is this very process; both platforms the agent runs on report its pid.
+    assert {e["pid"] for e in seen} == {os.getpid()}
+    assert "s3cret-value" not in json.dumps(seen)
+    info = key_agent.status(item.path)
+    assert (info["decrypts"], info["encrypts"], info["refused"], info["items_used"]) == (1, 1, 0, 1)
+
+
+def test_a_log_that_fails_never_stops_the_agent_serving(broker):
+    def broken(_entry):
+        raise OSError("disk full")
+
+    item = broker(use_log=broken)
+    remote = key_agent.RemoteVault(item.path)
+    assert remote.decrypt(remote.encrypt("v", **coords()), **coords()) == "v"
+
+
+def test_the_use_log_is_owner_only_keeps_one_earlier_log_and_follows_no_link(base):
+    path = base / "agent.uselog"
+    first = key_agent.UseLog(path)
+    first({"op": "decrypt", "record": "a"})
+    first.close()
+    assert stat.S_IMODE(os.lstat(path).st_mode) == 0o600
+    second = key_agent.UseLog(path)
+    second({"op": "decrypt", "record": "b"})
+    second.close()
+    assert json.loads(path.read_text())["record"] == "b"
+    assert json.loads((base / "agent.uselog.prev").read_text())["record"] == "a"
+    # A link where the log goes is not written through.
+    target = base / "elsewhere"
+    target.write_text("keep")
+    path.unlink()
+    os.symlink(target, path)
+    linked = key_agent.UseLog(path)
+    linked({"op": "decrypt"})
+    linked.close()
+    assert target.read_text() == "keep"
+
+
+def test_the_use_log_stops_at_its_limit(base):
+    path = base / "agent.uselog"
+    log = key_agent.UseLog(path, limit=60)
+    for number in range(10):
+        log({"op": "decrypt", "record": f"item{number}"})
+    assert 0 < len(path.read_bytes()) <= 60
+    assert len(path.read_text().splitlines()) < 10
+
+
+def test_unlock_only_serves_the_named_item_to_run(base, env, tmp_path):
+    """`unlock --only tok`: `run` gets tok and is refused the other item, by name."""
+    vault = base / "v3"
+    for args in (
+        ["secrets", "init", "--custody", "passphrase", "--vault", str(vault)],
+        ["secrets", "add", "Token", "--id", "tok", "--stdin", "--vault", str(vault)],
+        ["secrets", "add", "Other", "--id", "other", "--stdin", "--vault", str(vault)],
+    ):
+        code, _out, err = in_process(args, env, [PHRASE])
+        assert code == 0, err
+    code, out, err = in_process(
+        ["unlock", "--only", "tok", "--only", "nosuch", "--vault", str(vault)], env, [PHRASE]
+    )
+    assert code == 0, err
+    assert "serves only nosuch, tok" in out
+    assert "there is no item nosuch in this store" in err
+    pid = key_agent.status(key_agent.socket_path(vault, env))["pid"]
+    dump = tmp_path / "dump.py"
+    dump.write_text("import json, os, sys\nsys.stdout.write(json.dumps(dict(os.environ)))\n")
+    child_env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("FLOOR_VAULT", "HERMES"))},
+        **env,
+        "FLOOR_VAULT_STATE_DIR": str(base / "state"),
+        "FLOOR_VAULT_ALLOW_UNBOUND": "1",
+    }
+
+    def run(ref):
+        return subprocess.run(
+            [sys.executable, "-c", LAUNCH.format(src=str(ROOT / "src")), "run", "--vault",
+             str(vault), "-e", f"A=fv:{ref}", "--", sys.executable, str(dump)],
+            capture_output=True, text=True, env=child_env, stdin=subprocess.DEVNULL,
+            start_new_session=True, timeout=120,
+        )  # fmt: skip
+
+    try:
+        served = run("tok")
+        assert served.returncode == 0, served.stderr
+        assert json.loads(served.stdout)["A"] == VALUE
+        refused = run("other")
+        assert refused.returncode != 0
+        assert "other items only" in refused.stderr
+        assert VALUE not in refused.stdout + refused.stderr
+    finally:
+        key_agent.lock(key_agent.socket_path(vault, env))
+        if not wait_until(lambda: not alive(pid)):
+            force_kill(pid)
+
+
+def test_unlock_refuses_an_only_that_is_not_an_item_id(base, env, vault):
+    code, _out, err = in_process(["unlock", "--only", "no/such", "--vault", str(vault)], env, [])
+    assert code == 2 and "is not an item id" in err
+    with pytest.raises(key_agent.AgentNotRunning):
+        key_agent.status(key_agent.socket_path(vault, env))

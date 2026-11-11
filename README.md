@@ -242,10 +242,13 @@ retire those yourself. A copy or backup made before still opens with the old key
 
 > **The agent is a decryption oracle for code running as you.** It never hands
 > out the key, but any process of yours that can reach its socket can ask it to
-> decrypt anything in the store, and to encrypt too, so it can also write a
-> widened binding. Bindings are checked by the caller, not by the agent. Unlock
-> for the work and no longer (`floorvault unlock --ttl 1h --idle 10m`, then
-> `floorvault lock`). A reboot ends it, and root is out of scope.
+> decrypt what it serves. Bindings are checked by the caller, not by the agent.
+> It only decrypts unless unlocked with `--write`, `unlock --only ITEM` limits it
+> to the items you name, and `unlock --status` shows what it has been asked for.
+> Unlock for the work and no longer (`floorvault unlock --only ITEM --ttl 1h
+> --idle 10m`, then `floorvault lock`). To keep a program away from it, run that
+> program as another user or in a container. A reboot ends it, and root is out
+> of scope.
 
 [Passphrase-protected key and key agent](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#a-passphrase-protected-key)
 
@@ -297,7 +300,7 @@ Beta, unaudited, no policy broker, and search beacons leak equality. In detail:
 | Memory | Managed buffers can be wiped; other copies may persist, including the `cryptography` library's own copy of the AES-SIV subkey inside its engine. Page locking and anti-dump measures do not create an enclave. |
 | Migration | Deletion does not guarantee erasure from WAL, pages, backups, snapshots or storage media. |
 | Agent access | A compromised or prompt-injected authorised caller can request genuine plaintext. The library does not supply a policy broker. |
-| Key agent | While unlocked, code running as you can ask the agent to encrypt or decrypt any item; it hands out plaintext, not the key. It refuses to start without core-dump and debugger protection unless `--allow-unhardened` is given, and it is not an enclave. The macOS peer-credential check and the suspend-inclusive clock have not been run on a real Mac outside CI. |
+| Key agent | While unlocked, code running as you can ask the agent to decrypt what it serves: every item, or only those named with `--only`. It encrypts only with `--write`. It hands out plaintext, not the key, and cannot tell one of your programs from another. It refuses to start without core-dump and debugger protection unless `--allow-unhardened` is given, and it is not an enclave. The macOS peer-credential check and the suspend-inclusive clock have not been run on a real Mac outside CI. |
 | Passphrase | The wrapping is only as strong as the passphrase, and there is no recovery: lose the passphrase or `master.key.fvpw` and the data is gone. After `protect --rotate`, backups made before still open with the old key, and an external key file, environment key or the shared OS key store entry is not retired for you. |
 | Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, and the state directory must persist and stay outside the store writer's control; restoring both the store and record can replay an older, wider binding undetected. `hermes hvault allow` keeps the same kind of record: a later `allow` refuses a binding changed behind its back, and with a floorvault newer than 0.4.0 the plugin's startup resolution reads it and skips an item whose recorded binding was cleared or rolled back in `vault.db`. The plugin only reads the record, so an item it was never recorded for is judged by the store alone (a cleared binding is then refused only with `require_binding: true`), and with 0.4.0 or older nothing is compared. |
 

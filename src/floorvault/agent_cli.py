@@ -202,8 +202,14 @@ def _custody_key(args, environ: Mapping[str, str], vault_dir: Optional[Path]) ->
     return read_key_file(key_file) if key_file is not None else None
 
 
-def _agent_crypto(args, environ: Mapping[str, str], vault_dir: Optional[Path]):
+def _agent_crypto(
+    args, environ: Mapping[str, str], vault_dir: Optional[Path], *, writes: bool = False
+):
     """A ``RemoteVault`` for a running key agent, or None when there is none to use.
+
+    An agent only decrypts unless it was unlocked with ``--write``. For a command that
+    ``writes`` such an agent is no agent: None is returned and the passphrase is asked for,
+    as if nothing were running, and a note says why.
 
     Only a store with a passphrase-wrapped key and no explicit key option
     (``--key-env``, ``--key-file``) can have one. The refusals ``_custody_key``
@@ -231,7 +237,7 @@ def _agent_crypto(args, environ: Mapping[str, str], vault_dir: Optional[Path]):
     except key_agent.AgentError:
         return None  # no agent can run for this path (too long, say)
     try:
-        key_agent.status(sock)
+        info = key_agent.status(sock)
     except key_agent.AgentNotRunning:
         return None
     except key_agent.AgentError as exc:
@@ -239,12 +245,20 @@ def _agent_crypto(args, environ: Mapping[str, str], vault_dir: Optional[Path]):
             f"the key agent for {vault_dir} is there but cannot be used ({exc}); "
             "`floorvault lock` stops it. Nothing was opened"
         ) from None
+    if writes and info.get("writable") is False:
+        _err(
+            "floorvault",
+            "the key agent for this store only decrypts and this command writes, so the "
+            "passphrase is needed (`floorvault unlock --write` starts an agent that also "
+            "encrypts)",
+        )
+        return None
     return key_agent.RemoteVault(sock)
 
 
-def _custody(args, environ: Mapping[str, str], vault_dir: Optional[Path]):
+def _custody(args, environ: Mapping[str, str], vault_dir: Optional[Path], *, writes: bool = False):
     """``(key_bytes, crypto)``: a running key agent's ``RemoteVault``, else the key from ``_custody_key``."""
-    crypto = _agent_crypto(args, environ, vault_dir)
+    crypto = _agent_crypto(args, environ, vault_dir, writes=writes)
     if crypto is not None:
         return None, crypto
     return _custody_key(args, environ, vault_dir), None
@@ -660,6 +674,12 @@ def _check_bindings(
                 continue  # resolve() reports the missing item
             fingerprints[item_id] = store.binding_fingerprint(item_id)
             bindings[item_id] = store.get_allowed_commands(item_id)
+        except key_agent.AgentOutOfScope:
+            fingerprints.pop(item_id, None)
+            problems.append(
+                f"vault item {item_id}: the key agent for this store was unlocked for other "
+                "items only (`floorvault unlock --status` lists them), so it is not resolved"
+            )
         except Exception as exc:  # noqa: BLE001 - fail closed; report the type only
             fingerprints.pop(item_id, None)
             problems.append(
@@ -786,6 +806,9 @@ def _prepare_environment(
     except AgentEnvError as exc:
         for problem in exc.problems:
             _err(prog, problem)
+        return None, RUN_FAILED
+    except (key_agent.AgentReadOnly, key_agent.AgentOutOfScope) as exc:
+        _err(prog, str(exc))
         return None, RUN_FAILED
     finally:
         del store
@@ -961,6 +984,26 @@ def add_agent_parsers(subparsers) -> None:
         ),
     )
     unlock.add_argument(
+        "--write",
+        action="store_true",
+        help=(
+            "let the agent encrypt as well as decrypt, so `secrets add`, `put` and `allow` "
+            "need no passphrase while it runs. Without this the agent only decrypts, which "
+            "is all `floorvault run` needs; an agent that encrypts lets any process running "
+            "as you write to the store, a wider command binding included"
+        ),
+    )
+    unlock.add_argument(
+        "--only",
+        action="append",
+        default=None,
+        metavar="ITEM",
+        help=(
+            "serve this item only (repeat for more). The agent refuses every other record, "
+            "so what is exposed while it runs is these items and not the whole store"
+        ),
+    )
+    unlock.add_argument(
         "--status",
         action="store_true",
         help="report whether an agent is running for the store, and unlock nothing",
@@ -989,6 +1032,7 @@ def agent_main(args: argparse.Namespace) -> int:
         if args.status:
             info = key_agent.status(sock)
             print(_describe_agent(info, vault_dir))
+            print(_describe_use(info, sock))
             return 0
         try:
             ttl = key_agent.parse_duration(args.ttl)
@@ -996,6 +1040,11 @@ def agent_main(args: argparse.Namespace) -> int:
         except ValueError as exc:
             _err(prog, str(exc))
             return 2
+        only = None if args.only is None else sorted(set(args.only))
+        for item_id in only or ():
+            if not _ITEM_ID.fullmatch(item_id):
+                _err(prog, f"--only {item_id!r} is not an item id ([A-Za-z0-9._-]{{1,128}})")
+                return 2
         try:
             key_agent.status(sock)
         except key_agent.AgentNotRunning:
@@ -1017,6 +1066,8 @@ def agent_main(args: argparse.Namespace) -> int:
             idle=idle,
             app_context=APP_CONTEXT,
             allow_unhardened=args.allow_unhardened,
+            writable=args.write,
+            only=only,
         )
         try:
             phrase = passphrase_custody.prompt_passphrase(f"Passphrase for {vault_dir}: ")
@@ -1054,8 +1105,10 @@ def agent_main(args: argparse.Namespace) -> int:
         _err(
             prog,
             "`floorvault run` and `floorvault secrets` for this store use the agent now; "
-            "`floorvault lock` stops it.",
+            "`floorvault lock` stops it. Any process running as you can ask it for what it "
+            "serves, so lock it when the work is done.",
         )
+        _warn_unknown_scope_items(prog, vault_dir, sock, only)
         return 0
     except key_agent.AgentNotRunning as exc:
         _err(prog, str(exc))
@@ -1063,6 +1116,32 @@ def agent_main(args: argparse.Namespace) -> int:
     except key_agent.AgentError as exc:
         _err(prog, str(exc))
         return 1
+
+
+def _warn_unknown_scope_items(
+    prog: str, vault_dir: Path, sock: Path, only: Optional[list[str]]
+) -> None:
+    """Say so when ``--only`` names an item the store does not have: a typo unlocks nothing."""
+    if not only:
+        return
+    try:
+        store = open_store(vault_dir, crypto=key_agent.RemoteVault(sock))
+        missing = [item_id for item_id in only if store.get_meta(item_id) is None]
+    except Exception:  # noqa: BLE001 - a courtesy check: the agent is up either way
+        return
+    for item_id in missing:
+        _err(prog, f"note: there is no item {item_id} in this store")
+
+
+def _describe_use(info: Mapping[str, object], sock: Path) -> str:
+    """What the agent has been asked for so far; the counts are kept inside the agent."""
+    if "decrypts" not in info:
+        return "use: this agent does not report it (started by an older floorvault)"
+    return (
+        f"use: {info.get('decrypts')} decrypt(s) of {info.get('items_used')} item(s), "
+        f"{info.get('encrypts')} encrypt(s), {info.get('refused')} refused. "
+        f"Each request is logged in {key_agent.use_log_path(sock)}"
+    )
 
 
 def _describe_agent(info: Mapping[str, object], vault_dir: Path) -> str:
@@ -1078,7 +1157,17 @@ def _describe_agent(info: Mapping[str, object], vault_dir: Path) -> str:
         f"without use. protected memory: {'yes' if info.get('protected_memory') else 'no'}; "
         f"core dumps off: {'yes' if info.get('core_dumps_off') else 'no'}; "
         f"ptrace blocked: {'yes' if info.get('ptrace_blocked') else 'no'}"
+        f"{_describe_mode(info)}"
     )
+
+
+def _describe_mode(info: Mapping[str, object]) -> str:
+    if "writable" not in info:
+        return ""  # an agent started by an older floorvault: it encrypts and serves everything
+    mode = "decrypts and encrypts" if info.get("writable") else "decrypts only"
+    only = info.get("only")
+    scope = "every item" if only is None else "only " + ", ".join(str(i) for i in only)  # type: ignore[union-attr]
+    return f"; {mode}; serves {scope}"
 
 
 def add_secrets_parser(subparsers) -> None:
@@ -1310,7 +1399,13 @@ def _split_target(text: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def _store_for(
-    args, *, create: bool = False, provider_environ=None, environ=None, assert_listing=True
+    args,
+    *,
+    create: bool = False,
+    provider_environ=None,
+    environ=None,
+    assert_listing=True,
+    writes: bool = False,
 ):
     """Open the store; with ``create``, create it (and a key) only if there is none.
 
@@ -1323,7 +1418,7 @@ def _store_for(
     _check_key_options(args)
     vault_dir = _vault_dir(args.vault, os.environ)
     existed = _is_regular_file(vault_dir / "vault.db")
-    key_bytes, crypto = _custody(args, os.environ, vault_dir)
+    key_bytes, crypto = _custody(args, os.environ, vault_dir, writes=writes or create)
     store = open_store(
         vault_dir,
         key_env=args.key_env,
@@ -1352,6 +1447,8 @@ def _check_store_key(store, vault_dir: Path) -> None:
         ) from None
     except VaultError:
         pass  # e.g. sealed listing metadata: nothing this check can read
+    except key_agent.AgentOutOfScope:
+        pass  # an agent unlocked for some items only cannot authenticate the others
 
 
 def _check_key_options(args) -> None:
@@ -1395,7 +1492,7 @@ def _cmd_put(args, prog: str) -> int:
     except ValueError as exc:
         _err(prog, str(exc))
         return 2
-    store = _store_for(args)
+    store = _store_for(args, writes=True)
     if store.get_meta(args.item_id) is None:
         _err(prog, f"item {args.item_id} not found")
         return 1
@@ -1877,7 +1974,8 @@ def _cmd_allow(args, prog: str) -> int:
     if not args.clear and not args.accept and not command:
         _err(prog, "give the command after --, for example: -- npx -y @scope/server")
         return 2
-    store = _store_for(args)
+    # --accept only reads the binding; every other form seals a new one.
+    store = _store_for(args, writes=not args.accept)
     if store.get_meta(args.item_id) is None:
         _err(prog, f"item {args.item_id} not found")
         return 1
@@ -1969,7 +2067,7 @@ def _cmd_seal_listing(args, prog: str) -> int:
     vault_dir = _vault_dir(args.vault, os.environ)
     # The key must open every item before anything changes. The assertion is
     # not applied here: converting is how a store comes to satisfy it.
-    store = _store_for(args, assert_listing=False)
+    store = _store_for(args, assert_listing=False, writes=True)
     sealed_rows, cleartext_rows = _listing_rows(vault_dir)
     if not cleartext_rows:
         if sealed_rows:
@@ -1988,7 +2086,7 @@ def _cmd_seal_listing(args, prog: str) -> int:
         _err(prog, "a key rotation of this store is in progress; finish it first")
         return 1
     del store
-    key_bytes, crypto = _custody(args, os.environ, vault_dir)
+    key_bytes, crypto = _custody(args, os.environ, vault_dir, writes=True)
     sealed = open_store(
         vault_dir,
         key_env=args.key_env,
@@ -2842,6 +2940,9 @@ def secrets_main(args: argparse.Namespace) -> int:
         return 1
     except VaultError as exc:
         _err(prog, str(exc))
+        return 1
+    except (key_agent.AgentReadOnly, key_agent.AgentOutOfScope) as exc:
+        _err(prog, f"{exc}. Nothing was changed")
         return 1
     except ValueError as exc:
         _err(prog, str(exc))
