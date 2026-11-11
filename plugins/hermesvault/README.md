@@ -26,7 +26,8 @@ It holds agent credentials only. The browser-fill login vault at
 - **Your key, your custody.** The store key comes from the OS key store, a key file
   (such as a Docker or Kubernetes secret mount) or a systemd-creds credential. A
   configured custody that fails is an error, never a quiet fallback. A
-  passphrase-protected store is not supported.
+  passphrase-protected store (`master.key.fvpw`) is not supported, because the
+  plugin never prompts; it is refused by name, unless the key is in `token_env`.
 - **`hermes hvault`** manages the store: `bind`, `allow`, `list`, `show`, `rm` and
   `doctor`, plus `setup`, `add`, `put` and `env` for scripts.
 
@@ -326,7 +327,8 @@ bind with `floorvault secrets allow`).
   inspect it (`hermes hvault show`) and run `hermes hvault allow ITEM --accept`.
   Limits:
   - It needs a floorvault newer than 0.4.0. With 0.4.0 or older nothing is
-    compared, and only the next `allow` notices.
+    compared, and only the next `allow` notices; Hermes prints a warning saying
+    so each time it resolves, so the missing check is not mistaken for a passed one.
   - Resolution reads the record and never writes it. An item that was never
     bound or recorded is judged by the store alone.
   - Hermes must see the same state directory `allow` ran with. If the store has

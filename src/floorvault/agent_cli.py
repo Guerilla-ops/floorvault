@@ -1659,6 +1659,44 @@ def _check_store_opens(store, vault_dir: Path) -> None:
         ) from None
 
 
+def _retirement_steps(old: str) -> list[str]:
+    """What the operator still has to do to retire the old key after a rotation.
+
+    The rotation removes only what is the store's own (the sealed credential, the OS-tier
+    marker). The key store entry, a variable or a key file may be shared or live outside
+    anything floorvault edits, so each is named here instead of being left to memory.
+    """
+    steps = [
+        "find every copy of the store made before today (backups, snapshots, sync folders) and "
+        "delete it, or keep treating it as protected only by the old key",
+    ]
+    if old == "the OS key store":
+        steps.append(
+            "remove the old OS key store entry (service floor-vault) once no other store uses "
+            "it; every store that uses it shares one entry, so check first"
+        )
+    elif old == "the systemd-creds credential beside the store":
+        steps.append(
+            "delete every copy or backup of master.key.sdcred; this rotation removed the live one"
+        )
+    elif old.startswith("the key $FLOOR_VAULT_KEY or"):
+        steps.append(
+            "remove the old key from wherever it is set (a shell profile, a service unit, a "
+            "secret manager)"
+        )
+    elif old.startswith("$"):
+        steps.append(
+            f"remove {old} from every shell profile, service unit and secret manager that sets it"
+        )
+    elif old.startswith("the key file "):
+        steps.append(f"delete {old[len('the key file ') :]} and any backup of it")
+    steps.append(
+        "change what read the old key (an MCP server's --key-file, a service's environment); "
+        "it now fails to open this store"
+    )
+    return steps
+
+
 def _protect_report(prog: str, vault_dir: Path, removed: list[str], old: str, items: int) -> None:
     print(
         f"protected: {vault_dir} now opens only with its passphrase ({items} item(s) re-encrypted)"
@@ -1679,6 +1717,9 @@ def _protect_report(prog: str, vault_dir: Path, removed: list[str], old: str, it
         "support a passphrase, so a store it uses should not be protected this way. There "
         "is no recovery: lose the passphrase or master.key.fvpw and the data is gone.",
     )
+    _err(prog, "to retire the old key:")
+    for number, step in enumerate(_retirement_steps(old), start=1):
+        _err(prog, f"  {number}. {step}")
     _err(
         prog,
         "an unattended `run` (an MCP client, a service) cannot answer a prompt and will "

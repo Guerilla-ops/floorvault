@@ -1597,6 +1597,31 @@ def test_list_escapes_control_characters_from_the_store(allow_env, capsys):
     assert len(out.splitlines()) == 2 and "\x1b" not in out
 
 
+# --- a passphrase-protected store --------------------------------------------
+
+
+@pytest.mark.parametrize("custody", ["os", "key_file", "systemd-creds"])
+def test_a_passphrase_protected_store_is_refused_in_plain_words(file_home, custody):
+    """The plugin never prompts. Each custody used to fail with a message that never
+    mentioned the passphrase, and one of them pointed at `hvault setup`, which cannot help."""
+    (file_home / "agent-vault" / "master.key.fvpw").write_bytes(b"wrapped")
+    cfg = {"env": {"A": "hv:vault_k"}, "custody": custody}
+    if custody == "key_file":
+        cfg["key_file"] = "secrets/vault.key"
+    result = fetch(file_home, cfg)
+    assert not result.ok and result.secrets == {}
+    assert "protected by a passphrase" in result.error
+    assert "never prompts" in result.error and "master.key.fvpw" in result.error
+
+
+def test_a_key_in_token_env_still_opens_a_protected_store(file_home, monkeypatch):
+    """Plain `protect` keeps the key, so a key the caller supplies is still theirs to use."""
+    (file_home / "agent-vault" / "master.key.fvpw").write_bytes(b"wrapped")
+    monkeypatch.setenv("HERMES_VAULT_KEY", OTHER_KEY)
+    result = fetch(file_home, {"env": {"A": "hv:vault_k"}})
+    assert result.ok and result.secrets == {"A": "sk-file"}
+
+
 # ------------------------------------------------- mid-resolve rebinding (TOCTOU)
 
 

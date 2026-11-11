@@ -122,8 +122,13 @@ def binding_record_problems(
     judged by the store alone, as they were before this check existed, and the
     note says so. An item the record does not hold is a first use and has no
     problem. A floorvault without ``BindingRecord.compare`` (0.4.0 and older)
-    returns nothing: it has no way to read the record without writing it.
+    has no way to read the record without writing it, so nothing is checked; a
+    note says so, because the check would otherwise be silently absent.
     """
+    too_old = [
+        "floorvault 0.4.0 or older cannot check the binding record, so a binding cleared or "
+        "rolled back in vault.db is not noticed here; upgrade floorvault to a newer release"
+    ]
     try:
         from floorvault.binding_record import (
             BindingRecord,
@@ -132,10 +137,10 @@ def binding_record_problems(
             default_state_dir,
         )
     except ImportError:
-        return {}, []
+        return {}, too_old
     fingerprint = getattr(store, "binding_fingerprint", None)
     if fingerprint is None or not hasattr(BindingRecord, "compare"):
-        return {}, []
+        return {}, too_old
     current = {}
     for item_id in item_ids:
         try:
