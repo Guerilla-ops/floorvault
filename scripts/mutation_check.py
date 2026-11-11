@@ -1418,6 +1418,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         "FileAnchorStore accepts path-traversal names and writes outside its directory",
     ),
     Mutation(
+        "FA-20",
+        "src/floorvault/freshness.py",
+        "            if not is_windows() or time.monotonic() >= deadline:\n",
+        "            if True:  # MUTANT\n",
+        "A momentary Windows sharing violation on the anchor file is not retried, so concurrent "
+        "runs fail on the binding record (floorvault run: cannot use the binding record)",
+    ),
+    Mutation(
         "AD-4",
         "src/floorvault/providers/adaptive.py",
         "        if self._tier3_store_present():\n            return self._read_os_tier_beside_file_key()\n        if not self._os_tier_usable():",
@@ -2720,6 +2728,21 @@ MUTATIONS: tuple[Mutation, ...] = (
         "    if True:  # MUTANT\n        return None\n",
         "The gateway line is never known, so `hermes hvault bind` leaves every new item unbound "
         "and it resolves for any command that reads the store",
+    ),
+    Mutation(
+        "PWC-12",
+        "src/floorvault/agent_cli.py",
+        "    for number, step in enumerate(_retirement_steps(old), start=1):\n",
+        "    for number, step in enumerate([], start=1):  # MUTANT\n",
+        "`protect --rotate` stops telling the operator how to retire the old key and its backups",
+    ),
+    Mutation(
+        "BG-13",
+        "plugins/hermesvault/binding_guard.py",
+        '    if fingerprint is None or not hasattr(BindingRecord, "compare"):\n        return {}, too_old\n',
+        '    if fingerprint is None or not hasattr(BindingRecord, "compare"):\n        return {}, []  # MUTANT\n',
+        "A floorvault too old to read the binding record leaves the plugin checking nothing, "
+        "and says nothing: the missing check reads as a passed one",
     ),
     Mutation(
         "BG-9",

@@ -718,6 +718,18 @@ and the data is gone.
     Another user's connection could not be tested here (the test environment is root
     only); it is checked in unit tests by replacing the peer-uid lookup, and the macOS
     peer-credential call has not been run on a real Mac outside CI.
+  - **It encrypts as well as decrypts.** The same socket accepts `encrypt` for any table,
+    record and column, so code running as you can also write valid sealed data into
+    `vault.db`, a widened command binding included. The binding record kept outside the
+    store makes `floorvault run` (and a Hermes plugin new enough to check it) refuse such a
+    binding; a process that talks to the socket directly never goes through either, and
+    needs no binding to read. On macOS the agent is given no process ID for the peer
+    (only its uid), so nothing about which program is asking can be checked there.
+  - **How to run it with that in mind.** Treat an unlocked agent as the key being open to
+    all your code. Unlock for the work and no longer: a short total and idle limit
+    (`floorvault unlock --ttl 1h --idle 10m`), `floorvault lock` when done, and no
+    unlocked agent on a machine that runs code you do not trust. The defaults (8h and 1h)
+    are a convenience, not a recommendation for such a machine.
 - **`floorvault secrets protect`** wraps the key of an *existing* store that keeps
   it in a raw `master.key` beside the store (the Tier-3 file): it first checks
   that the raw key opens the store (a stale `master.key` is refused), writes
@@ -749,6 +761,17 @@ and the data is gone.
     that uses it and is never touched; an environment variable or key file is not edited,
     so retire it yourself. **A copy or backup of the store made before `protect --rotate`
     still opens with the old key**, so it is protected only as well as that key is.
+    The command ends by printing the steps for the key it replaced; they are:
+    1. Find every copy of the store made before the rotation (backups, snapshots, sync
+       folders) and delete it, or keep treating it as protected only by the old key.
+    2. OS key store: remove the old entry (service `floor-vault`) once no other store
+       uses it. Every store that uses the OS key store shares one entry, so check first.
+    3. `--key-env`: remove the variable from every shell profile, service unit and
+       secret manager that sets it.
+    4. `--key-file` or systemd-creds: delete the key file, or any copy or backup of
+       `master.key.sdcred` (the live credential is removed by the rotation).
+    5. Change whatever read the old key (an MCP server's `--key-file`, a service's
+       environment). It now fails to open the store.
     Anything else that opens this store with the old key (an MCP server's `--key-file`, the
     Hermes plugin, which does not support a passphrase) stops working.
   - **What it refuses, changing nothing:** a raw `master.key` beside the store (use plain

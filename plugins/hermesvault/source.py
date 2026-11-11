@@ -80,6 +80,24 @@ FLOORVAULT_KEY_ENV_NAMES = frozenset(
     {"FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "FLOOR_VAULT_KEY_FILE"}
 )
 _ITEM_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def valid_env_name(name) -> bool:
+    """Hermes' variable-name rule, made strict.
+
+    Hermes' ``is_valid_env_name`` matches with ``$``, which also accepts a name
+    ending in a newline ("FOO\\n" would be written to config.yaml and echoed as
+    a forged line), and raises TypeError on a non-string YAML key such as ``1``.
+    """
+    return isinstance(name, str) and bool(_ENV_NAME.fullmatch(name)) and is_valid_env_name(name)
+
+
+#: A master key is 32 bytes; token_env must hold exactly that as hex. Anything
+#: else is a mistake (a truncated paste, the wrong variable) and is refused with
+#: a message that says so, rather than a failure deep inside FloorVault that
+#: only names an exception type.
+_TOKEN_KEY_HEX = re.compile(r"[0-9a-fA-F]{64}")
 #: Must equal VaultStore's default custody so stores made either way open alike.
 _SERVICE_NAME = "floor-vault"
 #: floorvault.systemd_creds.CREDENTIAL_FILENAME, named here for floorvault 0.2.2.
@@ -115,8 +133,13 @@ def validate_config(cfg: dict) -> None:
     if not isinstance(cfg.get("dir", ""), str):
         raise ValueError("secrets.hermesvault.dir must be a string")
     token = cfg.get("token_env", DEFAULT_TOKEN_ENV)
-    if not isinstance(token, str) or not is_valid_env_name(token):
+    if not valid_env_name(token):
         raise ValueError("secrets.hermesvault.token_env must be an environment variable name")
+    env_map = cfg.get("env")
+    if env_map is not None and not isinstance(env_map, dict):
+        # One rule for every reader: null is "no mappings", anything else that is
+        # not a map is refused (startup, `doctor` and `status` alike).
+        raise ValueError("secrets.hermesvault.env must be a map of ENV_VAR to hv: refs")
     for name in ("enabled", "override_existing", "require_binding"):
         if name in cfg and not isinstance(cfg[name], bool):
             raise ValueError(f"secrets.hermesvault.{name} must be a boolean")
@@ -168,14 +191,25 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False, warnings=Non
     from floorvault.vaultkit import VaultStore
 
     base = resolve_base_dir(cfg, home_path)
+    token_env = str(cfg.get("token_env") or DEFAULT_TOKEN_ENV)
+    # The key is validated before the store-existence check: a truncated or
+    # non-hex value is a more specific mistake than "no store yet", and either
+    # way nothing can be opened.
+    key_hex = get_source_environment().get(token_env)
+    key: bytes | None = None
+    if key_hex:
+        hex_text = key_hex.strip()
+        if not _TOKEN_KEY_HEX.fullmatch(hex_text):
+            raise StoreNotSetUp(
+                f"{token_env} must hold exactly 64 hex characters (a 32-byte key); "
+                f"it holds {len(hex_text)}. Nothing was opened"
+            )
+        key = bytes.fromhex(hex_text)
     store_exists = (base / "vault.db").is_file()
     if not setup and not store_exists:
         raise StoreNotSetUp(f"no store at {base}; run `hermes hvault setup` once")
-    token_env = str(cfg.get("token_env") or DEFAULT_TOKEN_ENV)
-    key_hex = get_source_environment().get(token_env)
-    if key_hex:
-        key = bytes.fromhex(key_hex.strip())
-    else:
+    if key is None:
+        _refuse_passphrase_store(base)
         custody = cfg.get("custody", DEFAULT_CUSTODY)
         if custody == "key_file":
             key = _key_from_file(resolve_key_file(cfg, home_path), warnings)
@@ -183,7 +217,48 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False, warnings=Non
             key = _key_from_credential(base, setup=setup, store_exists=store_exists)
         else:
             key = _key_from_os(base, setup=setup)
-    return VaultStore(base, crypto=FloorVault(key, app_instance_id=_APP_INSTANCE_ID))
+    # Our own copy is mutable and wiped as soon as FloorVault has derived from
+    # it: the custody providers return immutable bytes, which nothing can zero,
+    # but nothing here has to keep a second one alive past construction.
+    key_buffer = bytearray(key)
+    del key
+    try:
+        return VaultStore(
+            base,
+            crypto=FloorVault(key_buffer, app_instance_id=_APP_INSTANCE_ID, wipe_source_key=True),
+        )
+    finally:
+        for index in range(len(key_buffer)):
+            key_buffer[index] = 0
+
+
+#: The wrapped key of a passphrase-protected store (floorvault 0.4: ``init --custody passphrase``,
+#: ``secrets protect``). Named here, not imported, so an older floorvault still loads this module.
+_PASSPHRASE_KEY_FILENAME = "master.key.fvpw"  # nosec B105 - a file name, not a secret
+
+
+def _refuse_passphrase_store(base: Path) -> None:
+    """Say plainly that a passphrase-protected store cannot be opened from here.
+
+    This plugin never prompts, so it cannot unwrap the key. Without this check
+    every custody failed with its own message ("refusing headless fallback",
+    "run `hermes hvault setup`"), none of which mentions the passphrase, and one
+    of which points at a step that cannot help. A key given in ``token_env`` is
+    not affected: plain ``protect`` keeps the key, so it can still open the
+    store, and that is the caller's choice.
+    """
+    try:
+        (base / _PASSPHRASE_KEY_FILENAME).lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise CustodyUnavailable(f"cannot check {base} for a passphrase-wrapped key") from None
+    raise CustodyUnavailable(
+        f"the store at {base} is protected by a passphrase ({_PASSPHRASE_KEY_FILENAME}), and "
+        "this plugin never prompts, so it cannot open it. Hermes needs a store whose key is "
+        "in the OS key store, a key file or a systemd-creds credential; passphrase protection "
+        "is for stores that `floorvault run` opens after `floorvault unlock`"
+    )
 
 
 def _newer_floorvault(custody: str) -> CustodyUnavailable:
@@ -262,6 +337,18 @@ def _key_from_credential(base: Path, *, setup: bool, store_exists: bool) -> byte
     return key
 
 
+def _binding_moved(fingerprint_of, item_id: str, before: str) -> bool:
+    """Whether the item's binding fingerprint changed since ``before`` was read.
+
+    A read error counts as moved: the guard cannot be shown to be the one that
+    was checked, so the resolved value is not applied.
+    """
+    try:
+        return fingerprint_of(item_id) != before
+    except Exception:
+        return True
+
+
 class HermesVaultSource(SecretSource):
     name = "hermesvault"
     label = "FloorVault"
@@ -315,6 +402,16 @@ class HermesVaultSource(SecretSource):
         }
 
     def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
+        return self.fetch_for(cfg, home_path, hermes_command_lines())
+
+    def fetch_for(self, cfg: dict, home_path: Path, command_lines) -> FetchResult:
+        """``fetch``, with bindings compared against ``command_lines``.
+
+        ``None`` skips only that comparison, for `hermes hvault doctor` and
+        `status`: they run as the ``hvault`` process, which no binding names, so
+        compared against it every bound item would read as skipped. The binding
+        record, an unreadable binding and ``require_binding`` are still checked.
+        """
         result = FetchResult()
         try:
             validate_config(cfg)
@@ -348,7 +445,6 @@ class HermesVaultSource(SecretSource):
                 "check the profile directory and key custody",
                 ErrorKind.AUTH_FAILED,
             )
-        command_lines = hermes_command_lines()
         require_binding = bool(cfg.get("require_binding", False))
         if not hasattr(store, "get_allowed_commands"):
             result.warnings.append(
@@ -362,8 +458,20 @@ class HermesVaultSource(SecretSource):
             store, resolve_base_dir(cfg, home_path), mapped_items
         )
         result.warnings.extend(record_notes)
+        # What each item's binding looked like when it was checked, for a second
+        # look after the decrypt: a binding rewritten between the check and the
+        # resolve must not release the value into the environment.
+        fingerprint_of = getattr(store, "binding_fingerprint", None)
+        checked: dict[str, str] = {}
+        for item_id in mapped_items:
+            if fingerprint_of is None:
+                break
+            try:
+                checked[item_id] = fingerprint_of(item_id)
+            except Exception:
+                checked.pop(item_id, None)
         for name, ref in env_map.items():
-            if not is_valid_env_name(name):
+            if not valid_env_name(name):
                 result.warnings.append(f"Skipped invalid env-var name {name!r}")
                 continue
             item_id, field = parse_ref(ref)
@@ -381,6 +489,15 @@ class HermesVaultSource(SecretSource):
             except Exception:
                 result.warnings.append(f"Skipped {name}: vault item {item_id} is unavailable")
                 continue
+            if item_id in checked and _binding_moved(fingerprint_of, item_id, checked[item_id]):
+                # The binding was rewritten between the check above and this
+                # decrypt. The value is already in this process's memory, but it
+                # does not go into the environment under a guard that changed.
+                result.warnings.append(
+                    f"Skipped {name}: vault item {item_id}'s command binding changed "
+                    "while it was being resolved; the value was not applied"
+                )
+                continue
             if field is not None:
                 value = secret.get(field)
                 if not isinstance(value, str) or not value:
@@ -397,6 +514,16 @@ class HermesVaultSource(SecretSource):
                 result.warnings.append(
                     f"Skipped {name}: item {item_id} holds {len(secret)} fields — "
                     "name one with hv:<item_id>:<field>"
+                )
+                continue
+            if "\x00" in value:
+                # No environment variable can hold a NUL: Hermes' publish step
+                # (os.environ[name] = value) would raise and stop startup. Such a
+                # value predates the CLI's write-time check or came from another
+                # tool; skip it like any other unusable field.
+                result.warnings.append(
+                    f"Skipped {name}: item {item_id} holds a NUL byte, which no "
+                    "environment variable can hold"
                 )
                 continue
             result.secrets[name] = value

@@ -122,8 +122,13 @@ def binding_record_problems(
     judged by the store alone, as they were before this check existed, and the
     note says so. An item the record does not hold is a first use and has no
     problem. A floorvault without ``BindingRecord.compare`` (0.4.0 and older)
-    returns nothing: it has no way to read the record without writing it.
+    has no way to read the record without writing it, so nothing is checked; a
+    note says so, because the check would otherwise be silently absent.
     """
+    too_old = [
+        "floorvault 0.4.0 or older cannot check the binding record, so a binding cleared or "
+        "rolled back in vault.db is not noticed here; upgrade floorvault to a newer release"
+    ]
     try:
         from floorvault.binding_record import (
             BindingRecord,
@@ -132,10 +137,10 @@ def binding_record_problems(
             default_state_dir,
         )
     except ImportError:
-        return {}, []
+        return {}, too_old
     fingerprint = getattr(store, "binding_fingerprint", None)
     if fingerprint is None or not hasattr(BindingRecord, "compare"):
-        return {}, []
+        return {}, too_old
     current = {}
     for item_id in item_ids:
         try:
@@ -183,7 +188,10 @@ def binding_record_problems(
 
 
 def binding_problem(
-    store, item_id: str, command_lines: Sequence[Sequence[str]], require_binding: bool
+    store,
+    item_id: str,
+    command_lines: Optional[Sequence[Sequence[str]]],
+    require_binding: bool,
 ) -> Optional[str]:
     """Why ``item_id`` may not be resolved for this process, or None when it may.
 
@@ -192,7 +200,8 @@ def binding_problem(
     whoever can write that file can clear one without the key (#97).
     ``require_binding``, which lives in Hermes' configuration, turns a cleared
     binding into a refusal; :func:`binding_record_problems` notices one that was
-    recorded and then cleared or replaced.
+    recorded and then cleared or replaced. ``command_lines`` None skips only the
+    comparison with this process's command line (see ``fetch_for``).
     """
     getter = getattr(store, "get_allowed_commands", None)
     if getter is None:
@@ -210,6 +219,8 @@ def binding_problem(
                 "has no command binding, and secrets.hermesvault.require_binding is set; "
                 f"bind it with `{_bind_command(store, item_id)}`"
             )
+        return None
+    if command_lines is None:
         return None
     try:
         from floorvault.agentenv import command_allowed

@@ -26,7 +26,8 @@ It holds agent credentials only. The browser-fill login vault at
 - **Your key, your custody.** The store key comes from the OS key store, a key file
   (such as a Docker or Kubernetes secret mount) or a systemd-creds credential. A
   configured custody that fails is an error, never a quiet fallback. A
-  passphrase-protected store is not supported.
+  passphrase-protected store (`master.key.fvpw`) is not supported, because the
+  plugin never prompts; it is refused by name, unless the key is in `token_env`.
 - **`hermes hvault`** manages the store: `bind`, `allow`, `list`, `show`, `rm` and
   `doctor`, plus `setup`, `add`, `put` and `env` for scripts.
 
@@ -130,7 +131,7 @@ hermes hvault bind DB_PASSWORD --id vault_db --field password   # a named field 
 hermes hvault allow <item_id> -- <line>      # bind it to another command line, such as a service's
 hermes hvault list                           # metadata only
 hermes hvault doctor                         # check mappings, custody and precedence
-hermes hvault show hv:<item_id>              # field names and status, and bindings; never plaintext
+hermes hvault show hv:<item_id>              # how many fields are set, and the bindings; never plaintext
 hermes hvault rm <item_id>
 ```
 
@@ -146,10 +147,20 @@ hermes hvault env <item_id> SERVICE_TOKEN    # prints the config.yaml mapping
 Prefer `--stdin` or `put` to `field=value` arguments, which show up in process
 listings. A malformed line is reported by its number (`stdin line 3`), never
 echoed, since it may be the secret itself. `put` replaces one field inside a single SQLite transaction.
+`add --stdin` and `bind --stdin` read from a pipe or file and refuse a terminal,
+where the value would be echoed; only the line ending (LF or CRLF) is removed,
+so a value is stored as written. A blank value, or one containing a NUL byte
+(no environment variable can hold one), is refused and nothing is stored. Field
+names may not contain control characters or line separators.
 
 `hermes hvault doctor` checks the active profile's configuration and existing
 store, attempts to resolve each mapping, and reports variables shadowed by the
-current environment or protected as the bootstrap key. Exit status is 0 when
+current environment or protected as the bootstrap key. It checks bindings as
+startup does (an unreadable binding, one changed since `allow` recorded it,
+`require_binding`), except whether Hermes was started as a bound line: doctor
+runs as the `hvault` process, which no binding names, so each bound mapping is
+listed instead, with a note when the gateway line `bind` uses is not among its
+lines. Exit status is 0 when
 all configured mappings resolve without these issues, 1 for operational issues
 (including a disabled source or no mappings), and 2 for malformed configuration.
 It never prints credential values and does not create a missing vault. It opens
@@ -251,19 +262,18 @@ is one of the item's bindings, and skips it with a warning otherwise. Other
 items in the same `env` map still resolve.
 
 ```bash
-hermes hvault allow service_token            # bind to the command line Hermes was just started with
+hermes hvault allow service_token            # bind to the gateway line, as `bind` does
 hermes hvault allow service_token -- hermes gateway run   # ...or spell it out
 hermes hvault allow service_token --remove -- hermes gateway run  # drop one line
 hermes hvault allow service_token --clear    # unbind: resolves for any command
 hermes hvault show hv:service_token          # lists what it is bound to
 ```
 
-With no `--` the command records the command line(s) the *current* process was
-started with — useful when you launch Hermes through a wrapper script and run
-`allow` from inside that script. Lines that are `hvault` invocations themselves
-are never recorded silently: bound only to those, the item would resolve for
-hvault commands but not the agent, so `allow` refuses and tells you to pass the
-line explicitly. The usual flow is to start Hermes the way you normally do; when
+With no `--` the command binds the gateway line, the one `bind` binds a new item
+to (on Windows, where Hermes rewrites that line, it asks for the line after
+`--`). It never records its own command line: that is always the `hermes hvault
+allow` invocation, and bound to it the item would resolve for hvault commands
+but not the agent. The usual flow is to start Hermes the way you normally do; when
 a bound item is skipped, the startup warning prints the exact line to put after
 `--`. For a Hermes started by a service/launcher, `hermes
 --print-runtime-command gateway run` prints that line as JSON — paste it quoted
@@ -317,7 +327,8 @@ bind with `floorvault secrets allow`).
   inspect it (`hermes hvault show`) and run `hermes hvault allow ITEM --accept`.
   Limits:
   - It needs a floorvault newer than 0.4.0. With 0.4.0 or older nothing is
-    compared, and only the next `allow` notices.
+    compared, and only the next `allow` notices; Hermes prints a warning saying
+    so each time it resolves, so the missing check is not mistaken for a passed one.
   - Resolution reads the record and never writes it. An item that was never
     bound or recorded is judged by the store alone.
   - Hermes must see the same state directory `allow` ran with. If the store has

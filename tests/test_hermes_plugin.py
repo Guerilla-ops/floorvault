@@ -1225,12 +1225,11 @@ def _stored_binding(home, item_id):
     return store.get_allowed_commands(item_id)
 
 
-def test_allow_binds_this_hermes_command_lines(allow_env, monkeypatch, capsys):
+def test_allow_with_no_command_binds_the_gateway_line(allow_env, capsys):
+    """The no-command default is the line `bind` binds a new item to (HV-11)."""
     plugin_cli, home = allow_env
-    lines = [[HERMES, "gateway", "run"], ["/usr/bin/python3", "-m", "hermes_cli", "gateway", "run"]]
-    monkeypatch.setattr(plugin_cli, "hermes_command_lines", lambda: lines)
     assert plugin_cli.hvault_command(_allow_args()) == 0
-    assert _stored_binding(home, "vault_testopenai") == [list(line) for line in lines]
+    assert _stored_binding(home, "vault_testopenai") == [_expected_gateway_line(home)]
     out = capsys.readouterr().out
     assert "resolved only when Hermes was started as:" in out
 
@@ -1489,28 +1488,27 @@ def test_doctor_prints_the_actual_warnings(plugin_cli, vault_home, monkeypatch, 
     assert "GONE" in err and "no_such_item" in err  # the warning itself, not a count
 
 
-def test_allow_never_binds_the_hvault_invocation_itself(allow_env, monkeypatch, capsys):
+def test_allow_never_binds_the_hvault_invocation_itself(allow_env, monkeypatch):
+    """A real `hermes hvault allow` has "hvault" in sys.argv and sys.orig_argv alike,
+    so the old default of "this process's lines" could only refuse (HV-11)."""
     plugin_cli, home = allow_env
-    monkeypatch.setattr(
-        plugin_cli,
-        "hermes_command_lines",
-        lambda: [["/usr/bin/python3", "hvault", "allow", "vault_testopenai"]],
-    )
+    invocation = [HERMES, "hvault", "allow", "vault_testopenai"]
+    monkeypatch.setattr(sys, "argv", invocation)
+    monkeypatch.setattr(sys, "orig_argv", ["/usr/bin/python3", *invocation], raising=False)
+    assert plugin_cli.hvault_command(_allow_args()) == 0
+    bound = _stored_binding(home, "vault_testopenai")
+    assert bound == [_expected_gateway_line(home)]
+    assert not any("hvault" in line for line in bound)
+
+
+def test_allow_with_no_command_asks_for_the_line_where_there_is_no_default(
+    allow_env, monkeypatch, capsys
+):
+    plugin_cli, home = allow_env
+    monkeypatch.setattr(plugin_cli, "gateway_command_line", lambda _home: None)
     assert plugin_cli.hvault_command(_allow_args()) == 2
     assert "after --" in capsys.readouterr().err
     assert _stored_binding(home, "vault_testopenai") is None  # unchanged
-
-
-def test_allow_drops_self_referential_lines_but_binds_the_rest(allow_env, monkeypatch, capsys):
-    plugin_cli, home = allow_env
-    agent_line = [HERMES, "gateway", "run"]
-    monkeypatch.setattr(
-        plugin_cli,
-        "hermes_command_lines",
-        lambda: [["/usr/bin/python3", "hvault", "allow"], agent_line],
-    )
-    assert plugin_cli.hvault_command(_allow_args()) == 0
-    assert _stored_binding(home, "vault_testopenai") == [agent_line]
 
 
 def test_allow_accepts_a_print_runtime_command_json_line(allow_env, capsys):
@@ -1597,3 +1595,97 @@ def test_list_escapes_control_characters_from_the_store(allow_env, capsys):
     assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="list")) == 0
     out = capsys.readouterr().out
     assert len(out.splitlines()) == 2 and "\x1b" not in out
+
+
+# --- a passphrase-protected store --------------------------------------------
+
+
+@pytest.mark.parametrize("custody", ["os", "key_file", "systemd-creds"])
+def test_a_passphrase_protected_store_is_refused_in_plain_words(file_home, custody):
+    """The plugin never prompts. Each custody used to fail with a message that never
+    mentioned the passphrase, and one of them pointed at `hvault setup`, which cannot help."""
+    (file_home / "agent-vault" / "master.key.fvpw").write_bytes(b"wrapped")
+    cfg = {"env": {"A": "hv:vault_k"}, "custody": custody}
+    if custody == "key_file":
+        cfg["key_file"] = "secrets/vault.key"
+    result = fetch(file_home, cfg)
+    assert not result.ok and result.secrets == {}
+    assert "protected by a passphrase" in result.error
+    assert "never prompts" in result.error and "master.key.fvpw" in result.error
+
+
+def test_a_key_in_token_env_still_opens_a_protected_store(file_home, monkeypatch):
+    """Plain `protect` keeps the key, so a key the caller supplies is still theirs to use."""
+    (file_home / "agent-vault" / "master.key.fvpw").write_bytes(b"wrapped")
+    monkeypatch.setenv("HERMES_VAULT_KEY", OTHER_KEY)
+    result = fetch(file_home, {"env": {"A": "hv:vault_k"}})
+    assert result.ok and result.secrets == {"A": "sk-file"}
+
+
+# ------------------------------------------------- mid-resolve rebinding (TOCTOU)
+
+
+def test_fetch_rechecks_the_binding_after_resolving(vault_home, monkeypatch):
+    """A binding rewritten between the check and the decrypt must not release the value."""
+    from floorvault.vaultkit.vault import VaultStore
+
+    _as_started(monkeypatch, [HERMES, "gateway", "run"])
+    _bind(vault_home, "vault_testopenai", [HERMES, "gateway", "run"])
+    real_resolve = VaultStore.resolve_secret
+
+    def resolve_and_tamper(self, item_id):
+        secret = real_resolve(self, item_id)
+        self.update_allowed_commands(item_id, lambda current: [*(current or []), ["/bin/attacker"]])
+        return secret
+
+    monkeypatch.setattr(VaultStore, "resolve_secret", resolve_and_tamper)
+    result = fetch(vault_home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
+    assert result.secrets == {}
+    assert any("while it was being resolved" in w for w in result.warnings)
+
+
+def test_fetch_still_resolves_when_the_binding_is_untouched(vault_home, monkeypatch):
+    """The second look costs two fingerprint reads and changes nothing else."""
+    _as_started(monkeypatch, [HERMES, "gateway", "run"])
+    _bind(vault_home, "vault_testopenai", [HERMES, "gateway", "run"])
+    result = fetch(vault_home, {"env": {"OPENAI_API_KEY": "hv:vault_testopenai"}})
+    assert result.ok and result.secrets == {"OPENAI_API_KEY": "sk-test-123"}
+    assert result.warnings == []
+
+
+# -------------------------------------------------------- key custody strictness
+
+
+def test_a_truncated_token_env_key_is_refused_by_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_VAULT_KEY", "00" * 16)  # 16 bytes, not 32
+    result = fetch(tmp_path, {"env": {"X": "hv:vault_a"}})
+    assert not result.ok and result.error_kind == ErrorKind.NOT_CONFIGURED
+    assert "HERMES_VAULT_KEY" in result.error and "64 hex" in result.error
+    assert "00" not in result.error, "the key material itself must not be echoed"
+
+
+def test_a_non_hex_token_env_key_is_refused_by_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_VAULT_KEY", "zz" * 32)
+    result = fetch(tmp_path, {"env": {"X": "hv:vault_a"}})
+    assert not result.ok and "64 hex" in result.error
+
+
+def test_the_plugin_wipes_its_own_key_copy_after_construction(tmp_path, monkeypatch):
+    """The source's key buffer is zeroed once FloorVault has derived from it."""
+    from source import _open_store
+
+    seen = {}
+    real_init = floorvault.FloorVault.__init__
+
+    def spy_init(self, master_key, **kwargs):
+        seen["buffer"] = master_key
+        real_init(self, master_key, **kwargs)
+
+    monkeypatch.setattr(floorvault.FloorVault, "__init__", spy_init)
+    key = "ab" * 32  # non-zero, so zeroing is observable
+    monkeypatch.setenv("HERMES_VAULT_KEY", key)
+    store = _open_store({}, tmp_path, setup=True)
+    assert store
+    buffer = seen["buffer"]
+    assert isinstance(buffer, bytearray), "the plugin hands FloorVault a mutable buffer"
+    assert bytes(buffer) == b"\x00" * 32, "the plugin's key copy must be zeroed after construction"
