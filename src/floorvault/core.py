@@ -238,7 +238,7 @@ class FloorVault:
 
     def __init__(
         self,
-        master_key: Union[bytes, HardenedMemoryKey],
+        master_key: Union[bytes, bytearray, HardenedMemoryKey],
         app_instance_id: str = "default",
         *,
         maximum_tracked_nonces: int = 10000,
@@ -247,9 +247,11 @@ class FloorVault:
     ) -> None:
         """Initialize FloorVault.
 
-        Derives isolated subkeys from the master key. The master key handle
-        is preserved by default; set ``wipe_source_key=True`` to zero the
-        caller-provided source key after derivation.
+        Derives isolated subkeys from the master key. A ``bytes`` or
+        ``bytearray`` source is copied, and the copy is zeroed after derivation;
+        set ``wipe_source_key=True`` to also zero a caller-provided
+        ``HardenedMemoryKey`` after derivation (immutable ``bytes`` cannot be
+        wiped — pass a ``bytearray`` and zero it yourself when custody matters).
 
         Construction is deliberately heavyweight — HKDF derivation plus the
         hardened memory container cost tens of microseconds — so callers
