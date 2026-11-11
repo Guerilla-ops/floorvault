@@ -188,7 +188,10 @@ def binding_record_problems(
 
 
 def binding_problem(
-    store, item_id: str, command_lines: Sequence[Sequence[str]], require_binding: bool
+    store,
+    item_id: str,
+    command_lines: Optional[Sequence[Sequence[str]]],
+    require_binding: bool,
 ) -> Optional[str]:
     """Why ``item_id`` may not be resolved for this process, or None when it may.
 
@@ -197,7 +200,8 @@ def binding_problem(
     whoever can write that file can clear one without the key (#97).
     ``require_binding``, which lives in Hermes' configuration, turns a cleared
     binding into a refusal; :func:`binding_record_problems` notices one that was
-    recorded and then cleared or replaced.
+    recorded and then cleared or replaced. ``command_lines`` None skips only the
+    comparison with this process's command line (see ``fetch_for``).
     """
     getter = getattr(store, "get_allowed_commands", None)
     if getter is None:
@@ -215,6 +219,8 @@ def binding_problem(
                 "has no command binding, and secrets.hermesvault.require_binding is set; "
                 f"bind it with `{_bind_command(store, item_id)}`"
             )
+        return None
+    if command_lines is None:
         return None
     try:
         from floorvault.agentenv import command_allowed
