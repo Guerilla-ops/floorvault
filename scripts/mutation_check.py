@@ -1418,6 +1418,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         "FileAnchorStore accepts path-traversal names and writes outside its directory",
     ),
     Mutation(
+        "FA-20",
+        "src/floorvault/freshness.py",
+        "            if not is_windows() or time.monotonic() >= deadline:\n",
+        "            if True:  # MUTANT\n",
+        "A momentary Windows sharing violation on the anchor file is not retried, so concurrent "
+        "runs fail on the binding record (floorvault run: cannot use the binding record)",
+    ),
+    Mutation(
         "AD-4",
         "src/floorvault/providers/adaptive.py",
         "        if self._tier3_store_present():\n            return self._read_os_tier_beside_file_key()\n        if not self._os_tier_usable():",
