@@ -92,6 +92,7 @@ class Broker:
         idle=600,
         with_crypto=True,
         writable=True,
+        bindings=False,
         only=None,
         use_log=None,
     ):
@@ -111,6 +112,7 @@ class Broker:
             # Most tests here round-trip, so they ask for an agent that also encrypts;
             # the default (decrypt only) has its own tests below.
             writable=writable,
+            bindings=bindings,
             only=only,
             use_log=use_log,
         )
@@ -702,6 +704,105 @@ def test_a_scoped_agent_that_writes_still_writes_only_its_items(broker):
     assert remote.encrypt("A", **item_coords("a"))
     with pytest.raises(key_agent.AgentOutOfScope):
         remote.encrypt("B", **item_coords("b"))
+
+
+def test_a_writing_agent_does_not_seal_command_bindings(broker):
+    """The store's policy is not delegated: a forged binding does not end with the unlock."""
+    item = broker(writable=True)  # no --bindings
+    remote = key_agent.RemoteVault(item.path)
+    assert remote.encrypt("v", **item_coords("a"))  # data columns are served
+    binding = item_coords("a", key_agent.BINDING_COLUMN)
+    with pytest.raises(key_agent.AgentPolicyRefused, match="command bindings"):
+        remote.encrypt('{"commands":[]}', **binding)
+    # Decrypting a binding, like every read, is unaffected.
+    sealed = local_engine().encrypt('{"commands":[]}', **binding)
+    assert remote.decrypt(sealed, **binding) == '{"commands":[]}'
+    info = key_agent.status(item.path)
+    assert info["bindings"] is False and info["encrypts"] == 1 and info["refused"] == 1
+
+
+def test_an_agent_unlocked_for_bindings_seals_them(broker):
+    item = broker(writable=True, bindings=True)
+    remote = key_agent.RemoteVault(item.path)
+    binding = item_coords("a", key_agent.BINDING_COLUMN)
+    sealed = remote.encrypt('{"commands":[["/bin/sh","-c","x"]]}', **binding)
+    assert local_engine().decrypt(sealed, **binding) == '{"commands":[["/bin/sh","-c","x"]]}'
+    assert key_agent.status(item.path)["bindings"] is True
+
+
+def test_a_scoped_writing_agent_seals_no_binding_for_out_of_scope_items(broker):
+    item = broker(only=["a"], writable=True, bindings=True)
+    remote = key_agent.RemoteVault(item.path)
+    assert remote.encrypt('{"commands":[]}', **item_coords("a", key_agent.BINDING_COLUMN))
+    with pytest.raises(key_agent.AgentOutOfScope):
+        remote.encrypt('{"commands":[]}', **item_coords("b", key_agent.BINDING_COLUMN))
+
+
+def test_bindings_need_a_writing_agent(vault, env):
+    with pytest.raises(key_agent.AgentError, match="needs a writing agent"):
+        key_agent.prepare(
+            vault, app_context=APP_CONTEXT, writable=False, bindings=True, environ=env
+        )
+
+
+def test_unlock_bindings_needs_write(base, env, vault):
+    code, _out, err = in_process(["unlock", "--bindings", "--vault", str(vault)], env, [])
+    assert code == 2 and "--bindings needs --write" in err
+
+
+def test_allow_is_gated_on_bindings_not_on_writing(base, env):
+    """`secrets allow` asks for the passphrase under a --write agent; --bindings routes it."""
+    vault = base / "v-allow"
+    for args in (
+        ["secrets", "init", "--custody", "passphrase", "--vault", str(vault)],
+        ["secrets", "add", "Token", "--id", "tok", "--stdin", "--vault", str(vault)],
+    ):
+        code, _out, err = in_process(args, env, [PHRASE])
+        assert code == 0, err
+    sock = key_agent.socket_path(vault, env)
+
+    code, out, err = in_process(["unlock", "--write", "--vault", str(vault)], env, [PHRASE])
+    assert code == 0, err
+    assert "command bindings refused" in out
+    pid = key_agent.status(sock)["pid"]
+    try:
+        # A policy change is not taken through the writing agent: the passphrase is
+        # asked for instead (in_process answers the prompt) and the binding is sealed
+        # by the command, not the socket.
+        code, _out, err = in_process(
+            ["secrets", "allow", "tok", "--vault", str(vault), "--", sys.executable, "-V"],
+            env,
+            [PHRASE],
+        )
+        assert code == 0, err
+        assert "does not seal command bindings" in err
+        # --accept only reads: a decrypt-serving agent is enough, no prompt.
+        code, _out, err = in_process(
+            ["secrets", "allow", "tok", "--accept", "--vault", str(vault)], env
+        )
+        assert code == 0, err
+    finally:
+        key_agent.lock(sock)
+        if not wait_until(lambda: not alive(pid)):
+            force_kill(pid)
+
+    code, out, err = in_process(
+        ["unlock", "--write", "--bindings", "--vault", str(vault)], env, [PHRASE]
+    )
+    assert code == 0, err
+    assert "command bindings included" in out
+    pid = key_agent.status(sock)["pid"]
+    try:
+        # With --bindings the agent seals the binding itself: no prompt is needed.
+        code, _out, err = in_process(
+            ["secrets", "allow", "tok", "--vault", str(vault), "--", sys.executable, "-X"],
+            env,
+        )
+        assert code == 0, err
+    finally:
+        key_agent.lock(sock)
+        if not wait_until(lambda: not alive(pid)):
+            force_kill(pid)
 
 
 def test_every_use_is_counted_and_logged_without_values(broker):

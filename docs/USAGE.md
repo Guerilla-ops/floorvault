@@ -668,8 +668,9 @@ and the data is gone.
   sleep if the wall clock is corrected backwards during that same suspend.
   While it runs, `floorvault run` and `floorvault secrets` for that store use it
   instead of asking for the passphrase, with no terminal needed. **The agent never
-  hands out the key.** It decrypts for the caller (and encrypts, only if unlocked with
-  `--write`): the store code is given an object whose `encrypt` and `decrypt` ask the agent, so the key stays in the agent's
+  hands out the key.** It decrypts for the caller (and encrypts data columns, only if
+  unlocked with `--write`; command bindings are sealed only with `--bindings`, below):
+  the store code is given an object whose `encrypt` and `decrypt` ask the agent, so the key stays in the agent's
   protected memory and the caller sees only plaintext and ciphertext. Each of those
   calls counts as use (it restarts the `--idle` clock); `status` does not. An explicit
   `--key-env` or `--key-file` is never replaced by the agent, a store that also has a
@@ -720,14 +721,20 @@ and the data is gone.
     peer-credential calls (`LOCAL_PEERCRED`, and `LOCAL_PEERPID` for the use log) have not
     been run on a real Mac outside CI.
   - **It only decrypts, unless you ask for more.** Everything `floorvault run` does is a
-    read, so by default the agent refuses to encrypt. `secrets add`, `put`, `allow` and
-    the other commands that write ask for the passphrase even while an agent runs, and say
-    why. `floorvault unlock --write` starts an agent that also encrypts. Use it for a
-    session of edits and lock it after: an agent that encrypts lets any process running as
-    you write valid sealed data into `vault.db`, a widened command binding included, and
-    then update the binding record to match, so that `run` notices nothing. (The record is
-    a guard against whoever can write `vault.db` but not act as you. Code running as you
-    can write the record too.)
+    read, so by default the agent refuses to encrypt. `secrets add`, `put` and the other
+    commands that write ask for the passphrase even while an agent runs, and say why.
+    `floorvault unlock --write` starts an agent that also encrypts. Use it for a session
+    of edits and lock it after: an agent that encrypts lets any process running as you
+    write valid sealed data into `vault.db`.
+  - **But it never seals a command binding unless you say so.** `allowed_commands` is the
+    store's policy — which commands get which secret — and a binding forged through the
+    socket does not end with the unlock that wrote it: written into `vault.db` and
+    re-recorded against the store's record (both writable by code running as you),
+    `run` would notice nothing. So a `--write` agent refuses to seal it, `secrets allow`
+    asks for the passphrase under every other agent, and `unlock --write --bindings` is
+    the only mode that can change policy through the socket. (`allow --accept` only
+    reads, and works through any agent; `allow --clear` writes NULL and seals nothing,
+    but clearing is a policy change, so it is gated the same way.)
   - **`unlock --only ITEM` narrows it to the items you name** (repeat the option). The
     agent then serves those items' records and refuses every other record; `run` for
     another item fails and says so. The item id is part of what is decrypted, so one item
