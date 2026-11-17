@@ -629,6 +629,53 @@ floorvault secrets allow github-pat --accept  # trust a change made outside this
   `require_binding` is set, it resolves unbound items.
 
 
+### A key kept by Vault Transit
+
+On a host that can reach a HashiCorp Vault, keep the master key only wrapped by
+Vault's Transit engine:
+
+```sh
+export VAULT_ADDR=https://vault.internal:8200
+export VAULT_TOKEN=...                               # a token for this key only
+floorvault secrets init --custody vault-transit     # new store only
+floorvault secrets add "OpenAI" --id openai --stdin
+floorvault run -e OPENAI_API_KEY=fv:openai -- python ~/agent.py
+```
+
+`init` asks Vault for a new data key and keeps it only wrapped, in
+`vault-transit/` beside the store (the format of `VaultTransitProvider`,
+[docs/VAULT-TRANSIT.md](VAULT-TRANSIT.md)). Every `run` and `secrets` command asks
+Vault to unwrap it; nothing caches it between commands, and nothing on disk opens
+the store.
+
+- **Configuration comes from the environment only.** `VAULT_ADDR` (`https://`
+  only) and `VAULT_TOKEN` are required; `VAULT_CACERT` names a CA bundle for a
+  Vault on private PKI (TLS is always verified); `FLOOR_VAULT_TRANSIT_KEY`
+  (default `floorvault-master`) and `FLOOR_VAULT_TRANSIT_MOUNT` (default `transit`)
+  name the key. None of this is kept beside the store, because whoever could
+  write that file could point the next open at their own server and receive the
+  token.
+- **The token is the credential now.** Give it a policy for `datakey`, `decrypt`
+  and `rewrap` on this one key (docs/VAULT-TRANSIT.md has the policy), a short
+  TTL, and keep it out of files others can read. Revoking it locks the store on
+  every host at once, and Vault's audit log records each unwrap.
+- **`run` keeps it from the command it starts.** For a store with this custody,
+  `VAULT_TOKEN` and any copy of its value under another name are removed from the
+  child's environment, as `FLOOR_VAULT_KEY` is. For any other store it passes
+  through, so `floorvault run -- vault ...` keeps working.
+- **It fails closed.** No address, no token, a revoked token or an unreachable
+  Vault stops the command; no other key is tried, and nothing is created over a
+  store whose wrapped key is missing. `init` refuses a store that already has
+  another key (a raw `master.key`, a systemd-creds credential, a
+  passphrase-wrapped key, or an OS-tier marker), and those custodies refuse a store
+  that has this one. `protect` does not move it under a passphrase.
+- **What it does not stop.** Code running as you can read `VAULT_TOKEN` from your
+  environment and ask Vault to unwrap the key, as `run` does. Losing the Transit
+  key, or the Vault that holds it, loses the data: keep your own backup of the
+  secrets. **Not exercised against a real Vault here:** the tests use a stand-in
+  for the Transit engine; the provider itself is tested against that same
+  contract.
+
 ### A passphrase-protected key
 
 For interactive work on a host with no OS key store, keep the master key only
@@ -865,7 +912,7 @@ must fail instead of silently downgrading custody.
 | Linux Secret Service | Requires the `linux` extra and an accessible Secret Service. |
 | Local file | Disabled by default. `allow_disk_fallback=True` opts in; copying an unwrapped file can reveal the key. |
 | Wrapped local file | Add `passphrase=` to file custody for scrypt + AES-SIV wrapping. Security depends on the passphrase and its custody. |
-| Vault Transit | Separate provider wraps the master key remotely; unwrapped key use and field encryption remain local. |
+| Vault Transit | Separate provider wraps the master key remotely; unwrapped key use and field encryption remain local. The CLI uses it with `secrets init --custody vault-transit`, the Hermes plugin with `custody: vault-transit`. |
 
 Use `AdaptiveKeyProvider(service_name="my-app", strict=True)` for explicit OS-only
 custody. `environ=` chooses where the environment tier reads its variables (`{}`

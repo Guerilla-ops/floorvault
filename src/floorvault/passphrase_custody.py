@@ -49,7 +49,13 @@ WRAPPED_FILENAME = WRAPPED_KEY_FILENAME
 #: is re-sealed under it, and only then is it renamed to ``WRAPPED_FILENAME``.
 STAGED_FILENAME = WRAPPED_KEY_FILENAME + ".staged"
 #: Files that mean another custody already holds (or held) this store's key.
-OTHER_CUSTODY_FILES = ("master.key", SYSTEMD_CREDENTIAL_FILENAME, OS_TIER_MARKER_FILENAME)
+#: ``vault-transit`` is a directory (transit_custody.STORE_DIRNAME): Vault keeps that key.
+OTHER_CUSTODY_FILES = (
+    "master.key",
+    SYSTEMD_CREDENTIAL_FILENAME,
+    OS_TIER_MARKER_FILENAME,
+    "vault-transit",
+)
 
 
 class PassphraseCustodyError(Exception):

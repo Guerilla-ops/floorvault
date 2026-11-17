@@ -88,6 +88,19 @@ decrypts the stored blob afterwards, and caches the plaintext in-process for
 `cache_ttl` seconds (default 300). `provider.wipe()` drops the cache; the
 wrapped store is unaffected.
 
+## From the CLI and the Hermes plugin
+
+`floorvault secrets init --custody vault-transit` and the hermesvault plugin's
+`custody: vault-transit` use this provider with the store directory
+`<store>/vault-transit/` and the application context `floor-agent`, so a store
+set up by either opens with the other. Both use `cache_ttl=0`: every open asks
+Vault. The CLI reads `VAULT_ADDR`, `VAULT_TOKEN`, `VAULT_CACERT`,
+`FLOOR_VAULT_TRANSIT_KEY` and `FLOOR_VAULT_TRANSIT_MOUNT` from the environment; the
+plugin reads `vault_addr`, `vault_transit_key`, `vault_transit_mount` and
+`vault_cacert` from `config.yaml`, and the token from the variable named by
+`vault_token_env` in the profile's environment. Neither keeps where to find Vault
+beside the store. See [USAGE.md](USAGE.md#a-key-kept-by-vault-transit).
+
 ## KEK rotation (rewrap)
 
 ```bash

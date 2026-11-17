@@ -44,7 +44,7 @@ from pathlib import Path
 from secrets import token_bytes
 from typing import Mapping, Optional, Sequence
 
-from . import key_agent, passphrase_custody, systemd_creds
+from . import key_agent, passphrase_custody, systemd_creds, transit_custody
 from .agentenv import (
     CUSTODY_ENV_NAMES,
     KEY_POINTER_ENV_NAMES,
@@ -151,25 +151,54 @@ def _key_file_from(args, environ: Mapping[str, str]) -> Optional[Path]:
     return Path(raw) if raw else None
 
 
+_TRANSIT_NOT_PROTECTED = (
+    "the key of {dir} is kept by Vault Transit; protect does not move it under a "
+    "passphrase (the Vault-wrapped key would be left beside the new one). Nothing was changed"
+)
 _TWO_CUSTODIES = (
     "{dir} holds both a systemd-creds credential and a passphrase-wrapped key; "
     "two keys for one store means it was forked. Nothing was opened"
 )
 
 
+def _transit_companions(vault_dir: Path) -> list[str]:
+    """Other key sources beside a store whose key Vault Transit keeps (each is a second key)."""
+    found = [
+        name
+        for name in passphrase_custody.OTHER_CUSTODY_FILES
+        if name != transit_custody.STORE_DIRNAME and os.path.lexists(vault_dir / name)
+    ]
+    if passphrase_custody.wrapped_present(vault_dir):
+        found.append(passphrase_custody.wrapped_path(vault_dir).name)
+    return found
+
+
 def _custody_key(args, environ: Mapping[str, str], vault_dir: Optional[Path]) -> Optional[bytes]:
     """The master key from a file or a sealed credential, or None for ``--key-env`` / default custody.
 
     Order: ``--key-env`` (None here, ``open_store`` reads it), ``--key-file``,
-    the systemd-creds credential beside the vault, ``$FLOOR_VAULT_KEY_FILE``.
-    A vault that has a credential gets its key from it and from nowhere else
-    unless a key option names another; ``$FLOOR_VAULT_KEY`` is not consulted.
+    the Vault Transit custody beside the vault, the systemd-creds credential beside
+    the vault, ``$FLOOR_VAULT_KEY_FILE``. A vault that has a credential (or a
+    Vault-wrapped key) gets its key from it and from nowhere else unless a key option
+    names another; ``$FLOOR_VAULT_KEY`` is not consulted.
     """
     if getattr(args, "key_env", None):
         return None
     if getattr(args, "key_file", None) is not None:
         return read_key_file(args.key_file)
     if vault_dir is not None:
+        if transit_custody.present(vault_dir):
+            others = _transit_companions(vault_dir)
+            if others:
+                raise StoreUnavailable(
+                    f"the key of the vault at {vault_dir} is kept by Vault Transit, and "
+                    f"{', '.join(others)} beside it is a second key; two keys for one store "
+                    "means it was forked. Nothing was opened"
+                )
+            try:
+                return transit_custody.read_key(vault_dir, environ, app_instance_id=APP_CONTEXT)
+            except transit_custody.TransitCustodyError as exc:
+                raise StoreUnavailable(str(exc)) from None
         if passphrase_custody.wrapped_present(vault_dir) and systemd_creds.credential_present(
             vault_dir
         ):
@@ -737,6 +766,7 @@ def _prepare_environment(
         for problem in exc.problems:
             _err(prog, problem)
         return None, RUN_FAILED
+    env = _without_transit_token(args, env)
     if not refs:
         # No vault is opened, but a copy of a key file's key under another
         # name must not reach the child either. Reading the file opens nothing.
@@ -794,6 +824,30 @@ def _prepare_environment(
         env = {name: value for name, value in env.items() if value.strip().lower() != key_hex}
     env.update(values)
     return env, 0
+
+
+def _without_transit_token(args, env: dict) -> dict:
+    """Drop the Vault token from the child's environment when it is this store's key.
+
+    With Vault Transit custody the token opens the store, so it is a custody
+    credential like ``$FLOOR_VAULT_KEY``: the variable and any copy of its value under
+    another name are removed. A store with another custody, or a run given
+    ``--key-env``/``--key-file``, passes it through, so ``run -- vault ...`` still works.
+    """
+    if getattr(args, "key_env", None) or getattr(args, "key_file", None) is not None:
+        return env
+    try:
+        in_use = transit_custody.present(_vault_dir(args.vault, os.environ))
+    except Exception:  # noqa: BLE001 - no store to look at means no Transit custody
+        in_use = False
+    if not in_use:
+        return env
+    token = (os.environ.get(transit_custody.TOKEN_ENV) or "").strip()
+    return {
+        name: value
+        for name, value in env.items()
+        if name.upper() != transit_custody.TOKEN_ENV and not (token and value.strip() == token)
+    }
 
 
 def _spawn_and_wait(path: str, argv: Sequence[str], env: Mapping[str, str]) -> int:
@@ -1142,8 +1196,12 @@ def add_secrets_parser(subparsers) -> None:
     init.add_argument(
         "--custody",
         required=True,
-        choices=["systemd-creds", "passphrase"],
-        help="where the key is kept",
+        choices=["systemd-creds", "passphrase", "vault-transit"],
+        help=(
+            "where the key is kept. vault-transit: wrapped by HashiCorp Vault's Transit "
+            "engine; reads VAULT_ADDR, VAULT_TOKEN, VAULT_CACERT, FLOOR_VAULT_TRANSIT_KEY "
+            "(default floorvault-master) and FLOOR_VAULT_TRANSIT_MOUNT (default transit)"
+        ),
     )
     protect = sub.add_parser(
         "protect",
@@ -1475,6 +1533,15 @@ def _cmd_init(args, prog: str) -> int:
         return 2
     if args.custody == "passphrase":
         return _init_passphrase(vault_dir, prog)
+    if args.custody == "vault-transit":
+        return _init_transit(vault_dir, prog)
+    if transit_custody.present(vault_dir):
+        _err(
+            prog,
+            f"{vault_dir} already keeps its key in Vault Transit; a second key would fork "
+            "the store. Nothing was created",
+        )
+        return 2
     if passphrase_custody.wrapped_present(vault_dir):
         _err(
             prog,
@@ -1509,6 +1576,37 @@ def _cmd_init(args, prog: str) -> int:
 
 
 _WEAK_BELOW_CHARS = 12
+
+
+def _init_transit(vault_dir: Path, prog: str) -> int:
+    """``init --custody vault-transit``: a key minted by Vault and kept only wrapped by it."""
+    others = _transit_companions(vault_dir)
+    if others:
+        _err(
+            prog,
+            f"{vault_dir} already holds {', '.join(others)}; a second key would fork the "
+            "store. Nothing was created",
+        )
+        return 2
+    try:
+        path = transit_custody.create(vault_dir, os.environ, app_instance_id=APP_CONTEXT)
+    except transit_custody.TransitCustodyError as exc:
+        raise StoreUnavailable(str(exc)) from None
+    print(f"created {path}")
+    print(
+        "the master key is wrapped by Vault Transit and kept nowhere else; `run` and "
+        f"`secrets` for the vault at {vault_dir} ask Vault to unwrap it each time, with "
+        f"${transit_custody.ADDR_ENV} and ${transit_custody.TOKEN_ENV}"
+    )
+    _err(
+        prog,
+        "the token is now the credential that opens this store: give it only transit "
+        "datakey, decrypt and rewrap on this key (docs/VAULT-TRANSIT.md), a short TTL, and "
+        "keep it out of files others can read. Revoking it locks the store everywhere. "
+        "Losing the Transit key, or Vault, loses the data: keep your own backup of the "
+        "secrets. `run` removes the token from the environment of the command it starts.",
+    )
+    return 0
 
 
 def _init_passphrase(vault_dir: Path, prog: str) -> int:
@@ -1561,6 +1659,9 @@ def _cmd_protect(args, prog: str) -> int:
     vault_dir = _vault_dir(args.vault, os.environ)
     if passphrase_custody.wrapped_present(vault_dir):
         _err(prog, f"{vault_dir} is already passphrase-protected; nothing was changed")
+        return 2
+    if transit_custody.present(vault_dir):
+        _err(prog, _TRANSIT_NOT_PROTECTED.format(dir=vault_dir))
         return 2
     if systemd_creds.credential_present(vault_dir):
         _err(
@@ -1740,6 +1841,10 @@ def _cmd_protect_rotate(args, prog: str) -> int:
     """
     from . import custody_rotation as rotation
     from .binding_record import BindingRecordError
+
+    if transit_custody.present(_vault_dir(args.vault, os.environ)):
+        _err(prog, _TRANSIT_NOT_PROTECTED.format(dir=_vault_dir(args.vault, os.environ)))
+        return 2
 
     _check_key_options(args)
     vault_dir = _vault_dir(args.vault, os.environ)
@@ -2454,6 +2559,13 @@ _PLUGIN_CUSTODY_SINCE = (0, 2, 8)
 def _hermes_custody(cfg: dict) -> str:
     """``secrets.hermesvault.custody``, checked as the plugin checks it."""
     custody = cfg.get("custody", "os")
+    if custody == "vault-transit":
+        # The plugin finds Vault through config.yaml; this command would have to as
+        # well, or it would read another Vault (or none) from its own environment.
+        raise ValueError(
+            "secrets import --hermes does not move secrets into a store with custody: "
+            "vault-transit yet; add each one with `hermes hvault bind`. Nothing was changed"
+        )
     if custody not in _HERMES_CUSTODIES:
         raise ValueError(
             "secrets.hermesvault.custody must be one of: " + ", ".join(_HERMES_CUSTODIES)
