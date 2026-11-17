@@ -1043,6 +1043,13 @@ MUTATIONS: tuple[Mutation, ...] = (
         "`protect` runs on a store whose key Vault keeps",
     ),
     Mutation(
+        "VTC-8",
+        "src/floorvault/agent_cli.py",
+        "    other = passphrase_custody.other_custody_present(vault_dir)\n    if other is not None:\n        raise StoreUnavailable(",
+        "    other = passphrase_custody.other_custody_present(vault_dir)\n    if False:  # MUTANT\n        raise StoreUnavailable(",
+        "`init --custody passphrase` asks for a passphrase it will then refuse (on Windows the prompt waits on the console)",
+    ),
+    Mutation(
         "SA-1",
         "src/floorvault/sqlalchemy_adapter.py",
         "        try:\n"

@@ -225,9 +225,11 @@ def test_other_custodies_are_refused_beside_a_vault_wrapped_key(cli, vault):
     sealed = cli(["secrets", "init", "--custody", "systemd-creds"])
     assert sealed.returncode == 2
     assert "already keeps its key in Vault Transit" in sealed.stderr
-    # Passphrase init asks first (and has no terminal here); the refusal itself is
-    # in create_wrapped_key, tested directly below.
-    assert cli(["secrets", "init", "--custody", "passphrase"]).returncode != 0
+    # Refused before any passphrase is asked for (on Windows a prompt would read the
+    # console and wait); create_wrapped_key refuses again under its lock, tested below.
+    wrapped = cli(["secrets", "init", "--custody", "passphrase"])
+    assert wrapped.returncode == 1, wrapped.stderr
+    assert "vault-transit shows that another custody holds a key" in wrapped.stderr
     assert not passphrase_custody.wrapped_present(vault)
     assert not (vault / "master.key.sdcred").exists()
     added = cli(["secrets", "add", "Token", "--id", "tok", "--stdin"], stdin=f"value={VALUE}\n")

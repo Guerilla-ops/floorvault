@@ -1611,6 +1611,14 @@ def _init_transit(vault_dir: Path, prog: str) -> int:
 
 def _init_passphrase(vault_dir: Path, prog: str) -> int:
     """``init --custody passphrase``: a new random key, kept only wrapped under a passphrase."""
+    # create_wrapped_key refuses another custody too (under its lock); this says so
+    # before asking for a passphrase that would only be thrown away.
+    other = passphrase_custody.other_custody_present(vault_dir)
+    if other is not None:
+        raise StoreUnavailable(
+            f"{vault_dir / other} shows that another custody holds a key for this store; a "
+            "second key would fork it. Nothing was created"
+        )
     try:
         phrase = passphrase_custody.prompt_passphrase("New passphrase: ", confirm=True)
         path = passphrase_custody.create_wrapped_key(vault_dir, phrase)
