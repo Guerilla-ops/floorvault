@@ -793,7 +793,9 @@ and the data is gone.
     the environment of any command `run` has started. To keep a program away from the
     agent, do not run it as you: the socket's directory is yours alone and the peer's user
     is checked, so a program run as another user, or in a container that does not mount
-    your runtime directory, cannot reach it.
+    the socket's directory, cannot reach it. That directory is `$XDG_RUNTIME_DIR/floorvault`,
+    or `<store>/agent` when `$XDG_RUNTIME_DIR` is not set, so a container given the store
+    and run as your user ID can reach the agent too.
   - **How to run it with that in mind.** Unlock for the work and no longer: name the items
     (`--only`), keep the limits short (`floorvault unlock --ttl 1h --idle 10m`), leave
     `--write` off, and `floorvault lock` when done. The default limits (8h and 1h) are a

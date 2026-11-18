@@ -812,6 +812,34 @@ def test_unlock_only_serves_the_named_item_to_run(base, env, tmp_path):
             force_kill(pid)
 
 
+def test_a_scoped_writer_writes_its_item_when_another_item_comes_first(base, env):
+    """`unlock --write --only b` with items a then b: `put b` is served. Before the store
+    checked the key against b's own record, it read a's and was refused (#146)."""
+    vault = base / "v4"
+    for args in (
+        ["secrets", "init", "--custody", "passphrase", "--vault", str(vault)],
+        ["secrets", "add", "A", "--id", "a", "--stdin", "--vault", str(vault)],
+        ["secrets", "add", "B", "--id", "b", "--stdin", "--vault", str(vault)],
+    ):
+        code, _out, err = in_process(args, env, [PHRASE])
+        assert code == 0, err
+    unlock = ["unlock", "--write", "--only", "b", "--vault", str(vault)]
+    code, _out, err = in_process(unlock, env, [PHRASE])
+    assert code == 0, err
+    path = key_agent.socket_path(vault, env)
+    pid = key_agent.status(path)["pid"]
+    try:
+        with mock.patch("getpass.getpass", lambda *_a, **_k: "rotated-b"):
+            put_b = in_process(["secrets", "put", "b", "value", "--vault", str(vault)], env)
+            put_a = in_process(["secrets", "put", "a", "value", "--vault", str(vault)], env)
+        assert put_b[0] == 0, put_b[2]
+        assert put_a[0] == 1 and "other items only" in put_a[2]
+    finally:
+        key_agent.lock(path)
+        if not wait_until(lambda: not alive(pid)):
+            force_kill(pid)
+
+
 def test_unlock_refuses_an_only_that_is_not_an_item_id(base, env, vault):
     code, _out, err = in_process(["unlock", "--only", "no/such", "--vault", str(vault)], env, [])
     assert code == 2 and "is not an item id" in err

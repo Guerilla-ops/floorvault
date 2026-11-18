@@ -692,7 +692,14 @@ class VaultStore:
             return None
         return int(row[1])
 
-    def _assert_writes_allowed(self, conn: sqlite3.Connection) -> None:
+    def _assert_writes_allowed(
+        self, conn: sqlite3.Connection, item_id: Optional[str] = None
+    ) -> None:
+        """Refuse a write mid-rotation, after a rotation, or under a key that is not the store's.
+
+        ``item_id`` is the item the write is for, when there is one: its own record is
+        the one the key is checked against (see ``_verify_key``).
+        """
         generation = self._write_generation(conn)
         if generation is None:
             raise VaultError("vault rotation is in progress; write refused")
@@ -705,10 +712,10 @@ class VaultStore:
                 "VaultStore was opened; write refused. Open it again with the new key"
             )
         if not self._key_verified:
-            self._verify_key(conn)
+            self._verify_key(conn, item_id)
             self._key_verified = True
 
-    def _verify_key(self, conn: sqlite3.Connection) -> None:
+    def _verify_key(self, conn: sqlite3.Connection, item_id: Optional[str] = None) -> None:
         """Refuse to write under a key that does not open the store's records (#109).
 
         Nothing else ties a ``VaultStore``'s key to the store: opened with
@@ -716,9 +723,16 @@ class VaultStore:
         new records under that key beside records it cannot read. One existing
         item's sealed label is authenticated before the first write; a store
         with no sealed item has nothing to check against.
+
+        The label of ``item_id`` itself is checked when it exists: a key agent unlocked
+        for some items only (``unlock --write --only``) serves that item's records and
+        refuses every other, so checking whichever item comes first would refuse a
+        write the agent may make. Any sealed record proves the key equally well.
         """
         row = conn.execute(
-            "SELECT id, label FROM vault_items WHERE typeof(label) = 'blob' LIMIT 1"
+            "SELECT id, label FROM vault_items WHERE typeof(label) = 'blob' "
+            "ORDER BY id IS NOT ? LIMIT 1",
+            (item_id,),
         ).fetchone()
         if row is None:
             return
@@ -906,7 +920,7 @@ class VaultStore:
 
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            self._assert_writes_allowed(conn)
+            self._assert_writes_allowed(conn, item_id)
             conn.execute(
                 """
                 INSERT INTO vault_items (
@@ -982,7 +996,7 @@ class VaultStore:
 
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            self._assert_writes_allowed(conn)
+            self._assert_writes_allowed(conn, item_id)
             row = conn.execute(
                 "SELECT kind, payload_cipher FROM vault_items WHERE id = ?", (item_id,)
             ).fetchone()
@@ -1094,7 +1108,7 @@ class VaultStore:
         """
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            self._assert_writes_allowed(conn)
+            self._assert_writes_allowed(conn, item_id)
             row = conn.execute(
                 "SELECT allowed_commands FROM vault_items WHERE id = ?", (item_id,)
             ).fetchone()
@@ -1119,7 +1133,7 @@ class VaultStore:
         sealed = self._seal_allowed_commands(item_id, commands)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            self._assert_writes_allowed(conn)
+            self._assert_writes_allowed(conn, item_id)
             cursor = conn.execute(
                 "UPDATE vault_items SET allowed_commands = ? WHERE id = ?", (sealed, item_id)
             )
@@ -1181,7 +1195,7 @@ class VaultStore:
         """Delete item by ID."""
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            self._assert_writes_allowed(conn)
+            self._assert_writes_allowed(conn, item_id)
             cursor = conn.execute("DELETE FROM vault_items WHERE id = ?", (item_id,))
             return cursor.rowcount > 0
 

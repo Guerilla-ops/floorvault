@@ -247,8 +247,10 @@ retire those yourself. A copy or backup made before still opens with the old key
 > to the items you name, and `unlock --status` shows what it has been asked for.
 > Unlock for the work and no longer (`floorvault unlock --only ITEM --ttl 1h
 > --idle 10m`, then `floorvault lock`). To keep a program away from it, run that
-> program as another user or in a container. A reboot ends it, and root is out
-> of scope.
+> program as another user, or in a container that does not mount the socket's
+> directory (`$XDG_RUNTIME_DIR/floorvault`, else `<store>/agent`). A container
+> that mounts it and runs as your user ID can still reach the agent. A reboot
+> ends it, and root is out of scope.
 
 [Passphrase-protected key and key agent](https://github.com/Guerilla-ops/floorvault/blob/main/docs/USAGE.md#a-passphrase-protected-key)
 

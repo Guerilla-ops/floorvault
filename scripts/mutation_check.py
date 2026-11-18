@@ -319,7 +319,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "DS-1",
         "src/floorvault/vaultkit/vault.py",
-        '            self._assert_writes_allowed(conn)\n            conn.execute(\n                """\n                INSERT INTO vault_items (',
+        '            self._assert_writes_allowed(conn, item_id)\n            conn.execute(\n                """\n                INSERT INTO vault_items (',
         '            pass  # MUTANT: writer barrier disabled\n            conn.execute(\n                """\n                INSERT INTO vault_items (',
         "Rotation barrier removed: a late old-key writer is accepted",
     ),
@@ -714,8 +714,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "ROT-10",
         "src/floorvault/vaultkit/vault.py",
-        "        if not self._key_verified:\n            self._verify_key(conn)\n",
-        "        if False:  # MUTANT\n            self._verify_key(conn)\n",
+        "        if not self._key_verified:\n            self._verify_key(conn, item_id)\n",
+        "        if False:  # MUTANT\n            self._verify_key(conn, item_id)\n",
         "A VaultStore opened with the old key after a rotation writes under it (#109)",
     ),
     Mutation(
@@ -745,6 +745,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         'os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600',
         'os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o666',
         "A new vault.db is created with the process umask (typically 0644) instead of owner-only",
+    ),
+    Mutation(
+        "VS-5",
+        "src/floorvault/vaultkit/vault.py",
+        '            "ORDER BY id IS NOT ? LIMIT 1",\n            (item_id,),\n',
+        '            "LIMIT 1",  # MUTANT\n            (),\n',
+        "The key is checked against the first item, so a scoped `unlock --write --only` agent "
+        "cannot write its own item when another comes first (#146)",
     ),
     # --- Wrapped-master generation store (R1, roadmap issue #11) -------------
     Mutation(
