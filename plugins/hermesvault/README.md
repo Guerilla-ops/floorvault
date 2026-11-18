@@ -85,8 +85,10 @@ secrets:
       DB_PASSWORD: hv:vault_db:password      # a named field
     # dir: agent-vault                       # default <profile-home>/agent-vault
     # token_env: HERMES_VAULT_KEY            # bootstrap key variable (64 hex chars)
-    # custody: os                            # os, key_file or systemd-creds
+    # custody: os                            # os, key_file, systemd-creds or vault-transit
     # key_file: /run/secrets/hermes-vault    # with custody: key_file
+    # vault_addr: https://vault.internal:8200   # with custody: vault-transit
+    # vault_token_env: VAULT_TOKEN           # the variable holding the Vault token
     # override_existing: false
     # require_binding: false                 # refuse items with no command binding
 ```
@@ -193,6 +195,7 @@ environment). Without it, the key comes from the custody the profile sets in
 | `os` (default) | the OS key store (macOS Keychain, Windows DPAPI, Linux Secret Service) through FloorVault's `AdaptiveKeyProvider`, with its environment tier turned off | desktops and laptops |
 | `key_file` | the file named by `key_file` (absolute, or relative to the profile home), holding 64 hex characters | containers and servers with an orchestrator secret mount (Docker/Kubernetes secret on tmpfs) |
 | `systemd-creds` | `master.key.sdcred` beside the store, sealed by `systemd-creds encrypt --user` and unsealed with `systemd-creds decrypt --user` | Linux servers with systemd 256 or newer and no Secret Service |
+| `vault-transit` | `vault-transit/` beside the store, wrapped by HashiCorp Vault's Transit engine and unwrapped on every fetch with the token in `vault_token_env` | hosts that can reach a Vault; a fleet that should be lockable by revoking one token |
 
 `FLOOR_VAULT_KEY`, `VAULT_MASTER_KEY` and `FLOOR_VAULT_KEY_FILE` are never read,
 so a key in another profile's environment never unlocks this store. The source
@@ -207,6 +210,24 @@ warning. `hermes hvault setup` creates the store under that key; it never
 creates or changes the key file. The file is as strong as its permissions: on
 a host's disk it protects against other users, not against code running as you
 or against a copy of the disk.
+
+**`vault-transit`.** Set `vault_addr` (an `https://` URL) and put a Vault token
+in the profile's environment under `VAULT_TOKEN` (or the name in
+`vault_token_env`). Optional: `vault_transit_key` (default `floorvault-master`),
+`vault_transit_mount` (default `transit`) and `vault_cacert`, a CA bundle for a
+Vault on private PKI (relative to the profile home). `hermes hvault setup` asks
+Vault for a new key and keeps it only wrapped, for a new store only; at startup the
+source asks Vault to unwrap it and never creates one. This is the same layout and
+context as `floorvault secrets init --custody vault-transit`, so a store made
+either way opens either way. The token is then the credential that opens the
+store: give it only `datakey`, `decrypt` and `rewrap` on this key, and a short
+TTL. Revoking it locks the store on every host at once. The plugin declares the
+token's variable as protected, so a mapped secret never overwrites it, but it
+cannot remove the token from Hermes' own environment: the agent and the commands
+it starts can see it there. No token, a revoked one or an unreachable Vault fails
+closed. A store with this custody is refused under any other custody, and this
+custody is refused beside another key. **Not exercised against a real Vault:**
+the tests use a stand-in for the Transit engine.
 
 **`systemd-creds`.** `hermes hvault setup` creates a random key, seals it to this
 user and machine with `systemd-creds encrypt --user`, checks that it unseals,
@@ -357,7 +378,9 @@ bind with `floorvault secrets allow`).
   into printed YAML.
 - **Reads its own master key** from the `token_env` variable, else from the custody
   configured in `custody`: the OS key store (service `floor-vault`, the default),
-  the file named by `key_file`, or the systemd-creds credential beside the store. It never reads other tools' credential stores, `.env`
+  the file named by `key_file`, the systemd-creds credential beside the store, or,
+  with `custody: vault-transit`, the Vault-wrapped key beside the store and the
+  token in `vault_token_env`. It never reads other tools' credential stores, `.env`
   files or Hermes' `auth.json`. Any other FloorVault `VaultStore` on the same
   account that uses default custody (for example an app built on
   `floorvault.vaultkit`, whose default store is `~/.floor/vault`) uses the same
@@ -370,7 +393,10 @@ bind with `floorvault secrets allow`).
   `systemd-creds` (`decrypt --user` at startup; `encrypt` and `decrypt` during
   `hermes hvault setup`), as an argument list with no shell and a minimal
   environment. Otherwise no subprocesses.
-- **No network calls**, no shell commands, no background processes, no telemetry.
+- **Network calls only with `custody: vault-transit`:** HTTPS requests to
+  `vault_addr` (Transit `datakey` during `hermes hvault setup`, `decrypt` at every
+  fetch), carrying the Vault token. Otherwise no network calls. No shell commands,
+  no background processes, no telemetry.
 
 ## Develop
 

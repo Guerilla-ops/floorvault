@@ -18,6 +18,11 @@ with ``custody``:
 * ``systemd-creds``: the key sealed by ``systemd-creds encrypt --user`` beside
   the store (``master.key.sdcred``), unsealed with ``systemd-creds decrypt``.
   This is the only custody that starts a subprocess.
+* ``vault-transit``: the key minted by HashiCorp Vault's Transit engine and
+  kept only wrapped by it (``vault-transit/`` beside the store), unwrapped on
+  every fetch. ``vault_addr`` names the server; the token is read from the
+  variable named by ``vault_token_env`` (default ``VAULT_TOKEN``) in the
+  fetch-scoped environment. The only custody that makes a network call.
 
 Command bindings set with ``hermes hvault allow`` (or ``floorvault secrets allow``) are enforced against the
 command line Hermes itself was started with (see ``binding_guard``): a
@@ -73,7 +78,21 @@ def _import_floorvault():
 DEFAULT_DIR_NAME = "agent-vault"
 DEFAULT_TOKEN_ENV = "HERMES_VAULT_KEY"  # nosec B105 - a variable's name, not a key
 DEFAULT_CUSTODY = "os"
-CUSTODIES = ("os", "key_file", "systemd-creds")
+CUSTODIES = ("os", "key_file", "systemd-creds", "vault-transit")
+#: Settings only custody: vault-transit reads; elsewhere they would be silently ignored.
+_TRANSIT_SETTINGS = (
+    "vault_addr",
+    "vault_token_env",
+    "vault_transit_key",
+    "vault_transit_mount",
+    "vault_cacert",
+)
+DEFAULT_VAULT_TOKEN_ENV = "VAULT_TOKEN"  # nosec B105 - a variable's name
+#: floorvault.transit_custody's defaults and directory, named here so a floorvault
+#: from before that module (0.2.8 has the provider) opens the same store.
+_TRANSIT_STORE_DIRNAME = "vault-transit"
+_DEFAULT_TRANSIT_KEY = "floorvault-master"
+_DEFAULT_TRANSIT_MOUNT = "transit"
 #: floorvault's own key variables. The plugin does not read them, but a mapped
 #: output must not overwrite them for anything else in the process that does.
 FLOORVAULT_KEY_ENV_NAMES = frozenset(
@@ -153,6 +172,25 @@ def validate_config(cfg: dict) -> None:
     elif key_file is not None:
         # A key_file that is silently ignored would leave the store on another custody.
         raise ValueError("secrets.hermesvault.key_file is used only with custody: key_file")
+    if custody == "vault-transit":
+        addr = cfg.get("vault_addr")
+        if not isinstance(addr, str) or not addr.strip().startswith("https://"):
+            raise ValueError(
+                "secrets.hermesvault.custody: vault-transit needs vault_addr, an https:// URL"
+            )
+        for name in ("vault_transit_key", "vault_transit_mount", "vault_cacert"):
+            if name in cfg and (not isinstance(cfg[name], str) or not cfg[name].strip()):
+                raise ValueError(f"secrets.hermesvault.{name} must be a non-empty string")
+        if not valid_env_name(cfg.get("vault_token_env", DEFAULT_VAULT_TOKEN_ENV)):
+            raise ValueError(
+                "secrets.hermesvault.vault_token_env must be an environment variable name"
+            )
+    else:
+        stray = [name for name in _TRANSIT_SETTINGS if cfg.get(name) is not None]
+        if stray:
+            raise ValueError(
+                f"secrets.hermesvault.{stray[0]} is used only with custody: vault-transit"
+            )
 
 
 def resolve_key_file(cfg: dict, home_path: Path) -> Path:
@@ -211,7 +249,10 @@ def _open_store(cfg: dict, home_path: Path, *, setup: bool = False, warnings=Non
     if key is None:
         _refuse_passphrase_store(base)
         custody = cfg.get("custody", DEFAULT_CUSTODY)
-        if custody == "key_file":
+        _refuse_unconfigured_transit(base, custody)
+        if custody == "vault-transit":
+            key = _key_from_transit(cfg, home_path, base, setup=setup, store_exists=store_exists)
+        elif custody == "key_file":
             key = _key_from_file(resolve_key_file(cfg, home_path), warnings)
         elif custody == "systemd-creds":
             key = _key_from_credential(base, setup=setup, store_exists=store_exists)
@@ -265,6 +306,86 @@ def _newer_floorvault(custody: str) -> CustodyUnavailable:
     return CustodyUnavailable(
         f"custody: {custody} needs floorvault 0.2.8 or newer; upgrade the floorvault package"
     )
+
+
+def _refuse_unconfigured_transit(base: Path, custody: str) -> None:
+    """A store whose key Vault keeps is opened by that custody or not at all.
+
+    Any other custody would find no key, or worse, create one beside the wrapped
+    key and fork the store. The opposite case (custody: vault-transit on a store
+    keyed elsewhere) is refused in ``_key_from_transit``.
+    """
+    if custody == "vault-transit":
+        return
+    if (base / _TRANSIT_STORE_DIRNAME).exists() or (base / _TRANSIT_STORE_DIRNAME).is_symlink():
+        raise CustodyUnavailable(
+            f"the key of the store at {base} is kept by Vault Transit; set "
+            "secrets.hermesvault.custody: vault-transit and vault_addr to open it"
+        )
+
+
+def _key_from_transit(cfg: dict, home_path: Path, base: Path, *, setup: bool, store_exists: bool):
+    """The key Vault Transit keeps wrapped beside the store; minted only by ``setup``."""
+    try:
+        from floorvault.providers.base import KeyProviderError
+        from floorvault.providers.vault_transit import VaultTransitProvider
+    except ImportError:
+        raise _newer_floorvault("vault-transit") from None
+    transit_dir = base / _TRANSIT_STORE_DIRNAME
+    present = transit_dir.exists() or transit_dir.is_symlink()
+    for name in ("master.key", _SYSTEMD_CREDENTIAL_FILENAME, _PASSPHRASE_KEY_FILENAME):
+        if (base / name).exists() or (base / name).is_symlink():
+            raise CustodyUnavailable(
+                f"{base} holds {name}, another key for this store; custody: vault-transit "
+                "would make a second one. Nothing was opened"
+            )
+    if not present:
+        if not setup:
+            raise StoreNotSetUp(
+                f"no Vault-wrapped key at {transit_dir}; run `hermes hvault setup` once"
+            )
+        if store_exists:
+            raise CustodyUnavailable(
+                f"{base} already holds a store keyed elsewhere; setup creates a Vault-wrapped "
+                "key for a new store only"
+            )
+    token_env = str(cfg.get("vault_token_env") or DEFAULT_VAULT_TOKEN_ENV)
+    token = (get_source_environment().get(token_env) or "").strip()
+    if not token:
+        raise CustodyUnavailable(
+            f"custody: vault-transit reads the Vault token from {token_env}, which is not set "
+            "in this profile's environment"
+        )
+    cacert = cfg.get("vault_cacert")
+    if cacert is not None:
+        cacert = Path(str(cacert).strip()).expanduser()
+        if not cacert.is_absolute():
+            cacert = Path(home_path) / cacert
+    try:
+        provider = VaultTransitProvider(
+            vault_addr=str(cfg["vault_addr"]).strip(),
+            key_name=str(cfg.get("vault_transit_key") or _DEFAULT_TRANSIT_KEY).strip(),
+            store_dir=transit_dir,
+            token=token,
+            app_instance_id=_APP_INSTANCE_ID,
+            transit_mount=str(cfg.get("vault_transit_mount") or _DEFAULT_TRANSIT_MOUNT).strip(),
+            cafile=None if cacert is None else str(cacert),
+            cache_ttl=0,
+        )
+    except ValueError as exc:
+        raise CustodyUnavailable(f"secrets.hermesvault.vault_addr: {exc}") from None
+    except TypeError:  # a floorvault whose provider predates cafile=
+        raise _newer_floorvault("vault-transit") from None
+    try:
+        held = provider.resolve_key(allow_create=setup and not present)
+    except KeyProviderError as exc:
+        # The provider never puts the token in a message.
+        raise CustodyUnavailable(f"Vault Transit: {exc}") from None
+    try:
+        return held.get_bytes()
+    finally:
+        held.wipe()
+        provider.wipe()
 
 
 def _key_from_os(base: Path, *, setup: bool) -> bytes:
@@ -369,7 +490,11 @@ class HermesVaultSource(SecretSource):
     }
 
     def protected_env_vars(self, cfg: dict) -> frozenset[str]:
-        return frozenset({self.token_env(cfg)}) | FLOORVAULT_KEY_ENV_NAMES
+        protected = frozenset({self.token_env(cfg)}) | FLOORVAULT_KEY_ENV_NAMES
+        if isinstance(cfg, dict) and cfg.get("custody") == "vault-transit":
+            # The Vault token opens the store: a mapped secret must not overwrite it.
+            protected |= {str(cfg.get("vault_token_env") or DEFAULT_VAULT_TOKEN_ENV)}
+        return protected
 
     def config_schema(self) -> dict:
         return {
@@ -382,8 +507,28 @@ class HermesVaultSource(SecretSource):
             },
             "custody": {
                 "description": "Where the key is kept when token_env is unset: "
-                "os, key_file or systemd-creds",
+                "os, key_file, systemd-creds or vault-transit",
                 "default": DEFAULT_CUSTODY,
+            },
+            "vault_addr": {
+                "description": "With custody: vault-transit, the Vault server (https://)",
+                "default": None,
+            },
+            "vault_token_env": {
+                "description": "With custody: vault-transit, the env var holding the Vault token",
+                "default": DEFAULT_VAULT_TOKEN_ENV,
+            },
+            "vault_transit_key": {
+                "description": "With custody: vault-transit, the Transit key's name",
+                "default": _DEFAULT_TRANSIT_KEY,
+            },
+            "vault_transit_mount": {
+                "description": "With custody: vault-transit, where Transit is mounted",
+                "default": _DEFAULT_TRANSIT_MOUNT,
+            },
+            "vault_cacert": {
+                "description": "With custody: vault-transit, a CA bundle for a Vault on private PKI",
+                "default": None,
             },
             "key_file": {
                 "description": "With custody: key_file, the file holding the key (64 hex)",

@@ -994,6 +994,62 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     # --- SQLAlchemy adapter guards (Phase 2, roadmap issue #11) --------------
     Mutation(
+        "VTC-1",
+        "src/floorvault/transit_custody.py",
+        "    return _key_bytes(_provider(vault_dir, environ, app_instance_id), allow_create=False)\n",
+        "    return _key_bytes(_provider(vault_dir, environ, app_instance_id), allow_create=True)  # MUTANT\n",
+        "Opening a store whose Vault-wrapped key is missing mints a new key over its data instead of failing",
+    ),
+    Mutation(
+        "VTC-2",
+        "src/floorvault/transit_custody.py",
+        '    if present(vault_dir):\n        raise TransitCustodyError(\n            f"{store_dir(vault_dir)} already exists',
+        '    if False:  # MUTANT\n        raise TransitCustodyError(\n            f"{store_dir(vault_dir)} already exists',
+        "A second `init --custody vault-transit` is not refused",
+    ),
+    Mutation(
+        "VTC-3",
+        "src/floorvault/agent_cli.py",
+        "    if not in_use:\n        return env\n",
+        "    if True:  # MUTANT\n        return env\n",
+        "`run` passes the Vault token that opens the store to the command it starts",
+    ),
+    Mutation(
+        "VTC-4",
+        "src/floorvault/agent_cli.py",
+        '            if others:\n                raise StoreUnavailable(\n                    f"the key of the vault at {vault_dir} is kept by Vault Transit, and "',
+        '            if False:  # MUTANT\n                raise StoreUnavailable(\n                    f"the key of the vault at {vault_dir} is kept by Vault Transit, and "',
+        "A second key beside a Vault-wrapped one is not refused: the store opens though it was forked",
+    ),
+    Mutation(
+        "VTC-5",
+        "src/floorvault/passphrase_custody.py",
+        '    OS_TIER_MARKER_FILENAME,\n    "vault-transit",\n)',
+        "    OS_TIER_MARKER_FILENAME,\n)  # MUTANT",
+        "A passphrase-wrapped key can be created beside a Vault-wrapped one",
+    ),
+    Mutation(
+        "VTC-6",
+        "src/floorvault/agent_cli.py",
+        '    if transit_custody.present(vault_dir):\n        _err(\n            prog,\n            f"{vault_dir} already keeps its key in Vault Transit',
+        '    if False:  # MUTANT\n        _err(\n            prog,\n            f"{vault_dir} already keeps its key in Vault Transit',
+        "`init --custody systemd-creds` seals a second key beside a Vault-wrapped one",
+    ),
+    Mutation(
+        "VTC-7",
+        "src/floorvault/agent_cli.py",
+        "    if transit_custody.present(vault_dir):\n        _err(prog, _TRANSIT_NOT_PROTECTED.format(dir=vault_dir))",
+        "    if False:  # MUTANT\n        _err(prog, _TRANSIT_NOT_PROTECTED.format(dir=vault_dir))",
+        "`protect` runs on a store whose key Vault keeps",
+    ),
+    Mutation(
+        "VTC-8",
+        "src/floorvault/agent_cli.py",
+        "    other = passphrase_custody.other_custody_present(vault_dir)\n    if other is not None:\n        raise StoreUnavailable(",
+        "    other = passphrase_custody.other_custody_present(vault_dir)\n    if False:  # MUTANT\n        raise StoreUnavailable(",
+        "`init --custody passphrase` asks for a passphrase it will then refuse (on Windows the prompt waits on the console)",
+    ),
+    Mutation(
         "SA-1",
         "src/floorvault/sqlalchemy_adapter.py",
         "        try:\n"

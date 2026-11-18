@@ -149,8 +149,12 @@ def test_init_refuses_a_store_that_exists_and_another_custody(vault, env):
     (vault / "vault.db").unlink()
     for name in ("master.key", "master.key.sdcred", "master.key.ostier"):
         (vault / name).write_bytes(b"x")
-        code, _out, err = init(vault, env, PHRASE)
+        prompt = Prompt(PHRASE, PHRASE)
+        code, _out, err = cli(
+            ["secrets", "init", "--custody", "passphrase", "--vault", str(vault)], env, prompt
+        )
         assert code == 1 and name in err and "fork" in err
+        assert prompt.asked == [], "refused before a passphrase was asked for"
         assert not (vault / "master.key.fvpw").exists()
         (vault / name).unlink()
 
