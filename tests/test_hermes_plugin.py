@@ -1689,3 +1689,139 @@ def test_the_plugin_wipes_its_own_key_copy_after_construction(tmp_path, monkeypa
     buffer = seen["buffer"]
     assert isinstance(buffer, bytearray), "the plugin hands FloorVault a mutable buffer"
     assert bytes(buffer) == b"\x00" * 32, "the plugin's key copy must be zeroed after construction"
+
+
+# --- custody: vault-transit ---------------------------------------------------
+
+TRANSIT_TOKEN = "hvs.plugin-transit-token"
+TRANSIT_ADDR = "https://vault.test:8200"
+
+
+@pytest.fixture()
+def transit_home(tmp_path, monkeypatch):
+    """A profile with no key variable, Transit replaced by the CLI tests' fake engine."""
+    import test_transit_custody as tc  # the same stateless fake the CLI tests use
+
+    from floorvault.providers import vault_transit
+
+    namespace: dict = {}
+    exec(compile(tc.FAKE_VAULT, "fakevault", "exec"), namespace)  # noqa: S102 - test fixture
+    monkeypatch.setattr(vault_transit, "UrllibTransport", namespace["FakeTransit"])
+    for name in ("HERMES_VAULT_KEY", "FLOOR_VAULT_KEY", "VAULT_MASTER_KEY", "FLOOR_VAULT_KEY_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("VAULT_TOKEN", TRANSIT_TOKEN)
+    monkeypatch.setenv("FV_TEST_VAULT_GOOD_TOKEN", TRANSIT_TOKEN)
+    return tmp_path
+
+
+def _transit_cfg(**over):
+    return {"custody": "vault-transit", "vault_addr": TRANSIT_ADDR, **over}
+
+
+def test_vault_transit_setup_creates_the_key_and_fetch_opens_the_store(transit_home):
+    from source import _open_store
+
+    store = _open_store(_transit_cfg(), transit_home, setup=True)
+    store.add_item(kind="generic", label="t", secret={"value": "sk-transit"}, item_id="vault_t")
+    base = transit_home / "agent-vault"
+    assert (base / "vault-transit").is_dir()
+    assert not (base / "master.key").exists()
+    result = fetch(transit_home, _transit_cfg(env={"A": "hv:vault_t"}))
+    assert result.ok and result.secrets == {"A": "sk-transit"}, result.error
+
+
+def test_vault_transit_opens_a_store_whose_key_the_cli_created(transit_home):
+    """The CLI (floorvault.transit_custody) and the plugin share layout and context."""
+    from floorvault import transit_custody
+
+    base = transit_home / "agent-vault"
+    env = {"VAULT_ADDR": TRANSIT_ADDR, "VAULT_TOKEN": TRANSIT_TOKEN}
+    transit_custody.create(base, env, app_instance_id="floor-agent")
+    key = transit_custody.read_key(base, env, app_instance_id="floor-agent")
+    _store_under(base, key.hex())
+    result = fetch(transit_home, _transit_cfg(env={"A": "hv:vault_k"}))
+    assert result.ok and result.secrets == {"A": "sk-file"}, result.error
+
+
+def test_vault_transit_fetch_never_creates_a_key(transit_home):
+    result = fetch(transit_home, _transit_cfg(env={"A": "hv:vault_t"}))
+    assert not result.ok
+    assert not (transit_home / "agent-vault" / "vault-transit").exists()
+
+
+def test_vault_transit_without_a_token_or_with_a_revoked_one_fails_closed(
+    transit_home, monkeypatch
+):
+    from source import _open_store
+
+    store = _open_store(_transit_cfg(), transit_home, setup=True)
+    store.add_item(kind="generic", label="t", secret={"value": "sk-transit"}, item_id="vault_t")
+    # A key variable for this store is not set: nothing else may stand in either.
+    monkeypatch.delenv("VAULT_TOKEN")
+    missing = fetch(transit_home, _transit_cfg(env={"A": "hv:vault_t"}))
+    assert not missing.ok and "VAULT_TOKEN" in missing.error and missing.secrets == {}
+    monkeypatch.setenv("VAULT_TOKEN", "hvs.revoked")
+    revoked = fetch(transit_home, _transit_cfg(env={"A": "hv:vault_t"}))
+    assert not revoked.ok and "Vault Transit" in revoked.error and revoked.secrets == {}
+    assert "hvs.revoked" not in revoked.error
+
+
+def test_vault_transit_reads_the_token_from_the_named_variable(transit_home, monkeypatch):
+    from source import _open_store
+
+    monkeypatch.delenv("VAULT_TOKEN")
+    monkeypatch.setenv("PROFILE_VAULT_TOKEN", TRANSIT_TOKEN)
+    cfg = _transit_cfg(vault_token_env="PROFILE_VAULT_TOKEN")
+    store = _open_store(cfg, transit_home, setup=True)
+    store.add_item(kind="generic", label="t", secret={"value": "sk-transit"}, item_id="vault_t")
+    result = fetch(transit_home, {**cfg, "env": {"A": "hv:vault_t"}})
+    assert result.ok and result.secrets == {"A": "sk-transit"}, result.error
+
+
+def test_a_vault_wrapped_store_is_refused_under_another_custody(transit_home):
+    from source import _open_store
+
+    _open_store(_transit_cfg(), transit_home, setup=True).add_item(
+        kind="generic", label="t", secret={"value": "sk-transit"}, item_id="vault_t"
+    )
+    for custody in ("os", "systemd-creds"):
+        result = fetch(transit_home, {"custody": custody, "env": {"A": "hv:vault_t"}})
+        assert not result.ok and "custody: vault-transit" in result.error
+
+
+def test_vault_transit_refuses_a_store_that_has_another_key(transit_home):
+    base = transit_home / "agent-vault"
+    base.mkdir(mode=0o700)
+    (base / "master.key.sdcred").write_bytes(b"sealed")
+    result = fetch(transit_home, _transit_cfg(env={"A": "hv:vault_t"}))
+    assert not result.ok
+    from source import _open_store
+
+    with pytest.raises(Exception, match="another key for this store"):
+        _open_store(_transit_cfg(), transit_home, setup=True)
+    assert not (base / "vault-transit").exists()
+
+
+@pytest.mark.parametrize(
+    ("cfg", "message"),
+    [
+        ({"custody": "vault-transit"}, "needs vault_addr"),
+        ({"custody": "vault-transit", "vault_addr": "http://vault:8200"}, "https://"),
+        ({"custody": "os", "vault_addr": TRANSIT_ADDR}, "only with custody: vault-transit"),
+        ({**_transit_cfg(), "vault_token_env": "1BAD"}, "vault_token_env"),
+        ({**_transit_cfg(), "vault_transit_key": ""}, "vault_transit_key"),
+    ],
+)
+def test_vault_transit_settings_are_checked(cfg, message):
+    from source import validate_config
+
+    with pytest.raises(ValueError, match=message):
+        validate_config(cfg)
+
+
+def test_the_vault_token_is_protected_from_a_mapped_secret_only_when_it_is_the_key():
+    source = HermesVaultSource()
+    assert "VAULT_TOKEN" in source.protected_env_vars(_transit_cfg())
+    assert "MY_TOKEN" in source.protected_env_vars(_transit_cfg(vault_token_env="MY_TOKEN"))
+    # Another custody: an agent may legitimately get a Vault token from the store.
+    assert "VAULT_TOKEN" not in source.protected_env_vars({"custody": "os"})

@@ -164,7 +164,7 @@ stored in the database it protects:
 | macOS Keychain | `macos` extra |
 | Windows DPAPI | Bound to the Windows account |
 | Linux Secret Service | `linux` extra |
-| HashiCorp Vault Transit | Wraps the master key remotely; encryption stays local |
+| HashiCorp Vault Transit | `floorvault secrets init --custody vault-transit`; wraps the master key remotely, encryption stays local; one revocable token per host |
 | Passphrase-wrapped key | `floorvault secrets init --custody passphrase`; unlock once with `floorvault unlock` (Linux and macOS) |
 | systemd-creds | `floorvault secrets init --custody systemd-creds`; Linux, systemd 256 or newer |
 | Key file | `--key-file` or `$FLOOR_VAULT_KEY_FILE`, such as a Docker or Kubernetes secret mount |

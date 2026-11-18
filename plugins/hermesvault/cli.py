@@ -253,8 +253,9 @@ def register_cli(subparser) -> None:
     sub.add_parser(
         "setup",
         help=(
-            "Create the store and its key (OS key store, which may prompt; or a "
-            "systemd-creds credential), as secrets.hermesvault.custody says"
+            "Create the store and its key (OS key store, which may prompt; a "
+            "systemd-creds credential; or a key wrapped by Vault Transit), as "
+            "secrets.hermesvault.custody says"
         ),
     )
 
@@ -324,6 +325,13 @@ def _cmd_setup(_args) -> int:
     print(f"store ready at {resolve_base_dir(cfg, Path(get_hermes_home()))}")
     print(_custody_line(cfg))
     print("the secret source now opens it at startup without prompting")
+    if cfg.get("custody") == "vault-transit":
+        print(
+            "checked: Vault unwrapped the key with the token in this shell. Not checked: "
+            "that the token is set where Hermes runs, or how long it lives; restart Hermes "
+            "and run `hermes hvault doctor` there. Revoking the token locks the store",
+            file=sys.stderr,
+        )
     if cfg.get("custody") == "systemd-creds":
         print(
             "checked: the credential unseals from this shell. Not checked: unsealing from "
