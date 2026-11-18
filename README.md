@@ -243,8 +243,9 @@ retire those yourself. A copy or backup made before still opens with the old key
 > **The agent is a decryption oracle for code running as you.** It never hands
 > out the key, but any process of yours that can reach its socket can ask it to
 > decrypt what it serves. Bindings are checked by the caller, not by the agent.
-> It only decrypts unless unlocked with `--write`, `unlock --only ITEM` limits it
-> to the items you name, and `unlock --status` shows what it has been asked for.
+> It only decrypts unless unlocked with `--write`, and never seals a command
+> binding unless `--bindings` was given too; `unlock --only ITEM` limits it to
+> the items you name, and `unlock --status` shows what it has been asked for.
 > Unlock for the work and no longer (`floorvault unlock --only ITEM --ttl 1h
 > --idle 10m`, then `floorvault lock`). To keep a program away from it, run that
 > program as another user or in a container. A reboot ends it, and root is out
