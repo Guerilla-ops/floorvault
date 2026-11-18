@@ -587,7 +587,7 @@ def test_the_key_is_checked_against_the_item_being_written(tmp_path):
     scoped = _ServesOnly(_crypto(OLD), "b")
     only_b = VaultStore(tmp_path / "vault", crypto=scoped)
     assert only_b.update_generic_field("b", "value", "new")
-    assert only_b.set_allowed_commands("b", [["/bin/true"]])
+    assert only_b.set_allowed_commands("b", [[sys.executable]])
     assert only_b.remove_item("b")
     assert "a" not in scoped.asked
     assert store.resolve_secret("a") == {"value": "a"}
