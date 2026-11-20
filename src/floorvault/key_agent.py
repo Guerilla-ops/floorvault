@@ -48,7 +48,7 @@ import struct
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from ._filelock import exclusive_lock
 
@@ -74,11 +74,24 @@ KEY_WAIT_TIMEOUT = 15 * 60
 MAX_SOCKET_PATH = 100
 _OPS = ("status", "lock", "encrypt", "decrypt")
 _CRYPTO_OPS = ("encrypt", "decrypt")
+#: The table whose records are a store's items; ``record_id`` there is the item id. A scoped
+#: agent (``unlock --only``) serves these records for its items and nothing else.
+ITEM_TABLE = "vault_items"
+#: The use log stops growing here; the counters in ``status`` keep counting.
+USE_LOG_LIMIT = 1024 * 1024
 _DURATION = re.compile(r"^(\d+)([smhd]?)$")
 
 
 class AgentError(Exception):
     """The agent cannot be started, reached or trusted. The message is safe to print."""
+
+
+class AgentReadOnly(AgentError):
+    """The agent only decrypts, and was asked to encrypt (it was not unlocked with ``--write``)."""
+
+
+class AgentOutOfScope(AgentError):
+    """The agent was unlocked for named items only, and was asked about another record."""
 
 
 class AgentNotRunning(AgentError):
@@ -273,7 +286,13 @@ def peer_credentials(conn: socket.socket) -> tuple[Optional[int], int]:
         # struct xucred { u_int cr_version; uid_t cr_uid; ... }, LOCAL_PEERCRED = 1 at level 0.
         buf = conn.getsockopt(0, 1, 76)
         _version, uid = struct.unpack_from("II", buf)
-        return None, uid
+        # LOCAL_PEERPID = 2 at the same level. Only recorded in the use log, never used to
+        # decide anything, so a platform that refuses it costs nothing but that detail.
+        try:
+            (pid,) = struct.unpack("i", conn.getsockopt(0, 2, 4))
+        except (OSError, struct.error):
+            return None, uid
+        return (pid if pid > 0 else None), uid
     raise AgentError("Unix socket peer credentials are not available on this platform")
 
 
@@ -448,6 +467,67 @@ def _suspend_inclusive_clock() -> Optional[Callable[[], float]]:
     return lambda: time.clock_gettime(clock_id)
 
 
+def use_log_path(sock_path: Path) -> Path:
+    """Where the agent for ``sock_path`` records each use of the key."""
+    return Path(sock_path).with_suffix(".uselog")
+
+
+class UseLog:
+    """One line per use of the key, in a 0600 file beside the socket.
+
+    A record for the owner to read, not a control: code running as you can edit or remove
+    the file. The counters in ``status`` are kept in the agent and cannot be changed that
+    way. The previous agent's log is kept once, as ``<name>.prev``. Nothing here may stop
+    the agent serving, so every failure is swallowed and the log simply ends.
+    """
+
+    def __init__(self, path: Path, *, limit: int = USE_LOG_LIMIT) -> None:
+        self.path = Path(path)
+        self._left = limit
+        self._fd = -1
+        try:
+            with contextlib.suppress(FileNotFoundError):
+                if stat.S_ISREG(os.lstat(self.path).st_mode):
+                    os.replace(self.path, self.path.with_name(self.path.name + ".prev"))
+                else:
+                    return  # a link or a directory where the log goes: write nothing
+            flags = (
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+            )
+            self._fd = os.open(self.path, flags, 0o600)
+        except OSError:
+            self._fd = -1
+
+    def __call__(self, entry: Mapping[str, Any]) -> None:
+        if self._fd < 0:
+            return
+        line = (json.dumps(dict(entry), separators=(",", ":"), sort_keys=True) + "\n").encode()
+        if len(line) > self._left:
+            self.close()
+            return
+        try:
+            os.write(self._fd, line)
+            self._left -= len(line)
+        except OSError:
+            self.close()
+
+    def close(self) -> None:
+        if self._fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(self._fd)
+            self._fd = -1
+
+
+def _peer_program(pid: Optional[int]) -> Optional[str]:
+    """The peer's executable where the platform shows it (Linux). For the use log only."""
+    if pid is None or sys.platform != "linux":
+        return None
+    try:
+        return os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return None
+
+
 class _LimitClock:
     """Seconds the agent has been alive, for its total and idle limits.
 
@@ -497,6 +577,19 @@ class Agent:
     ``lock`` stops the agent; ``encrypt`` and ``decrypt`` are use, and are served by
     ``crypto`` (a ``FloorVault`` over the same key) when one is given. ``clock`` and
     ``poll`` exist for tests; the default clock keeps counting while the machine sleeps.
+
+    What it will do with the key is as narrow as the caller asked for:
+
+    - It only decrypts unless ``writable``. Everything ``floorvault run`` does is a read; an
+      agent that also encrypts lets any process of the same user write valid sealed data
+      into the store, a widened command binding included.
+    - With ``only`` it serves the records of those items and refuses every other record.
+      The item id is the ``record_id`` each request names, and it is bound into what is
+      decrypted, so one item cannot be asked for under another's name.
+    - Every request for the key is counted, and passed to ``use_log`` when one is given.
+
+    None of this tells one same-user program from another: it bounds what any of them can
+    get from the agent.
     """
 
     def __init__(
@@ -512,9 +605,17 @@ class Agent:
         identity: Optional[tuple[int, int]] = None,
         start_token: Optional[str] = None,
         crypto: Any = None,
+        writable: bool = False,
+        only: Optional[Iterable[str]] = None,
+        use_log: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> None:
         self._key = key
         self._crypto = crypto
+        self._writable = bool(writable)
+        self._only = None if only is None else frozenset(only)
+        self._use_log = use_log
+        self._counts = {"decrypt": 0, "encrypt": 0, "refused": 0}
+        self._items_used: set[str] = set()
         self.sock_path = Path(sock_path)
         #: (st_dev, st_ino) of the socket this agent bound; only that file is removed on exit.
         self._identity = identity
@@ -589,7 +690,7 @@ class Agent:
 
     def _handle(self, conn: socket.socket) -> None:
         try:
-            _pid, uid = peer_credentials(conn)
+            pid, uid = peer_credentials(conn)
         except (AgentError, OSError):
             _send(conn, {"ok": False, "error": "refused"})
             _discard_pending(conn)
@@ -613,6 +714,12 @@ class Agent:
                     "idle_in": max(0, int(idle_left)),
                     "protected_memory": bool(getattr(self._key, "is_locked", False)),
                     **self._hardening,
+                    "writable": self._writable,
+                    "only": None if self._only is None else sorted(self._only),
+                    "decrypts": self._counts["decrypt"],
+                    "encrypts": self._counts["encrypt"],
+                    "refused": self._counts["refused"],
+                    "items_used": len(self._items_used),
                 },
             )
         elif op == "lock":
@@ -638,16 +745,70 @@ class Agent:
             # would restart the idle clock of an agent that should already be gone.
             self._check_live()
             self.touch()
-            _send(conn, self._crypto_reply(op, request))
+            _send(conn, self._crypto_reply(op, request, pid))
         else:
             _send(conn, {"ok": False, "error": "unknown operation"})
 
-    def _crypto_reply(self, op: str, request: Mapping[str, Any]) -> dict[str, Any]:
+    def _refusal(self, op: str, coords: Mapping[str, Any]) -> Optional[dict[str, Any]]:
+        """Why this agent will not do ``op`` on that record, or None when it will."""
+        if op == "encrypt" and not self._writable:
+            return {"ok": False, "kind": "read_only", "error": "this agent only decrypts"}
+        if self._only is not None and not (
+            coords["table"] == ITEM_TABLE and coords["record_id"] in self._only
+        ):
+            return {
+                "ok": False,
+                "kind": "scope",
+                "error": "this agent was unlocked for other items only",
+            }
+        return None
+
+    def _note_use(
+        self, op: str, coords: Mapping[str, Any], pid: Optional[int], reply: Mapping[str, Any]
+    ) -> None:
+        """Count the request and write it to the use log. Never raises."""
+        refused = reply.get("kind") in ("read_only", "scope")
+        if refused:
+            self._counts["refused"] += 1
+        elif reply.get("ok"):
+            self._counts[op] += 1
+            if coords.get("table") == ITEM_TABLE:
+                self._items_used.add(str(coords.get("record_id")))
+        if self._use_log is None:
+            return
+        entry: dict[str, Any] = {
+            "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "op": op,
+            "table": coords.get("table"),
+            "record": coords.get("record_id"),
+            "column": coords.get("column"),
+            "result": "ok" if reply.get("ok") else str(reply.get("kind", "failed")),
+            "pid": pid,
+        }
+        program = _peer_program(pid)
+        if program is not None:
+            entry["program"] = program
+        with contextlib.suppress(Exception):
+            self._use_log(entry)
+
+    def _crypto_reply(
+        self, op: str, request: Mapping[str, Any], pid: Optional[int] = None
+    ) -> dict[str, Any]:
         """Run one ``encrypt`` or ``decrypt``. A failure names its kind and never its content."""
+        try:
+            coords = _coordinates(request, key_id_default=0 if op == "encrypt" else None)
+        except (ValueError, TypeError):
+            return {"ok": False, "kind": "value", "error": "invalid argument"}
+        reply = self._refusal(op, coords) or self._run_crypto(op, request, coords)
+        self._note_use(op, coords, pid, reply)
+        return reply
+
+    def _run_crypto(
+        self, op: str, request: Mapping[str, Any], coords: Mapping[str, Any]
+    ) -> dict[str, Any]:
         from .core import DecryptionVerificationError, NonceReuseError
 
         try:
-            coords = _coordinates(request, key_id_default=0 if op == "encrypt" else None)
             if op == "encrypt":
                 plaintext = _unb64(request.get("plaintext_b64"))
                 cipher = self._crypto.encrypt(plaintext, **coords)
@@ -868,6 +1029,17 @@ class RemoteVault:
             raise NonceReuseError("the agent refused to reuse a nonce")
         if kind == "value":
             raise ValueError("the agent rejected an argument")
+        if kind == "read_only":
+            raise AgentReadOnly(
+                "the key agent for this store only decrypts, and this needs to encrypt; "
+                "`floorvault lock` and repeat the command (it asks for the passphrase), or "
+                "unlock with `floorvault unlock --write`"
+            )
+        if kind == "scope":
+            raise AgentOutOfScope(
+                "the key agent for this store was unlocked for other items only "
+                "(`floorvault unlock --status` lists them)"
+            )
         raise AgentError(f"the agent refused the request ({reply.get('error', 'no reason')})")
 
     def encrypt(
@@ -1138,6 +1310,8 @@ def prepare(
     environ: Optional[Mapping[str, str]] = None,
     app_context: str,
     allow_unhardened: bool = False,
+    writable: bool = False,
+    only: Optional[Iterable[str]] = None,
 ) -> PendingAgent:
     """Bind the socket, fork the agent, and have it protect itself; it then waits for its key.
 
@@ -1188,6 +1362,8 @@ def prepare(
             allow_unhardened,
             key_read,
             ready_write,
+            writable,
+            None if only is None else frozenset(only),
         )
         os._exit(0)
     os.close(key_read)
@@ -1231,6 +1407,8 @@ def start(
     environ: Optional[Mapping[str, str]] = None,
     app_context: str,
     allow_unhardened: bool = False,
+    writable: bool = False,
+    only: Optional[Iterable[str]] = None,
 ) -> dict[str, Any]:
     """Start a background agent holding ``key`` for ``vault_dir``; return its first status.
 
@@ -1249,6 +1427,8 @@ def start(
         environ=environ,
         app_context=app_context,
         allow_unhardened=allow_unhardened,
+        writable=writable,
+        only=only,
     )
     return pending.send_key(key)
 
@@ -1319,6 +1499,8 @@ def _daemon(  # pragma: no cover - runs in the forked child
     allow_unhardened: bool,
     key_read: int,
     ready_write: int,
+    writable: bool = False,
+    only: Optional[frozenset[str]] = None,
 ) -> None:
     code = 1
     served = False
@@ -1363,6 +1545,9 @@ def _daemon(  # pragma: no cover - runs in the forked child
                     identity=identity,
                     start_token=start_token,
                     crypto=crypto,
+                    writable=writable,
+                    only=only,
+                    use_log=UseLog(use_log_path(path)),
                 )
                 for number in (signal.SIGTERM, signal.SIGINT):
                     signal.signal(number, lambda *_a: agent.request_stop("signalled"))

@@ -167,6 +167,11 @@ def test_platform_overrides_are_declared_explicitly():
         ],  # AGT-45 retired: equivalent once unlink checks for a listener
         "FRK-1",
         "AGT-68",
+        "AGT-70",
+        "AGT-71",
+        "AGT-72",
+        "AGT-73",
+        "AGT-74",
         "FL-1",
         "HRD-1",
         "HRD-2",

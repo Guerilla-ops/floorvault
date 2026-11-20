@@ -554,6 +554,55 @@ def test_a_wrong_key_cannot_write_to_a_store_never_rotated(tmp_path):
         )
 
 
+class _ServesOnly:
+    """A crypto that serves one item's records and refuses the rest, as a key agent
+    unlocked with ``--write --only`` does (#146)."""
+
+    class Refused(Exception):
+        pass
+
+    def __init__(self, inner, item_id):
+        self._inner, self._item_id, self.asked = inner, item_id, []
+
+    def _check(self, kwargs):
+        self.asked.append(kwargs["record_id"])
+        if kwargs["table"] != "vault_items" or kwargs["record_id"] != self._item_id:
+            raise self.Refused(kwargs["record_id"])
+
+    def encrypt(self, plaintext, **kwargs):
+        self._check(kwargs)
+        return self._inner.encrypt(plaintext, **kwargs)
+
+    def decrypt(self, value, **kwargs):
+        self._check(kwargs)
+        return self._inner.decrypt(value, **kwargs)
+
+
+def test_the_key_is_checked_against_the_item_being_written(tmp_path):
+    """With items a then b, a key that may only touch b still writes b: the check reads
+    b's own label, not whichever item comes first."""
+    store = _store(tmp_path)
+    store.add_item("generic", "A", {"value": "a"}, item_id="a")
+    store.add_item("generic", "B", {"value": "b"}, item_id="b")
+    scoped = _ServesOnly(_crypto(OLD), "b")
+    only_b = VaultStore(tmp_path / "vault", crypto=scoped)
+    assert only_b.update_generic_field("b", "value", "new")
+    assert only_b.set_allowed_commands("b", [[sys.executable]])
+    assert only_b.remove_item("b")
+    assert "a" not in scoped.asked
+    assert store.resolve_secret("a") == {"value": "a"}
+
+
+def test_the_item_being_written_does_not_let_a_wrong_key_through(tmp_path):
+    store = _store(tmp_path)
+    store.add_item("generic", "A", {"value": "a"}, item_id="a")
+    store.add_item("generic", "B", {"value": "b"}, item_id="b")
+    wrong = VaultStore(tmp_path / "vault", crypto=_crypto(IMPOSTOR))
+    with pytest.raises(VaultError, match="key does not open the vault's existing items"):
+        wrong.update_generic_field("b", "value", "x")
+    assert store.resolve_secret("b") == {"value": "b"}
+
+
 def test_an_empty_store_has_nothing_to_check_a_key_against(tmp_path):
     VaultStore(tmp_path / "vault", crypto=_crypto(IMPOSTOR)).add_item(
         "generic", "First", {"value": "v"}
