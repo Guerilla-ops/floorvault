@@ -10,10 +10,13 @@ anchor overwrite, trigger tampering, unflushed rename) each have a test here.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import shutil
 import sqlite3
+import struct
 import sys
 import threading
 from pathlib import Path
@@ -257,18 +260,30 @@ def test_pending_empty_string_tamper_is_malformed_not_pending(app):
     _assert_refused(path, store, "malformed")
 
 
-def test_a_record_signed_with_the_legacy_mac_still_verifies(app):
-    """Records written before the pending-presence tag keep verifying (FV-02)."""
-    path, store, _connection, anchor, _table_ = app
-    record_path = store.directory / "app.fvanchor"
-    blob = json.loads(record_path.read_bytes())
-    blob["mac"] = anchor._legacy_record_mac(bytes.fromhex(blob["committed"]), None).hex()
-    record_path.write_bytes(json.dumps(blob, sort_keys=True, separators=(",", ":")).encode())
-    fresh, fresh_anchor = _reopen(path, store)
-    try:
-        fresh_anchor.verify(fresh)
-    finally:
-        fresh.close()
+def test_the_record_mac_is_the_documented_one(app):
+    """The record is signed exactly as SPEC.md documents, so every release reads it.
+
+    FV-02 is closed by refusing a ``pending`` that is not a digest, not by a new MAC
+    body: a new body would make records written by this version look tampered to
+    older ones (and the reverse), which a downgrade or a second floorvault version
+    on the same store would report as a rollback."""
+    _path, store, _connection, anchor, _table_ = app
+    blob = json.loads((store.directory / "app.fvanchor").read_bytes())
+    assert blob["format"] == "FVFA1"
+
+    def frame(data: bytes) -> bytes:
+        return struct.pack(">Q", len(data)) + data
+
+    pending = bytes.fromhex(blob["pending"]) if blob["pending"] is not None else b""
+    body = (
+        b"FVFA1"
+        + b"record"
+        + frame(b"app")
+        + frame(bytes.fromhex(blob["committed"]))
+        + frame(pending)
+    )
+    expected = hmac.new(anchor._key.get_bytes(), body, hashlib.sha256).hexdigest()
+    assert blob["mac"] == expected
 
 
 def test_anchor_record_from_another_key_is_refused(app):

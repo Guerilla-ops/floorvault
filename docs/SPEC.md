@@ -1076,6 +1076,11 @@ on any table can write an anchored one.
 Anchor record (JSON, sorted keys, compact separators):
 `{"format":"FVFA1","committed":hex,"pending":hex|null,"mac":hex}` with
 `mac = HMAC(k, "FVFA1" || "record" || frame(name) || frame(committed) || frame(pending or ""))`.
+A reader refuses the record as malformed, before checking `mac`, unless `committed`
+is exactly 32 bytes and `pending` is null or exactly 32 bytes. The MAC body cannot
+tell a null `pending` from an empty one, so without that rule a record rewritten
+from `"pending":null` to `"pending":""` would authenticate and read as an
+interrupted commit.
 
 `AnchorStore` is `load(name) -> bytes | None` and
 `compare_and_swap(name, expected, new) -> bool`, which replaces the record only

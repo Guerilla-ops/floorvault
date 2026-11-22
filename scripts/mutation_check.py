@@ -1372,11 +1372,17 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "FA-3",
         "src/floorvault/freshness.py",
-        "        if not hmac.compare_digest(\n"
-        "            mac, self._record_mac(committed, pending)\n"
-        "        ) and not hmac.compare_digest(mac, self._legacy_record_mac(committed, pending)):",
+        "        if not hmac.compare_digest(mac, self._record_mac(committed, pending)):",
         "        if False:  # MUTANT",
         "Anchor record no longer authenticated: whoever can write the store can re-baseline it to a rolled-back database",
+    ),
+    Mutation(
+        "FA-21",
+        "src/floorvault/freshness.py",
+        "        if len(committed) != 32 or (pending is not None and len(pending) != 32):",
+        "        if False:  # MUTANT",
+        'A record rewritten from pending:null to pending:"" authenticates and reads as an '
+        "interrupted commit, steering the operator to discard_interrupted_commit (FV-02)",
     ),
     Mutation(
         "FA-4",

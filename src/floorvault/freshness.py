@@ -392,28 +392,10 @@ class FreshnessAnchor:
     # -- anchor record --------------------------------------------------------
 
     def _record_mac(self, committed: bytes, pending: Optional[bytes]) -> bytes:
-        # Presence is tagged, not folded into the frame: ``_frame(pending or b"")``
-        # made ``pending: null`` and ``pending: ""`` the same MAC body, so a record
-        # rewritten null -> "" still authenticated while parsing as an interrupted
-        # commit (FV-02). ``_load`` refuses a pending that is not exactly a digest,
-        # so an empty one can never reach this body.
-        body = (
-            _FORMAT
-            + b"record"
-            + _frame(self.name.encode("utf-8"))
-            + _frame(committed)
-            + (b"\x01" + _frame(pending) if pending is not None else b"\x00")
-        )
-        return hmac.new(self._key.get_bytes(), body, hashlib.sha256).digest()
-
-    def _legacy_record_mac(self, committed: bytes, pending: Optional[bytes]) -> bytes:
-        """The pre-FV-02 MAC body, for records written before the presence tag.
-
-        Accepting it is safe only because ``_load`` refuses ``pending == b""``
-        before the MAC is checked: the one ambiguity this body could not
-        distinguish (null vs empty) is unreachable, so any record that verifies
-        here names its (committed, pending) uniquely.
-        """
+        # ``_frame(pending or b"")`` gives ``pending: null`` and ``pending: ""`` the
+        # same body. That is safe only because ``_load`` refuses any pending that is
+        # not exactly a digest before checking the MAC, so an empty one never gets
+        # here (FV-02). The body is unchanged, so every release reads these records.
         body = (
             _FORMAT
             + b"record"
@@ -448,13 +430,11 @@ class FreshnessAnchor:
             raise RollbackDetectedError("freshness anchor record is malformed") from None
         # Lengths are enforced before the MAC: each digest is exactly 32 bytes.
         # In particular ``pending: ""`` is refused outright - it parses to b"",
-        # which the legacy MAC body cannot tell apart from null, so accepting it
-        # would let a record rewrite masquerade as an interrupted commit (FV-02).
+        # which the MAC body cannot tell apart from null, so accepting it would
+        # let a record rewrite masquerade as an interrupted commit (FV-02).
         if len(committed) != 32 or (pending is not None and len(pending) != 32):
             raise RollbackDetectedError("freshness anchor record is malformed")
-        if not hmac.compare_digest(
-            mac, self._record_mac(committed, pending)
-        ) and not hmac.compare_digest(mac, self._legacy_record_mac(committed, pending)):
+        if not hmac.compare_digest(mac, self._record_mac(committed, pending)):
             raise RollbackDetectedError(
                 "freshness anchor record failed authentication (wrong key, or it was altered)"
             )
