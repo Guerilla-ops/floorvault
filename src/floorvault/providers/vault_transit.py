@@ -88,9 +88,7 @@ _SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 def _require_segment(value: object, what: str) -> str:
     """``value`` as a single URL path segment, or ``ValueError``."""
     if not isinstance(value, str) or _SEGMENT.fullmatch(value) is None or value in (".", ".."):
-        raise ValueError(
-            f"{what} must be a single path segment of [A-Za-z0-9._-], not {value!r}"
-        )
+        raise ValueError(f"{what} must be a single path segment of [A-Za-z0-9._-], not {value!r}")
     return value
 
 
@@ -112,12 +110,7 @@ def _require_vault_addr(vault_addr: str) -> None:
             "vault_addr must be an https:// URL; plain HTTP cannot carry "
             "a token that unwraps the master key"
         )
-    if (
-        parts.username is not None
-        or parts.password is not None
-        or parts.query
-        or parts.fragment
-    ):
+    if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
         raise ValueError("vault_addr must not carry userinfo, a query or a fragment")
 
 
@@ -160,9 +153,7 @@ class UrllibTransport:
         self._retries = max(0, retries)
         # ``urlparse().hostname`` lowercases, so the trusted list is lowered too:
         # an uppercase standby name must match, not silently refuse every redirect.
-        self._allowed_redirect_hosts = frozenset(
-            host.lower() for host in allowed_redirect_hosts
-        )
+        self._allowed_redirect_hosts = frozenset(host.lower() for host in allowed_redirect_hosts)
         # The verified-TLS context is bound into the HTTPS handler itself:
         # OpenerDirector.open() takes no per-call context argument. The
         # redirect handler refuses everything; redirects are reissued

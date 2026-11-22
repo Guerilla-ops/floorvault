@@ -24,9 +24,18 @@ def seed_inputs() -> list[bytes]:
         return bytes([limit]) + struct.pack(">I", len(body)) + body
 
     return [
-        frame({"op": "encrypt", "table": "t", "record_id": "1", "column": "c",
-               "schema_id": "s", "schema_version": 1, "key_id": 0,
-               "plaintext": "AA=="}),
+        frame(
+            {
+                "op": "encrypt",
+                "table": "t",
+                "record_id": "1",
+                "column": "c",
+                "schema_id": "s",
+                "schema_version": 1,
+                "key_id": 0,
+                "plaintext": "AA==",
+            }
+        ),
         frame({"op": "decrypt", "schema_version": -1, "key_id": True}),
         frame(["not", "a", "dict"]),
         frame({"schema_version": 1e40}),

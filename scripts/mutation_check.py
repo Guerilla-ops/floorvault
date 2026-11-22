@@ -1372,7 +1372,9 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "FA-3",
         "src/floorvault/freshness.py",
-        "        if not hmac.compare_digest(mac, self._record_mac(committed, pending)):",
+        "        if not hmac.compare_digest(\n"
+        "            mac, self._record_mac(committed, pending)\n"
+        "        ) and not hmac.compare_digest(mac, self._legacy_record_mac(committed, pending)):",
         "        if False:  # MUTANT",
         "Anchor record no longer authenticated: whoever can write the store can re-baseline it to a rolled-back database",
     ),
@@ -2593,8 +2595,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AGT-63",
         "src/floorvault/key_agent.py",
-        '            wanted_token = request.get("start_token")\n            if wanted_token is not None and wanted_token != self._start_token:\n',
-        '            wanted_token = request.get("start_token")\n            if False:  # MUTANT\n',
+        '            wanted_token = request.get("start_token")\n            if wanted_token is not None and not (\n',
+        '            wanted_token = request.get("start_token")\n            if False and not (  # MUTANT\n',
         "A lock pinned to an earlier agent start stops the newer agent (#84)",
         expect_on_windows="survived",
     ),

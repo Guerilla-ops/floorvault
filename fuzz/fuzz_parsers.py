@@ -124,8 +124,12 @@ def seed_inputs() -> list[bytes]:
     import json
 
     record = json.dumps(
-        {"format": "fv-freshness-anchor-1", "committed": "00" * 32,
-         "pending": None, "mac": "00" * 32}
+        {
+            "format": "fv-freshness-anchor-1",
+            "committed": "00" * 32,
+            "pending": None,
+            "mac": "00" * 32,
+        }
     ).encode()
     bindings = json.dumps(
         {"format": "fv-bindings-1", "vault": str(_VAULT), "items": {"a": "b"}}
