@@ -1,5 +1,5 @@
 <p>
-  <img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/floorvault-v0.4.0-full.webp" width="100%" alt="FloorVault v0.4.0: bind the field, bind the command. Six parts: field context, database adapters, key custody, agent secrets, the key agent (new in 0.4.0) and the Hermes plugin, plus search beacons, key rotation, key recovery, inspect, hardened memory keys, sealed listing and published test vectors.">
+  <img src="https://raw.githubusercontent.com/Guerilla-ops/floorvault/main/docs/assets/floorvault-v0.4.2-full.webp" width="100%" alt="FloorVault v0.4.2: bind the field, bind the command. Six parts: field context, database adapters, key custody (Vault Transit from the CLI, new in 0.4.2), agent secrets, the key agent (decrypt only by default, new in 0.4.2) and the Hermes plugin (vault-transit custody, bindings re-checked after resolve, 21 hvault audit findings fixed). Also in 0.4.2: fork-safe memory key, strict token_env key, bounded --stdin, rotation retire steps, Windows anchor retry, CI token not persisted, mutation-tested fixes.">
 </p>
 
 # FloorVault
@@ -26,36 +26,46 @@ the key itself can sit behind a passphrase that you type once per session.
 [Hermes Agent](#hermes-agent) · [Limits](#security-boundaries) ·
 [Documentation](#documentation)
 
-## New in 0.4.0
+## New in 0.4.2
 
-- **A key behind a passphrase.** `floorvault secrets init --custody passphrase`
-  keeps a new store's master key only as a passphrase-wrapped file
-  (`master.key.fvpw`, scrypt and AES-SIV), and `floorvault secrets protect` wraps
-  the raw key file of an existing store the same way. `secrets protect --rotate`
-  moves a store whose key is in the OS key store, a systemd-creds credential,
-  `--key-env` or `--key-file` under a passphrase by re-encrypting it under a new
-  key; every step is resumable, so run the same command again after an
-  interruption.
-- **A key agent (Linux and macOS).** `floorvault unlock` asks for the passphrase
-  once and leaves a hardened background agent holding the key (8 hours in total
-  and 1 hour idle by default, counted through sleep); `floorvault lock` wipes it.
-  While it runs, `floorvault run` and `floorvault secrets` use it with no prompt
-  and no terminal, so an MCP client or a service can resolve secrets. The agent
-  refuses to start unless core dumps are off and debuggers are blocked
-  (`--allow-unhardened` overrides this, with a warning), is forked before the
-  passphrase is asked for, and checks every directory above its
-  socket. It gives up after 15 minutes if its starter never delivers the key,
-  does not take a busy agent for a stale socket, and cannot be stopped by a
-  cleanup aimed at an earlier agent.
-- **Hermes plugin 0.4.0.** `hermes hvault bind` sets up a store and maps a
-  variable in one step (`--stdin` takes the value from a pipe), and
-  `hermes hvault allow` binds an item to the command line Hermes runs as, without
-  leaving Hermes. `hermes hvault doctor` prints the warnings Hermes prints at
-  startup instead of a count, `hermes hvault` no longer needs PyYAML, and the
-  warning for a skipped item names a command line you can bind.
+0.4.1 was never tagged or published, so 0.4.2 is the first release after 0.4.0.
 
-Upgrading from 0.3.x needs no data migration, and a store that already uses a key
-file, systemd-creds or the OS key store keeps working as it is. Full notes:
+- **The key agent only decrypts.** Everything `run` does is a read, so by default
+  the agent decrypts and nothing else; commands that write ask for the passphrase
+  and say why. `floorvault unlock --write` starts an agent that also encrypts data
+  columns, and only `unlock --write --bindings` can seal a command binding through
+  the socket, so a same-user process can no longer forge a wider binding while
+  the agent runs. `unlock --only ITEM` serves those items and refuses every other
+  record. Every request is counted (`unlock --status`) and written to an
+  owner-only use log beside the socket: time, operation, item, result and the
+  peer's pid, never a value.
+- **Vault Transit from the CLI and the Hermes plugin.**
+  `floorvault secrets init --custody vault-transit` mints a key with Vault and
+  keeps it only wrapped, beside the store. Every open asks Vault to unwrap it, so
+  revoking the token locks the store at its next open, on every host. Where Vault
+  is and the token come from the environment only (`VAULT_ADDR`, `VAULT_TOKEN`,
+  `VAULT_CACERT`, `FLOOR_VAULT_TRANSIT_KEY`, `FLOOR_VAULT_TRANSIT_MOUNT`), and
+  `run` keeps the store's token from the child. It fails closed: no other key is
+  tried and a missing wrapped key is never re-minted. The Hermes plugin opens the
+  same store with `custody: vault-transit`.
+- **Hermes plugin 0.4.2.** An audit of `hermes hvault` fixed 21 findings
+  ([report](https://github.com/Guerilla-ops/floorvault/blob/main/docs/HVAULT-CLI-AUDIT-2026-11-11.md)).
+  Startup resolution re-reads each item's binding after resolving it and drops a
+  value whose binding changed in between, `token_env` must hold exactly 64 hex
+  characters, and `bind --stdin` is capped at 64 KiB. Behaviour changes:
+  `allow ITEM` with no command binds the gateway line, and store, key and custody
+  failures exit 1 instead of 2.
+- **Hardening.** `vault.db` is created owner-only (0600), and an existing file is
+  tightened when the store opens. A forked child can no longer zero the parent's
+  hardened memory key. `protect --rotate` ends with the steps to retire the old
+  key. On Windows the anchor store retries a momentary sharing violation. CI no
+  longer leaves the workflow token in `.git/config`, and every `uv sync` is
+  `--locked`.
+
+Upgrading from 0.4.0 needs no data migration. An agent you start with
+`floorvault unlock` no longer encrypts: use `unlock --write` for a session that
+writes, and add `--bindings` to change bindings through it. Full notes:
+[v0.4.2 release](https://github.com/Guerilla-ops/floorvault/releases/tag/v0.4.2) ·
 [v0.4.0 release](https://github.com/Guerilla-ops/floorvault/releases/tag/v0.4.0).
 
 **Beta.** No completed independent code audit or security certification is claimed.
@@ -281,10 +291,11 @@ there it takes precedence, and `doctor` flags it.
 - The plugin needs floorvault 0.2.8 or newer. `hermes hvault allow` needs 0.3.0
   or newer; with 0.2.x, bind with `floorvault secrets allow`.
 - It does not support a passphrase-protected store, because it never prompts. Use
-  the OS key store, a key file or systemd-creds for a store Hermes reads.
+  the OS key store, a key file, systemd-creds or Vault Transit
+  (`custody: vault-transit`) for a store Hermes reads.
 - `hermes hvault allow` keeps a binding record outside the store. A later
-  `allow` refuses a binding changed behind its back, and with a floorvault newer
-  than 0.4.0 startup resolution skips such an item too; see
+  `allow` refuses a binding changed behind its back, and with floorvault 0.4.2
+  or newer startup resolution skips such an item too; see
   [Security boundaries](#security-boundaries).
 
 [Plugin README](https://github.com/Guerilla-ops/floorvault/blob/main/plugins/hermesvault/README.md) ·
@@ -305,7 +316,7 @@ Beta, unaudited, no policy broker, and search beacons leak equality. In detail:
 | Agent access | A compromised or prompt-injected authorised caller can request genuine plaintext. The library does not supply a policy broker. |
 | Key agent | While unlocked, code running as you can ask the agent to decrypt what it serves: every item, or only those named with `--only`. It encrypts only with `--write`. It hands out plaintext, not the key, and cannot tell one of your programs from another. It refuses to start without core-dump and debugger protection unless `--allow-unhardened` is given, and it is not an enclave. The macOS peer-credential check and the suspend-inclusive clock have not been run on a real Mac outside CI. |
 | Passphrase | The wrapping is only as strong as the passphrase, and there is no recovery: lose the passphrase or `master.key.fvpw` and the data is gone. After `protect --rotate`, backups made before still open with the old key, and an external key file, environment key or the shared OS key store entry is not retired for you. |
-| Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, and the state directory must persist and stay outside the store writer's control; restoring both the store and record can replay an older, wider binding undetected. `hermes hvault allow` keeps the same kind of record: a later `allow` refuses a binding changed behind its back, and with a floorvault newer than 0.4.0 the plugin's startup resolution reads it and skips an item whose recorded binding was cleared or rolled back in `vault.db`. The plugin only reads the record, so an item it was never recorded for is judged by the store alone (a cleared binding is then refused only with `require_binding: true`), and with 0.4.0 or older nothing is compared. |
+| Command binding | Guards against mistakes and untrusted config. From 0.3.0 `run` keeps a record of each binding outside the store and refuses one that was cleared or rolled back in `vault.db`. An item's first use is trusted, and the state directory must persist and stay outside the store writer's control; restoring both the store and record can replay an older, wider binding undetected. `hermes hvault allow` keeps the same kind of record: a later `allow` refuses a binding changed behind its back, and with floorvault 0.4.2 or newer the plugin's startup resolution reads it and skips an item whose recorded binding was cleared or rolled back in `vault.db`. The plugin only reads the record, so an item it was never recorded for is judged by the store alone (a cleared binding is then refused only with `require_binding: true`), and with 0.4.0 or older nothing is compared. |
 
 ## Documentation
 
