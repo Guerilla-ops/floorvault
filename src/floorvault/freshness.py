@@ -294,7 +294,9 @@ class FreshnessAnchor:
         self.name = name
         self.store = store
         self._tables = dict(sorted(folded.items()))
-        self._key = self._derive_key(master_key)
+        # The derived HMAC key gets the same page-locked, wiped-on-GC custody
+        # as the master key it came from (FV-06).
+        self._key = HardenedMemoryKey(self._derive_key(master_key))
         # The committed digest this instance last verified or wrote, and the
         # connection it was established on. Writes refuse to advance from any
         # other state or connection, and a failed verify clears both, so an
@@ -325,7 +327,7 @@ class FreshnessAnchor:
 
     def digest(self, connection: Any) -> bytes:
         """Keyed digest of the anchored tables' rows and schema, as seen by ``connection``."""
-        mac = hmac.new(self._key, digestmod=hashlib.sha256)
+        mac = hmac.new(self._key.get_bytes(), digestmod=hashlib.sha256)
         mac.update(_FORMAT + b"digest" + _frame(self.name.encode("utf-8")))
         # Schema first. A trigger can rewrite an anchored table on the next
         # legitimate write (and a trigger on any table can target one), so
@@ -390,6 +392,28 @@ class FreshnessAnchor:
     # -- anchor record --------------------------------------------------------
 
     def _record_mac(self, committed: bytes, pending: Optional[bytes]) -> bytes:
+        # Presence is tagged, not folded into the frame: ``_frame(pending or b"")``
+        # made ``pending: null`` and ``pending: ""`` the same MAC body, so a record
+        # rewritten null -> "" still authenticated while parsing as an interrupted
+        # commit (FV-02). ``_load`` refuses a pending that is not exactly a digest,
+        # so an empty one can never reach this body.
+        body = (
+            _FORMAT
+            + b"record"
+            + _frame(self.name.encode("utf-8"))
+            + _frame(committed)
+            + (b"\x01" + _frame(pending) if pending is not None else b"\x00")
+        )
+        return hmac.new(self._key.get_bytes(), body, hashlib.sha256).digest()
+
+    def _legacy_record_mac(self, committed: bytes, pending: Optional[bytes]) -> bytes:
+        """The pre-FV-02 MAC body, for records written before the presence tag.
+
+        Accepting it is safe only because ``_load`` refuses ``pending == b""``
+        before the MAC is checked: the one ambiguity this body could not
+        distinguish (null vs empty) is unreachable, so any record that verifies
+        here names its (committed, pending) uniquely.
+        """
         body = (
             _FORMAT
             + b"record"
@@ -397,7 +421,7 @@ class FreshnessAnchor:
             + _frame(committed)
             + _frame(pending or b"")
         )
-        return hmac.new(self._key, body, hashlib.sha256).digest()
+        return hmac.new(self._key.get_bytes(), body, hashlib.sha256).digest()
 
     def _encode_record(self, committed: bytes, pending: Optional[bytes]) -> bytes:
         record = {
@@ -422,7 +446,15 @@ class FreshnessAnchor:
             mac = bytes.fromhex(record["mac"])
         except (UnicodeDecodeError, ValueError, KeyError, TypeError, AttributeError):
             raise RollbackDetectedError("freshness anchor record is malformed") from None
-        if not hmac.compare_digest(mac, self._record_mac(committed, pending)):
+        # Lengths are enforced before the MAC: each digest is exactly 32 bytes.
+        # In particular ``pending: ""`` is refused outright - it parses to b"",
+        # which the legacy MAC body cannot tell apart from null, so accepting it
+        # would let a record rewrite masquerade as an interrupted commit (FV-02).
+        if len(committed) != 32 or (pending is not None and len(pending) != 32):
+            raise RollbackDetectedError("freshness anchor record is malformed")
+        if not hmac.compare_digest(
+            mac, self._record_mac(committed, pending)
+        ) and not hmac.compare_digest(mac, self._legacy_record_mac(committed, pending)):
             raise RollbackDetectedError(
                 "freshness anchor record failed authentication (wrong key, or it was altered)"
             )

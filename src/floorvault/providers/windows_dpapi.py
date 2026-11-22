@@ -143,6 +143,12 @@ class WindowsDPAPIKeyProvider(KeyProvider):
             buf = (ctypes.c_byte * len(data)).from_buffer_copy(data)
             return DATA_BLOB(len(data), buf)
 
+        def free_out(out: DATA_BLOB) -> None:
+            # The Win32 buffer held plaintext or ciphertext we no longer need;
+            # zero before LocalFree or the key stays in freed heap memory (FV-05).
+            ctypes.memset(out.pbData, 0, out.cbData)
+            ctypes.windll.kernel32.LocalFree(out.pbData)
+
         crypt32 = ctypes.windll.crypt32
         crypt32.CryptProtectData.argtypes = [
             ctypes.POINTER(DATA_BLOB),
@@ -157,15 +163,20 @@ class WindowsDPAPIKeyProvider(KeyProvider):
         blob = to_blob(key)
         ent = to_blob(self._entropy)
         out = DATA_BLOB()
-        ok = crypt32.CryptProtectData(
-            ctypes.byref(blob), None, ctypes.byref(ent), None, None, 0, ctypes.byref(out)
-        )
+        try:
+            # CRYPTPROTECT_UI_FORBIDDEN (0x1): a custody call must never put up an
+            # OS dialog in a headless or service run.
+            ok = crypt32.CryptProtectData(
+                ctypes.byref(blob), None, ctypes.byref(ent), None, None, 0x1, ctypes.byref(out)
+            )
+        finally:
+            ctypes.memset(blob.pbData, 0, blob.cbData)
         if not ok:
             raise ProtectedStoreError("CryptProtectData failed")
         try:
             return ctypes.string_at(out.pbData, out.cbData)
         finally:
-            ctypes.windll.kernel32.LocalFree(out.pbData)
+            free_out(out)
 
     def _windows_unprotect(self, blob: bytes) -> bytes:
         import ctypes
@@ -193,13 +204,15 @@ class WindowsDPAPIKeyProvider(KeyProvider):
         ent = to_blob(self._entropy)
         out = DATA_BLOB()
         ok = crypt32.CryptUnprotectData(
-            ctypes.byref(blob_in), None, ctypes.byref(ent), None, None, 0, ctypes.byref(out)
+            ctypes.byref(blob_in), None, ctypes.byref(ent), None, None, 0x1, ctypes.byref(out)
         )
         if not ok:
             raise ProtectedStoreError("CryptUnprotectData failed")
         try:
             return ctypes.string_at(out.pbData, out.cbData)
         finally:
+            # out.pbData held the decrypted key: zero before the free (FV-05).
+            ctypes.memset(out.pbData, 0, out.cbData)
             ctypes.windll.kernel32.LocalFree(out.pbData)
 
     # ---- boundary (protect on write, unprotect on read) -------------------

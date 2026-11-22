@@ -173,3 +173,71 @@ def test_linux_keyring_invalid_service_fails_closed(tmp_path):
 
     with pytest.raises(ValueError):
         LinuxSecretServiceKeyProvider(store_path=tmp_path, service="")
+
+
+def test_dpapi_zeroes_plaintext_blobs_and_suppresses_ui(monkeypatch, tmp_path):
+    """FV-05: the decrypted-key buffer must be memset before LocalFree, the
+    plaintext input blob must be wiped after the call, and dwFlags must carry
+    CRYPTPROTECT_UI_FORBIDDEN (0x1). The fake heap buffers are real ctypes
+    memory, so a skipped memset leaves the bytes readable."""
+    import ctypes
+    import types
+
+    from floorvault.providers.windows_dpapi import WindowsDPAPIKeyProvider
+
+    provider = WindowsDPAPIKeyProvider(
+        store_path=tmp_path / "k", entropy=b"e", allow_nonwindows_stub=True
+    )
+    heap_blocks: list = []
+    flags: list[int] = []
+
+    def heap_put(data: bytes):
+        block = ctypes.create_string_buffer(data, len(data))
+        heap_blocks.append(block)
+        return ctypes.cast(block, ctypes.POINTER(ctypes.c_byte))
+
+    def fake_protect(in_blob, _s, _e, _a, _b, dwflags, out_ptr):
+        flags.append(dwflags)
+        out = out_ptr._obj
+        out.cbData = 16
+        out.pbData = heap_put(b"C" * 16)
+        return True
+
+    def fake_unprotect(in_blob, _s, _e, _a, _b, dwflags, out_ptr):
+        flags.append(dwflags)
+        out = out_ptr._obj
+        out.cbData = 32
+        out.pbData = heap_put(b"K" * 32)
+        return True
+
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        types.SimpleNamespace(
+            crypt32=types.SimpleNamespace(
+                CryptProtectData=fake_protect, CryptUnprotectData=fake_unprotect
+            ),
+            kernel32=types.SimpleNamespace(LocalFree=lambda ptr: None),
+        ),
+        raising=False,
+    )
+
+    # _windows_protect: input key blob is wiped after the call; out freed zeroed.
+    key_blob_holder = {}
+
+    def capture_protect(in_blob, *rest):
+        key_blob_holder["blob"] = in_blob._obj
+        return fake_protect(in_blob, *rest)
+
+    ctypes.windll.crypt32.CryptProtectData = capture_protect
+    provider._windows_protect(b"K" * 32)
+    in_blob = key_blob_holder["blob"]
+    assert ctypes.string_at(in_blob.pbData, in_blob.cbData) == bytes(32)
+    assert heap_blocks and bytes(heap_blocks[-1]) == bytes(16)
+
+    # _windows_unprotect: the decrypted-key out buffer is memset before free.
+    heap_blocks.clear()
+    assert provider._windows_unprotect(b"C" * 16) == b"K" * 32
+    assert bytes(heap_blocks[0]) == bytes(32)
+
+    assert flags == [0x1, 0x1]

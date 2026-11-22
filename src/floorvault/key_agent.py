@@ -36,6 +36,7 @@ import base64
 import binascii
 import contextlib
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -295,7 +296,14 @@ def peer_credentials(conn: socket.socket) -> tuple[Optional[int], int]:
     if sys.platform == "darwin":
         # struct xucred { u_int cr_version; uid_t cr_uid; ... }, LOCAL_PEERCRED = 1 at level 0.
         buf = conn.getsockopt(0, 1, 76)
-        _version, uid = struct.unpack_from("II", buf)
+        version, uid = struct.unpack_from("II", buf)
+        # XUCRED_VERSION is 0. A kernel that ever bumped it would change the
+        # layout, and a silently re-interpreted cr_uid is a broken identity
+        # check, not a compatibility quirk (FV-08).
+        if version != 0:
+            raise AgentError(
+                f"xucred version {version} is not the version 0 layout this check expects"
+            )
         # LOCAL_PEERPID = 2 at the same level. Only recorded in the use log, never used to
         # decide anything, so a platform that refuses it costs nothing but that detail.
         try:
@@ -740,7 +748,14 @@ class Agent:
             )
         elif op == "lock":
             wanted_token = request.get("start_token")
-            if wanted_token is not None and wanted_token != self._start_token:
+            if wanted_token is not None and not (
+                isinstance(wanted_token, str)
+                and isinstance(self._start_token, str)
+                and hmac.compare_digest(
+                    wanted_token.encode("utf-8", "surrogatepass"),
+                    self._start_token.encode("utf-8", "surrogatepass"),
+                )
+            ):
                 _send(conn, {"ok": False, "error": "a different agent holds this socket"})
                 return
             wanted = request.get("identity")

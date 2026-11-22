@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import getpass
+import hmac
 import os
 import secrets
 import sys
@@ -254,7 +255,7 @@ def create_wrapped_key(vault_dir: Path, passphrase: str) -> Path:
         except (OSError, ValueError) as exc:
             raise PassphraseCustodyError(f"cannot create {path} ({type(exc).__name__})") from None
         check = read_key(vault_dir, passphrase)
-        if check != key:
+        if check is None or not hmac.compare_digest(check, key):
             raise PassphraseCustodyError(
                 f"{path} did not unwrap to the same key; the key is not usable, "
                 "nothing else changed"
@@ -330,7 +331,8 @@ def stage_wrapped_key(vault_dir: Path, key: bytes, passphrase: str) -> Path:
             raise PassphraseCustodyError(f"cannot create {path}: {exc}") from None
         except (OSError, ValueError) as exc:
             raise PassphraseCustodyError(f"cannot create {path} ({type(exc).__name__})") from None
-        if read_staged_key(vault_dir, passphrase) != key:
+        staged = read_staged_key(vault_dir, passphrase)
+        if staged is None or not hmac.compare_digest(staged, key):
             raise PassphraseCustodyError(
                 f"{path} did not unwrap to the same key; nothing else changed"
             )

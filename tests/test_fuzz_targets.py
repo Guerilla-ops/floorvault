@@ -57,6 +57,8 @@ def test_the_fuzz_targets_exist():
         "fuzz_protected_store",
         "fuzz_identifiers",
         "fuzz_beacons",
+        "fuzz_agent_protocol",
+        "fuzz_parsers",
     } <= names
 
 

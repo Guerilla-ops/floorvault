@@ -27,8 +27,10 @@ MADV_DONTFORK = 10 if is_linux() else None
 
 # Page size used to align the key allocation. Linux madvise(2) requires the
 # address to be page-aligned and returns EINVAL otherwise, so an unaligned
-# buffer can never receive either protection.
-PAGE_SIZE = 4096
+# buffer can never receive either protection. The OS reports it: 16 KiB on
+# arm64 macOS, 64 KiB on some Linux kernels - a hardcoded 4096 stays aligned
+# but understates the real mapping size (FV-04).
+PAGE_SIZE = mmap.PAGESIZE
 
 
 class SecurityHardeningError(RuntimeError):

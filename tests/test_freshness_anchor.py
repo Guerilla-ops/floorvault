@@ -10,6 +10,7 @@ anchor overwrite, trigger tampering, unflushed rename) each have a test here.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -244,6 +245,30 @@ def test_tampered_anchor_record_is_refused(app, mutate):
     record = store.directory / "app.fvanchor"
     record.write_bytes(mutate(record.read_bytes()))
     _assert_refused(path, store)
+
+
+def test_pending_empty_string_tamper_is_malformed_not_pending(app):
+    """``"pending":null`` rewritten to ``"pending":""`` authenticated under the
+    legacy MAC body and then read as an interrupted commit (FV-02). ``""`` is not
+    a digest and was never a written value, so the record is malformed now."""
+    path, store, _connection, _anchor, _table_ = app
+    record = store.directory / "app.fvanchor"
+    record.write_bytes(record.read_bytes().replace(b'"pending":null', b'"pending":""'))
+    _assert_refused(path, store, "malformed")
+
+
+def test_a_record_signed_with_the_legacy_mac_still_verifies(app):
+    """Records written before the pending-presence tag keep verifying (FV-02)."""
+    path, store, _connection, anchor, _table_ = app
+    record_path = store.directory / "app.fvanchor"
+    blob = json.loads(record_path.read_bytes())
+    blob["mac"] = anchor._legacy_record_mac(bytes.fromhex(blob["committed"]), None).hex()
+    record_path.write_bytes(json.dumps(blob, sort_keys=True, separators=(",", ":")).encode())
+    fresh, fresh_anchor = _reopen(path, store)
+    try:
+        fresh_anchor.verify(fresh)
+    finally:
+        fresh.close()
 
 
 def test_anchor_record_from_another_key_is_refused(app):

@@ -79,6 +79,47 @@ _MAX_BLOB_BYTES = MAX_PAYLOAD_BYTES
 #: so a blob that fails this is malformed, not merely old.
 _BLOB_PATTERN = re.compile(rb"vault:v\d+:[A-Za-z0-9+/=]+")
 
+#: One URL path segment's safe charset for transit key names and mount parts.
+#: ``/``, ``?``, ``#``, ``%`` and ``.``/``..`` segments are refused so a configured
+#: name cannot steer the authenticated request to another Vault API path (FV-03).
+_SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def _require_segment(value: object, what: str) -> str:
+    """``value`` as a single URL path segment, or ``ValueError``."""
+    if not isinstance(value, str) or _SEGMENT.fullmatch(value) is None or value in (".", ".."):
+        raise ValueError(
+            f"{what} must be a single path segment of [A-Za-z0-9._-], not {value!r}"
+        )
+    return value
+
+
+def _require_mount(value: object) -> str:
+    """A transit mount as ``/``-separated safe segments, or ``ValueError``."""
+    mount = value.strip("/") if isinstance(value, str) else ""
+    if not mount:
+        raise ValueError("transit_mount must name a mounted path")
+    for segment in mount.split("/"):
+        _require_segment(segment, "a transit_mount segment")
+    return mount
+
+
+def _require_vault_addr(vault_addr: str) -> None:
+    """Refuse an address whose parts could divert or confuse the request (FV-03)."""
+    parts = urllib.parse.urlparse(vault_addr)
+    if parts.scheme != "https" or not parts.hostname:
+        raise ValueError(
+            "vault_addr must be an https:// URL; plain HTTP cannot carry "
+            "a token that unwraps the master key"
+        )
+    if (
+        parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+    ):
+        raise ValueError("vault_addr must not carry userinfo, a query or a fragment")
+
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Refuse every redirect; Vault HA 307s need an explicit trust contract.
@@ -111,18 +152,17 @@ class UrllibTransport:
         allowed_redirect_hosts: frozenset[str] = frozenset(),
         cafile: str | os.PathLike | None = None,
     ) -> None:
-        parts = urllib.parse.urlparse(vault_addr)
-        if parts.scheme != "https" or not parts.hostname:
-            raise ValueError(
-                "vault_addr must be an https:// URL; plain HTTP cannot carry "
-                "a token that unwraps the master key"
-            )
+        _require_vault_addr(vault_addr)
         if not 0 < timeout <= 60:
             raise ValueError("timeout must be in (0, 60] seconds")
         self._base = vault_addr.rstrip("/")
         self._timeout = timeout
         self._retries = max(0, retries)
-        self._allowed_redirect_hosts = frozenset(allowed_redirect_hosts)
+        # ``urlparse().hostname`` lowercases, so the trusted list is lowered too:
+        # an uppercase standby name must match, not silently refuse every redirect.
+        self._allowed_redirect_hosts = frozenset(
+            host.lower() for host in allowed_redirect_hosts
+        )
         # The verified-TLS context is bound into the HTTPS handler itself:
         # OpenerDirector.open() takes no per-call context argument. The
         # redirect handler refuses everything; redirects are reissued
@@ -330,16 +370,14 @@ class VaultTransitProvider(KeyProvider):
         cafile: str | os.PathLike | None = None,
         transport: Any | None = None,
     ) -> None:
-        if not key_name or not key_name.strip():
-            raise ValueError("key_name must name an operator-provisioned transit key")
+        self._key_name = _require_segment(
+            key_name.strip() if isinstance(key_name, str) else "", "key_name"
+        )
         # The HTTPS contract lives at the provider too: an injected transport
         # must not be able to weaken the advertised endpoint guarantee.
-        parsed_addr = urllib.parse.urlparse(vault_addr)
-        if parsed_addr.scheme != "https" or not parsed_addr.hostname:
-            raise ValueError("vault_addr must be an https:// URL")
-        self._key_name = key_name
+        _require_vault_addr(vault_addr)
         self._app_instance_id = app_instance_id
-        self._mount = transit_mount.strip("/")
+        self._mount = _require_mount(transit_mount)
         self._cache_ttl = cache_ttl
         self._token = token if token is not None else os.environ.get("VAULT_TOKEN")
         if not self._token:
