@@ -10,6 +10,7 @@ Scales from interactive desktop storage to headless cloud/Docker environments:
 from __future__ import annotations
 
 import contextlib
+import hmac
 import os
 import stat
 import warnings
@@ -837,7 +838,7 @@ def protect_key_file(
                     provider._read_wrapped_key_file(wrapped_file) or b"", passphrase
                 )
                 try:
-                    if bytes(check) != bytes(master):
+                    if not hmac.compare_digest(bytes(check), bytes(master)):
                         raise KeyProviderError(
                             "wrapped key file does not round-trip; raw key left in place"
                         )

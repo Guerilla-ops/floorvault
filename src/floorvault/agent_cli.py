@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import getpass
+import hmac
 import json
 import os
 import re
@@ -2108,7 +2109,7 @@ def _protect_rotate_steps(args, prog: str, vault_dir: Path, *, staged: bool) -> 
     passphrase_custody.publish_staged_key(vault_dir, phrase)
     removed = passphrase_custody.remove_replaced_custody(vault_dir)
     check = passphrase_custody.read_key(vault_dir, phrase)
-    if check != new_key:
+    if check is None or not hmac.compare_digest(check, new_key):
         raise StoreUnavailable(f"{vault_dir}: the wrapped key does not match the new key")
     _protect_report(prog, vault_dir, removed, old, len(items))
     if len(phrase) < _WEAK_BELOW_CHARS:
@@ -2269,7 +2270,7 @@ def _cmd_seal_listing(args, prog: str) -> int:
 
 
 def _cmd_rm(args, prog: str) -> int:
-    if _store_for(args).remove_item(args.item_id):
+    if _store_for(args, writes=True).remove_item(args.item_id):
         print(f"removed {args.item_id}")
         try:
             _binding_record(_vault_dir(args.vault, os.environ)).forget(args.item_id)

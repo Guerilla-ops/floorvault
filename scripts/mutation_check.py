@@ -1377,6 +1377,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         "Anchor record no longer authenticated: whoever can write the store can re-baseline it to a rolled-back database",
     ),
     Mutation(
+        "FA-21",
+        "src/floorvault/freshness.py",
+        "        if len(committed) != 32 or (pending is not None and len(pending) != 32):",
+        "        if False:  # MUTANT",
+        'A record rewritten from pending:null to pending:"" authenticates and reads as an '
+        "interrupted commit, steering the operator to discard_interrupted_commit (FV-02)",
+    ),
+    Mutation(
         "FA-4",
         "src/floorvault/freshness.py",
         "            self._trusted is None\n",
@@ -2593,8 +2601,8 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         "AGT-63",
         "src/floorvault/key_agent.py",
-        '            wanted_token = request.get("start_token")\n            if wanted_token is not None and wanted_token != self._start_token:\n',
-        '            wanted_token = request.get("start_token")\n            if False:  # MUTANT\n',
+        '            wanted_token = request.get("start_token")\n            if wanted_token is not None and not (\n',
+        '            wanted_token = request.get("start_token")\n            if False and not (  # MUTANT\n',
         "A lock pinned to an earlier agent start stops the newer agent (#84)",
         expect_on_windows="survived",
     ),

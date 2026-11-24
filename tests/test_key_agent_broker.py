@@ -946,3 +946,55 @@ def test_unlock_refuses_an_only_that_is_not_an_item_id(base, env, vault):
     assert code == 2 and "is not an item id" in err
     with pytest.raises(key_agent.AgentNotRunning):
         key_agent.status(key_agent.socket_path(vault, env))
+
+
+def test_rm_needs_a_writing_agent_or_the_passphrase(base, env):
+    """`secrets rm` writes, so a decrypt-only agent is no agent for it (FV-01).
+
+    Before the fix the command opened the store through the agent anyway: a
+    decrypt answered the write barrier's key check and the DELETE then ran, so
+    `rm` under a read-only unlock deleted the item and its binding record. Now
+    the agent is stepped around and the passphrase is asked, as for `add` - and
+    with no terminal that is a refusal, changing nothing.
+    """
+    vault = base / "v-rm"
+    for args in (
+        ["secrets", "init", "--custody", "passphrase", "--vault", str(vault)],
+        ["secrets", "add", "Token", "--id", "tok", "--stdin", "--vault", str(vault)],
+    ):
+        code, _out, err = in_process(args, env, [PHRASE])
+        assert code == 0, err
+    code, _out, err = in_process(["unlock", "--vault", str(vault)], env, [PHRASE])
+    assert code == 0, err
+    pid = key_agent.status(key_agent.socket_path(vault, env))["pid"]
+
+    child_env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("FLOOR_VAULT", "HERMES"))},
+        **env,
+        "FLOOR_VAULT_STATE_DIR": str(base / "state"),
+    }
+
+    def floorvault(*args):
+        # No controlling terminal, so a passphrase prompt cannot be answered:
+        # whatever succeeds here succeeded through the agent.
+        return subprocess.run(
+            [sys.executable, "-c", LAUNCH.format(src=str(ROOT / "src")), *args],
+            capture_output=True,
+            text=True,
+            env=child_env,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            timeout=120,
+        )
+
+    try:
+        refused = floorvault("secrets", "rm", "tok", "--vault", str(vault))
+        assert refused.returncode == 1
+        assert "only decrypts" in refused.stderr
+        listed = floorvault("secrets", "list", "--vault", str(vault))
+        assert listed.returncode == 0, listed.stderr
+        assert "tok" in listed.stdout.split()
+    finally:
+        key_agent.lock(key_agent.socket_path(vault, env))
+        if not wait_until(lambda: not alive(pid)):
+            force_kill(pid)

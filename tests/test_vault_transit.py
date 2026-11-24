@@ -107,6 +107,74 @@ def test_requires_a_token(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    "key_name",
+    ["../keys", "a/b", "a?x", "a#x", "a%20b", "a b", ".", "..", "", "  "],
+)
+def test_key_name_must_be_one_safe_path_segment(tmp_path, key_name):
+    """A key name is interpolated into the request path (FV-03): no traversal or
+    query/fragment injection into the authenticated Vault API call."""
+    with pytest.raises(ValueError):
+        VaultTransitProvider(
+            vault_addr=ADDR,
+            key_name=key_name,
+            store_dir=tmp_path,
+            token=TOKEN,
+            transport=FakeVault(),
+        )
+
+
+@pytest.mark.parametrize(
+    "mount",
+    ["transit/../secret", "a//b", "..", "trans it", "", "///", "mount?x"],
+)
+def test_transit_mount_must_be_safe_path_segments(tmp_path, mount):
+    with pytest.raises(ValueError):
+        VaultTransitProvider(
+            vault_addr=ADDR,
+            key_name="k",
+            store_dir=tmp_path,
+            token=TOKEN,
+            transit_mount=mount,
+            transport=FakeVault(),
+        )
+
+
+def test_a_nested_transit_mount_is_accepted(tmp_path):
+    provider, _ = make_provider(tmp_path, transit_mount="team/transit")
+    assert provider._mount == "team/transit"
+
+
+@pytest.mark.parametrize(
+    "addr",
+    [
+        "https://user:pass@vault.example.test",
+        "https://vault.example.test/?q=1",
+        "https://vault.example.test/#frag",
+        "http://vault.example.test",
+    ],
+)
+def test_vault_addr_rejects_diverting_parts(tmp_path, addr):
+    """userinfo/query/fragment in the base URL could divert or corrupt the
+    request path (FV-03); plain HTTP was already refused for the token."""
+    with pytest.raises(ValueError):
+        UrllibTransport(addr)
+    with pytest.raises(ValueError):
+        VaultTransitProvider(
+            vault_addr=addr,
+            key_name="k",
+            store_dir=tmp_path,
+            token=TOKEN,
+            transport=FakeVault(),
+        )
+
+
+def test_trusted_redirect_hosts_match_case_insensitively():
+    transport = UrllibTransport(ADDR, allowed_redirect_hosts=("Standby.EXAMPLE",))
+    transport._opener = _StubOpener("https://standby.example/v1/x")
+    assert transport.post("/v1/x", {}, TOKEN) == {"data": {"ok": True}}
+
+
 def test_provision_mints_and_wraps(tmp_path, monkeypatch):
     monkeypatch.delenv("VAULT_TOKEN", raising=False)
     provider, fake = make_provider(tmp_path)
