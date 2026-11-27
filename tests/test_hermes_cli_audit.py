@@ -42,7 +42,7 @@ def cli(tmp_path, monkeypatch):
     store = floorvault.get_vault_store(tmp_path / "agent-vault", auto_migrate=False)
     store.add_item(kind="generic", label="k", secret={"value": SECRET}, item_id="existing")
     monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(plugin_cli, "_secrets_cfg", lambda: {"enabled": True})
+    monkeypatch.setattr(plugin_cli, "_plugin_cfg", lambda: {"enabled": True})
     monkeypatch.setattr(plugin_cli, "_write_mapping", lambda _n, _r: True)
     plugin_cli._real_cmd_doctor = plugin_cli.__dict__.get(
         "_real_cmd_doctor", plugin_cli._cmd_doctor
@@ -178,7 +178,7 @@ def test_hv_6_field_names_with_c1_controls_or_line_separators_are_refused(
 def test_hv_7_rm_warns_about_mappings_left_on_the_removed_item(cli, monkeypatch, capsys):
     monkeypatch.setattr(
         cli,
-        "_secrets_cfg",
+        "_plugin_cfg",
         lambda: {
             "enabled": True,
             "env": {"A": "hv:existing", "B": "hv:existing:value", "C": "hv:x"},
@@ -215,7 +215,7 @@ def test_hv_10_put_on_a_blank_value_says_so(cli, tmp_path, monkeypatch, capsys):
 
 
 def _cfg(cli, monkeypatch, cfg):
-    monkeypatch.setattr(cli, "_secrets_cfg", lambda: cfg)
+    monkeypatch.setattr(cli, "_plugin_cfg", lambda: cfg)
 
 
 def _allow(cli, command=(), **flags):
@@ -278,7 +278,7 @@ def test_hv_13_bare_hvault_errors_are_not_prefixed_none(cli, monkeypatch, capsys
     def refuse():
         raise cli.CLIInputError("Hermes configuration must be a mapping")
 
-    monkeypatch.setattr(cli, "_secrets_cfg", refuse)
+    monkeypatch.setattr(cli, "_plugin_cfg", refuse)
     assert cli.hvault_command(SimpleNamespace(hvault_command=None)) == 2
     assert capsys.readouterr().err.startswith("hvault: ")
 

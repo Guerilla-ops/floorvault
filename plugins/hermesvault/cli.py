@@ -120,7 +120,7 @@ def _mapping_at(parent: dict, key: str) -> dict:
     return value
 
 
-def _secrets_cfg() -> dict:
+def _plugin_cfg() -> dict:
     """The ``secrets.hermesvault`` section exactly as the user wrote it.
 
     Read through ``read_user_config_raw``, Hermes' raw reader: it raises on a
@@ -156,7 +156,7 @@ def _secrets_cfg() -> dict:
 
 
 def _store(*, setup: bool = False):
-    cfg = _secrets_cfg()
+    cfg = _plugin_cfg()
     from .source import _open_store
 
     return _open_store(cfg, Path(get_hermes_home()), setup=setup)
@@ -319,7 +319,7 @@ def _custody_line(cfg: dict) -> str:
 def _cmd_setup(_args) -> int:
     from .source import resolve_base_dir
 
-    cfg = _secrets_cfg()
+    cfg = _plugin_cfg()
     store = _store(setup=True)
     del store
     print(f"store ready at {resolve_base_dir(cfg, Path(get_hermes_home()))}")
@@ -499,7 +499,7 @@ def _warn_still_mapped(item_id: str) -> None:
     section is echoed (see ``_cmd_bind``).
     """
     try:
-        env_map = _secrets_cfg().get("env")
+        env_map = _plugin_cfg().get("env")
     except CLIInputError:
         return
     if not isinstance(env_map, dict):
@@ -527,7 +527,7 @@ def _forget_binding(item_id: str) -> None:
     except ImportError:  # floorvault 0.2.x keeps no record
         return
     try:
-        base = resolve_base_dir(_secrets_cfg(), Path(get_hermes_home()))
+        base = resolve_base_dir(_plugin_cfg(), Path(get_hermes_home()))
         record, _record_error = _binding_record(base)
         record.forget(item_id)
     except (BindingRecordError, CLIInputError) as exc:
@@ -644,7 +644,7 @@ def _cmd_bind(args) -> int:
         print("hvault bind: --stdin reads the value from a pipe or file", file=sys.stderr)
         return 2
 
-    cfg = _secrets_cfg()
+    cfg = _plugin_cfg()
     if args.env_name in HermesVaultSource().protected_env_vars(cfg):
         # Hermes never applies a mapping onto the bootstrap or key variables, so
         # binding one would store a value that nothing can use.
@@ -819,7 +819,7 @@ def _cmd_allow(args) -> int:
     if store.get_meta(item_id) is None:
         print(f"hvault allow: item {item_id} not found", file=sys.stderr)
         return 1
-    cfg = _secrets_cfg()
+    cfg = _plugin_cfg()
     base = resolve_base_dir(cfg, Path(get_hermes_home()))
     record, record_error = _binding_record(base)
     try:
@@ -942,7 +942,7 @@ def _cmd_allow(args) -> int:
 def _cmd_status(_args) -> int:
     """``hermes hvault`` with no command: where things stand and the next step.
     Opens the store exactly as the secret source does — no prompt, nothing created."""
-    cfg = _secrets_cfg()
+    cfg = _plugin_cfg()
     home = Path(get_hermes_home())
     base = resolve_base_dir(cfg, home)
     exists = (base / "vault.db").is_file()
@@ -974,7 +974,7 @@ def _cmd_status(_args) -> int:
 
 
 def _cmd_doctor(_args) -> int:
-    cfg = _secrets_cfg()
+    cfg = _plugin_cfg()
     home = Path(get_hermes_home())
     base = resolve_base_dir(cfg, home)
     print(f"profile: {home}")
@@ -987,7 +987,7 @@ def _cmd_doctor(_args) -> int:
             file=sys.stderr,
         )
         return 1
-    # validate_config (in _secrets_cfg) refused an env that is neither a map nor null.
+    # validate_config (in _plugin_cfg) refused an env that is neither a map nor null.
     env_map = cfg.get("env") or {}
     if not env_map:
         print("hvault doctor: no mappings configured", file=sys.stderr)

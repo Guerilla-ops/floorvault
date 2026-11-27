@@ -239,7 +239,7 @@ def test_doctor_resolves_without_printing_secrets(plugin_cli, vault_home, monkey
     monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
     monkeypatch.setattr(
         plugin_cli,
-        "_secrets_cfg",
+        "_plugin_cfg",
         lambda: {"enabled": True, "env": {"TOKEN": "hv:vault_testopenai"}},
     )
     assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="doctor")) == 0
@@ -261,7 +261,7 @@ def test_doctor_reports_unusable_or_shadowed_mappings(
     plugin_cli, vault_home, monkeypatch, capsys, cfg, existing
 ):
     monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
-    monkeypatch.setattr(plugin_cli, "_secrets_cfg", lambda: cfg)
+    monkeypatch.setattr(plugin_cli, "_plugin_cfg", lambda: cfg)
     if existing:
         monkeypatch.setenv("TOKEN", "existing-secret")
     assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="doctor")) == 1
@@ -273,7 +273,7 @@ def test_doctor_reports_unusable_or_shadowed_mappings(
 def test_doctor_missing_store_does_not_create_it(plugin_cli, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(
-        plugin_cli, "_secrets_cfg", lambda: {"enabled": True, "env": {"TOKEN": "hv:x"}}
+        plugin_cli, "_plugin_cfg", lambda: {"enabled": True, "env": {"TOKEN": "hv:x"}}
     )
     assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="doctor")) == 1
     assert not (tmp_path / "agent-vault").exists()
@@ -348,7 +348,7 @@ def test_config_load_errors_do_not_fall_back_to_default_store(plugin_cli, monkey
     module.read_user_config_raw = fail
     monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
     with pytest.raises(ValueError, match="configuration"):
-        plugin_cli._secrets_cfg()
+        plugin_cli._plugin_cfg()
 
 
 def test_source_open_error_redacts_exception(monkeypatch, tmp_path):
@@ -382,7 +382,7 @@ def test_cli_rejects_bad_yaml_even_when_host_returns_defaults(plugin_cli, tmp_pa
     module.read_user_config_raw = fail
     monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
     with pytest.raises(ValueError, match="configuration"):
-        plugin_cli._secrets_cfg()
+        plugin_cli._plugin_cfg()
 
 
 def _healthy_host_config(tmp_path, monkeypatch):
@@ -403,7 +403,7 @@ def test_cli_reads_config_with_hermes_raw_reader_and_needs_no_yaml(
     _healthy_host_config(tmp_path, monkeypatch)
     monkeypatch.setitem(sys.modules, "hermes_yaml", None)
     monkeypatch.setitem(sys.modules, "yaml", None)  # an import of either now raises ImportError
-    assert plugin_cli._secrets_cfg() == {"enabled": True}
+    assert plugin_cli._plugin_cfg() == {"enabled": True}
 
 
 def test_cli_with_no_raw_reader_names_the_missing_seam(plugin_cli, tmp_path, monkeypatch):
@@ -413,7 +413,7 @@ def test_cli_with_no_raw_reader_names_the_missing_seam(plugin_cli, tmp_path, mon
     module = types.ModuleType("hermes_cli.config")  # no read_user_config_raw attribute
     monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
     with pytest.raises(ValueError) as raised:
-        plugin_cli._secrets_cfg()
+        plugin_cli._plugin_cfg()
     message = str(raised.value)
     assert "read_user_config_raw" in message
     assert "correct config.yaml" not in message  # config.yaml is fine; the seam is missing
@@ -426,7 +426,7 @@ def test_cli_rejects_a_non_mapping_config(plugin_cli, tmp_path, monkeypatch):
     module.read_user_config_raw = lambda: ["a", "list"]
     monkeypatch.setitem(sys.modules, "hermes_cli.config", module)
     with pytest.raises(ValueError, match="must be a mapping"):
-        plugin_cli._secrets_cfg()
+        plugin_cli._plugin_cfg()
 
 
 def _raw_reader_like_hermes(tmp_path, monkeypatch, text):
@@ -449,7 +449,7 @@ def test_cli_refuses_a_root_that_is_not_a_mapping_that_hermes_reads_as_empty(
     """read_user_config_raw flattens a list or scalar root to {}; that must not select the default store."""
     _raw_reader_like_hermes(tmp_path, monkeypatch, text)
     with pytest.raises(ValueError, match="must be a mapping"):
-        plugin_cli._secrets_cfg()
+        plugin_cli._plugin_cfg()
 
 
 @pytest.mark.parametrize(
@@ -457,7 +457,7 @@ def test_cli_refuses_a_root_that_is_not_a_mapping_that_hermes_reads_as_empty(
 )
 def test_cli_accepts_a_missing_or_empty_config(plugin_cli, tmp_path, monkeypatch, text):
     _raw_reader_like_hermes(tmp_path, monkeypatch, text)
-    assert plugin_cli._secrets_cfg() == {}
+    assert plugin_cli._plugin_cfg() == {}
 
 
 # --- review of pin 6fc8132e: scope, prompts, creation, error text ---------------
@@ -547,7 +547,7 @@ def test_setup_creates_the_store_that_fetch_then_reads(tmp_path, monkeypatch, ca
 
     monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
     monkeypatch.setattr(hermesvault_cli, "get_hermes_home", lambda: str(tmp_path))
-    monkeypatch.setattr(hermesvault_cli, "_secrets_cfg", lambda: {})
+    monkeypatch.setattr(hermesvault_cli, "_plugin_cfg", lambda: {})
     assert hermesvault_cli.hvault_command(SimpleNamespace(hvault_command="setup")) == 0
     assert f"store ready at {tmp_path / 'agent-vault'}" in capsys.readouterr().out
     assert (tmp_path / "agent-vault" / "vault.db").is_file()
@@ -560,7 +560,7 @@ def test_add_on_a_missing_store_points_to_setup(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setenv("HERMES_VAULT_KEY", KEY)
     monkeypatch.setattr(hermesvault_cli, "get_hermes_home", lambda: str(tmp_path))
-    monkeypatch.setattr(hermesvault_cli, "_secrets_cfg", lambda: {})
+    monkeypatch.setattr(hermesvault_cli, "_plugin_cfg", lambda: {})
     args = SimpleNamespace(hvault_command="add", label="x", fields=["value=v"], stdin=False,
                            item_id=None)  # fmt: skip
     assert hermesvault_cli.hvault_command(args) == 1
@@ -743,7 +743,7 @@ def _hvault(monkeypatch, home, cfg, command, **extra):
     from hermesvault import cli as hermesvault_cli
 
     monkeypatch.setattr(hermesvault_cli, "get_hermes_home", lambda: str(home))
-    monkeypatch.setattr(hermesvault_cli, "_secrets_cfg", lambda: cfg)
+    monkeypatch.setattr(hermesvault_cli, "_plugin_cfg", lambda: cfg)
     return hermesvault_cli.hvault_command(SimpleNamespace(hvault_command=command, **extra))
 
 
@@ -1185,7 +1185,7 @@ def test_require_binding_must_be_a_boolean(vault_home):
 
 def test_hvault_show_prints_the_bindings(plugin_cli, vault_home, monkeypatch, capsys):
     monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
-    monkeypatch.setattr(plugin_cli, "_secrets_cfg", lambda: {"enabled": True})
+    monkeypatch.setattr(plugin_cli, "_plugin_cfg", lambda: {"enabled": True})
     show = SimpleNamespace(hvault_command="show", ref="vault_testopenai", reveal=False)
     assert plugin_cli.hvault_command(show) == 0
     assert "bindings: none; resolved for any command" in capsys.readouterr().out
@@ -1215,7 +1215,7 @@ def _allow_args(item_id="vault_testopenai", command=None, **flags):
 def allow_env(plugin_cli, vault_home, monkeypatch):
     """CLI wired to the fixture store, with the binding record in a temp state dir."""
     monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
-    monkeypatch.setattr(plugin_cli, "_secrets_cfg", lambda: {"enabled": True})
+    monkeypatch.setattr(plugin_cli, "_plugin_cfg", lambda: {"enabled": True})
     monkeypatch.setenv("FLOOR_VAULT_STATE_DIR", str(vault_home / "state"))
     return plugin_cli, vault_home
 
@@ -1383,7 +1383,7 @@ def test_bind_reads_the_value_from_stdin(plugin_cli, vault_home, monkeypatch, ca
     import io
 
     monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
-    monkeypatch.setattr(plugin_cli, "_secrets_cfg", lambda: {"enabled": True})
+    monkeypatch.setattr(plugin_cli, "_plugin_cfg", lambda: {"enabled": True})
     monkeypatch.setattr(sys, "stdin", io.StringIO("sk-from-stdin\n"))
     assert plugin_cli.hvault_command(_bind_cli_args("NEW_KEY")) == 0
     out = capsys.readouterr().out
@@ -1470,7 +1470,7 @@ def test_bind_stdin_refuses_a_terminal(plugin_cli, tmp_path, monkeypatch, capsys
             return True
 
     monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: tmp_path)
-    monkeypatch.setattr(plugin_cli, "_secrets_cfg", lambda: {"enabled": True})
+    monkeypatch.setattr(plugin_cli, "_plugin_cfg", lambda: {"enabled": True})
     monkeypatch.setattr(sys, "stdin", Tty())
     assert plugin_cli.hvault_command(_bind_cli_args()) == 2
     assert "pipe or file" in capsys.readouterr().err
@@ -1480,7 +1480,7 @@ def test_doctor_prints_the_actual_warnings(plugin_cli, vault_home, monkeypatch, 
     monkeypatch.setattr(plugin_cli, "get_hermes_home", lambda: vault_home)
     monkeypatch.setattr(
         plugin_cli,
-        "_secrets_cfg",
+        "_plugin_cfg",
         lambda: {"enabled": True, "env": {"GONE": "hv:no_such_item"}},
     )
     assert plugin_cli.hvault_command(SimpleNamespace(hvault_command="doctor")) == 1
@@ -1536,9 +1536,9 @@ def test_cli_refuses_a_secrets_section_that_is_not_a_mapping(plugin_cli, tmp_pat
     _healthy_host_config(tmp_path, monkeypatch)
     sys.modules["hermes_cli.config"].read_user_config_raw = lambda: {"secrets": ["hermesvault"]}
     with pytest.raises(plugin_cli.CLIInputError, match="secrets configuration must be a mapping"):
-        plugin_cli._secrets_cfg()
+        plugin_cli._plugin_cfg()
     sys.modules["hermes_cli.config"].read_user_config_raw = lambda: {"other": 1}
-    assert plugin_cli._secrets_cfg() == {}
+    assert plugin_cli._plugin_cfg() == {}
 
 
 # --- resolution consults the record `allow` keeps outside the store (#97) -----
