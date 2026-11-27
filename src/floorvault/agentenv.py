@@ -131,9 +131,31 @@ CODE_INJECTION_ENV_NAMES = frozenset(
         "NPM_CONFIG_NODE_OPTIONS",
         "NPM_CONFIG_SCRIPT_SHELL",
         "NPM_CONFIG_PREFIX",
+        # Git variables that execute commands, load hooks/helpers, or inject
+        # config (e.g. core.sshCommand, core.pager, credential.helper, aliases).
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "GIT_PROXY_COMMAND",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "GIT_EDITOR",
+        "GIT_SEQUENCE_EDITOR",
+        "GIT_PAGER",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_EXEC_PATH",
+        "GIT_TEMPLATE_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        # Fallback pager/editor commands used by Git and other CLI tools.
+        "PAGER",
+        "EDITOR",
+        "VISUAL",
     }
 )
-CODE_INJECTION_ENV_PREFIXES = ("DYLD_",)
+CODE_INJECTION_ENV_PREFIXES = ("DYLD_", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 
 _ITEM_ID = r"[A-Za-z0-9._-]{1,128}"
 _REF = re.compile(

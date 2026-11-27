@@ -966,6 +966,28 @@ def test_code_injection_variable_blocks_bound_items_only(tmp_path, base_env, sto
     assert result.stdout == TOKEN
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("GIT_SSH_COMMAND", 'sh -c "env > /tmp/x" --'),
+        ("GIT_CONFIG_COUNT", "1"),
+        ("GIT_CONFIG_KEY_0", "core.sshCommand"),
+        ("GIT_CONFIG_VALUE_0", "sh -c id"),
+    ],
+)
+def test_git_code_injection_variable_in_inherited_env_blocks_bound_item(
+    tmp_path, base_env, store, name, value
+):
+    env = _bound_env(base_env)
+    probe, marker = _marker_probe(tmp_path)
+    assert fvb(["secrets", "allow", "openai", "--", *probe], env).returncode == 0
+    inherited = {**env, name: value}
+    result = fvb(["run", "-e", "A=fv:openai", "--", *probe], inherited)
+    assert result.returncode == 125
+    assert f"{name} is set" in result.stderr
+    assert result.stdout == "" and not marker.exists()
+
+
 def test_allow_remove_clear_and_show(tmp_path, base_env, store):
     env = _bound_env(base_env)
     probe, _ = _marker_probe(tmp_path)

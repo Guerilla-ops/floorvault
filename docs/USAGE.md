@@ -565,8 +565,12 @@ floorvault secrets allow github-pat --accept  # trust a change made outside this
   `NODE_OPTIONS`, `NODE_PATH`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONHOME`,
   `PYTHONUSERBASE`, `PYTHONPYCACHEPREFIX`, `PERL5OPT`, `RUBYOPT`, `BASH_ENV`,
   `SHELLOPTS`, `PS4`, `GCONV_PATH`, `OPENSSL_CONF`, `JAVA_TOOL_OPTIONS`,
-  package-index variables for pip and uv, and npm's registry, config-file and
-  TLS settings (`agentenv.CODE_INJECTION_ENV_NAMES` has the full list). Unset
+  package-index variables for pip and uv, npm's registry, config-file and
+  TLS settings, Git's command, config and hook variables (`GIT_SSH_COMMAND`,
+  `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*`,
+  `GIT_CONFIG_VALUE_*`, etc.), and `PAGER`/`EDITOR`/`VISUAL`
+  (`agentenv.CODE_INJECTION_ENV_NAMES` and `CODE_INJECTION_ENV_PREFIXES` have
+  the full list). Unset
   them for that command. The list is best effort: `HOME`, `PATH` and a
   program's own configuration files can steer it too, as can exported shell
   functions (`BASH_FUNC_*`) and package caches (`NPM_CONFIG_CACHE`,
