@@ -4,7 +4,7 @@ Scope: `Guerilla-ops/floorvault` (main, 0.4.2). No infrastructure repository: Fl
 
 ## System overview and trust boundaries
 
-FloorVault runs in the caller's process. It has no network listener; its only IPC endpoint is the key agent's owner-only Unix socket, and its only outbound network call is HTTPS to a Vault server for Transit custody.
+FloorVault runs in the caller's process. It has no network listener; its only IPC endpoint is the key agent's owner-only Unix socket, and its own outbound network call is HTTPS to a Vault server for Transit custody. `EncryptedLibSqlTable` also issues queries over the caller-provided libSQL connection, which may be a remote URL or embedded replica; that transport is the caller's.
 
 Trust boundaries:
 1. **Storage ↔ process** — databases, `vault.db`, ciphertext, metadata and backups are untrusted at rest; plaintext is released only after AES-SIV authentication against caller-supplied expected context.
