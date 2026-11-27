@@ -78,7 +78,7 @@ Concrete forms of SECURITY.md's invariants 1–9.
 - **TLS to Vault (CWE-295, CWE-319).** `providers/vault_transit.py` accepts only `https://` and a default-verified `ssl` context; redirects must stay on https; tokens never logged.
 - **Diagnostics (CWE-532, CWE-209).** Errors, warnings and the agent use log never include values or keys; CLI `secrets` commands print no values; `secrets put` and `secrets add --stdin` take values from the prompt/stdin, while positional `secrets add field=value` arguments are visible to `ps` (documented in its help).
 - **Migration/rotation (CWE-404-adjacent integrity).** Source preserved until verification, retired records never resurrected, old key generations kept through staged rotation.
-- **Deserialization / parsing.** Agent JSON and recovery bundles are parsed with stdlib `json` only; no `pickle`/`yaml.load` of untrusted input.
+- **Deserialization / parsing.** Agent messages are parsed with stdlib `json` only; recovery bundles (`key_recovery.py`) are a binary `FVRB1` header, bundle id and authenticated envelope; no `pickle`/`yaml.load` of untrusted input.
 - **Supply chain (CWE-829, CWE-494).** Workflows pin actions by SHA, use least `permissions`, no `pull_request_target` with checkout of PR code; release builds are attested and published via Trusted Publishing.
 
 ## Out of scope / accepted risk *(SECURITY.md)*
