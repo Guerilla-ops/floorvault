@@ -39,7 +39,7 @@ Trust boundaries:
 
 ## Assets and sensitivity *(SECURITY.md)*
 
-Master and derived keys (highest); recovery material; credential values in `vault.db`; protected metadata; expected record coordinates (context); trusted freshness state; command-binding records; Vault tokens; release artifacts' integrity.
+All weighted equally for triage (maintainer decision). Master and derived keys; recovery material; credential values in `vault.db`; protected metadata; expected record coordinates (context); trusted freshness state; command-binding records; Vault tokens; release artifacts' integrity.
 
 ## Attacker profiles
 
